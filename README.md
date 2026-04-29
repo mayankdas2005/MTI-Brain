@@ -45,31 +45,31 @@ The frontend authenticates via username/password, receives a JWT from the backen
 
 ```
 quest/
-Γö£ΓöÇΓöÇ backend/      # FastAPI backend (see backend/README.md)
-Γöé   Γö£ΓöÇΓöÇ app/
-Γöé   Γöé   Γö£ΓöÇΓöÇ api/       # Route handlers: health, auth, chat, projects
-Γöé   Γöé   Γö£ΓöÇΓöÇ core/      # Config, logging, middleware, circuit breakers
-Γöé   Γöé   Γö£ΓöÇΓöÇ db/        # SQLAlchemy async session factory
-Γöé   Γöé   Γö£ΓöÇΓöÇ models/    # ORM: User, Project, Thread, Message, Feedback, ExecutionLog
-Γöé   Γöé   Γö£ΓöÇΓöÇ schemas/   # Pydantic request/response schemas
-Γöé   Γöé   ΓööΓöÇΓöÇ services/  # Auth, conversation CRUD, feedback, health
-Γöé   Γö£ΓöÇΓöÇ alembic/       # Database migrations
-Γöé   Γö£ΓöÇΓöÇ scripts/       # Utility scripts
-Γöé   Γö£ΓöÇΓöÇ Dockerfile     # Multi-stage Python 3.12 build (includes MSSQL ODBC drivers)
-Γöé   ΓööΓöÇΓöÇ .env.example
-Γöé
-Γö£ΓöÇΓöÇ frontend/     # Next.js application (see frontend/README.md)
-Γöé   Γö£ΓöÇΓöÇ app/           # App Router pages (login, chat, projects)
-Γöé   Γö£ΓöÇΓöÇ components/    # 30+ React components (sidebar, composer, messages, dialogs)
-Γöé   Γö£ΓöÇΓöÇ lib/           # API client, SSE parser, Zustand stores, auth, types
-Γöé   Γö£ΓöÇΓöÇ hooks/         # Keyboard shortcuts, mobile detection, toast
-Γöé   Γö£ΓöÇΓöÇ Dockerfile     # Multi-stage Node 20 build (standalone output)
-Γöé   ΓööΓöÇΓöÇ .env.example
-Γöé
-ΓööΓöÇΓöÇ database/     # Data layer Docker Compose (see database/README.md)
-    Γö£ΓöÇΓöÇ docker-compose.yml  # PostgreSQL + PgBouncer
-    Γö£ΓöÇΓöÇ docker_volume/      # Persistent data (git-ignored)
-    ΓööΓöÇΓöÇ .env.example
+├── backend/      # FastAPI backend (see backend/README.md)
+│   ├── app/
+│   │   ├── api/       # Route handlers: health, auth, chat, projects
+│   │   ├── core/      # Config, logging, middleware, circuit breakers
+│   │   ├── db/        # SQLAlchemy async session factory
+│   │   ├── models/    # ORM: User, Project, Thread, Message, Feedback, ExecutionLog
+│   │   ├── schemas/   # Pydantic request/response schemas
+│   │   └── services/  # Auth, conversation CRUD, feedback, health
+│   ├── alembic/       # Database migrations
+│   ├── scripts/       # Utility scripts
+│   ├── Dockerfile     # Multi-stage Python 3.12 build (includes MSSQL ODBC drivers)
+│   └── .env.example
+│
+├── frontend/     # Next.js application (see frontend/README.md)
+│   ├── app/           # App Router pages (login, chat, projects)
+│   ├── components/    # 30+ React components (sidebar, composer, messages, dialogs)
+│   ├── lib/           # API client, SSE parser, Zustand stores, auth, types
+│   ├── hooks/         # Keyboard shortcuts, mobile detection, toast
+│   ├── Dockerfile     # Multi-stage Node 20 build (standalone output)
+│   └── .env.example
+│
+└── database/     # Data layer Docker Compose (see database/README.md)
+    ├── docker-compose.yml  # PostgreSQL + PgBouncer
+    ├── docker_volume/      # Persistent data (git-ignored)
+    └── .env.example
 ```
 
 ## Tech Stack
@@ -78,7 +78,7 @@ quest/
 |-------|-----------|
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4, shadcn/ui, Zustand |
 | Backend | FastAPI + Gunicorn + Uvicorn (Python 3.12) |
-| Auth | Username/password ΓåÆ JWT (PyJWT, HS256, 8-hour expiry) |
+| Auth | Username/password → JWT (PyJWT, HS256, 8-hour expiry) |
 | App Database | PostgreSQL 18 + pgvector + SQLAlchemy (async) + Alembic |
 | Connection Pooling | PgBouncer (transaction mode) |
 | Vector Search | pgvector (1536-dim) on feedback embeddings |
