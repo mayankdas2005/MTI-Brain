@@ -67,39 +67,17 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeThreadTitle, setActiveThreadTitle] = useState('');
 
-  const [threadsFetched, setThreadsFetched] = useState(false);
-
+  // Detail seeding (cache hit, list-only seed, or cold) is fully owned by
+  // fetchProject in the store - no inline pre-seed needed here.
   useEffect(() => {
-    setThreadsFetched(false);
-    // Seed currentProject from the cached projects list so the page header
-    // (name, description) renders instantly while we fetch the full detail
-    // (which includes threads). Without this, every navigation showed a
-    // full-page skeleton even when the basic project info was already in memory.
-    const cachedList = useProjectStore.getState().projects;
-    const cached = cachedList.find((p) => p.id === projectId);
-    const currentId = useProjectStore.getState().currentProject?.id;
-    if (cached && currentId !== projectId) {
-      useProjectStore.setState({
-        currentProject: {
-          id: cached.id,
-          name: cached.name,
-          description: cached.description,
-          starred: cached.starred,
-          threads: [],
-          created_at: cached.created_at,
-          updated_at: cached.updated_at,
-        },
-      });
-    }
-    fetchProject(projectId)
-      .then(() => setThreadsFetched(true))
-      .catch(() => {
-        router.replace('/projects');
-      });
+    fetchProject(projectId).catch(() => {
+      router.replace('/projects');
+    });
 
     return () => {
       // Clear stale currentProject when leaving this page so other project
-      // pages don't briefly flash this project's data.
+      // pages don't briefly flash this project's data. The detail map keeps
+      // the data warm for an instant re-render on return.
       useProjectStore.setState({ currentProject: null });
     };
   }, [projectId, fetchProject, router]);
@@ -124,7 +102,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     });
   };
 
-  if (currentProjectLoading || !currentProject) {
+  // Cold load only: no cache, no list seed - currentProject is still null.
+  if (!currentProject) {
     return (
       <div className="h-full overflow-y-auto">
         <div className="max-w-4xl mx-auto px-6 py-8">
@@ -144,6 +123,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       </div>
     );
   }
+
+  // Show the threads-only skeleton when we have header info but the detail
+  // request hasn't landed yet (list-only seed path).
+  const showThreadSkeleton = currentProjectLoading && currentProject.threads.length === 0;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -235,7 +218,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         </div>
 
         {/* Thread List */}
-        {!threadsFetched ? (
+        {showThreadSkeleton ? (
           <div className="space-y-2">
             {[1, 2, 3].map((i) => (
               <div key={i} className="rounded-xl border border-border bg-background p-4">

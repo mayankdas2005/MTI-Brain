@@ -393,10 +393,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     });
     // Refresh sidebar
     get().fetchRecents();
-    // If the detail page for this project is currently open, refresh it so
-    // the new thread appears immediately.
+    // Drop any stale detail cache for the parent project (thread_count and
+    // threads list both shifted) and refresh if the detail page is open.
     if (projectId) {
       const { useProjectStore } = await import('./projects');
+      useProjectStore.getState().invalidateProjectDetail(projectId);
       useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
     }
     return res.thread_id;
@@ -421,10 +422,14 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     });
     try {
       await api.deleteThread(threadId);
-      // Refresh project counts + detail if open
+      // Refresh project list (counts) + drop stale detail cache + refresh
+      // detail if the parent project page is currently open.
       const { useProjectStore } = await import('./projects');
       useProjectStore.getState().fetchProjects();
-      useProjectStore.getState().refreshCurrentProjectIfMatches(affectedProjectId);
+      if (affectedProjectId) {
+        useProjectStore.getState().invalidateProjectDetail(affectedProjectId);
+        useProjectStore.getState().refreshCurrentProjectIfMatches(affectedProjectId);
+      }
     } catch {
       set({ threads: prev, searchResults: prevSearchResults }); // rollback
     }
@@ -443,33 +448,37 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     if (get().currentThreadId === threadId) {
       set({ currentThreadStarred: !get().currentThreadStarred });
     }
-    // Mirror the toggle into currentProject.threads if the open project
-    // contains this thread. Fall back to currentThreadProjectId when the
+    // Mirror the toggle into the project detail cache (and the open detail
+    // page if it matches). Fall back to currentThreadProjectId when the
     // thread isn't in the sidebar list (e.g. paginated beyond view).
     const affectedProjectId =
       prev.find((t) => t.id === threadId)?.project_id
       ?? (get().currentThreadId === threadId ? get().currentThreadProjectId : null);
     if (affectedProjectId) {
       const { useProjectStore } = await import('./projects');
-      const cur = useProjectStore.getState().currentProject;
-      if (cur?.id === affectedProjectId) {
-        useProjectStore.setState({
-          currentProject: {
-            ...cur,
-            threads: cur.threads.map((t) =>
-              t.id === threadId ? { ...t, starred: !t.starred } : t,
-            ),
-          },
-        });
-      }
+      useProjectStore.getState().mutateProjectDetail(affectedProjectId, (p) => ({
+        ...p,
+        threads: p.threads.map((t) =>
+          t.id === threadId ? { ...t, starred: !t.starred } : t,
+        ),
+      }));
     }
     try {
       await api.starThread(threadId);
     } catch {
-      // Rollback both sidebar list and current thread metadata
+      // Rollback sidebar list, current thread metadata, and project cache
       set({ threads: prev });
       if (get().currentThreadId === threadId) {
         set({ currentThreadStarred: prevStarred });
+      }
+      if (affectedProjectId) {
+        const { useProjectStore } = await import('./projects');
+        useProjectStore.getState().mutateProjectDetail(affectedProjectId, (p) => ({
+          ...p,
+          threads: p.threads.map((t) =>
+            t.id === threadId ? { ...t, starred: !t.starred } : t,
+          ),
+        }));
       }
     }
   },
@@ -485,32 +494,38 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     if (get().currentThreadId === threadId) {
       set({ currentThreadTitle: title });
     }
-    // Mirror rename into currentProject.threads if it's the open project.
-    // Fall back to currentThreadProjectId when the thread isn't in sidebar.
+    // Mirror rename into the project detail cache (and the open detail page
+    // if it matches). Fall back to currentThreadProjectId when the thread
+    // isn't in sidebar.
     const affectedProjectId =
       prev.find((t) => t.id === threadId)?.project_id
       ?? (get().currentThreadId === threadId ? get().currentThreadProjectId : null);
     if (affectedProjectId) {
       const { useProjectStore } = await import('./projects');
-      const cur = useProjectStore.getState().currentProject;
-      if (cur?.id === affectedProjectId) {
-        useProjectStore.setState({
-          currentProject: {
-            ...cur,
-            threads: cur.threads.map((t) =>
-              t.id === threadId ? { ...t, title } : t,
-            ),
-          },
-        });
-      }
+      useProjectStore.getState().mutateProjectDetail(affectedProjectId, (p) => ({
+        ...p,
+        threads: p.threads.map((t) =>
+          t.id === threadId ? { ...t, title } : t,
+        ),
+      }));
     }
     try {
       await api.renameThread(threadId, title);
     } catch {
-      // Rollback both sidebar list and current thread title
+      // Rollback sidebar list, current thread title, and project cache
       set({ threads: prev });
       if (get().currentThreadId === threadId) {
         set({ currentThreadTitle: prevTitle });
+      }
+      if (affectedProjectId) {
+        const originalTitle = prev.find((t) => t.id === threadId)?.title ?? null;
+        const { useProjectStore } = await import('./projects');
+        useProjectStore.getState().mutateProjectDetail(affectedProjectId, (p) => ({
+          ...p,
+          threads: p.threads.map((t) =>
+            t.id === threadId ? { ...t, title: originalTitle } : t,
+          ),
+        }));
       }
     }
   },
@@ -524,6 +539,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     try {
       await api.moveThread(threadId, projectId);
       const { useProjectStore } = await import('./projects');
+      // Both sides of the move have stale thread lists + counts. Drop the
+      // detail cache for each so the next visit re-fetches; refresh the open
+      // detail page (if any) immediately.
+      if (fromProjectId) useProjectStore.getState().invalidateProjectDetail(fromProjectId);
+      if (projectId) useProjectStore.getState().invalidateProjectDetail(projectId);
       await Promise.all([
         get().fetchRecents(),
         useProjectStore.getState().fetchProjects(),
@@ -557,10 +577,18 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       if (ids.includes(get().currentThreadId ?? '')) {
         set({ currentThreadId: null, currentMessages: [] });
       }
-      // Refresh project counts + detail if open
+      // Evict cached message data for every deleted thread so a stale id
+      // doesn't render after the rows are gone.
+      set((state) => {
+        const map = { ...state.threadMessageMap };
+        for (const id of ids) delete map[id];
+        return { threadMessageMap: map };
+      });
+      // Refresh project counts, drop affected detail caches, refresh open detail
       const { useProjectStore } = await import('./projects');
       useProjectStore.getState().fetchProjects();
       for (const pid of affectedProjectIds) {
+        useProjectStore.getState().invalidateProjectDetail(pid);
         useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
       }
     } catch {
@@ -585,10 +613,15 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       const { useProjectStore } = await import('./projects');
       get().fetchRecents();
       useProjectStore.getState().fetchProjects();
+      // Drop detail caches on every project that lost or gained threads.
       for (const pid of affectedProjectIds) {
+        useProjectStore.getState().invalidateProjectDetail(pid);
         useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
       }
-      useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
+      if (projectId) {
+        useProjectStore.getState().invalidateProjectDetail(projectId);
+        useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
+      }
     } catch {
       set({ threads: prev });
     }
@@ -778,11 +811,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           };
         });
         get().fetchRecents();
-        // If this thread belongs to the project currently open in the
-        // detail page, refresh it so the new conversation appears there.
+        // The project's thread updated_at (and possibly thread_count for a
+        // freshly-created thread) shifted - drop the detail cache so the
+        // next visit re-fetches, and refresh now if the page is open.
         const pid = get().currentThreadProjectId;
         if (pid) {
           import('./projects').then(({ useProjectStore }) => {
+            useProjectStore.getState().invalidateProjectDetail(pid);
             useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
           });
         }
@@ -1381,14 +1416,20 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
   submitFeedback: async (threadId, conversationId, liked, comment) => {
     const result = await api.submitFeedback(threadId, conversationId, { liked, comment });
-    // Update local message feedback state
-    const msgs = get().currentMessages;
-    set({
-      currentMessages: msgs.map((m) =>
-        m.conversation_id === conversationId && m.role === 'assistant'
-          ? { ...m, feedback: { liked: result.liked, comment: result.comment ?? undefined } }
-          : m,
-      ),
+    // Update both currentMessages (live render) and threadMessageMap (cache)
+    // so navigating away and back doesn't reset the feedback indicator.
+    const apply = (m: Message) =>
+      m.conversation_id === conversationId && m.role === 'assistant'
+        ? { ...m, feedback: { liked: result.liked, comment: result.comment ?? undefined } }
+        : m;
+    set((state) => {
+      const cached = state.threadMessageMap[threadId];
+      return {
+        currentMessages: state.currentMessages.map(apply),
+        ...(cached
+          ? { threadMessageMap: { ...state.threadMessageMap, [threadId]: cached.map(apply) } }
+          : {}),
+      };
     });
   },
 
