@@ -1,0 +1,50 @@
+# Dependencies (installed in container)
+node_modules/
+
+# Build output (built in container)
+.next/
+out/
+dist/
+build/
+
+# Git
+.git/
+.gitignore
+
+# Environment
+# NEXT_PUBLIC_* values must be baked into the browser bundle at `next build`
+# time, so .env and .env.production have to be in the build context. Everything
+# else (local overrides, test envs) stays out.
+!.env
+!.env.production
+.env.local
+.env.development
+.env.test
+.env.*.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Debug / coverage
+*.log
+npm-debug.log*
+coverage/
+.nyc_output/
+
+# Cache
+.eslintcache
+.turbo/
+tsconfig.tsbuildinfo
+
+# Vercel / v0 sandbox
+.vercel/
+.snowflake/
+.v0-trash/
+
+# Docker
+Dockerfile
+docker-compose*.yml

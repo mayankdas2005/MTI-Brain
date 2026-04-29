@@ -1,0 +1,356 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* ── Light mode - Premium cool slate ── */
+  --background: #eaf1fa;
+  --foreground: #0f1b2d;
+  --card: #f8fbff;
+  --card-foreground: #0f1b2d;
+  --popover: #f8fbff;
+  --popover-foreground: #0f1b2d;
+  --primary: #1B76B8;
+  --primary-foreground: #ffffff;
+  --secondary: #dce7f4;
+  --secondary-foreground: #1c2c43;
+  --muted: #dce8f6;
+  --muted-foreground: #4d637f;
+  --accent: #d4e1f1;
+  --accent-foreground: #0f1b2d;
+  --destructive: #EE2650;
+  --destructive-foreground: #ffffff;
+  --border: #bdd0e6;
+  --input: #e0eaf7;
+  --ring: #1B76B8;
+  --chart-1: #1B76B8;
+  --chart-2: #F9A619;
+  --chart-3: #4f739f;
+  --chart-4: #FACA2B;
+  --chart-5: #EE2650;
+  --radius: 0.625rem;
+  /* User message bubble */
+  --user-bubble: #d8e4f3;
+  --user-bubble-foreground: #0f1b2d;
+  /* Sidebar */
+  --sidebar: #dce8f6;
+  --sidebar-foreground: #0f1b2d;
+  --sidebar-primary: #1B76B8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #cdddef;
+  --sidebar-accent-foreground: #0f1b2d;
+  --sidebar-border: #b8cce3;
+  --sidebar-ring: #1B76B8;
+  /* Header strip (sidebar header + topbar) */
+  --header: #091a31;
+  --header-foreground: #eaf2ff;
+  --header-control-bg: #ffffff14;
+  --header-control-bg-hover: #ffffff26;
+  --header-control-border: #ffffff26;
+  /* Shared UI pigments */
+  --skeleton: #adc3de;
+  --scrollbar-thumb: #89a8ca;
+  --scrollbar-thumb-hover: #7597bc;
+  --scrollbar-track: transparent;
+  --star: #f59e0b;
+  /* Easing */
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.dark {
+  /* ── Dark mode - Cool slate (temperature-matched to light mode) ── */
+  --background: #1c1f23;
+  --foreground: #e4e8ee;
+  --card: #22262d;
+  --card-foreground: #e4e8ee;
+  --popover: #22262d;
+  --popover-foreground: #e4e8ee;
+  --primary: #1B76B8;
+  --primary-foreground: #ffffff;
+  --secondary: #272c33;
+  --secondary-foreground: #e4e8ee;
+  --muted: #272c33;
+  --muted-foreground: #8a9bb0;
+  --accent: #2c323b;
+  --accent-foreground: #e4e8ee;
+  --destructive: #EE2650;
+  --destructive-foreground: #ffffff;
+  --border: #333c47;
+  --input: #272c33;
+  --ring: #1B76B8;
+  --chart-1: #1B76B8;
+  --chart-2: #F9A619;
+  --chart-3: #6a7f95;
+  --chart-4: #FACA2B;
+  --chart-5: #EE2650;
+  /* User message bubble */
+  --user-bubble: #272c33;
+  --user-bubble-foreground: #e4e8ee;
+  /* Sidebar */
+  --sidebar: #171b20;
+  --sidebar-foreground: #e4e8ee;
+  --sidebar-primary: #1B76B8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #272c33;
+  --sidebar-accent-foreground: #e4e8ee;
+  --sidebar-border: #2d3540;
+  --sidebar-ring: #1B76B8;
+  /* Header strip */
+  --header: #10141a;
+  --header-foreground: #d4e2f4;
+  --header-control-bg: #ffffff10;
+  --header-control-bg-hover: #ffffff18;
+  --header-control-border: #ffffff1c;
+  /* Shared UI pigments */
+  --skeleton: #2c3440;
+  --scrollbar-thumb: #445060;
+  --scrollbar-thumb-hover: #556070;
+  --scrollbar-track: transparent;
+  --star: #f59e0b;
+}
+
+@theme inline {
+  --font-sans: 'Geist', 'Geist Fallback';
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-star: var(--star);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  body {
+    @apply bg-background text-foreground;
+    /* Tabular numbers everywhere - essential for financial precision */
+    font-variant-numeric: tabular-nums;
+    background-image:
+      radial-gradient(1200px 560px at 8% -26%, #87a9d318, transparent 58%),
+      radial-gradient(900px 520px at 108% 8%, #6e95c512, transparent 52%);
+  }
+  button,
+  a,
+  [role="button"],
+  [type="button"],
+  [type="submit"],
+  [type="reset"],
+  label[for],
+  select,
+  summary {
+    cursor: pointer;
+  }
+}
+
+/* Thinking glow - CSS custom properties per theme */
+:root {
+  --glow-rest: 0 0 8px -2px #1B76B826, 0 0 20px -4px #1B76B814;
+  --glow-peak: 0 0 14px -2px #1B76B847, 0 0 28px -4px #1B76B824;
+  --glow-complete-border: #1B76B833;
+  --glow-complete-shadow: 0 0 10px -3px #1B76B814;
+}
+
+.dark {
+  --glow-rest: 0 0 8px -2px #1B76B830, 0 0 20px -4px #1B76B818;
+  --glow-peak: 0 0 14px -2px #1B76B855, 0 0 28px -4px #1B76B82a;
+  --glow-complete-border: #1B76B840;
+  --glow-complete-shadow: 0 0 10px -3px #1B76B820;
+}
+
+.dark body {
+  background-color: var(--background);
+  /* Cool blue tint matches light mode temperature */
+  background-image:
+    radial-gradient(1200px 620px at 10% -28%, #1B76B80e, transparent 58%),
+    radial-gradient(900px 560px at 112% 10%, #1B76B808, transparent 52%);
+}
+
+/* ── Animations ── */
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Subtle slide-up on all fade-in elements - messages feel more alive */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.25s ease-out both;
+}
+
+.animate-fade-up {
+  animation: fade-up 0.4s ease-out both;
+}
+
+/* Streaming cursor - brand identity */
+.streaming-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  margin-left: 3px;
+  vertical-align: middle;
+  animation: cursor-breathe 1.4s ease-in-out infinite;
+  box-shadow: 0 0 6px 1px color-mix(in oklch, var(--primary) 40%, transparent);
+}
+
+@keyframes cursor-breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* Thinking glow - heartbeat (fast attack, slow release) */
+@keyframes thinking-glow {
+  0%   { box-shadow: var(--glow-rest); }
+  15%  { box-shadow: var(--glow-peak); }
+  100% { box-shadow: var(--glow-rest); }
+}
+
+.thinking-glow {
+  animation: thinking-glow 2.2s ease-in-out infinite;
+}
+
+/* Subtle glow after reasoning completes */
+.reasoning-complete {
+  border: 1px solid var(--glow-complete-border);
+  box-shadow: var(--glow-complete-shadow);
+}
+
+/* Skeleton shimmer - brand-tinted traveling highlight */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--skeleton) 25%,
+    color-mix(in oklch, var(--primary) 22%, var(--skeleton)) 50%,
+    var(--skeleton) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* Spring transition - for send/star/action buttons */
+.transition-spring {
+  transition-property: transform;
+  transition-duration: 280ms;
+  transition-timing-function: var(--spring);
+}
+
+/* Chip breath - suggestion chips gently breathe at rest */
+@keyframes chip-breathe {
+  0%, 100% { opacity: 0.8; }
+  50%       { opacity: 1; }
+}
+
+/* Star reward pop - fires when toggling to starred */
+@keyframes star-burst {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.5); }
+  65%  { transform: scale(0.92); }
+  100% { transform: scale(1); }
+}
+
+.star-burst {
+  animation: star-burst 0.38s var(--spring) both;
+}
+
+/* ── SQL / Code syntax highlighting (highlight.js) ── */
+/* Uses app palette - works in both light and dark mode */
+.hljs-keyword,
+.hljs-operator,
+.hljs-clause { color: var(--primary); font-weight: 500; }          /* SELECT FROM WHERE JOIN ON */
+
+.hljs-string,
+.hljs-value { color: #F9A619; }                                     /* 'string values' */
+
+.hljs-number,
+.hljs-literal { color: #4ade80; }                                   /* 100, 0.5, NULL, TRUE */
+
+.hljs-comment { color: var(--muted-foreground); font-style: italic; } /* -- comments */
+
+.hljs-built_in,
+.hljs-function { color: #a78bfa; }                                  /* CURRENT_DATE, INTERVAL, SUM() */
+
+.hljs-type { color: #60a5fa; }                                      /* data types */
+
+.hljs-variable,
+.hljs-attr { color: var(--foreground); }                            /* column / table names */
+
+.hljs-title { color: var(--foreground); font-weight: 500; }         /* table / alias names */
+
+/* Credits overlay */
+@keyframes scan {
+  from { top: 0; }
+  to { top: 100%; }
+}
+
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
