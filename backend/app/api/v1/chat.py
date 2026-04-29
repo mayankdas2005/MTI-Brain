@@ -171,7 +171,7 @@ def _build_sse_generator(
                         "data": json.dumps({"thread_id": str(thread_id), "title": title}),
                     }
 
-            yield {"event": "node.start", "data": json.dumps({"node": "classify"})}
+            yield {"event": "node.start", "data": json.dumps({"node": "classify", "message": "Classifying question"})}
             await asyncio.sleep(0.05)
             yield {"event": "classify", "data": json.dumps({"question_type": "data_query"})}
 
@@ -196,14 +196,14 @@ def _build_sse_generator(
                 yield {"event": "reasoning.delta", "data": json.dumps({"node": "generate_sql", "text": _chunk})}
                 await asyncio.sleep(0.06)
 
-            yield {"event": "node.start", "data": json.dumps({"node": "generate_sql"})}
+            yield {"event": "node.start", "data": json.dumps({"node": "generate_sql", "message": "Building SQL query"})}
             await asyncio.sleep(0.05)
             yield {
                 "event": "generate_sql",
                 "data": json.dumps({"sql": final_data["sql"], "intent": final_data["intent"]}),
             }
 
-            yield {"event": "node.start", "data": json.dumps({"node": "execute"})}
+            yield {"event": "node.start", "data": json.dumps({"node": "execute", "message": "Executing query"})}
             await asyncio.sleep(0.05)
             yield {
                 "event": "execute.done",
@@ -220,6 +220,8 @@ def _build_sse_generator(
                     "event": "chart",
                     "data": json.dumps({"spec": final_data["chart_spec"]}),
                 }
+
+            yield {"event": "node.start", "data": json.dumps({"node": "respond", "message": "Preparing answer"})}
 
             chunks = final_data["answer"].split(" ")
             for chunk in chunks:

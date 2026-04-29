@@ -551,7 +551,7 @@ message_hits AS (
         m.thread_id, t.project_id, t.title, t.created_at, t.updated_at,
         m.content AS matched_content,
         ts_headline('english', m.content, q,
-            'MaxWords=35, MinWords=15, ShortWord=3, StartSel=<b>, StopSel=</b>'
+            'MaxWords=35, MinWords=15, ShortWord=3, HighlightAll=true, StartSel=<b>, StopSel=</b>'
         ) AS headline,
         'message' AS match_type,
         COALESCE(ts_rank(m.search_vector, q), 0) * 1.0
@@ -639,6 +639,9 @@ async def search_threads(
         A list of result dictionaries with thread_id, project_id, title,
         match_type, preview, headline, rank, created_at, and updated_at.
     """
+    if len(search_text.strip()) < 2:
+        return []
+
     params: dict = {"search_text": search_text, "limit": limit, "offset": offset}
 
     if project_id and user_id:

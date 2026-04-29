@@ -52,7 +52,7 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
 
     if (debounceTimer) clearTimeout(debounceTimer);
 
-    if (!query.trim()) {
+    if (query.trim().length < 2) {
       set({ chatResults: [], projectResults: [], loading: false });
       return;
     }
@@ -80,6 +80,6 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
           set({ loading: false });
         }
       }
-    }, 200);
+    }, 150);
   },
 }));

@@ -262,7 +262,7 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
               {greeting || 'Hello'}, {firstName}
             </p>
           )}
-          <h1 className="text-4xl font-semibold tracking-tight text-foreground" suppressHydrationWarning>
+          <h1 className="text-5xl font-light tracking-[-0.03em] text-foreground" suppressHydrationWarning>
             {tagline || 'Your treasury advisor is ready'}
           </h1>
         </div>
@@ -299,8 +299,10 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
                 key={i}
                 onClick={() => handleSuggestion(s.prompt)}
                 disabled={isStreaming}
-                className="animate-fade-up group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50"
-                style={{ animationDelay: `${(i + 1) * 80}ms` }}
+                className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50"
+                style={{
+                  animation: `fade-up 0.4s ease-out ${(i + 1) * 80}ms both, chip-breathe 4s ${1.5 + i * 0.3}s ease-in-out infinite`,
+                }}
               >
                 <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors" />
                 <span className="text-foreground/80 group-hover:text-foreground transition-colors">

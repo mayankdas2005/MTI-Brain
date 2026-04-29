@@ -136,6 +136,12 @@ class QuestThread(Base):
         Index("ix_quest_thread_user", "user_id"),
         Index("ix_quest_thread_search", "search_vector", postgresql_using="gin"),
         Index("ix_quest_thread_user_updated", "user_id", "updated_at"),
+        Index(
+            "ix_quest_thread_title_trgm",
+            "title",
+            postgresql_using="gin",
+            postgresql_ops={"title": "gin_trgm_ops"},
+        ),
     )
 
 

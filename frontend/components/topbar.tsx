@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Star, Search } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { Star, Search, FileDown } from 'lucide-react';
+import { exportThread } from '@/lib/utils/export';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -20,6 +21,12 @@ export function Topbar() {
   const currentThreadTitle = useThreadStore((s) => s.currentThreadTitle);
   const currentThreadStarred = useThreadStore((s) => s.currentThreadStarred);
   const starThread = useThreadStore((s) => s.starThread);
+  const currentMessages = useThreadStore((s) => s.currentMessages);
+
+  const handleExport = () => {
+    if (!currentThreadTitle || !currentMessages.length) return;
+    exportThread(currentThreadTitle, currentMessages);
+  };
 
   // Detect platform for shortcut label
   const [isMac, setIsMac] = useState(false);
@@ -27,10 +34,27 @@ export function Topbar() {
     setIsMac(navigator.platform.toUpperCase().indexOf('MAC') >= 0);
   }, []);
 
+  // Star reward burst animation
+  const [starBurst, setStarBurst] = useState(false);
+  const starBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleStar = () => {
+    if (!currentThreadId) return;
+    if (!currentThreadStarred) {
+      setStarBurst(true);
+      if (starBurstTimer.current) clearTimeout(starBurstTimer.current);
+      starBurstTimer.current = setTimeout(() => setStarBurst(false), 400);
+    }
+    starThread(currentThreadId);
+  };
+
   return (
     <div
-      className="flex items-center justify-between h-12 px-3 border-b border-[var(--header-control-border)] text-[var(--header-foreground)]"
-      style={{ backgroundColor: 'var(--header)' }}
+      className="flex items-center justify-between h-12 px-3 text-[var(--header-foreground)]"
+      style={{
+        backgroundColor: 'var(--header)',
+        borderBottom: '1px solid var(--header-control-border)',
+        boxShadow: '0 1px 0 0 var(--header-control-border), 0 2px 12px -2px rgba(0,0,0,0.18)',
+      }}
     >
       {/* Left spacer */}
       <div className="flex items-center gap-1" />
@@ -43,11 +67,11 @@ export function Topbar() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="shrink-0 h-8 w-8 border border-transparent hover:border-[var(--header-control-border)] hover:bg-[var(--header-control-bg)]"
-                onClick={() => currentThreadId && starThread(currentThreadId)}
+                className="shrink-0 h-8 w-8 border border-transparent hover:border-[var(--header-control-border)] hover:bg-[var(--header-control-bg)] transition-spring active:scale-[0.82]"
+                onClick={handleStar}
               >
                 <Star
-                  className={`w-4 h-4 ${
+                  className={`w-4 h-4 transition-colors duration-200 ${starBurst ? 'star-burst' : ''} ${
                     currentThreadStarred
                       ? 'fill-[var(--color-star)] text-[var(--color-star)]'
                       : 'text-[var(--header-foreground)]/60'
@@ -67,13 +91,27 @@ export function Topbar() {
         <div />
       )}
 
-      {/* Right: Search trigger */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            onClick={openSearch}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
-          >
+      {/* Right: Export + Search */}
+      <div className="flex items-center gap-2">
+        {currentThreadId && currentMessages.length > 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleExport}
+                className="flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] transition-spring active:scale-[0.88]"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Export as PDF</TooltipContent>
+          </Tooltip>
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={openSearch}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
+            >
             <Search className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Search</span>
             <kbd className="hidden sm:inline rounded border border-[var(--header-control-border)] bg-[var(--header-control-bg)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--header-foreground)]/60">
@@ -82,7 +120,8 @@ export function Topbar() {
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom">{`Search (${isMac ? '⌘' : 'Ctrl+'}K)`}</TooltipContent>
-      </Tooltip>
+        </Tooltip>
+      </div>
     </div>
   );
 }

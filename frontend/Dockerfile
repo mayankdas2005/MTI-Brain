@@ -31,7 +31,7 @@ RUN npm run build
 FROM node:20-alpine AS runner
 
 LABEL org.opencontainers.image.title="MTI Brain Frontend" \
-      org.opencontainers.image.description="MTI Brain – AI-powered decision intelligence"
+      org.opencontainers.image.description="MTI Brain - AI-powered decision intelligence"
 
 WORKDIR /app
 

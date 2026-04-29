@@ -2,6 +2,7 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 import { ReactNode, useState, isValidElement, Children } from 'react';
 import { Button } from '@/components/ui/button';
 import { Copy, Check } from 'lucide-react';
@@ -58,6 +59,7 @@ export function MarkdownRenderer({ content, isUser }: MarkdownRendererProps) {
     <div className="prose prose-sm dark:prose-invert max-w-none">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
         components={{
           h1: ({ children }) => (
             <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>

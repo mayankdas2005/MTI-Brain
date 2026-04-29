@@ -157,43 +157,43 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
         <Table>
           <TableHeader className="sticky top-0 z-10">
             <TableRow className="border-b border-border">
-              {columns.map((col, ci) => (
-                <TableHead
-                  key={col}
-                  className="text-xs whitespace-nowrap py-3 cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background"
-                  onClick={() => handleSort(ci)}
-                >
-                  <div className="font-semibold text-foreground flex items-center gap-1">
-                    {formatLabel(col)}
-                    {TYPE_LABEL[colTypes[ci]] && (
-                      <span className="font-normal text-[10px] text-muted-foreground/60">({TYPE_LABEL[colTypes[ci]]})</span>
-                    )}
-                    <span className="text-muted-foreground/40">
-                      {sortCol === ci ? (
-                        sortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-foreground" /> : <ArrowDown className="w-3 h-3 text-foreground" />
-                      ) : (
-                        <ArrowUpDown className="w-3 h-3" />
-                      )}
-                    </span>
-                  </div>
-                </TableHead>
-              ))}
+              {columns.map((col, ci) => {
+                const isNumeric = colTypes[ci] === 'int' || colTypes[ci] === 'float';
+                return (
+                  <TableHead
+                    key={col}
+                    className={`whitespace-nowrap py-2 cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background ${isNumeric ? 'text-right' : ''}`}
+                    onClick={() => handleSort(ci)}
+                  >
+                    <div className={`flex items-center gap-1 ${isNumeric ? 'justify-end' : ''}`}>
+                      <span className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground">
+                        {formatLabel(col)}
+                      </span>
+                      <span className="text-muted-foreground/40 shrink-0">
+                        {sortCol === ci ? (
+                          sortDir === 'asc' ? <ArrowUp className="w-2.5 h-2.5 text-foreground" /> : <ArrowDown className="w-2.5 h-2.5 text-foreground" />
+                        ) : (
+                          <ArrowUpDown className="w-2.5 h-2.5" />
+                        )}
+                      </span>
+                    </div>
+                  </TableHead>
+                );
+              })}
             </TableRow>
           </TableHeader>
           <TableBody>
             {pagedRows.map((row, ri) => (
-              <TableRow key={start + ri} className={ri % 2 === 1 ? 'bg-muted/20' : ''}>
+              <TableRow key={start + ri} className={ri % 2 === 1 ? 'bg-muted/15' : ''}>
                 {row.map((cell, ci) => {
                   const cellStr = cell === null || cell === undefined ? '' : String(cell);
-                  const colName = columns[ci];
+                  const isNumeric = colTypes[ci] === 'int' || colTypes[ci] === 'float';
                   return (
                     <ContextMenu key={ci}>
                       <ContextMenuTrigger asChild>
-                        <TableCell className="text-xs whitespace-nowrap">
+                        <TableCell className={`text-xs whitespace-nowrap py-2 tabular-nums ${isNumeric ? 'text-right font-medium' : ''}`}>
                           {cell === null || cell === undefined ? (
-                            <span className="text-muted-foreground italic">null</span>
-                          ) : colTypes[ci] === 'int' || colTypes[ci] === 'float' ? (
-                            <span className="tabular-nums">{cellStr}</span>
+                            <span className="text-muted-foreground/50 italic font-normal">-</span>
                           ) : (
                             cellStr
                           )}

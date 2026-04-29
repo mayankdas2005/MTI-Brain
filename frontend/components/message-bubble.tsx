@@ -3,7 +3,10 @@
 import { Message, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, CheckCheck } from 'lucide-react';
+import hljs from 'highlight.js/lib/core';
+import sql from 'highlight.js/lib/languages/sql';
+hljs.registerLanguage('sql', sql);
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
@@ -229,14 +232,21 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
 
         {/* Message bubble */}
         <div
-          className="max-w-[80%] rounded-3xl px-5 py-3 text-sm leading-relaxed"
+          className="max-w-[80%] rounded-2xl px-5 py-3 text-sm leading-relaxed"
           style={{
             backgroundColor: 'var(--user-bubble)',
             color: 'var(--user-bubble-foreground)',
           }}
         >
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
-          <p className="text-[11px] opacity-40 mt-1.5 text-right">{timeStr}</p>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <p className="text-[11px] opacity-40 mt-1.5 text-right cursor-default">{timeStr}</p>
+            </TooltipTrigger>
+            <TooltipContent side="left">
+              {messageDate.toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
     );
@@ -266,6 +276,28 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
     >
+      {/* Streaming pipeline progress stepper - purely data-driven from backend node.start events */}
+      {message.isStreaming && message.streamingSteps && message.streamingSteps.length > 0 && (
+        <div className="flex items-center flex-wrap gap-x-0.5 gap-y-1 px-1 pb-2">
+          {message.streamingSteps.map((step, i) => (
+            <span key={step.node + i} className="flex items-center gap-1 animate-fade-in">
+              {i > 0 && <span className="text-muted-foreground/30 text-[10px] mx-0.5">→</span>}
+              {step.status === 'done' ? (
+                <span className="flex items-center gap-0.5 text-[11px] text-muted-foreground">
+                  <CheckCheck className="w-3 h-3 shrink-0" />
+                  {step.message || step.node}
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-[11px] text-primary font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary inline-block animate-pulse shrink-0" />
+                  {step.message || step.node}
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Reasoning Block - unified thinking indicator (like Claude) */}
       {prefShowReasoning && (message.isStreaming || message.reasoning) && (
         <Accordion type="single" collapsible defaultValue={message.isStreaming ? 'reasoning' : undefined} className="mb-2">
@@ -311,8 +343,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                   />
                 ) : message.isStreaming ? (
                   <div className="px-3 py-3 space-y-2">
-                    <div className="h-3 w-3/4 rounded bg-muted animate-pulse" />
-                    <div className="h-3 w-1/2 rounded bg-muted animate-pulse [animation-delay:150ms]" />
+                    <div className="h-3 w-3/4 rounded-md skeleton-shimmer" />
+                    <div className="h-3 w-1/2 rounded-md skeleton-shimmer" style={{ animationDelay: '150ms' }} />
                   </div>
                 ) : null;
               })()}
@@ -382,7 +414,10 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 </Tooltip>
               </div>
               <div className="flex-1 overflow-y-auto p-3">
-                <pre className="text-xs font-mono text-foreground/80 whitespace-pre-wrap break-words">{sql}</pre>
+                <pre
+                  className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words"
+                  dangerouslySetInnerHTML={{ __html: hljs.highlight(sql, { language: 'sql' }).value }}
+                />
               </div>
             </div>
           )}
@@ -421,9 +456,16 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       {!message.isStreaming && (
         <div className="flex items-center gap-1.5 mt-1">
           {message.created_at && (
-            <span className="text-[11px] text-muted-foreground/40">
-              {`${new Date(message.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${new Date(message.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="text-[11px] text-muted-foreground/40 cursor-default">
+                  {`${new Date(message.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${new Date(message.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {new Date(message.created_at).toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
+              </TooltipContent>
+            </Tooltip>
           )}
           <div
             className={`flex items-center gap-0.5 transition-opacity duration-150 ${

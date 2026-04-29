@@ -9,6 +9,7 @@ import {
   FileText,
   FolderOpen,
   Plus,
+  Loader2,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -62,11 +63,18 @@ export function SearchModal() {
       <DialogDescription className="sr-only">Search chats and projects</DialogDescription>
       <DialogContent className="overflow-hidden p-0 sm:max-w-xl rounded-2xl border-border/80" showCloseButton={false}>
         <Command shouldFilter={false} className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[13px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-tight">
-          <CommandInput
-            placeholder="Search chats and projects..."
-            value={query}
-            onValueChange={search}
-          />
+          <div className="relative">
+            <CommandInput
+              placeholder="Search chats and projects..."
+              value={query}
+              onValueChange={search}
+            />
+            {loading && hasQuery && (
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+              </div>
+            )}
+          </div>
           <CommandList className="max-h-[400px]">
             {/* Empty state - no results for query */}
             {!loading && hasQuery && !hasResults && (
@@ -86,7 +94,7 @@ export function SearchModal() {
 
             <CommandSeparator />
 
-            {/* Loading skeletons - in the same position where recents appear */}
+            {/* Loading skeletons - recents empty state */}
             {loading && !hasQuery && recentChats.length === 0 && (
               <CommandGroup heading="Recent Chats">
                 <div className="px-2 py-1 space-y-2">
@@ -94,6 +102,24 @@ export function SearchModal() {
                   <div className="flex items-center gap-2 px-2 py-1.5"><Skeleton className="h-4 w-4 rounded shrink-0" /><Skeleton className="h-4 w-3/4" /></div>
                   <div className="flex items-center gap-2 px-2 py-1.5"><Skeleton className="h-4 w-4 rounded shrink-0" /><Skeleton className="h-4 w-2/3" /></div>
                   <div className="flex items-center gap-2 px-2 py-1.5"><Skeleton className="h-4 w-4 rounded shrink-0" /><Skeleton className="h-4 w-4/5" /></div>
+                </div>
+              </CommandGroup>
+            )}
+
+            {/* Loading skeletons - active search in progress */}
+            {loading && hasQuery && (
+              <CommandGroup heading="Conversations">
+                <div className="px-2 py-1 space-y-1">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="flex items-center gap-2 px-2 py-1.5">
+                      <Skeleton className="h-4 w-4 rounded shrink-0" />
+                      <div className="flex-1 space-y-1.5">
+                        <Skeleton className="h-3.5 w-3/5" />
+                        <Skeleton className="h-3 w-4/5" />
+                      </div>
+                      <Skeleton className="h-3 w-10 shrink-0" />
+                    </div>
+                  ))}
                 </div>
               </CommandGroup>
             )}

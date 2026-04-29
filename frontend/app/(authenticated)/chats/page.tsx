@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNow } from '@/lib/hooks/use-now';
 import { formatRelativeTime } from '@/lib/utils/relative-time';
 import { useRouter } from 'next/navigation';
@@ -14,6 +14,7 @@ import {
   Trash2,
   FolderInput,
   MessageSquare,
+  FileText,
   X,
 } from 'lucide-react';
 import {
@@ -47,6 +48,7 @@ export default function ChatsPage() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -62,6 +64,7 @@ export default function ChatsPage() {
   const [moveOpen, setMoveOpen] = useState(false);
 
   const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [focusedSearchIndex, setFocusedSearchIndex] = useState(-1);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const now = useNow();
 
@@ -70,9 +73,6 @@ export default function ChatsPage() {
   const displayedThreads = isSearching ? [] : threads;
 
   const fetchThreads = useCallback(async (append = false) => {
-    // Stale-while-revalidate: only show the loading skeleton when we have
-    // nothing to display. If a cached list is already on screen, refresh
-    // silently in the background.
     const hasCached = threads.length > 0;
     if (!hasCached || append) setLoading(true);
     try {
@@ -83,7 +83,6 @@ export default function ChatsPage() {
         setThreads((prev) => [...prev, ...items]);
       } else {
         setThreads(items);
-        // Also seed the global store so other pages can reuse the cache.
         useThreadStore.setState({ threads: items, threadsLastFetched: Date.now() });
       }
       setOffset(newOffset + items.length);
@@ -95,34 +94,28 @@ export default function ChatsPage() {
   }, [offset, threads.length]);
 
   const fetchSearch = useCallback(async (query: string) => {
-    setLoading(true);
+    setSearchLoading(true);
     try {
       const results = await api.getRecents({ search: query, limit: 50 });
       setSearchResults(results as SearchResult[]);
     } catch {
       toast.error('Search failed');
     }
-    setLoading(false);
+    setSearchLoading(false);
   }, []);
 
-  // Initial load - seed from Zustand cache so the page renders instantly,
-  // then fetch fresh data in the background.
+  // Initial load - seed from Zustand cache so the page renders instantly.
   useEffect(() => {
     const cached = useThreadStore.getState().threads;
     if (cached.length > 0) {
       setThreads(cached);
       setLoading(false);
     }
-    // Run in parallel - these calls are independent.
     Promise.all([fetchThreads(false), fetchProjects()]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Mirror deletions from the global thread store into the local page state.
-  // Sidebar / context-menu / chat-view deletes happen through the global
-  // store; without this, /chats keeps showing threads that have already
-  // been removed elsewhere. We compare previous-vs-current IDs so that
-  // paginated items beyond the global store's window aren't dropped.
+  // Mirror deletions from the global thread store into local page state.
   const globalThreads = useThreadStore((s) => s.threads);
   const prevGlobalIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -139,17 +132,31 @@ export default function ChatsPage() {
     prevGlobalIdsRef.current = globalIds;
   }, [globalThreads]);
 
-  // Debounced search
+  // Debounced search - min 2 chars to avoid noisy single-char results.
   useEffect(() => {
-    if (!search.trim()) {
+    const trimmed = search.trim();
+    if (!trimmed) {
       setSearchResults([]);
+      setSearchLoading(false);
+      setFocusedSearchIndex(-1);
       return;
     }
-    const timer = setTimeout(() => fetchSearch(search.trim()), 250);
+    if (trimmed.length < 2) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+    setSearchLoading(true);
+    const timer = setTimeout(() => fetchSearch(trimmed), 150);
     return () => clearTimeout(timer);
   }, [search, fetchSearch]);
 
-  // Infinite scroll - trigger next page when sentinel enters viewport
+  // Reset focused search index when results change.
+  useEffect(() => {
+    setFocusedSearchIndex(-1);
+  }, [searchResults]);
+
+  // Infinite scroll sentinel.
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
@@ -165,11 +172,26 @@ export default function ChatsPage() {
     return () => observer.disconnect();
   }, [hasMore, loading, fetchThreads]);
 
-  // Keyboard navigation - arrow keys, Enter to open, Escape to cancel
+  // Keyboard navigation.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
-      if (isSearching) return;
+
+      if (isSearching) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setFocusedSearchIndex((i) => Math.min(i + 1, searchResults.length - 1));
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setFocusedSearchIndex((i) => Math.max(i - 1, 0));
+        } else if (e.key === 'Enter' && focusedSearchIndex >= 0) {
+          router.push(`/chat/${searchResults[focusedSearchIndex].thread_id}`);
+        } else if (e.key === 'Escape') {
+          setSearch('');
+        }
+        return;
+      }
+
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         setFocusedIndex((i) => Math.min(i + 1, displayedThreads.length - 1));
@@ -186,7 +208,7 @@ export default function ChatsPage() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [focusedIndex, displayedThreads, isSearching, router]);
+  }, [focusedIndex, focusedSearchIndex, searchResults, displayedThreads, isSearching, router]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -211,11 +233,9 @@ export default function ChatsPage() {
       await api.bulkDeleteThreads(ids);
       setThreads((prev) => prev.filter((t) => !selectedIds.has(t.id)));
       setSelectedIds(new Set());
-      // Sync sidebar Zustand store so recents + starred update immediately
       useThreadStore.setState((state) => ({
         threads: state.threads.filter((t) => !ids.includes(t.id)),
       }));
-      // Refresh project thread counts
       fetchProjects();
       toast.success(`Deleted ${ids.length} conversation${ids.length > 1 ? 's' : ''}`);
     } catch {
@@ -253,13 +273,27 @@ export default function ChatsPage() {
 
         {/* Search */}
         <div className="relative mb-6">
-          <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+          <div className="absolute left-3 top-3 h-4 w-4 text-muted-foreground pointer-events-none">
+            {searchLoading
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : <Search className="h-4 w-4" />
+            }
+          </div>
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search your chats..."
-            className="pl-10 h-11"
+            className={`pl-10 h-11 transition-all ${search ? 'pr-9' : ''}`}
           />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-3 top-3 h-4 w-4 text-muted-foreground hover:text-foreground transition-colors"
+              aria-label="Clear search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         {/* Selection bar */}
@@ -329,38 +363,84 @@ export default function ChatsPage() {
           </div>
         )}
 
-        {/* Thread List */}
+        {/* Thread / Search List */}
         <div className="space-y-1">
-          {threads.length === 0 && searchResults.length === 0 && loading ? (
-            <ThreadListSkeleton />
-          ) : isSearching ? (
-            searchResults.length === 0 && !loading ? (
-              <div className="text-center py-16">
-                <p className="text-sm text-muted-foreground">No results found</p>
-              </div>
-            ) : (
-              searchResults.map((result) => (
+          {isSearching ? (
+            <>
+              {/* Search result count */}
+              {!searchLoading && searchResults.length > 0 && (
+                <p className="text-xs text-muted-foreground mb-2 px-1">
+                  {searchResults.length} result{searchResults.length !== 1 ? 's' : ''}
+                </p>
+              )}
+
+              {/* Search loading skeleton */}
+              {searchLoading && <SearchResultSkeleton />}
+
+              {/* Empty state */}
+              {!searchLoading && searchResults.length === 0 && search.trim().length >= 2 && (
+                <div className="text-center py-16">
+                  <Search className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+                  <p className="text-sm font-medium text-foreground mb-1">No results found</p>
+                  <p className="text-xs text-muted-foreground">
+                    Try different keywords or check your spelling
+                  </p>
+                </div>
+              )}
+
+              {/* Results */}
+              {!searchLoading && searchResults.map((result, index) => (
                 <button
                   key={result.thread_id}
                   onClick={() => router.push(`/chat/${result.thread_id}`)}
-                  onMouseEnter={() => router.prefetch(`/chat/${result.thread_id}`)}
-                  className="w-full text-left rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors group"
+                  onMouseEnter={() => {
+                    router.prefetch(`/chat/${result.thread_id}`);
+                    setFocusedSearchIndex(index);
+                  }}
+                  className={`w-full text-left rounded-lg px-4 py-3 transition-colors group animate-in fade-in slide-in-from-bottom-1 duration-150 fill-mode-both ${
+                    focusedSearchIndex === index
+                      ? 'bg-muted/70 ring-1 ring-border'
+                      : 'hover:bg-muted/50'
+                  }`}
+                  style={{ animationDelay: `${Math.min(index, 6) * 35}ms` }}
                 >
                   <p className="text-sm font-medium text-foreground truncate">
                     {result.title || 'Untitled'}
                   </p>
                   {result.headline && (
                     <p
-                      className="text-xs text-muted-foreground mt-0.5 line-clamp-1"
+                      className="text-xs text-muted-foreground mt-0.5 line-clamp-2 [&_b]:text-foreground [&_b]:font-semibold"
                       dangerouslySetInnerHTML={{ __html: result.headline }}
                     />
                   )}
-                  <p className="text-xs text-muted-foreground/60 mt-0.5">
-                    {formatTime(result.updated_at)}
-                  </p>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    {result.match_type === 'message' && (
+                      <FileText className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+                    )}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="text-xs text-muted-foreground/60 cursor-default">
+                          {formatTime(result.updated_at)}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">
+                        {new Date(result.updated_at).toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
+                      </TooltipContent>
+                    </Tooltip>
+                    {result.project_id && projectNameMap.get(result.project_id) && (
+                      <>
+                        <span className="text-muted-foreground/40 text-xs">in</span>
+                        <span className="text-xs text-muted-foreground/60">
+                          {projectNameMap.get(result.project_id)}
+                        </span>
+                      </>
+                    )}
+                  </div>
                 </button>
-              ))
-            )
+              ))}
+            </>
+          ) : threads.length === 0 && loading ? (
+            <ThreadListSkeleton />
           ) : threads.length === 0 && !loading ? (
             <div className="text-center py-16">
               <MessageSquare className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
@@ -406,7 +486,14 @@ export default function ChatsPage() {
                         {thread.title || 'Untitled'}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1" suppressHydrationWarning>
-                        {formatTime(thread.updated_at)}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="cursor-default">{formatTime(thread.updated_at)}</span>
+                          </TooltipTrigger>
+                          <TooltipContent side="right">
+                            {new Date(thread.updated_at).toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
+                          </TooltipContent>
+                        </Tooltip>
                         {thread.project_id && projectNameMap.get(thread.project_id) && (
                           <>
                             <span className="text-muted-foreground/40">in</span>
@@ -477,6 +564,21 @@ function ThreadListSkeleton() {
       {THREAD_WIDTHS.map((w, i) => (
         <div key={i} className="rounded-lg px-4 py-3">
           <Skeleton className={`h-4 mb-2 ${w}`} />
+          <Skeleton className="h-3 w-1/4" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SearchResultSkeleton() {
+  return (
+    <div className="space-y-1">
+      {[0.6, 0.8, 0.7, 0.5].map((opacity, i) => (
+        <div key={i} className="rounded-lg px-4 py-3" style={{ opacity }}>
+          <Skeleton className="h-4 w-3/5 mb-1.5" />
+          <Skeleton className="h-3 w-full mb-1" />
+          <Skeleton className="h-3 w-4/5 mb-1.5" />
           <Skeleton className="h-3 w-1/4" />
         </div>
       ))}
