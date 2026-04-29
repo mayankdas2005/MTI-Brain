@@ -1,0 +1,259 @@
+"""SQLAlchemy ORM models for conversations, threads, projects, and feedback.
+
+Defines the persistence layer for the Quest conversational interface,
+including project grouping, threaded conversations, individual messages,
+and user feedback with optional vector embeddings.
+"""
+
+import uuid
+from datetime import datetime
+from datetime import timezone
+
+from app.db.base import Base
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import Boolean
+from sqlalchemy import DateTime
+from sqlalchemy import ForeignKey
+from sqlalchemy import Index
+from sqlalchemy import Integer
+from sqlalchemy import String
+from sqlalchemy import Text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped
+from sqlalchemy.orm import mapped_column
+from sqlalchemy.orm import relationship
+
+
+class QuestProject(Base):
+    """A top-level project that groups related conversation threads.
+
+    Attributes:
+        id: Primary key UUID, auto-generated.
+        user_id: Owner user UUID (FK to quest_user).
+        name: Human-readable project name (max 255 chars).
+        description: Optional long-form project description.
+        starred: Whether the user has starred/favourited the project.
+        created_at: Timestamp of project creation (UTC).
+        updated_at: Timestamp of last modification (UTC, auto-updated).
+        user: The owning ``QuestUser`` relationship.
+        threads: Child ``QuestThread`` instances belonging to this project.
+    """
+
+    __tablename__ = "quest_project"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quest_user.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    starred: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    user: Mapped["QuestUser | None"] = relationship(back_populates="projects")  # noqa: F821
+    threads: Mapped[list["QuestThread"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_quest_project_user", "user_id"),
+    )
+
+
+class QuestThread(Base):
+    """A conversation thread within an optional project.
+
+    Each thread corresponds to a single LangGraph checkpointer thread and
+    contains an ordered sequence of messages.
+
+    Attributes:
+        id: Primary key UUID, also used as the LangGraph thread_id.
+        user_id: Owner user UUID (FK to quest_user).
+        project_id: Optional FK linking the thread to a ``QuestProject``.
+        title: Optional short title (max 500 chars).
+        starred: Whether the user has starred/favourited the thread.
+        search_vector: TSVECTOR column auto-populated by a DB trigger on title.
+        created_at: Timestamp of thread creation (UTC).
+        updated_at: Timestamp of last modification (UTC, auto-updated).
+        user: The owning ``QuestUser`` relationship.
+        project: Parent ``QuestProject`` relationship (nullable).
+        messages: Ordered child ``QuestMessage`` instances.
+    """
+
+    __tablename__ = "quest_thread"
+
+    # This ID is also the thread_id used in LangGraph's checkpointer
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quest_user.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quest_project.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    starred: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Full-text search vector - auto-populated by DB trigger on title
+    search_vector = mapped_column(TSVECTOR, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    user: Mapped["QuestUser | None"] = relationship(back_populates="threads")  # noqa: F821
+    project: Mapped[QuestProject | None] = relationship(back_populates="threads")
+    messages: Mapped[list["QuestMessage"]] = relationship(
+        back_populates="thread",
+        cascade="all, delete-orphan",
+        order_by="QuestMessage.created_at",
+    )
+
+    __table_args__ = (
+        Index("ix_quest_thread_updated", "updated_at"),
+        Index("ix_quest_thread_project", "project_id"),
+        Index("ix_quest_thread_user", "user_id"),
+        Index("ix_quest_thread_search", "search_vector", postgresql_using="gin"),
+        Index("ix_quest_thread_user_updated", "user_id", "updated_at"),
+    )
+
+
+class QuestMessage(Base):
+    """A single user or assistant message within a thread.
+
+    Messages are grouped into question/response pairs via
+    ``conversation_id`` and support retry/edit chains through
+    ``parent_conversation_id``.
+
+    Attributes:
+        id: Primary key UUID, auto-generated.
+        thread_id: FK to the owning ``QuestThread``.
+        conversation_id: Groups a question and its response together.
+        parent_conversation_id: Links retries/edits to the original
+            conversation; ``None`` for the first version.
+        role: Message author role (``'user'`` or ``'assistant'``).
+        content: Full text content of the message.
+        reasoning: Optional model reasoning/chain-of-thought text.
+        metadata_: JSONB column storing sql, chart_spec, intent,
+            resolved_filters, columns, rows, row_count, and follow_ups.
+        search_vector: TSVECTOR column auto-populated by a DB trigger on
+            content.
+        created_at: Timestamp of message creation (UTC).
+        thread: Parent ``QuestThread`` relationship.
+        feedback: Child ``QuestFeedback`` instances for this message.
+    """
+
+    __tablename__ = "quest_message"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quest_thread.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # conversation_id groups a question + response pair together
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    # Links retries/edits to the original conversation (null for first version)
+    parent_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # 'user' or 'assistant'
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stores: sql, chart_spec, intent, resolved_filters, columns, rows, row_count, follow_ups
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    # Full-text search vector - auto-populated by DB trigger on content
+    search_vector = mapped_column(TSVECTOR, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    thread: Mapped[QuestThread] = relationship(back_populates="messages")
+    feedback: Mapped[list["QuestFeedback"]] = relationship(
+        back_populates="message", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_quest_message_thread", "thread_id"),
+        Index("ix_quest_message_conversation", "conversation_id"),
+        Index("ix_quest_message_created", "created_at"),
+        Index("ix_quest_message_search", "search_vector", postgresql_using="gin"),
+        Index("ix_quest_message_thread_created", "thread_id", "created_at"),
+    )
+
+
+class QuestFeedback(Base):
+    """User feedback (like/dislike and optional comment) on a message.
+
+    Stores an optional pgvector embedding of the question plus feedback
+    text to enable similarity-based retrieval of past feedback.
+
+    Attributes:
+        id: Primary key UUID, auto-generated.
+        message_id: Optional FK to the ``QuestMessage`` being rated.
+        thread_id: FK to the owning ``QuestThread``.
+        liked: ``True`` for like, ``False`` for dislike, ``None`` if unset.
+        comment: Optional free-text feedback comment.
+        embedding: 1536-dimensional pgvector embedding for similarity search.
+        created_at: Timestamp of feedback creation (UTC).
+        message: Parent ``QuestMessage`` relationship (nullable).
+    """
+
+    __tablename__ = "quest_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quest_message.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quest_thread.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    liked: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )  # true=like, false=dislike
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # pgvector embedding of question + feedback for similarity search
+    embedding = mapped_column(Vector(1536), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    message: Mapped[QuestMessage | None] = relationship(back_populates="feedback")
+
+    __table_args__ = (
+        Index("ix_quest_feedback_thread", "thread_id"),
+        Index("ix_quest_feedback_message", "message_id"),
+    )
