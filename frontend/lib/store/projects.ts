@@ -17,11 +17,11 @@ interface ProjectStore {
   currentProject: ProjectDetail | null;
   currentProjectLoading: boolean;
 
-  // Actions — list
+  // Actions - list
   fetchProjects: (search?: string) => Promise<void>;
   setSearchQuery: (query: string) => void;
 
-  // Actions — CRUD
+  // Actions - CRUD
   createProject: (name: string, description?: string) => Promise<ProjectOut>;
   fetchProject: (id: string) => Promise<void>;
   updateProject: (id: string, name?: string, description?: string) => Promise<void>;
@@ -78,7 +78,13 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
     if (!hasCached) set({ currentProjectLoading: true });
     try {
       const project = await api.getProject(id);
-      set({ currentProject: project, currentProjectLoading: false });
+      // Guard against race: only commit if this project is still the one
+      // the user wants to see. A rapid A→B navigation could let A's slower
+      // response arrive after B was already requested.
+      const latestId = get().currentProject?.id;
+      if (latestId === id || latestId === currentId || !latestId) {
+        set({ currentProject: project, currentProjectLoading: false });
+      }
     } catch {
       set({ currentProjectLoading: false });
       if (!hasCached) throw new Error('Project not found');
@@ -87,6 +93,7 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
 
   updateProject: async (id, name, description) => {
     const prev = get().projects;
+    const prevCurrent = get().currentProject;
     // Optimistic update in list
     set({
       projects: prev.map((p) =>
@@ -96,11 +103,10 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
       ),
     });
     // Optimistic update in detail
-    const current = get().currentProject;
-    if (current?.id === id) {
+    if (prevCurrent?.id === id) {
       set({
         currentProject: {
-          ...current,
+          ...prevCurrent,
           ...(name !== undefined && { name }),
           ...(description !== undefined && { description }),
         },
@@ -113,7 +119,7 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
       if (description !== undefined) body.description = description;
       await api.updateProject(id, body);
     } catch {
-      set({ projects: prev }); // rollback
+      set({ projects: prev, currentProject: prevCurrent }); // rollback both
     }
   },
 
@@ -133,20 +139,23 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
 
   starProject: async (id) => {
     const prev = get().projects;
+    const prevCurrent = get().currentProject;
     set({
       projects: prev.map((p) =>
         p.id === id ? { ...p, starred: !p.starred } : p,
       ),
     });
-    const current = get().currentProject;
-    if (current?.id === id) {
-      set({ currentProject: { ...current, starred: !current.starred } });
+    if (prevCurrent?.id === id) {
+      set({ currentProject: { ...prevCurrent, starred: !prevCurrent.starred } });
     }
 
     try {
       await api.starProject(id);
+      // Re-fetch to sync with server and prevent stale overwrites from
+      // concurrent fetchProjects calls elsewhere in the app.
+      get().fetchProjects();
     } catch {
-      set({ projects: prev }); // rollback
+      set({ projects: prev, currentProject: prevCurrent }); // rollback both
     }
   },
 

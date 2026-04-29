@@ -29,19 +29,19 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
         shortcuts['cmd-n']?.();
       }
 
-      // Cmd+/ — Show keyboard shortcuts
+      // Cmd+/ - Show keyboard shortcuts
       if (isCmd && e.key === '/') {
         e.preventDefault();
         shortcuts['cmd-/']?.();
       }
 
-      // Cmd+S — Star current thread
+      // Cmd+S - Star current thread
       if (isCmd && e.key === 's') {
         e.preventDefault();
         shortcuts['cmd-s']?.();
       }
 
-      // Cmd+Shift+C — Copy last response
+      // Cmd+Shift+C - Copy last response
       if (isCmd && e.shiftKey && e.key === 'C') {
         e.preventDefault();
         shortcuts['cmd-shift-c']?.();

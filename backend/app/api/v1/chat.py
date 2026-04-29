@@ -184,10 +184,10 @@ def _build_sse_generator(
                 "**Resolving entities**\n\n",
                 "Mapping 'bank accounts' → `treasury_accounts` table. ",
                 "Mapping 'yesterday' → `snapshot_date = CURRENT_DATE - INTERVAL '1 day'`.\n\n",
-                "No FX conversion needed — all balances stored in USD.\n\n",
+                "No FX conversion needed - all balances stored in USD.\n\n",
                 "**Validating results**\n\n",
                 "Ordering by `balance_usd DESC` to surface largest positions first. ",
-                "Query looks correct — returning all 5 accounts with end-of-day balances.\n",
+                "Query looks correct - returning all 5 accounts with end-of-day balances.\n",
             ]
             for _chunk in _reasoning_chunks:
                 if cancel_event.is_set():
@@ -240,7 +240,7 @@ def _build_sse_generator(
             # fetchThread from the client sees the saved message.
             await _save_assistant_message(final_data)
 
-            # Compute duration_ms RIGHT BEFORE yielding done — this is the
+            # Compute duration_ms RIGHT BEFORE yielding done - this is the
             # value the client displays, so it must be as close as possible
             # to the LiveTimer's last tick. The DB patch runs as a
             # fire-and-forget task so it doesn't add latency.
@@ -517,6 +517,15 @@ async def ask_question(
         metadata=user_meta,
     )
     await db.commit()
+
+    # Fire-and-forget title save as a background task so it is guaranteed to
+    # complete even if the client aborts the SSE stream before the generator
+    # reaches the title.generated event. The generator still yields the event
+    # for the real-time frontend update; the DB write is decoupled from SSE.
+    if is_first_message:
+        title = conv_service.make_title(body.question)
+        if title:
+            asyncio.create_task(conv_service.save_smart_title(thread_id, title))
 
     generator = _build_sse_generator(
         question=body.question,

@@ -47,7 +47,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const setMaxResultRows = usePreferencesStore((s) => s.setMaxResultRows);
   const hydrated = usePreferencesStore((s) => s.hydrated);
 
-  // Only show selection styling after user prefs have loaded — prevents flash
+  // Only show selection styling after user prefs have loaded - prevents flash
   const selected = (isSelected: boolean) =>
     isSelected && hydrated
       ? 'ring-2 ring-primary bg-primary/10 text-foreground'
@@ -202,18 +202,18 @@ function SettingRow({
 }
 
 const VERSION_QUOTES = [
-  '"We are the architects of the future." — Sameer Kishore, CEO',
-  '"The numbers don\'t lie. But they do tell stories." — Mayank Agrawal, CFO',
-  '"Revenue is a team sport." — Puneet Kumar, CRO',
-  '"People first, always." — Arlene LaBorde, CPO',
-  '"Operational excellence is not optional." — Mike Riep, COO',
-  '"Strategy is nothing without execution." — Chitra Vivek, Chief of Staff',
-  '"The cloud is just someone else\'s computer. Ours runs better." — Olivier Crene, President DW/Cloud',
-  '"Ship it. Then make it beautiful." — Bala Ramakrishna, President Apps & DE',
-  '"Process is poetry in disguise." — Natalie Heroux, EVP BPS',
-  '"Solutions aren\'t found — they\'re engineered." — Abhilash Kaduthanum, EVP Industry Solutions',
-  '"Growth is a mindset." — Eric Wong, VP Corp Dev',
-  '"We skipped v1. Too many features, not enough bugs." — QA Team',
+  '"We are the architects of the future." - CEO',
+  '"The numbers don\'t lie. But they do tell stories." - CFO',
+  '"Revenue is a team sport." - CRO',
+  '"People first, always." - CPO',
+  '"Operational excellence is not optional." - COO',
+  '"Strategy is nothing without execution." - Chief of Staff',
+  '"The cloud is just someone else\'s computer. Ours runs better." - President, DW/Cloud',
+  '"Ship it. Then make it beautiful." - President, Apps & DE',
+  '"Process is poetry in disguise." - EVP, BPS',
+  '"Solutions aren\'t found - they\'re engineered." - EVP, Industry Solutions',
+  '"Growth is a mindset." - VP, Corp Dev',
+  '"We skipped v1. Too many features, not enough bugs." - QA Team',
 ];
 
 function VersionEasterEgg() {
@@ -224,7 +224,7 @@ function VersionEasterEgg() {
   return (
     <div className="space-y-1">
       <p className="text-xs text-muted-foreground">
-        MTI Brain – AI-powered decision intelligence
+        MTI Brain - AI-powered decision intelligence
       </p>
       <p
         onMouseEnter={() => setHovered(true)}

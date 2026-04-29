@@ -4,6 +4,11 @@ import { useMemo, useRef, useCallback, useState } from 'react';
 import { Download, ClipboardCopy, RotateCcw } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   ScatterChart, Scatter, AreaChart, Area,
   XAxis, YAxis, CartesianGrid,
@@ -62,11 +67,11 @@ interface MessageVisualizationProps {
   chartSpec?: Record<string, unknown>;
 }
 
-// ─── Font family for SVG text — explicit so exports/copies keep the same font ───
+// ─── Font family for SVG text - explicit so exports/copies keep the same font ───
 
 const CHART_FONT = "'Geist', system-ui, sans-serif";
 
-// ─── Color palette — vibrant, accessible, distinct on light & dark ───
+// ─── Color palette - vibrant, accessible, distinct on light & dark ───
 
 const CHART_COLORS = [
   '#3B82F6', // blue
@@ -98,7 +103,7 @@ function normalizeSpec(
     return raw as unknown as ChartSpec;
   }
 
-  // Old format: { type, x_col, y_col, title, sort } — derive data from rows/columns
+  // Old format: { type, x_col, y_col, title, sort } - derive data from rows/columns
   if (!columns || !rows || rows.length === 0) return null;
 
   const data = rows.map((row) => {
@@ -266,7 +271,7 @@ function BarLineAreaChart({ spec }: { spec: BarLineAreaSpec }) {
           </ChartComponent>
         </ChartContainer>
       </div>
-      {/* Below the chart: x-label, then legend, then slider — all HTML, zero overlap */}
+      {/* Below the chart: x-label, then legend, then slider - all HTML, zero overlap */}
       {spec.x_label && (
         <p data-x-label className="text-center text-[11px] text-muted-foreground mt-1">{spec.x_label}</p>
       )}
@@ -462,7 +467,7 @@ async function exportChartAsCanvas(container: HTMLDivElement, title?: string): P
   // Inline all computed styles (resolves CSS variables)
   inlineStyles(svgEl, clone);
 
-  // Use Blob URL instead of data URL — more reliable with special characters
+  // Use Blob URL instead of data URL - more reliable with special characters
   const svgData = new XMLSerializer().serializeToString(clone);
   const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -608,20 +613,28 @@ export function MessageVisualization({
       <div ref={chartRef} className="group relative rounded-xl border border-border pt-4 px-4 pb-2 bg-sidebar">
         {/* Chart action buttons */}
         <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-          <button
-            onClick={handleCopy}
-            className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            title="Copy chart to clipboard"
-          >
-            <ClipboardCopy className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={handleDownload}
-            className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            title="Download chart as PNG"
-          >
-            <Download className="w-3.5 h-3.5" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleCopy}
+                className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              >
+                <ClipboardCopy className="w-3.5 h-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Copy chart to clipboard</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleDownload}
+                className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Download chart as PNG</TooltipContent>
+          </Tooltip>
         </div>
 
         {spec.title && (

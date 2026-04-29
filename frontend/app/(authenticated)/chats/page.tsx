@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useNow } from '@/lib/hooks/use-now';
+import { formatRelativeTime } from '@/lib/utils/relative-time';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,6 +27,11 @@ import {
 } from '@/components/ui/alert-dialog';
 import { MoveToProjectDialog } from '@/components/move-to-project-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { useProjectStore } from '@/lib/store/projects';
 import { useThreadStore } from '@/lib/store/threads';
 import { toast } from '@/lib/toast';
@@ -54,8 +61,13 @@ export default function ChatsPage() {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
 
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const now = useNow();
+
   const isSearching = search.trim().length > 0;
   const hasSelection = selectedIds.size > 0;
+  const displayedThreads = isSearching ? [] : threads;
 
   const fetchThreads = useCallback(async (append = false) => {
     // Stale-while-revalidate: only show the loading skeleton when we have
@@ -93,7 +105,7 @@ export default function ChatsPage() {
     setLoading(false);
   }, []);
 
-  // Initial load — seed from Zustand cache so the page renders instantly,
+  // Initial load - seed from Zustand cache so the page renders instantly,
   // then fetch fresh data in the background.
   useEffect(() => {
     const cached = useThreadStore.getState().threads;
@@ -101,7 +113,7 @@ export default function ChatsPage() {
       setThreads(cached);
       setLoading(false);
     }
-    // Run in parallel — these calls are independent.
+    // Run in parallel - these calls are independent.
     Promise.all([fetchThreads(false), fetchProjects()]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -136,6 +148,45 @@ export default function ChatsPage() {
     const timer = setTimeout(() => fetchSearch(search.trim()), 250);
     return () => clearTimeout(timer);
   }, [search, fetchSearch]);
+
+  // Infinite scroll - trigger next page when sentinel enters viewport
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasMore && !loading) {
+          fetchThreads(true);
+        }
+      },
+      { threshold: 0.1 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, loading, fetchThreads]);
+
+  // Keyboard navigation - arrow keys, Enter to open, Escape to cancel
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      if (isSearching) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setFocusedIndex((i) => Math.min(i + 1, displayedThreads.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setFocusedIndex((i) => Math.max(i - 1, 0));
+      } else if (e.key === 'Enter' && focusedIndex >= 0) {
+        router.push(`/chat/${displayedThreads[focusedIndex].id}`);
+      } else if (e.key === 'Escape') {
+        setFocusedIndex(-1);
+        setSelectMode(false);
+        setSelectedIds(new Set());
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [focusedIndex, displayedThreads, isSearching, router]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -174,18 +225,8 @@ export default function ChatsPage() {
   };
 
   const formatTime = (dateStr: string) => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `Last message ${diffMins}m ago`;
-    if (diffHours < 24) return `Last message ${diffHours}h ago`;
-    if (diffDays < 30) return `Last message ${diffDays}d ago`;
-    return `Last message ${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+    const rel = formatRelativeTime(dateStr, now);
+    return rel === 'just now' ? 'Just now' : `Last message ${rel}`;
   };
 
   const exitSelectMode = () => {
@@ -237,24 +278,32 @@ export default function ChatsPage() {
                   </span>
                   {hasSelection && (
                     <div className="flex items-center gap-1 ml-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 w-8 p-0"
-                        title="Move to project"
-                        onClick={() => setMoveOpen(true)}
-                      >
-                        <FolderInput className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                        title="Delete selected"
-                        onClick={() => setBulkDeleteOpen(true)}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => setMoveOpen(true)}
+                          >
+                            <FolderInput className="w-4 h-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">Move to project</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                            onClick={() => setBulkDeleteOpen(true)}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">Delete selected</TooltipContent>
+                      </Tooltip>
                     </div>
                   )}
                 </>
@@ -333,10 +382,12 @@ export default function ChatsPage() {
                   )}
                   <div
                     onClick={() => selectMode ? toggleSelect(thread.id) : router.push(`/chat/${thread.id}`)}
-                    onMouseEnter={() => !selectMode && router.prefetch(`/chat/${thread.id}`)}
-                    className={`flex items-center px-4 py-3.5 cursor-pointer transition-colors ${
+                    onMouseEnter={() => { if (!selectMode) { router.prefetch(`/chat/${thread.id}`); setFocusedIndex(index); } }}
+                    className={`flex items-center px-4 py-3.5 cursor-pointer transition-colors rounded-lg ${
                       selectedIds.has(thread.id)
                         ? 'bg-primary/8'
+                        : focusedIndex === index
+                        ? 'bg-muted/70 ring-1 ring-border'
                         : 'hover:bg-muted/50'
                     }`}
                   >
@@ -368,17 +419,8 @@ export default function ChatsPage() {
                 </div>
               ))}
 
-              {/* Show more */}
-              {hasMore && !loading && (
-                <div className="pt-2">
-                  <button
-                    onClick={() => fetchThreads(true)}
-                    className="w-full text-sm text-muted-foreground hover:text-foreground py-3 rounded-lg hover:bg-muted/50 transition-colors"
-                  >
-                    Show more
-                  </button>
-                </div>
-              )}
+              {/* Infinite scroll sentinel */}
+              <div ref={sentinelRef} className="h-4" />
               {loading && threads.length > 0 && (
                 <div className="flex justify-center py-4">
                   <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />

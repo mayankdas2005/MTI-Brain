@@ -3,14 +3,14 @@ FROM python:3.12.13-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.5 /uv /usr/local/bin/uv
 
-# Build-stage system libs — sdist fallbacks for three Python wheels:
+# Build-stage system libs - sdist fallbacks for three Python wheels:
 #
 #   * pyodbc / aioodbc  → need unixodbc-dev + gcc if the wheel is absent
 #   * pymssql           → need libssl-dev + libkrb5-dev + gcc if the
 #                         wheel is absent (bundled FreeTDS source build)
 #
 # CPython 3.12 on glibc x86_64 / arm64 is covered by the PyPI wheels for
-# all three packages, so in practice nothing here compiles from source —
+# all three packages, so in practice nothing here compiles from source -
 # but keeping the headers present means ``uv pip install`` never errors
 # out on a platform where the wheel is missing (e.g. musl alpine builds
 # if someone swaps the base image).
@@ -38,7 +38,7 @@ RUN uv venv /venv && \
 FROM python:3.12.13-slim AS runtime
 
 LABEL org.opencontainers.image.title="MTI Brain Backend" \
-      org.opencontainers.image.description="MTI Brain – AI-powered decision intelligence"
+      org.opencontainers.image.description="MTI Brain - AI-powered decision intelligence"
 
 # ──────────────────────────────────────────────────────────────────────────
 # SQL Server drivers + FreeTDS for the three supported connection paths.
@@ -53,7 +53,7 @@ LABEL org.opencontainers.image.title="MTI Brain Backend" \
 #       Last-resort ODBC path for very old servers.
 #
 #   dialect="pymssql"  (PymssqlAdapter)
-#     → Uses pymssql's BUNDLED FreeTDS — no system driver required.
+#     → Uses pymssql's BUNDLED FreeTDS - no system driver required.
 #       Best choice for SQL Server 2008 / 2008 R2.
 #
 # ``packages-microsoft-prod.deb`` registers the signing key + APT source
@@ -100,7 +100,7 @@ RUN apt-get update && \
 # keeps TLS 1.2+ as the default everywhere else while allowing the legacy
 # handshake for servers that still need it.
 #
-# Applied globally via OPENSSL_CONF — affects every process in the image
+# Applied globally via OPENSSL_CONF - affects every process in the image
 # (pyodbc, aioodbc, psycopg, httpx). Only matters when talking to legacy
 # endpoints; modern TLS 1.2+ handshakes negotiate the stronger protocol
 # automatically.
@@ -113,7 +113,7 @@ ENV OPENSSL_CONF=/etc/ssl/openssl_override.cnf
 # Register FreeTDS as an ODBC driver named "FreeTDS". Lets operators set
 # ``"driver": "FreeTDS"`` in datasource_config.json's ODBC path (when
 # dialect="sqlserver") for servers that neither Driver 17 nor Driver 18
-# can handle. Not used by the pymssql path — that one has its own
+# can handle. Not used by the pymssql path - that one has its own
 # bundled FreeTDS inside the wheel.
 #
 # Auto-detects ``libtdsodbc.so`` for both amd64 (x86_64-linux-gnu) and

@@ -1,4 +1,4 @@
-﻿# MTI Brain
+# MTI Brain
 
 **MTI Brain** is an AI-powered conversational data analytics platform. Users ask natural-language questions and receive structured answers with data tables, charts, and follow-up suggestions streamed in real time via Server-Sent Events.
 
@@ -17,33 +17,29 @@ Built on a FastAPI backend, Next.js frontend, and a PostgreSQL data layer with p
  | :3000     |   SSE  |                   |
  +-----------+        +--------+----------+
                                |
-                   +-----------+----------+
-                   |                      |
-                   v                      v
-           +---------------+    +------------------+
-           | PostgreSQL 18  |    | Neo4j 5.26       |
-           | + pgvector     |    | (Graph DB)       |
-           | + PgBouncer    |    | planned          |
-           | :5432          |    | :7474, :7687     |
-           +---------------+    +------------------+
-           database/
+                               v
+                       +---------------+
+                       | PostgreSQL 18  |
+                       | + pgvector     |
+                       | + PgBouncer    |
+                       | :5432          |
+                       +---------------+
+                       database/
 ```
 
 The frontend authenticates via username/password, receives a JWT from the backend, and uses that token for all subsequent API calls. The backend stores conversation threads, messages, projects, and feedback in PostgreSQL.
 
 ## Features
 
-- **Conversation Management** — threads, projects, starring, renaming, bulk operations
-- **Real-Time Streaming** — SSE-based streaming of answers and pipeline progress
-- **JWT Authentication** — username/password login with 8-hour JWT session tokens and per-user data isolation
-- **Smart Search** — full-text (tsvector), fuzzy (trigram), and phonetic (dmetaphone) search over threads and messages
-- **Feedback Loop** — thumbs-up/down feedback with pgvector embeddings for future retrieval-augmented generation
-- **Data Visualization** — auto-generated charts (recharts), paginated data tables, SQL display
-- **User Preferences** — per-user response tone, SQL/chart/reasoning visibility, persisted to localStorage
-- **Keyboard Shortcuts** — power-user shortcuts for navigation, starring, search, copy, and more
-- **Circuit Breakers** — resilient external service calls with graceful degradation
-
-**Planned:** LangGraph agent pipeline, AWS Bedrock (Claude Sonnet + Cohere Embed), Neo4j knowledge graph, Okta OIDC authentication, Redis query result cache, Langfuse observability.
+- **Conversation Management** - threads, projects, starring, renaming, bulk operations
+- **Real-Time Streaming** - SSE-based streaming of answers and pipeline progress
+- **JWT Authentication** - username/password login with 8-hour JWT session tokens and per-user data isolation
+- **Smart Search** - full-text (tsvector), fuzzy (trigram), and phonetic (dmetaphone) search over threads and messages
+- **Feedback Loop** - thumbs-up/down feedback with pgvector embeddings for future retrieval-augmented generation
+- **Data Visualization** - auto-generated charts (recharts), paginated data tables, SQL display
+- **User Preferences** - per-user response tone, SQL/chart/reasoning visibility, persisted to localStorage
+- **Keyboard Shortcuts** - power-user shortcuts for navigation, starring, search, copy, and more
+- **Circuit Breakers** - resilient external service calls with graceful degradation
 
 ## Project Structure
 
@@ -71,7 +67,7 @@ quest/
 │   └── .env.example
 │
 └── database/     # Data layer Docker Compose (see database/README.md)
-    ├── docker-compose.yml  # PostgreSQL + PgBouncer + Neo4j
+    ├── docker-compose.yml  # PostgreSQL + PgBouncer
     ├── docker_volume/      # Persistent data (git-ignored)
     └── .env.example
 ```
@@ -90,7 +86,6 @@ quest/
 | Streaming | SSE (sse-starlette) |
 | Resilience | Circuit breakers (pybreaker) + retries (tenacity) |
 | Containerization | Docker + Docker Compose |
-| **Planned** | LangGraph, AWS Bedrock, Neo4j, Redis, Okta OIDC, Langfuse |
 
 ## API
 
@@ -116,6 +111,10 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require `Authorizat
 | PATCH | `/{thread_id}/star` | Toggle star |
 | PATCH | `/{thread_id}/rename` | Rename thread |
 | PATCH | `/{thread_id}/move` | Move thread to a project |
+| POST | `/{thread_id}/ask` | Ask a question (SSE streaming) |
+| POST | `/{thread_id}/retry` | Retry last response (SSE streaming) |
+| POST | `/{thread_id}/edit` | Edit last question (SSE streaming) |
+| POST | `/{thread_id}/stop` | Stop active stream |
 | POST | `/{thread_id}/conversations/{id}/feedback` | Submit feedback |
 
 ### Projects (`/api/v1/projects`)
@@ -152,14 +151,15 @@ cd quest
 ### 2. Start the database layer
 
 ```bash
+docker network create db_net
 cd database
 cp .env.example .env
-# Edit .env: set POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, NEO4J_USER, NEO4J_PASSWORD
+# Edit .env: set POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
 docker compose up -d
 cd ..
 ```
 
-Wait for all services to report `healthy` (`docker compose ps`).
+Wait for both services to report `healthy` (`docker compose ps`).
 
 ### 3. Configure the backend
 
@@ -176,7 +176,6 @@ cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
 # Edit frontend/.env:
 #   NEXT_PUBLIC_API_URL: backend URL (e.g. http://localhost:8000)
-#   NEXT_PUBLIC_APP_URL: frontend URL (e.g. http://localhost:3000)
 ```
 
 ### 5. Run database migrations
@@ -218,22 +217,21 @@ curl http://localhost:8000/health
 
 | Service | Port | Stack | Description |
 |---------|------|-------|-------------|
-| **Frontend** | 3000 | `frontend/` | Next.js UI — login, chat, projects, settings |
+| **Frontend** | 3000 | `frontend/` | Next.js UI - login, chat, projects, settings |
 | **Backend** | 8000 | `backend/` | FastAPI REST + SSE streaming |
 | **PostgreSQL** | internal | `database/` | App database (pgvector, conversations, users) |
 | **PgBouncer** | 5432 | `database/` | Connection pooler (transaction mode, SCRAM-SHA-256) |
-| **Neo4j** | 7474, 7687 | `database/` | Graph database (planned: knowledge graph + vector indexes) |
 
 ## Environment Variables
 
 See each component for the full variable reference:
 
-- [backend/.env.example](backend/.env.example) — App DB, JWT secret, CORS, circuit breaker, plus commented-out planned integrations (Bedrock, Neo4j, Okta, Redis)
-- [database/.env.example](database/.env.example) — PostgreSQL, PgBouncer, Neo4j credentials and tuning
-- [frontend/.env.example](frontend/.env.example) — Backend API URL, app URL, plus commented-out Okta vars
+- [backend/.env.example](backend/.env.example) - App DB connection, JWT secret, CORS, connection pool, circuit breaker, SSL
+- [database/.env.example](database/.env.example) - PostgreSQL credentials, PgBouncer tuning
+- [frontend/.env.example](frontend/.env.example) - Backend API URL, dev HMR origins
 
 ## Component READMEs
 
-- [backend/README.md](backend/README.md) — API endpoints, database models, middleware, Dockerfile, env vars
-- [frontend/README.md](frontend/README.md) — Routes, components, state management, auth flow, SSE streaming, preferences, keyboard shortcuts
-- [database/README.md](database/README.md) — PostgreSQL tuning, PgBouncer config, Neo4j config, volumes, health checks, resource limits
+- [backend/README.md](backend/README.md) - API endpoints, database models, middleware, Dockerfile, env vars
+- [frontend/README.md](frontend/README.md) - Routes, components, state management, auth flow, SSE streaming, preferences, keyboard shortcuts
+- [database/README.md](database/README.md) - PostgreSQL tuning, PgBouncer config, volumes, health checks, resource limits

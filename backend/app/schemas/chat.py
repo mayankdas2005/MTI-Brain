@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class _StrictRequest(BaseModel):
-    """Base for all request models — rejects unknown fields, strips strings."""
+    """Base for all request models - rejects unknown fields, strips strings."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -37,7 +37,7 @@ class AskRequest(_StrictRequest):
         conversation_id: Optional conversation ID for follow-up questions.
         source_conversation_id: Optional conversation ID of the version
             that spawned this follow-up (for version-branch visibility).
-        response_tone: Response style — 'consultant' (default), 'operator',
+        response_tone: Response style - 'consultant' (default), 'operator',
             or 'brief'.
         max_rows: Maximum result rows to return (default 100).
     """
@@ -51,7 +51,7 @@ class AskRequest(_StrictRequest):
         default=None,
         max_length=10000,
         description="SQL from a specific prior answer the user wants to refine. "
-        "Passed by the 'Refine this query' UI — lets generate_sql adapt a "
+        "Passed by the 'Refine this query' UI - lets generate_sql adapt a "
         "specific answer's SQL rather than regenerating from scratch.",
     )
 

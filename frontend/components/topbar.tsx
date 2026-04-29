@@ -4,6 +4,11 @@ import { useEffect, useState } from 'react';
 import { Star, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 import { useThreadStore } from '@/lib/store/threads';
 import { useSearchStore } from '@/lib/store/search';
@@ -33,22 +38,26 @@ export function Topbar() {
       {/* Center: Thread title */}
       {currentThreadId && currentThreadTitle ? (
         <div className="flex items-center gap-2 min-w-0 max-w-md">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="shrink-0 h-8 w-8 border border-transparent hover:border-[var(--header-control-border)] hover:bg-[var(--header-control-bg)]"
-            onClick={() => currentThreadId && starThread(currentThreadId)}
-            title={currentThreadStarred ? 'Unstar' : 'Star'}
-          >
-            <Star
-              className={`w-4 h-4 ${
-                currentThreadStarred
-                  ? 'fill-yellow-500 text-yellow-500'
-                  : 'text-white/70'
-              }`}
-            />
-          </Button>
-          <span className="text-sm font-medium truncate text-white/90">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0 h-8 w-8 border border-transparent hover:border-[var(--header-control-border)] hover:bg-[var(--header-control-bg)]"
+                onClick={() => currentThreadId && starThread(currentThreadId)}
+              >
+                <Star
+                  className={`w-4 h-4 ${
+                    currentThreadStarred
+                      ? 'fill-[var(--color-star)] text-[var(--color-star)]'
+                      : 'text-[var(--header-foreground)]/60'
+                  }`}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{currentThreadStarred ? 'Unstar' : 'Star'}</TooltipContent>
+          </Tooltip>
+          <span className="text-sm font-medium truncate text-[var(--header-foreground)]">
             {currentThreadTitle}
           </span>
         </div>
@@ -59,17 +68,21 @@ export function Topbar() {
       )}
 
       {/* Right: Search trigger */}
-      <button
-        onClick={openSearch}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
-        title={`Search (${isMac ? '⌘' : 'Ctrl+'}K)`}
-      >
-        <Search className="w-3.5 h-3.5" />
-        <span className="hidden sm:inline">Search</span>
-        <kbd className="hidden sm:inline rounded border border-[var(--header-control-border)] bg-[var(--header-control-bg)] px-1.5 py-0.5 text-[10px] font-mono text-white/70">
-          {isMac ? '⌘K' : 'Ctrl+K'}
-        </kbd>
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={openSearch}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Search</span>
+            <kbd className="hidden sm:inline rounded border border-[var(--header-control-border)] bg-[var(--header-control-bg)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--header-foreground)]/60">
+              {isMac ? '⌘K' : 'Ctrl+K'}
+            </kbd>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{`Search (${isMac ? '⌘' : 'Ctrl+'}K)`}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

@@ -68,14 +68,14 @@ connect_args = {"ssl": _ssl} if _ssl else {}
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    # pool_pre_ping OFF: saves ~500ms per request on high-latency DBs.
-    # Stale connections are handled by aggressive pool_recycle (60s).
-    pool_pre_ping=False,
+    # pool_pre_ping validates each connection on checkout (~1ms overhead).
+    # Combined with the longer pool_recycle from config (default 1800s), this
+    # eliminates the ~1.3s reconnect cost that occurred every 60s under the
+    # previous hardcoded recycle value.
+    pool_pre_ping=True,
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
-    # Recycle aggressively: kill idle connections after 60s so they never go stale.
-    # New connections cost ~1.3s but only happen once per minute per pool slot.
-    pool_recycle=60,
+    pool_recycle=settings.DB_POOL_RECYCLE,
     pool_timeout=settings.DB_POOL_TIMEOUT,
     connect_args=connect_args,
     echo=settings.DEBUG,

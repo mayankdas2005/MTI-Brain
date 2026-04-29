@@ -147,7 +147,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}
       >
-        {/* Actions + version nav row — only on hover */}
+        {/* Actions + version nav row - only on hover */}
         <div className={`flex items-center gap-1.5 mb-1 mr-1 transition-opacity duration-150 ${showActions ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
           <div className="flex items-center gap-1.5">
             <Tooltip>
@@ -266,7 +266,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
     >
-      {/* Reasoning Block — unified thinking indicator (like Claude) */}
+      {/* Reasoning Block - unified thinking indicator (like Claude) */}
       {prefShowReasoning && (message.isStreaming || message.reasoning) && (
         <Accordion type="single" collapsible defaultValue={message.isStreaming ? 'reasoning' : undefined} className="mb-2">
           <AccordionItem
@@ -551,7 +551,7 @@ function RefineInput({ threadId, conversationId }: { threadId: string; conversat
     if (!refinement || isStreaming) return;
 
     // Find the SQL from the specific answer being refined (not necessarily
-    // the last one — user can refine any prior answer in the thread).
+    // the last one - user can refine any prior answer in the thread).
     const messages = useThreadStore.getState().currentMessages;
     const assistantMsg = messages.find(
       (m) => m.conversation_id === conversationId && m.role === 'assistant',

@@ -95,7 +95,7 @@ export default function ProjectsPage() {
                 <button
                   onClick={() => router.push(`/projects/${project.id}`)}
                   onMouseEnter={() => router.prefetch(`/projects/${project.id}`)}
-                  className="text-left rounded-xl border border-border bg-background p-4 hover:bg-muted/50 hover:border-border/80 transition-colors group"
+                  className="text-left rounded-xl border border-border bg-background p-4 shadow-sm hover:shadow-md hover:bg-muted/30 hover:border-primary/20 transition-all duration-200 group"
                 >
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center gap-2 min-w-0">
@@ -105,7 +105,7 @@ export default function ProjectsPage() {
                       </h3>
                     </div>
                     {project.starred && (
-                      <Star className="w-3.5 h-3.5 fill-yellow-400 text-yellow-400 shrink-0" />
+                      <Star className="w-3.5 h-3.5 fill-[var(--color-star)] text-[var(--color-star)] shrink-0" />
                     )}
                   </div>
 

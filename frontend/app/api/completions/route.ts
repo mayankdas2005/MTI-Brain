@@ -1,5 +1,5 @@
 /**
- * Mock endpoint disabled — frontend now uses the FastAPI backend directly.
+ * Mock endpoint disabled - frontend now uses the FastAPI backend directly.
  */
 export async function POST() {
   return Response.json(

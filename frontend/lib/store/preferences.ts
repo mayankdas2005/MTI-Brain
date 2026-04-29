@@ -67,7 +67,7 @@ export const usePreferencesStore = create<PreferencesStore>()(
             }
           }
         } catch {
-          // Corrupted data — use defaults
+          // Corrupted data - use defaults
         }
         // Update the persist storage to write to this user's key going forward
         usePreferencesStore.persist.setOptions({

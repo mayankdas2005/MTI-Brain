@@ -1,5 +1,5 @@
 /**
- * Thread API functions — typed wrappers for /api/v1/chat endpoints.
+ * Thread API functions - typed wrappers for /api/v1/chat endpoints.
  */
 
 import { apiFetch } from './client';

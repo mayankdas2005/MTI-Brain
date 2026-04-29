@@ -50,7 +50,7 @@ export function ThreadContextMenu({
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
         <ContextMenuContent className="w-48">
           <ContextMenuItem onClick={() => starThread(threadId)} className="gap-2">
-            <Star className={`w-4 h-4 ${starred ? 'fill-yellow-400 text-yellow-400' : ''}`} />
+            <Star className={`w-4 h-4 ${starred ? 'fill-[var(--color-star)] text-[var(--color-star)]' : ''}`} />
             {starred ? 'Unstar' : 'Star'}
           </ContextMenuItem>
           <ContextMenuItem onClick={() => setRenameOpen(true)} className="gap-2">

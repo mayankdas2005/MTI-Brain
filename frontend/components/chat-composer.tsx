@@ -82,7 +82,7 @@ export function ChatComposer() {
               <button
                 type="button"
                 onClick={handleStop}
-                className="flex items-center justify-center h-8 w-8 rounded-lg bg-foreground text-background hover:opacity-80 transition-opacity"
+                className="flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background hover:opacity-90 transition-all active:scale-[0.94]"
                 title="Stop generation"
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
@@ -92,7 +92,7 @@ export function ChatComposer() {
                 type="button"
                 onClick={() => handleSubmit()}
                 disabled={!canSend}
-                className="flex items-center justify-center h-8 w-8 rounded-lg bg-foreground text-background transition-opacity disabled:opacity-25 hover:opacity-80"
+                className="flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background transition-all disabled:opacity-25 hover:opacity-90 active:scale-[0.94]"
                 title="Send (Enter)"
               >
                 <ArrowUp className="w-4 h-4" />

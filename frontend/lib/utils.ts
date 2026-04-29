@@ -7,7 +7,7 @@ export function cn(...inputs: ClassValue[]) {
 
 // `navigator.clipboard` is only exposed on secure contexts (HTTPS or
 // localhost). On plain-http deployments it's undefined, so fall back to the
-// hidden-textarea + execCommand trick — deprecated but still supported by
+// hidden-textarea + execCommand trick - deprecated but still supported by
 // every browser that also claims to be a secure-context holdout.
 export async function copyText(text: string): Promise<boolean> {
   try {

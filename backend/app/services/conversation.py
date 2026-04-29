@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from app.core.logger import logger
 from app.models.conversation import QuestMessage, QuestProject, QuestThread
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, exists, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -353,12 +353,15 @@ async def save_message_and_touch(
         the first user message in the thread (no prior user messages exist).
     """
     # Check if any user messages already exist in this thread (before we insert ours)
-    count_result = await db.execute(
-        select(func.count())
-        .select_from(QuestMessage)
-        .where(QuestMessage.thread_id == thread_id, QuestMessage.role == "user")
+    exists_result = await db.execute(
+        select(
+            exists().where(
+                QuestMessage.thread_id == thread_id,
+                QuestMessage.role == "user",
+            )
+        )
     )
-    is_first_message = count_result.scalar() == 0
+    is_first_message = not exists_result.scalar()
 
     message = QuestMessage(
         thread_id=thread_id,

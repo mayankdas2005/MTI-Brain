@@ -32,7 +32,7 @@ frontend/
 │   ├── auth/
 │   │   └── callback/
 │   │       └── page.tsx                 # Auth callback handler (planned: Okta OIDC)
-│   ├── (authenticated)/                 # Route group — all pages require JWT
+│   ├── (authenticated)/                 # Route group - all pages require JWT
 │   │   ├── layout.tsx                   # Auth guard + sidebar + topbar shell
 │   │   ├── new/
 │   │   │   ├── page.tsx                 # Welcome state + new chat composer
@@ -130,15 +130,14 @@ frontend/
 
 | Route | Purpose |
 |-------|---------|
-| `/` | Login page — username/password form, calls `POST /api/v1/auth/login` |
-| `/auth/callback` | Auth callback page (prepared for Okta OIDC — not yet active) |
+| `/` | Login page - username/password form, calls `POST /api/v1/auth/login` |
 
 ### Authenticated (require JWT)
 
 | Route | Purpose |
 |-------|---------|
 | `/new` | Welcome screen with suggestion chips and centered composer |
-| `/chat/[chatId]` | Chat detail — message stream, data tables, charts, follow-ups |
+| `/chat/[chatId]` | Chat detail - message stream, data tables, charts, follow-ups |
 | `/chats` | All chats list with search and pagination |
 | `/projects` | Projects grid with search |
 | `/projects/[projectId]` | Project detail with its threads |
@@ -154,8 +153,6 @@ Direct username/password flow:
 5. All subsequent API calls include `Authorization: Bearer <token>`
 6. On 401 response, token is cleared and user is redirected to `/`
 7. Logout clears localStorage and redirects to `/`
-
-> **Planned:** Okta OAuth2/OIDC login. The `/auth/callback` route and Okta env vars are scaffolded for this future integration.
 
 ## State Management
 
@@ -178,6 +175,7 @@ The frontend uses a custom POST-based SSE parser (since `EventSource` only suppo
 
 | SSE Event | Handler | UI Update |
 |-----------|---------|-----------|
+| `timing.sync` | `onTimingSync` | Elapsed time sync during stream |
 | `title.generated` | `onTitleGenerated` | Set thread title in sidebar |
 | `node.start` | `onNodeStart` | Show pipeline step progress |
 | `reasoning.delta` | `onReasoningDelta` | Append to reasoning accordion |
@@ -202,7 +200,7 @@ Persisted per-user in localStorage. Configurable via the settings modal:
 | Show follow-ups | `true` | Toggle |
 | Show reasoning | `true` | Toggle |
 | Default data view | `table` | `sql`, `table` |
-| Max result rows | `100` | `10`–`500` |
+| Max result rows | `100` | `10`-`500` |
 
 ## Keyboard Shortcuts
 
@@ -236,7 +234,7 @@ Persisted per-user in localStorage. Configurable via the settings modal:
 2. **Configure environment:**
    ```bash
    cp .env.example .env
-   # Edit .env — at minimum set NEXT_PUBLIC_API_URL to point at the backend
+   # Edit .env - at minimum set NEXT_PUBLIC_API_URL to point at the backend
    ```
 
 3. **Start development server:**
@@ -248,7 +246,7 @@ Persisted per-user in localStorage. Configurable via the settings modal:
 ### Docker
 
 ```bash
-docker build --build-arg NEXT_PUBLIC_API_URL=https://your-api.example.com -t mti-brain-frontend .
+docker build -t mti-brain-frontend .
 docker run -p 3000:3000 mti-brain-frontend
 ```
 
@@ -263,17 +261,6 @@ Variables prefixed `NEXT_PUBLIC_` are embedded at build time and exposed to the 
 | Variable | Description |
 |----------|-------------|
 | `NEXT_PUBLIC_API_URL` | FastAPI backend base URL (e.g., `http://localhost:8000`) |
-| `NEXT_PUBLIC_APP_URL` | Frontend public URL (e.g., `http://localhost:3000`) |
-
-### Planned / future (Okta OIDC)
-
-These variables are present in `.env.example` for the future Okta authentication integration. They have no effect on the current username/password login flow:
-
-| Variable | Description |
-|----------|-------------|
-| `NEXT_PUBLIC_OKTA_DOMAIN` | Okta tenant domain (e.g., `your-org.okta.com`) |
-| `NEXT_PUBLIC_OKTA_CLIENT_ID` | Okta OIDC application client ID |
-| `NEXT_PUBLIC_OKTA_REDIRECT_URI` | OAuth2 callback URI (e.g., `http://localhost:3000/auth/callback`) |
 
 ### Dev-only
 

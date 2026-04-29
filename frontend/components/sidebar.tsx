@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useNow } from '@/lib/hooks/use-now';
+import { formatRelativeTime } from '@/lib/utils/relative-time';
 import Image from 'next/image';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,6 +20,7 @@ import {
   Loader2,
   FolderOpen,
   ChevronDown,
+  ChevronRight,
   MoreHorizontal,
   Pencil,
   FolderInput,
@@ -59,6 +62,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/lib/toast';
 import type { ThreadSummary, SearchResult } from '@/lib/types/api';
@@ -101,6 +109,7 @@ function ThreadItem({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const starThread = useThreadStore((s) => s.starThread);
   const deleteThread = useThreadStore((s) => s.deleteThread);
+  const now = useNow();
 
   return (
     <>
@@ -130,18 +139,7 @@ function ThreadItem({
           >
             <p className="text-sm font-medium truncate">{title}</p>
             <p className="text-xs opacity-55 mt-0.5" suppressHydrationWarning>
-              {(() => {
-                const date = new Date(thread.updated_at);
-                const now = new Date();
-                const diffMs = now.getTime() - date.getTime();
-                const diffMins = Math.floor(diffMs / 60000);
-                const diffHours = Math.floor(diffMs / 3600000);
-                const diffDays = Math.floor(diffMs / 86400000);
-                if (diffMins < 60) return `${diffMins}m ago`;
-                if (diffHours < 24) return `${diffHours}h ago`;
-                if (diffDays < 7) return `${diffDays}d ago`;
-                return date.toLocaleDateString();
-              })()}
+              {formatRelativeTime(thread.updated_at, now)}
             </p>
           </button>
 
@@ -155,9 +153,9 @@ function ThreadItem({
                 <MoreHorizontal className="w-3.5 h-3.5" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuContent side="right" align="start" className="w-44">
               <DropdownMenuItem onClick={() => starThread(thread.id)} className="gap-2">
-                <Star className={`w-3.5 h-3.5 ${thread.starred ? 'fill-yellow-400 text-yellow-400' : ''}`} />
+                <Star className={`w-3.5 h-3.5 ${thread.starred ? 'fill-[var(--color-star)] text-[var(--color-star)]' : ''}`} />
                 {thread.starred ? 'Unstar' : 'Star'}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setRenameOpen(true)} className="gap-2">
@@ -259,6 +257,7 @@ export function Sidebar() {
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showAllStarred, setShowAllStarred] = useState(false);
 
   // Note: initial fetch of threads & projects is handled once in the
   // authenticated layout so toggling the sidebar open/closed does not
@@ -297,19 +296,8 @@ export function Sidebar() {
     fetchRecents({ append: true });
   };
 
-  const formatTime = (dateStr: string) => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
-  };
+  const sidebarNow = useNow();
+  const formatTime = (dateStr: string) => formatRelativeTime(dateStr, sidebarNow);
 
   const hasSelection = selectedThreadIds.size > 0;
 
@@ -392,7 +380,7 @@ export function Sidebar() {
       <div className="px-3 pt-3 pb-2">
         <Button
           onClick={handleNewChat}
-          className="w-full h-10 rounded-xl justify-center gap-2 font-semibold"
+          className="w-full h-10 rounded-xl justify-center gap-2 font-semibold active:scale-[0.98] transition-transform"
           variant="outline"
         >
           <Plus className="w-[18px] h-[18px]" />
@@ -400,7 +388,7 @@ export function Sidebar() {
         </Button>
       </div>
 
-      {/* Search — opens global search modal */}
+      {/* Search - opens global search modal */}
       <div className="px-3 pb-2">
         <button
           onClick={() => {
@@ -409,7 +397,7 @@ export function Sidebar() {
           }}
           className="w-full flex items-center gap-2 px-2.5 h-9 rounded-xl border border-sidebar-border bg-sidebar text-sm text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
         >
-          <Search className="w-[18px] h-[18px] shrink-0" />
+          <Search className="w-4 h-4 shrink-0" />
           <span>Search...</span>
         </button>
       </div>
@@ -426,15 +414,19 @@ export function Sidebar() {
               <FolderOpen className="w-[18px] h-[18px] text-sidebar-foreground/50 shrink-0" />
               <span className="text-sm font-medium">Projects</span>
             </button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0 text-sidebar-foreground/60 hover:text-sidebar-foreground shrink-0"
-              onClick={() => setCreateProjectOpen(true)}
-              title="New project"
-            >
-              <Plus className="w-3.5 h-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0 text-sidebar-foreground/60 hover:text-sidebar-foreground shrink-0"
+                  onClick={() => setCreateProjectOpen(true)}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">New project</TooltipContent>
+            </Tooltip>
           </div>
         </div>
 
@@ -450,11 +442,20 @@ export function Sidebar() {
           </button>
         </div>
 
-        {/* Starred Section — starred projects + starred threads */}
+        {/* Starred Section - starred projects + starred threads, capped at 5 */}
         {(() => {
+          const STARRED_LIMIT = 5;
           const starredProjects = projects.filter((p) => p.starred);
           const starredThreads = threads.filter((t) => t.starred);
           if (starredProjects.length === 0 && starredThreads.length === 0) return null;
+          const totalStarred = starredProjects.length + starredThreads.length;
+          const starredProjectsVisible = showAllStarred
+            ? starredProjects
+            : starredProjects.slice(0, STARRED_LIMIT);
+          const starredThreadsVisible = showAllStarred
+            ? starredThreads
+            : starredThreads.slice(0, Math.max(0, STARRED_LIMIT - starredProjects.length));
+          const starredOverflow = totalStarred > STARRED_LIMIT;
           return (
             <>
               <div className="px-3 pb-1">
@@ -463,7 +464,7 @@ export function Sidebar() {
                 </p>
               </div>
               <div className="px-2 pb-1 space-y-0.5">
-                {starredProjects.map((project) => (
+                {starredProjectsVisible.map((project) => (
                   <ProjectContextMenu
                     key={project.id}
                     projectId={project.id}
@@ -483,7 +484,15 @@ export function Sidebar() {
                     </button>
                   </ProjectContextMenu>
                 ))}
-                {starredThreads.map(renderThread)}
+                {starredThreadsVisible.map(renderThread)}
+                {starredOverflow && (
+                  <button
+                    onClick={() => setShowAllStarred((v) => !v)}
+                    className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-1 rounded-lg hover:bg-sidebar-accent transition-colors"
+                  >
+                    {showAllStarred ? 'Show less' : `Show ${totalStarred - STARRED_LIMIT} more`}
+                  </button>
+                )}
               </div>
               <div className="px-3 py-1">
                 <div className="border-t border-sidebar-border" />
@@ -499,7 +508,7 @@ export function Sidebar() {
           </p>
         </div>
         <div className="px-2 pb-3 pt-0 space-y-0.5">
-          {threads.length === 0 && (threadsLoading || hasMore) ? (
+          {threads.length === 0 && threadsLoading ? (
             <SidebarThreadsSkeleton />
           ) : threads.length === 0 ? (
             <div className="text-center py-8">
@@ -509,19 +518,16 @@ export function Sidebar() {
             </div>
           ) : (
             <>
-              {threads.filter((t) => !t.starred).map(renderThread)}
-              {hasMore && !threadsLoading && (
+              {threads.filter((t) => !t.starred).slice(0, 8).map(renderThread)}
+              {(threads.filter((t) => !t.starred).length > 8 || hasMore) && (
                 <button
-                  onClick={handleLoadMore}
-                  className="w-full text-sm text-sidebar-foreground/60 hover:text-sidebar-foreground py-2 rounded-lg hover:bg-sidebar-accent transition-colors"
+                  onClick={() => router.push('/chats')}
+                  onMouseEnter={() => router.prefetch('/chats')}
+                  className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-1.5 rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
                 >
-                  Show more
+                  <span>See all chats</span>
+                  <ChevronRight className="w-3 h-3" />
                 </button>
-              )}
-              {threadsLoading && threads.length > 0 && (
-                <div className="flex justify-center py-2">
-                  <Loader2 className="w-4 h-4 animate-spin text-sidebar-foreground/60" />
-                </div>
               )}
             </>
           )}
@@ -531,7 +537,7 @@ export function Sidebar() {
       {/* Bulk action bar */}
       <BulkActionBar />
 
-      {/* Footer — User menu */}
+      {/* Footer - User menu */}
       <div className="px-3 py-2 border-t border-sidebar-border">
         {!user ? (
           <div className="flex items-center gap-2.5 px-2 py-1.5">

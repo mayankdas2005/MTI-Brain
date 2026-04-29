@@ -5,6 +5,11 @@ import { Button } from '@/components/ui/button';
 import { useThreadStore } from '@/lib/store/threads';
 import { Trash2, FolderInput, X } from 'lucide-react';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -32,33 +37,45 @@ export function BulkActionBar() {
         <span className="text-xs text-sidebar-foreground/70 flex-1">
           {count} selected
         </span>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={() => setMoveOpen(true)}
-          title="Move to project"
-        >
-          <FolderInput className="w-3.5 h-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
-          onClick={() => setDeleteConfirm(true)}
-          title="Delete selected"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={clearSelection}
-          title="Cancel"
-        >
-          <X className="w-3.5 h-3.5" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setMoveOpen(true)}
+            >
+              <FolderInput className="w-3.5 h-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top">Move to project</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={() => setDeleteConfirm(true)}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top">Delete selected</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={clearSelection}
+            >
+              <X className="w-3.5 h-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top">Cancel</TooltipContent>
+        </Tooltip>
       </div>
 
       <AlertDialog open={deleteConfirm} onOpenChange={setDeleteConfirm}>

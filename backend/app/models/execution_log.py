@@ -1,6 +1,6 @@
 """SQLAlchemy ORM model for the execution log.
 
-Captures every pipeline run outcome — question, SQL, schema, timing,
+Captures every pipeline run outcome - question, SQL, schema, timing,
 retry count, and whether a saved pattern influenced the query. This
 table is the foundation for the anti-degradation monitor (Phase 2)
 and implicit feedback detection (Phase 3).

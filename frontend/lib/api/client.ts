@@ -41,7 +41,7 @@ export async function apiFetch<T>(
   const res = await fetch(url, { ...options, headers });
 
   if (res.status === 401) {
-    // Token expired or invalid — clear and notify the layout via a custom event.
+    // Token expired or invalid - clear and notify the layout via a custom event.
     // Using window.location.href triggers a full page reload (slow). The
     // authenticated layout listens for 'quest:unauthenticated' and uses
     // Next.js routing to redirect, which keeps the bundle warm.

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Eye, EyeOff } from 'lucide-react';
 import { isAuthenticated, login } from '@/lib/auth';
 
 export default function LoginPage() {
@@ -15,6 +16,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated()) {
@@ -83,14 +85,24 @@ export default function LoginPage() {
               </div>
               <div className="space-y-1">
                 <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => { setPassword(e.target.value); setError(''); }}
-                  className="h-10 rounded-xl"
-                />
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => { setPassword(e.target.value); setError(''); }}
+                    className="h-10 rounded-xl pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    tabIndex={-1}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
               {error && <p className="text-destructive text-xs">{error}</p>}
               <Button

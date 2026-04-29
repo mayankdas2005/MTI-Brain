@@ -31,7 +31,7 @@ export interface Message {
   isStreaming?: boolean;
   streamingSteps?: StreamingStep[];
   feedback?: { liked: boolean; comment?: string };
-  /** Timing anchor from backend timing.sync event — lets LiveTimer
+  /** Timing anchor from backend timing.sync event - lets LiveTimer
    *  track the server's elapsed clock instead of the client's wall clock. */
   _timingAnchor?: { serverElapsedMs: number; clientReceivedAt: number };
 }
@@ -53,7 +53,7 @@ function randomId(): string {
 }
 
 /**
- * Parse reasoning from backend — may be a JSON array of step objects or a plain string.
+ * Parse reasoning from backend - may be a JSON array of step objects or a plain string.
  */
 function parseReasoningArray(raw: unknown): { label?: string; text?: string }[] | null {
   if (!raw) return null;
@@ -91,7 +91,7 @@ function parseReasoning(raw: unknown): string | undefined {
  *
  * During live streaming all nodes emit `node.start` events, but those aren't
  * persisted. The reasoning array only contains nodes that produced reasoning
- * text — non-streaming nodes (classify, validate_sql, run_query, respond)
+ * text - non-streaming nodes (classify, validate_sql, run_query, respond)
  * are missing. We fill in the gaps using metadata fields to determine which
  * nodes ran.
  */
@@ -116,42 +116,42 @@ function extractSteps(
     steps.push({ node, message, status: 'done' as const, timestamp: 0 });
   };
 
-  // 1. Understanding your question (classify) — always runs first
+  // 1. Understanding your question (classify) - always runs first
   addStep('classify', 'Understanding your question');
 
-  // 2. Resolving entities — from reasoning
+  // 2. Resolving entities - from reasoning
   if (reasoningLabels.has('Resolving entities')) {
     addStep('resolve', 'Resolving entities');
   }
 
-  // 3. Analyzing question and building query — from reasoning
+  // 3. Analyzing question and building query - from reasoning
   if (reasoningLabels.has('Analyzing question and building query')) {
     addStep('generate_sql', 'Analyzing question and building query');
   }
 
-  // 4. Validating SQL syntax — ran if SQL exists
+  // 4. Validating SQL syntax - ran if SQL exists
   if (metadata?.sql) {
     addStep('validate_sql', 'Validating SQL syntax');
   }
 
-  // 5. Fetching results — ran if columns/rows exist
+  // 5. Fetching results - ran if columns/rows exist
   if (metadata?.columns && metadata.columns.length > 0) {
     addStep('run_query', 'Fetching results');
   }
 
-  // 5b. Validating results — from reasoning
+  // 5b. Validating results - from reasoning
   if (reasoningLabels.has('Validating results')) {
     addStep('validate_results', 'Validating results');
   }
 
-  // 5c. Fix query + retry cycles — from reasoning
+  // 5c. Fix query + retry cycles - from reasoning
   for (const label of reasoningLabels) {
     if (label.startsWith('Fixing the query')) {
       addStep('fix_query', label);
     }
   }
 
-  // 6. Preparing your answer — ran if message has content
+  // 6. Preparing your answer - ran if message has content
   if (content) {
     addStep('respond', 'Preparing your answer');
   }
@@ -185,7 +185,7 @@ interface ThreadStore {
   streamingMessageId: string | null;
   // Thread currently receiving the stream. Used by the chat page guard
   // so navigating to a different thread while one is generating doesn't
-  // block the new thread's fetch — only skip when streaming INTO the
+  // block the new thread's fetch - only skip when streaming INTO the
   // thread we're rendering.
   streamingThreadId: string | null;
   // Dedicated slot holding the user+assistant messages for the active
@@ -202,6 +202,9 @@ interface ThreadStore {
 
   // Selection (bulk ops)
   selectedThreadIds: Set<string>;
+
+  // In-memory message map for instant re-visit (not persisted, cleared on page refresh)
+  threadMessageMap: Record<string, Message[]>;
 
   // ─── Actions ───
 
@@ -242,6 +245,12 @@ interface ThreadStore {
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
+// In-flight deduplication for default (no-search, no-append) fetchRecents calls.
+// Layout fires fetchRecents on every navigation; mutations also call it after
+// they complete. Without this guard, two near-simultaneous calls fire two
+// network requests and the slower one's stale result can overwrite the faster one.
+let fetchRecentsFlight: Promise<void> | null = null;
+
 // ─── Store ───
 
 export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
@@ -267,50 +276,64 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
   abortController: null,
   pendingQuestion: null,
   selectedThreadIds: new Set(),
+  threadMessageMap: {},
 
   // ─── Fetch ───
 
   fetchRecents: async (params) => {
-    const { searchQuery, threadsOffset, threads } = get();
-    const search = params?.search ?? searchQuery;
-    const append = params?.append ?? false;
-    const offset = append ? threadsOffset : 0;
-    const limit = 20;
+    const isDefaultFetch = !params?.search && !params?.append && !params?.project_id;
+    if (isDefaultFetch && fetchRecentsFlight) return fetchRecentsFlight;
 
-    set({ threadsLoading: true, isSearching: !!search });
-    try {
-      const result = await api.getRecents({
-        search: search || undefined,
-        project_id: params?.project_id,
-        limit,
-        offset,
-      });
+    const run = async () => {
+      const { searchQuery, threadsOffset, threads } = get();
+      const search = params?.search ?? searchQuery;
+      const append = params?.append ?? false;
+      const offset = append ? threadsOffset : 0;
+      const limit = 20;
 
-      if (search) {
-        set({
-          searchResults: result as SearchResult[],
-          threadsLoading: false,
+      set({ threadsLoading: get().threads.length === 0, isSearching: !!search });
+      try {
+        const result = await api.getRecents({
+          search: search || undefined,
+          project_id: params?.project_id,
+          limit,
+          offset,
         });
-      } else {
-        const items = result as ThreadSummary[];
-        set({
-          threads: append ? [...threads, ...items] : items,
-          searchResults: [],
-          threadsOffset: offset + items.length,
-          hasMore: items.length === limit,
-          threadsLoading: false,
-          isSearching: false,
-          threadsLastFetched: Date.now(),
-        });
+
+        if (search) {
+          set({
+            searchResults: result as SearchResult[],
+            threadsLoading: false,
+          });
+        } else {
+          const items = result as ThreadSummary[];
+          set({
+            threads: append ? [...threads, ...items] : items,
+            searchResults: [],
+            threadsOffset: offset + items.length,
+            hasMore: items.length === limit,
+            threadsLoading: false,
+            isSearching: false,
+            threadsLastFetched: Date.now(),
+          });
+        }
+      } catch {
+        set({ threadsLoading: false, isSearching: false });
       }
-    } catch {
-      set({ threadsLoading: false, isSearching: false });
+    };
+
+    const p = run();
+    if (isDefaultFetch) {
+      fetchRecentsFlight = p.finally(() => { fetchRecentsFlight = null; });
     }
+    return p;
   },
 
   fetchThread: async (threadId) => {
-    // Only show loading skeleton on first load, not on background revalidation
-    const hasMessages = get().currentThreadId === threadId && get().currentMessages.length > 0;
+    // Show skeleton only when no messages are available (neither current nor map)
+    const hasMessages =
+      (get().currentThreadId === threadId && get().currentMessages.length > 0) ||
+      (get().threadMessageMap[threadId]?.length ?? 0) > 0;
     set({ messagesLoading: !hasMessages, currentThreadId: threadId });
     try {
       const detail = await api.getThread(threadId);
@@ -332,15 +355,31 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       // Don't overwrite messages if askQuestion already populated them (race with pendingQuestion)
       const current = get().currentMessages;
       const shouldKeepMessages = current.length > 0 && messages.length === 0 && get().currentThreadId === threadId;
-      set({
-        currentMessages: shouldKeepMessages ? current : messages,
-        currentThreadTitle: detail.title,
-        currentThreadStarred: detail.starred,
-        currentThreadProjectId: detail.project_id,
-        messagesLoading: false,
-      });
+      const resolved = shouldKeepMessages ? current : messages;
+      // Race guard: user may have navigated to a different thread while
+      // this fetch was in flight. Always update the cache map, but only
+      // commit to current* state if we're still viewing this thread.
+      const stillViewing = get().currentThreadId === threadId;
+      if (stillViewing) {
+        set((state) => ({
+          currentMessages: resolved,
+          currentThreadTitle: detail.title,
+          currentThreadStarred: detail.starred,
+          currentThreadProjectId: detail.project_id,
+          messagesLoading: false,
+          threadMessageMap: { ...state.threadMessageMap, [threadId]: resolved },
+        }));
+      } else {
+        // Still cache for future visits, but don't touch current view
+        set((state) => ({
+          threadMessageMap: { ...state.threadMessageMap, [threadId]: resolved },
+        }));
+      }
     } catch {
-      set({ messagesLoading: false });
+      // Only clear loading if we're still on this thread
+      if (get().currentThreadId === threadId) {
+        set({ messagesLoading: false });
+      }
       throw new Error('Thread not found');
     }
   },
@@ -369,12 +408,16 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     const thread = prev.find((t) => t.id === threadId);
     const affectedProjectId = thread?.project_id ?? null;
     const wasCurrent = get().currentThreadId === threadId;
-    // Optimistic: remove from list + search results, clear if active
-    set({
-      threads: prev.filter((t) => t.id !== threadId),
-      searchResults: prevSearchResults.filter((r) => r.thread_id !== threadId),
-      selectedThreadIds: new Set([...get().selectedThreadIds].filter((id) => id !== threadId)),
-      ...(wasCurrent ? { currentThreadId: null, currentMessages: [] } : {}),
+    // Optimistic: remove from list + search results, clear if active, evict from map
+    set((state) => {
+      const { [threadId]: _evict, ...remainingMap } = state.threadMessageMap;
+      return {
+        threads: prev.filter((t) => t.id !== threadId),
+        searchResults: prevSearchResults.filter((r) => r.thread_id !== threadId),
+        selectedThreadIds: new Set([...state.selectedThreadIds].filter((id) => id !== threadId)),
+        threadMessageMap: remainingMap,
+        ...(wasCurrent ? { currentThreadId: null, currentMessages: [] } : {}),
+      };
     });
     try {
       await api.deleteThread(threadId);
@@ -390,6 +433,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
   starThread: async (threadId) => {
     const prev = get().threads;
+    const prevStarred = get().currentThreadStarred;
     // Optimistic toggle
     set({
       threads: prev.map((t) =>
@@ -400,8 +444,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       set({ currentThreadStarred: !get().currentThreadStarred });
     }
     // Mirror the toggle into currentProject.threads if the open project
-    // contains this thread.
-    const affectedProjectId = prev.find((t) => t.id === threadId)?.project_id ?? null;
+    // contains this thread. Fall back to currentThreadProjectId when the
+    // thread isn't in the sidebar list (e.g. paginated beyond view).
+    const affectedProjectId =
+      prev.find((t) => t.id === threadId)?.project_id
+      ?? (get().currentThreadId === threadId ? get().currentThreadProjectId : null);
     if (affectedProjectId) {
       const { useProjectStore } = await import('./projects');
       const cur = useProjectStore.getState().currentProject;
@@ -419,12 +466,17 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     try {
       await api.starThread(threadId);
     } catch {
-      set({ threads: prev }); // rollback
+      // Rollback both sidebar list and current thread metadata
+      set({ threads: prev });
+      if (get().currentThreadId === threadId) {
+        set({ currentThreadStarred: prevStarred });
+      }
     }
   },
 
   renameThread: async (threadId, title) => {
     const prev = get().threads;
+    const prevTitle = get().currentThreadTitle;
     set({
       threads: prev.map((t) =>
         t.id === threadId ? { ...t, title } : t,
@@ -434,7 +486,10 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       set({ currentThreadTitle: title });
     }
     // Mirror rename into currentProject.threads if it's the open project.
-    const affectedProjectId = prev.find((t) => t.id === threadId)?.project_id ?? null;
+    // Fall back to currentThreadProjectId when the thread isn't in sidebar.
+    const affectedProjectId =
+      prev.find((t) => t.id === threadId)?.project_id
+      ?? (get().currentThreadId === threadId ? get().currentThreadProjectId : null);
     if (affectedProjectId) {
       const { useProjectStore } = await import('./projects');
       const cur = useProjectStore.getState().currentProject;
@@ -452,21 +507,33 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     try {
       await api.renameThread(threadId, title);
     } catch {
-      set({ threads: prev }); // rollback
+      // Rollback both sidebar list and current thread title
+      set({ threads: prev });
+      if (get().currentThreadId === threadId) {
+        set({ currentThreadTitle: prevTitle });
+      }
     }
   },
 
   moveThread: async (threadId, projectId) => {
     const prev = get().threads;
     const fromProjectId = prev.find((t) => t.id === threadId)?.project_id ?? null;
-    await api.moveThread(threadId, projectId);
-    get().fetchRecents();
-    // Refresh project counts + whichever project detail is currently open
-    // (could be the source or destination).
-    const { useProjectStore } = await import('./projects');
-    useProjectStore.getState().fetchProjects();
-    useProjectStore.getState().refreshCurrentProjectIfMatches(fromProjectId);
-    useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
+    // Optimistic: update sidebar list and current thread meta immediately
+    set({ threads: prev.map((t) => t.id === threadId ? { ...t, project_id: projectId } : t) });
+    if (get().currentThreadId === threadId) set({ currentThreadProjectId: projectId });
+    try {
+      await api.moveThread(threadId, projectId);
+      const { useProjectStore } = await import('./projects');
+      await Promise.all([
+        get().fetchRecents(),
+        useProjectStore.getState().fetchProjects(),
+        useProjectStore.getState().refreshCurrentProjectIfMatches(fromProjectId),
+        useProjectStore.getState().refreshCurrentProjectIfMatches(projectId),
+      ]);
+    } catch {
+      set({ threads: prev });
+      if (get().currentThreadId === threadId) set({ currentThreadProjectId: fromProjectId });
+    }
   },
 
   // ─── Bulk ───
@@ -508,16 +575,23 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     const affectedProjectIds = new Set(
       prev.filter((t) => ids.includes(t.id)).map((t) => t.project_id).filter(Boolean) as string[],
     );
-    await api.bulkMoveThreads(ids, projectId);
-    set({ selectedThreadIds: new Set() });
-    get().fetchRecents();
-    // Refresh project counts + detail if open (source or destination)
-    const { useProjectStore } = await import('./projects');
-    useProjectStore.getState().fetchProjects();
-    for (const pid of affectedProjectIds) {
-      useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
+    // Optimistic: update project_id on all selected threads immediately
+    set({
+      threads: prev.map((t) => ids.includes(t.id) ? { ...t, project_id: projectId } : t),
+      selectedThreadIds: new Set(),
+    });
+    try {
+      await api.bulkMoveThreads(ids, projectId);
+      const { useProjectStore } = await import('./projects');
+      get().fetchRecents();
+      useProjectStore.getState().fetchProjects();
+      for (const pid of affectedProjectIds) {
+        useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
+      }
+      useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
+    } catch {
+      set({ threads: prev });
     }
-    useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
   },
 
   // ─── Streaming ───
@@ -548,10 +622,23 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
     const controller = new AbortController();
 
+    // Optimistic title - set before streaming so the sidebar never shows
+    // "Untitled" even if the title.generated SSE event is stopped before it
+    // fires. The backend saves the real title via save_message_and_touch
+    // before SSE begins; onStopped/onDone calls fetchRecents() to sync it.
+    const existingTitle = get().currentThreadTitle || get().threads.find((t) => t.id === threadId)?.title;
+    if (!existingTitle) {
+      const autoTitle = question.trim().split(/\s+/).slice(0, 6).join(' ');
+      set((state) => ({
+        currentThreadTitle: autoTitle,
+        threads: state.threads.map((t) => t.id === threadId ? { ...t, title: autoTitle } : t),
+      }));
+    }
+
     // streamingMessages holds the FULL thread (history + new turn) so the
     // chat page can render the whole conversation from this slot while the
     // stream is in flight. Only the new user/assistant messages change
-    // inside — the historical ones pass through unchanged.
+    // inside - the historical ones pass through unchanged.
     const nextMessages = [...currentMessages, userMsg, assistantMsg];
     set({
       currentMessages: nextMessages,
@@ -678,14 +765,18 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           if (m.id === userMsgId) return { ...m, conversation_id: convId };
           return m;
         };
-        set((state) => ({
-          currentMessages: state.currentMessages.map(mapper),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+        set((state) => {
+          const updated = state.currentMessages.map(mapper);
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
         get().fetchRecents();
         // If this thread belongs to the project currently open in the
         // detail page, refresh it so the new conversation appears there.
@@ -697,22 +788,30 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         }
       },
       onStopped: () => {
-        set((state) => ({
-          currentMessages: state.currentMessages.map((m) =>
+        set((state) => {
+          const updated = state.currentMessages.map((m) =>
             m.id === assistantMsgId
               ? { ...m, isStreaming: false, metadata_: { ...m.metadata_, stopped: true } }
               : m,
-          ),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+          );
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
+        get().fetchRecents(); // Sync real title from DB into sidebar
+        // Delayed re-sync: backend may commit the assistant message
+        // after the SSE connection closes.
+        setTimeout(() => { get().fetchRecents(); }, 600);
       },
       onError: (data) => {
-        set((state) => ({
-          currentMessages: state.currentMessages.map((m) =>
+        set((state) => {
+          const updated = state.currentMessages.map((m) =>
             m.id === assistantMsgId
               ? {
                   ...m,
@@ -721,13 +820,17 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                   conversation_id: data.conversation_id || '',
                 }
               : m,
-          ),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+          );
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
       },
     };
 
@@ -745,7 +848,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       await streamSSE(`/chat/${threadId}/ask`, askBody, handlers, controller.signal);
     } catch (err: unknown) {
       if ((err as Error).name === 'AbortError') {
-        // User cancelled — already handled by onStopped if backend confirmed
+        // User cancelled - already handled by onStopped if backend confirmed
       } else {
         // Stream broke mid-flight. If reasoning or answer already streamed,
         // preserve it and mark the message as interrupted instead of wiping
@@ -755,8 +858,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           !!(msg?.content && msg.content.trim()) ||
           !!(msg?.reasoning && msg.reasoning.trim());
         if (hasPartial) {
-          set((state) => ({
-            currentMessages: state.currentMessages.map((m) =>
+          set((state) => {
+            const updated = state.currentMessages.map((m) =>
               m.id === assistantMsgId
                 ? {
                     ...m,
@@ -765,13 +868,17 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                     streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
                   }
                 : m,
-            ),
-            streamingMessages: [],
-            isStreaming: false,
-            streamingMessageId: null,
-            streamingThreadId: null,
-            abortController: null,
-          }));
+            );
+            return {
+              currentMessages: updated,
+              threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+              streamingMessages: [],
+              isStreaming: false,
+              streamingMessageId: null,
+              streamingThreadId: null,
+              abortController: null,
+            };
+          });
         } else {
           handlers.onError?.({ message: 'Failed to get a response' });
         }
@@ -779,18 +886,23 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     } finally {
       // Safety net: if stream ended but onDone/onError/onStopped never fired, clean up
       if (get().streamingMessageId === assistantMsgId) {
-        set((state) => ({
-          currentMessages: state.currentMessages.map((m) =>
+        set((state) => {
+          const updated = state.currentMessages.map((m) =>
             m.id === assistantMsgId
               ? { ...m, isStreaming: false, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) }
               : m,
-          ),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+          );
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
+        get().fetchRecents();
       }
     }
   },
@@ -837,7 +949,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     // streamingMessages holds the FULL thread (history + new turn) so the
     // chat page can render the whole conversation from this slot while the
     // stream is in flight. Only the new user/assistant messages change
-    // inside — the historical ones pass through unchanged.
+    // inside - the historical ones pass through unchanged.
     const nextMessages = [...currentMessages, userMsg, assistantMsg];
     set({
       currentMessages: nextMessages,
@@ -934,29 +1046,39 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           if (m.id === userMsgId) return { ...m, conversation_id: convId };
           return m;
         };
-        set((state) => ({
-          currentMessages: state.currentMessages.map(mapper),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+        set((state) => {
+          const updated = state.currentMessages.map(mapper);
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
         get().fetchRecents();
       },
       onStopped: () => {
-        set((state) => ({
-          currentMessages: state.currentMessages.map((m) =>
+        set((state) => {
+          const updated = state.currentMessages.map((m) =>
             m.id === assistantMsgId
-              ? { ...m, isStreaming: false, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) }
+              ? { ...m, isStreaming: false, metadata_: { ...m.metadata_, stopped: true }, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) }
               : m,
-          ),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+          );
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
+        get().fetchRecents();
+        setTimeout(() => { get().fetchRecents(); }, 600);
       },
       onError: (data) => {
         set((state) => ({
@@ -982,18 +1104,23 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       }
     } finally {
       if (get().streamingMessageId === assistantMsgId) {
-        set((state) => ({
-          currentMessages: state.currentMessages.map((m) =>
+        set((state) => {
+          const updated = state.currentMessages.map((m) =>
             m.id === assistantMsgId
               ? { ...m, isStreaming: false, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) }
               : m,
-          ),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+          );
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
+        get().fetchRecents();
       }
     }
   },
@@ -1034,7 +1161,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     // streamingMessages holds the FULL thread (history + new turn) so the
     // chat page can render the whole conversation from this slot while the
     // stream is in flight. Only the new user/assistant messages change
-    // inside — the historical ones pass through unchanged.
+    // inside - the historical ones pass through unchanged.
     const nextMessages = [...currentMessages, userMsg, assistantMsg];
     set({
       currentMessages: nextMessages,
@@ -1120,27 +1247,37 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           if (m.id === userMsgId) return { ...m, conversation_id: convId };
           return m;
         };
-        set((state) => ({
-          currentMessages: state.currentMessages.map(mapper),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+        set((state) => {
+          const updated = state.currentMessages.map(mapper);
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
         get().fetchRecents();
       },
       onStopped: () => {
-        set((state) => ({
-          currentMessages: state.currentMessages.map((m) =>
-            m.id === assistantMsgId ? { ...m, isStreaming: false, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) } : m,
-          ),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+        set((state) => {
+          const updated = state.currentMessages.map((m) =>
+            m.id === assistantMsgId ? { ...m, isStreaming: false, metadata_: { ...m.metadata_, stopped: true }, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) } : m,
+          );
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
+        get().fetchRecents();
+        setTimeout(() => { get().fetchRecents(); }, 600);
       },
       onError: (data) => {
         set((state) => ({
@@ -1171,36 +1308,73 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       }
     } finally {
       if (get().streamingMessageId === assistantMsgId) {
-        set((state) => ({
-          currentMessages: state.currentMessages.map((m) =>
+        set((state) => {
+          const updated = state.currentMessages.map((m) =>
             m.id === assistantMsgId
               ? { ...m, isStreaming: false, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) }
               : m,
-          ),
-          streamingMessages: [],
-          isStreaming: false,
-          streamingMessageId: null,
-          streamingThreadId: null,
-          abortController: null,
-        }));
+          );
+          return {
+            currentMessages: updated,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+            streamingMessages: [],
+            isStreaming: false,
+            streamingMessageId: null,
+            streamingThreadId: null,
+            abortController: null,
+          };
+        });
+        get().fetchRecents();
       }
     }
   },
 
   stopGeneration: async (threadId) => {
-    const { abortController } = get();
+    const { abortController, streamingMessageId } = get();
     abortController?.abort();
     try {
       await api.stopGeneration(threadId);
     } catch {
       // Ignore errors on stop
     }
-    set({
-      isStreaming: false,
-      streamingThreadId: null,
-      streamingMessages: [],
-      abortController: null,
+    // Finalize the in-progress assistant message so the UI shows
+    // whatever was streamed so far instead of a blank/stuck state.
+    // The onStopped SSE handler may also fire and do this, but abort
+    // often prevents it from arriving - this is the safety net.
+    set((state) => {
+      const updated = state.currentMessages.map((m) =>
+        m.id === streamingMessageId
+          ? {
+              ...m,
+              isStreaming: false,
+              metadata_: { ...m.metadata_, stopped: true },
+              streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+            }
+          : m,
+      );
+      return {
+        currentMessages: updated,
+        threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+        streamingMessages: [],
+        isStreaming: false,
+        streamingMessageId: null,
+        streamingThreadId: null,
+        abortController: null,
+      };
     });
+    // Sync sidebar title from DB (backend commits the title before the
+    // stream starts, so it should be available immediately).
+    get().fetchRecents();
+    // Safety-net: re-fetch the thread after a short delay to pick up
+    // the assistant message that the backend saves asynchronously.
+    setTimeout(() => {
+      if (get().currentThreadId === threadId) {
+        get().fetchThread(threadId).catch(() => {});
+      }
+      // Also refresh sidebar again in case backend committed after our
+      // first fetchRecents call.
+      get().fetchRecents();
+    }, 800);
   },
 
   // ─── Feedback ───
@@ -1249,7 +1423,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     // The SSE keeps running in the background; backend persists the final
     // message so the user sees the completed answer when they return.
     // The composer stays disabled across all threads while a stream runs
-    // (matches Claude.ai — only one in-flight request at a time).
+    // (matches Claude.ai - only one in-flight request at a time).
 
     const leavingStreamingThread =
       currentThreadId !== null && isStreaming && streamingThreadId === currentThreadId;
@@ -1291,17 +1465,32 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       return;
     }
 
-    // Otherwise (different thread, or no preserved state), clear the old
-    // thread's display so fetchThread shows its skeleton and populates
-    // the new thread's messages.
-    log('switch-thread-clear');
-    set({
-      currentThreadId: id,
-      currentMessages: [],
-      currentThreadTitle: null,
-      currentThreadStarred: false,
-      currentThreadProjectId: null,
-    });
+    // Otherwise (different thread, or no preserved state). Load from the
+    // in-memory map for instant render; fetchThread will background-refresh.
+    const cached = get().threadMessageMap[id];
+    // Look up metadata from the sidebar threads list so we don't flash
+    // null/false defaults while fetchThread loads the full detail.
+    const threadMeta = get().threads.find((t) => t.id === id);
+    if (cached?.length) {
+      log('switch-thread-from-map');
+      set({
+        currentThreadId: id,
+        currentMessages: cached,
+        currentThreadTitle: threadMeta?.title ?? null,
+        currentThreadStarred: threadMeta?.starred ?? false,
+        currentThreadProjectId: threadMeta?.project_id ?? null,
+        messagesLoading: false,
+      });
+    } else {
+      log('switch-thread-clear');
+      set({
+        currentThreadId: id,
+        currentMessages: [],
+        currentThreadTitle: threadMeta?.title ?? null,
+        currentThreadStarred: threadMeta?.starred ?? false,
+        currentThreadProjectId: threadMeta?.project_id ?? null,
+      });
+    }
   },
 
   setSearchQuery: (query) => {
@@ -1336,7 +1525,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 }), {
   name: 'quest-threads-cache',
   storage: createJSONStorage(() => localStorage),
-  // Only persist cacheable list data — never persist streaming/SSE state,
+  // Only persist cacheable list data - never persist streaming/SSE state,
   // active controllers, or per-thread message buffers (those refresh on
   // demand from the backend).
   partialize: (state) => ({

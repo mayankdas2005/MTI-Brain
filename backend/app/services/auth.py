@@ -1,4 +1,4 @@
-"""Authentication service — JWT token management and user credential validation."""
+"""Authentication service - JWT token management and user credential validation."""
 
 from datetime import datetime, timedelta, timezone
 

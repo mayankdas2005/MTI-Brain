@@ -16,7 +16,7 @@ export default function NotFound() {
         </h1>
         <p className="text-sm text-muted-foreground leading-relaxed animate-fade-up" style={{ animationDelay: '1.4s', animationFillMode: 'both', opacity: 0 }}>
           We couldn&apos;t locate this page. Milestone Technologies operates
-          across 35 countries — but this URL isn&apos;t one of them.
+          across 35 countries - but this URL isn&apos;t one of them.
           Let&apos;s get you back on track.
         </p>
         <div className="animate-fade-up" style={{ animationDelay: '1.6s', animationFillMode: 'both', opacity: 0 }}>

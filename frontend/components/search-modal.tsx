@@ -1,6 +1,8 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
+import { formatRelativeTime as sharedFormatRelativeTime } from '@/lib/utils/relative-time';
+import { useNow } from '@/lib/hooks/use-now';
 import { useSearchStore } from '@/lib/store/search';
 import {
   MessageSquare,
@@ -28,6 +30,7 @@ import { useThreadStore } from '@/lib/store/threads';
 
 export function SearchModal() {
   const router = useRouter();
+  const now = useNow();
   const open = useSearchStore((s) => s.open);
   const query = useSearchStore((s) => s.query);
   const chatResults = useSearchStore((s) => s.chatResults);
@@ -65,12 +68,12 @@ export function SearchModal() {
             onValueChange={search}
           />
           <CommandList className="max-h-[400px]">
-            {/* Empty state — no results for query */}
+            {/* Empty state - no results for query */}
             {!loading && hasQuery && !hasResults && (
               <CommandEmpty>No results found for &quot;{query}&quot;</CommandEmpty>
             )}
 
-            {/* New Chat action — always available */}
+            {/* New Chat action - always available */}
             <CommandGroup>
               <CommandItem onSelect={handleNewChat} className="gap-2">
                 <Plus className="w-4 h-4" />
@@ -83,7 +86,7 @@ export function SearchModal() {
 
             <CommandSeparator />
 
-            {/* Loading skeletons — in the same position where recents appear */}
+            {/* Loading skeletons - in the same position where recents appear */}
             {loading && !hasQuery && recentChats.length === 0 && (
               <CommandGroup heading="Recent Chats">
                 <div className="px-2 py-1 space-y-2">
@@ -108,7 +111,7 @@ export function SearchModal() {
                     <MessageSquare className="w-4 h-4 shrink-0" />
                     <span className="truncate">{chat.title || 'Untitled'}</span>
                     <span className="ml-auto text-xs text-muted-foreground/60 shrink-0">
-                      {formatRelativeTime(chat.updated_at)}
+                      {sharedFormatRelativeTime(chat.updated_at, now)}
                     </span>
                   </CommandItem>
                 ))}
@@ -139,7 +142,7 @@ export function SearchModal() {
                         )}
                       </div>
                       <span className="text-xs text-muted-foreground/60 shrink-0 self-start">
-                        {formatRelativeTime(result.updated_at)}
+                        {sharedFormatRelativeTime(result.updated_at, now)}
                       </span>
                     </CommandItem>
                   );
@@ -201,17 +204,3 @@ export function SearchModal() {
   );
 }
 
-function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m`;
-  if (diffHours < 24) return `${diffHours}h`;
-  if (diffDays < 7) return `${diffDays}d`;
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}

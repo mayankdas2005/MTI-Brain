@@ -1,8 +1,8 @@
 ﻿# MTI Brain Backend
 
-FastAPI backend for **MTI Brain** — an AI-powered conversational data analytics platform. Provides JWT-authenticated REST APIs for user login, conversation thread management, and project organization, with Server-Sent Events (SSE) streaming support for real-time responses.
+FastAPI backend for **MTI Brain** - an AI-powered conversational data analytics platform. Provides JWT-authenticated REST APIs for user login, conversation thread management, and project organization, with Server-Sent Events (SSE) streaming support for real-time responses.
 
-The backend uses an async SQLAlchemy stack against PostgreSQL (with pgvector for embeddings and full-text search) and is designed to front a pluggable NL-to-SQL agent pipeline (planned: LangGraph + AWS Bedrock + Neo4j knowledge graph).
+The backend uses an async SQLAlchemy stack against PostgreSQL (with pgvector for embeddings and full-text search).
 
 ## Tech Stack
 
@@ -19,7 +19,6 @@ The backend uses an async SQLAlchemy stack against PostgreSQL (with pgvector for
 | Resilience | Circuit breakers (pybreaker) + retries (tenacity) |
 | Logging | Loguru (structured, with request-ID and timing context) |
 | Containerization | Docker (multi-stage, non-root, Python 3.12-slim) |
-| **Planned** | LangGraph agent pipeline, AWS Bedrock (Claude Sonnet + Cohere Embed), Neo4j knowledge graph, Redis cache, Okta OIDC, Langfuse observability |
 
 ## Project Structure
 
@@ -113,7 +112,7 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 }
 ```
 
-> **Development note:** Credentials are currently hardcoded in `app/services/auth.py`. This is intentionally dev-only — do not deploy with the default credentials in production.
+> **Development note:** Credentials are currently hardcoded in `app/services/auth.py`. This is intentionally dev-only - do not deploy with the default credentials in production.
 
 ### Chat (`/api/v1/chat`)
 
@@ -128,6 +127,10 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 | PATCH | `/{thread_id}/star` | Toggle thread star |
 | PATCH | `/{thread_id}/rename` | Rename thread |
 | PATCH | `/{thread_id}/move` | Move thread to a project |
+| POST | `/{thread_id}/ask` | Ask a question (SSE streaming) |
+| POST | `/{thread_id}/retry` | Retry last response (SSE streaming) |
+| POST | `/{thread_id}/edit` | Edit last question (SSE streaming) |
+| POST | `/{thread_id}/stop` | Stop active stream |
 | POST | `/{thread_id}/conversations/{conversation_id}/feedback` | Submit thumbs-up/down + comment |
 
 ### Projects (`/api/v1/projects`)
@@ -161,7 +164,7 @@ All tables live in the app PostgreSQL database.
 | **QuestProject** | `quest_project` | Named collection of threads. Fields: `id`, `user_id`, `name`, `description`, `starred`, timestamps. |
 | **QuestThread** | `quest_thread` | Conversation thread (= LangGraph `thread_id`). Fields: `id`, `user_id`, `project_id`, `title`, `starred`, `search_vector` (tsvector GIN). |
 | **QuestMessage** | `quest_message` | Individual user or assistant message. Fields: `id`, `thread_id`, `conversation_id`, `parent_conversation_id`, `role`, `content`, `reasoning`, `metadata` (JSONB: `sql`, `chart_spec`, `intent`, `columns`, `rows`, `follow_ups`, etc.), `search_vector`. |
-| **QuestFeedback** | `quest_feedback` | Thumbs-up/down + optional comment. Fields: `id`, `message_id`, `thread_id`, `liked`, `comment`, `embedding` (Vector 1536 — pgvector). |
+| **QuestFeedback** | `quest_feedback` | Thumbs-up/down + optional comment. Fields: `id`, `message_id`, `thread_id`, `liked`, `comment`, `embedding` (Vector 1536 - pgvector). |
 | **QuestExecutionLog** | `quest_execution_log` | Per-run telemetry. Fields: `question`, `question_type`, `schema_fqn`, `sql`, `row_count`, `retry_count`, `valid`, `exec_error`, `duration_ms`, `pattern_matched`, implicit/explicit feedback flags, user context. |
 
 ## Middleware
@@ -175,9 +178,9 @@ All tables live in the app PostgreSQL database.
 
 ## Resilience
 
-- **Circuit breakers** (pybreaker) on Postgres health — prevents cascading failures when the DB is unavailable.
+- **Circuit breakers** (pybreaker) on Postgres health - prevents cascading failures when the DB is unavailable.
 - **Tenacity retries** available for transient external service errors.
-- **Graceful pool warmup** — 3 connections pre-opened at startup; engine disposed cleanly on shutdown.
+- **Graceful pool warmup** - 3 connections pre-opened at startup; engine disposed cleanly on shutdown.
 - **Pool pre-ping** disabled (aggressive recycle via `DB_POOL_RECYCLE` instead) to avoid checkout latency.
 
 ## Getting Started
@@ -201,7 +204,7 @@ pip install -r requirements.txt
 
 # 3. Configure environment
 cp .env.example .env
-# Edit .env — at minimum set POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_DB, JWT_SECRET
+# Edit .env - at minimum set POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_DB, JWT_SECRET
 
 # 4. Run database migrations
 alembic upgrade head
@@ -230,7 +233,16 @@ gunicorn app.main:app \
   --bind 0.0.0.0:8000 \
   --worker-class uvicorn.workers.UvicornWorker \
   --workers 2 \
-  --timeout 180
+  --threads 2 \
+  --timeout 480 \
+  --graceful-timeout 30 \
+  --keep-alive 5 \
+  --max-requests 1000 \
+  --max-requests-jitter 50 \
+  --forwarded-allow-ips "*" \
+  --access-logfile - \
+  --error-logfile - \
+  --log-level info
 ```
 
 ## Environment Variables
@@ -245,8 +257,7 @@ Copy `.env.example` to `.env` and fill in the required values.
 | `POSTGRES_PASSWORD` | App database password |
 | `POSTGRES_HOST` | App database host |
 | `POSTGRES_DB` | App database name |
-| `JWT_SECRET` | Secret key for signing JWT tokens — **change in production** |
-| `CORS_ORIGINS` | JSON array or comma-separated list of allowed frontend origins (e.g. `["http://localhost:3000"]`) |
+| `JWT_SECRET` | Secret key for signing JWT tokens - **change in production** |
 
 ### Optional / defaults
 
@@ -255,6 +266,7 @@ Copy `.env.example` to `.env` and fill in the required values.
 | `ENVIRONMENT` | `development` | `development` or `production` |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `DEBUG` | `false` | FastAPI debug mode |
+| `CORS_ORIGINS` | `[]` | JSON array or comma-separated list of allowed frontend origins (e.g. `["http://localhost:3000"]`) |
 | `POSTGRES_PORT` | `5432` | App database port |
 | `DATABASE_SSL_MODE` | `disable` | `disable` / `require` / `verify-ca` / `verify-full` |
 | `DATABASE_SSL_ROOT_CERT` | `""` | Path to SSL root certificate |

@@ -20,7 +20,7 @@ COPY . .
 
 # NEXT_PUBLIC_* values come from frontend/.env and frontend/.env.production,
 # which Next.js auto-loads during `npm run build` with NODE_ENV=production.
-# Don't set NEXT_PUBLIC_* here — Dockerfile ENV beats the .env files in
+# Don't set NEXT_PUBLIC_* here - Dockerfile ENV beats the .env files in
 # Next.js's precedence and silently overrides the intended prod values.
 ENV NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production
@@ -30,8 +30,8 @@ RUN npm run build
 # ── Stage 3: Production Runner ─────────────────────────────────
 FROM node:20-alpine AS runner
 
-LABEL org.opencontainers.image.title="Quest Frontend" \
-      org.opencontainers.image.description="Quest AI-powered data analytics frontend"
+LABEL org.opencontainers.image.title="MTI Brain Frontend" \
+      org.opencontainers.image.description="MTI Brain – AI-powered decision intelligence"
 
 WORKDIR /app
 
@@ -52,7 +52,7 @@ RUN addgroup --system --gid 1001 nodejs && \
 # Pre-create .next cache dir with correct ownership
 RUN mkdir -p /app/.next/cache && chown -R nextjs:nodejs /app/.next
 
-# Copy only what's needed — minimal attack surface
+# Copy only what's needed - minimal attack surface
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static

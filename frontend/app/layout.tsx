@@ -38,7 +38,7 @@ export default function RootLayout({
     );
     console.log(
       "%c🧠 Hey, a curious one! Just like Milestone Technologies engineers every\\n" +
-      "   solution to spec — this app was built just for you.\\n" +
+      "   solution to spec - this app was built just for you.\\n" +
       "   No two problems are exactly alike.\\n\\n" +
       "   Fun fact: Milestone Technologies has been powering smarter IT since 1997.\\n" +
       "   This easter egg has been here since... you found it. Welcome aboard.\\n\\n" +

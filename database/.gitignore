@@ -5,5 +5,3 @@
 
 # Persistent data
 docker_volume/
-
-quest.sql

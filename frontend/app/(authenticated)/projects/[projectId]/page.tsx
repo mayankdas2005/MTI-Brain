@@ -17,6 +17,11 @@ import {
   FolderMinus,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { EditProjectDialog } from '@/components/edit-project-dialog';
 import { RenameDialog } from '@/components/rename-dialog';
 import { MoveToProjectDialog } from '@/components/move-to-project-dialog';
@@ -62,7 +67,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeThreadTitle, setActiveThreadTitle] = useState('');
 
+  const [threadsFetched, setThreadsFetched] = useState(false);
+
   useEffect(() => {
+    setThreadsFetched(false);
     // Seed currentProject from the cached projects list so the page header
     // (name, description) renders instantly while we fetch the full detail
     // (which includes threads). Without this, every navigation showed a
@@ -83,9 +91,17 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         },
       });
     }
-    fetchProject(projectId).catch(() => {
-      router.replace('/projects');
-    });
+    fetchProject(projectId)
+      .then(() => setThreadsFetched(true))
+      .catch(() => {
+        router.replace('/projects');
+      });
+
+    return () => {
+      // Clear stale currentProject when leaving this page so other project
+      // pages don't briefly flash this project's data.
+      useProjectStore.setState({ currentProject: null });
+    };
   }, [projectId, fetchProject, router]);
 
   const handleDelete = async () => {
@@ -147,39 +163,51 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
             <h1 className="text-2xl font-semibold text-foreground truncate">
               {currentProject.name}
             </h1>
-            <button
-              onClick={() => starProject(projectId)}
-              className="shrink-0 p-1 rounded hover:bg-muted transition-colors"
-              title={currentProject.starred ? 'Unstar' : 'Star'}
-            >
-              <Star
-                className={`w-5 h-5 ${
-                  currentProject.starred
-                    ? 'fill-yellow-400 text-yellow-400'
-                    : 'text-muted-foreground'
-                }`}
-              />
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => starProject(projectId)}
+                  className="shrink-0 p-1 rounded hover:bg-muted transition-colors"
+                >
+                  <Star
+                    className={`w-5 h-5 ${
+                      currentProject.starred
+                        ? 'fill-[var(--color-star)] text-[var(--color-star)]'
+                        : 'text-muted-foreground'
+                    }`}
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">{currentProject.starred ? 'Unstar' : 'Star'}</TooltipContent>
+            </Tooltip>
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setEditOpen(true)}
-              title="Edit project"
-            >
-              <Pencil className="w-4 h-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setDeleteOpen(true)}
-              className="text-destructive hover:text-destructive"
-              title="Delete project"
-            >
-              <Trash2 className="w-4 h-4" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setEditOpen(true)}
+                >
+                  <Pencil className="w-4 h-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Edit project</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDeleteOpen(true)}
+                  className="text-destructive hover:text-destructive"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Delete project</TooltipContent>
+            </Tooltip>
           </div>
         </div>
 
@@ -207,7 +235,21 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         </div>
 
         {/* Thread List */}
-        {currentProject.threads.length === 0 ? (
+        {!threadsFetched ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="rounded-xl border border-border bg-background p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Skeleton className="h-4 w-4 rounded" />
+                    <Skeleton className="h-4 w-48" />
+                  </div>
+                  <Skeleton className="h-3 w-32" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : currentProject.threads.length === 0 ? (
           <div className="text-center py-16 border border-dashed border-border rounded-xl">
             <MessageSquare className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
             <h3 className="text-sm font-medium text-foreground mb-1">No conversations yet</h3>
@@ -257,12 +299,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuContent side="bottom" align="end" className="w-48">
                     <DropdownMenuItem
                       onClick={() => starThread(thread.id)}
                       className="gap-2"
                     >
-                      <Star className={`w-3.5 h-3.5 ${thread.starred ? 'fill-yellow-500 text-yellow-500' : ''}`} />
+                      <Star className={`w-3.5 h-3.5 ${thread.starred ? 'fill-[var(--color-star)] text-[var(--color-star)]' : ''}`} />
                       {thread.starred ? 'Unstar' : 'Star'}
                     </DropdownMenuItem>
                     <DropdownMenuItem

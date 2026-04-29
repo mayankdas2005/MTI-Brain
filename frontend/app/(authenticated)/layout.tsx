@@ -37,7 +37,7 @@ export default function AuthenticatedLayout({
     return () => window.removeEventListener('quest:unauthenticated', onUnauth);
   }, [router]);
 
-  // Redirect unauthenticated users — runs client-side only
+  // Redirect unauthenticated users - runs client-side only
   useEffect(() => {
     if (!isAuthenticated()) {
       router.replace('/');
@@ -96,7 +96,7 @@ export default function AuthenticatedLayout({
     const MTI_FACTS = [
       '🚀 Milestone Technologies has been powering smarter IT since 1997',
       '🌍 Milestone operates in 36 countries across 6 continents',
-      '🏢 Headquartered in Fremont, California — the heart of Silicon Valley',
+      '🏢 Headquartered in Fremont, California - the heart of Silicon Valley',
       '👥 3500+ employees delivering IT services and digital solutions at scale',
       '🏆 Great Place to Work certified in the USA, India, Ireland, the Philippines, the UK and Mexico',
       '🤖 Milestone specializes in AI/Automation, Cloud Infrastructure, and Application Services',

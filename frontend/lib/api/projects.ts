@@ -1,5 +1,5 @@
 /**
- * Project API functions — typed wrappers for /api/v1/projects endpoints.
+ * Project API functions - typed wrappers for /api/v1/projects endpoints.
  */
 
 import { apiFetch } from './client';

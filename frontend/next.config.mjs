@@ -6,10 +6,10 @@ import os from "node:os";
 // `next dev` is reached from a different host (VM ↔ laptop).
 //
 // Strategy:
-//   1. Auto-detect every non-internal IPv4 on the host — covers both the
+//   1. Auto-detect every non-internal IPv4 on the host - covers both the
 //      "dev runs on the VM, opened from a laptop" and "dev runs on a
 //      laptop, opened from the LAN" cases without any config.
-//   2. Merge in any comma-separated origins from `NEXT_DEV_ORIGINS` —
+//   2. Merge in any comma-separated origins from `NEXT_DEV_ORIGINS` -
 //      escape hatch for Docker dev, SSH tunnels, or DNS aliases that
 //      auto-detect can't see.
 //

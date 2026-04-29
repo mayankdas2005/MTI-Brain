@@ -14,7 +14,7 @@ class QuestUser(Base):
 
     Attributes:
         id: Internal primary key UUID.
-        okta_id: Okta subject identifier (``sub`` claim) — unique.
+        okta_id: Okta subject identifier (``sub`` claim) - unique.
         email: User's primary email from Okta profile.
         name: Display name from Okta profile.
         groups: Okta group names the user belongs to (JSON array).

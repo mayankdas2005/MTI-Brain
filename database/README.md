@@ -8,13 +8,17 @@ Docker Compose stack providing the data layer for MTI Brain.
 |---|---|---|---|
 | **PostgreSQL** | `pgvector/pgvector:0.8.1-pg18` | None (internal only) | Primary relational store with pgvector extension for vector similarity search |
 | **PgBouncer** | `edoburu/pgbouncer:v1.25.1-p0` | `5432` | Connection pooler in front of PostgreSQL (transaction pooling mode). Depends on PostgreSQL being healthy. |
-| **Neo4j** | `neo4j:5.26.0-enterprise` | `7474` (HTTP/Browser), `7687` (Bolt) | Graph database with APOC and Graph Data Science plugins. |
 
-All services are connected via a private `db_net` bridge network.
+Both services communicate via a private `db_net` bridge network.
 
 ## Prerequisites
 
 - Docker and Docker Compose
+- The external `db_net` bridge network must exist before starting the stack:
+
+  ```bash
+  docker network create db_net
+  ```
 
 ## Getting Started
 
@@ -24,32 +28,34 @@ All services are connected via a private `db_net` bridge network.
    cp .env.example .env
    ```
 
-2. **Edit `.env`** and set real values for at minimum:
+2. **Edit `.env`** and set real values for:
 
    - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
-   - `NEO4J_USER`, `NEO4J_PASSWORD`
 
-3. **Start the stack:**
+3. **Populate PgBouncer config files** (required before first start):
+
+   - `./docker_volume/pgbouncer/pgbouncer.ini`
+   - `./docker_volume/pgbouncer/userlist.txt`
+
+4. **Start the stack:**
 
    ```bash
    docker compose up -d
    ```
 
-4. **Verify health:**
+5. **Verify health:**
 
    ```bash
    docker compose ps
    ```
 
-   All three services should show a `healthy` status once fully started.
+   Both services should show a `healthy` status once fully started.
 
 ## Connecting
 
 | Database | Connection String |
 |---|---|
 | PostgreSQL (via PgBouncer) | `postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@localhost:5432/<POSTGRES_DB>` |
-| Neo4j (Bolt) | `bolt://localhost:7687` (auth: `<NEO4J_USER>/<NEO4J_PASSWORD>`) |
-| Neo4j Browser | `http://localhost:7474` |
 
 ## Configuration
 
@@ -104,30 +110,6 @@ Configured via environment variables in `.env`:
 | `PGBOUNCER_LOG_STATS` | `1` | Log periodic stats |
 | `PGBOUNCER_STATS_PERIOD` | `60` | Stats logging interval (seconds) |
 
-### Neo4j
-
-**Memory** (tuned for 8 GB VM):
-- Heap: 512 MB initial and max (`heap_initial_size`, `heap_max_size`)
-- Page cache: 512 MB (`pagecache_size`)
-- Estimated total: ~1.4 GB (heap + pagecache + JVM overhead)
-
-**Transactions:**
-- Max concurrent transactions: 8
-- Transaction memory total max: 256 MB
-- Transaction timeout: 5 minutes
-
-**Plugins & Procedures:**
-- APOC plugin enabled (`apoc.*` unrestricted)
-- Graph Data Science plugin enabled (`gds*` unrestricted)
-- APOC file import/export disabled for security
-
-**JVM:**
-- G1GC with `MaxGCPauseMillis=200`
-- `+ExitOnOutOfMemoryError` for clean crash recovery
-
-**OS Tuning:**
-- `ulimits.nofile`: 40000 (soft and hard)
-
 ## Environment Variables
 
 All variables are defined in `.env` (copy from `.env.example`):
@@ -152,11 +134,6 @@ PGBOUNCER_LOG_CONNECTIONS=1
 PGBOUNCER_LOG_DISCONNECTIONS=1
 PGBOUNCER_LOG_STATS=1
 PGBOUNCER_STATS_PERIOD=60
-
-# ─── Neo4j ───
-NEO4J_URI=bolt://neo4j:7687
-NEO4J_USER=your_neo4j_user
-NEO4J_PASSWORD=your_neo4j_password
 ```
 
 ## Data Volumes
@@ -165,12 +142,10 @@ Persistent data is stored in `./docker_volume/`:
 
 ```
 docker_volume/
-  postgres/data/   # PostgreSQL data directory (PGDATA)
-  postgres/logs/   # PostgreSQL logs
-  neo4j/data/      # Neo4j data
-  neo4j/logs/      # Neo4j logs
-  neo4j/import/    # Neo4j import directory
-  neo4j/plugins/   # Neo4j plugins
+  postgres/data/          # PostgreSQL data directory (PGDATA)
+  postgres/logs/          # PostgreSQL logs
+  pgbouncer/pgbouncer.ini # PgBouncer config file (must exist before first start)
+  pgbouncer/userlist.txt  # PgBouncer auth file (must exist before first start)
 ```
 
 This directory is git-ignored.
@@ -181,7 +156,6 @@ This directory is git-ignored.
 |---|---|---|---|---|
 | PostgreSQL | 1.5 GB | 512 MB | 2.0 | 0.5 |
 | PgBouncer | 128 MB | 32 MB | 0.5 | 0.1 |
-| Neo4j | 2 GB | 768 MB | 2.0 | 1.0 |
 
 ## Health Checks
 
@@ -189,7 +163,6 @@ This directory is git-ignored.
 |---|---|---|---|---|---|
 | PostgreSQL | `pg_isready` | 10s | 5s | 5 | 30s |
 | PgBouncer | `pg_isready` | 10s | 5s | 5 | 10s |
-| Neo4j | HTTP `wget` to `:7474` | 30s | 10s | 5 | 60s |
 
 ## Stopping
 

@@ -34,7 +34,7 @@ export default function ChatPage({ params }: ChatPageProps) {
 
   // Authoritative source for rendering. If this page is showing the
   // currently-streaming thread, render from the dedicated streamingMessages
-  // slot — it's immune to setCurrentThread clearing it during navigation,
+  // slot - it's immune to setCurrentThread clearing it during navigation,
   // so returning to the thread keeps the live stream visible.
   const useStreamingSlot =
     streamingThreadId === chatId && streamingMessages.length > 0;
@@ -52,7 +52,7 @@ export default function ChatPage({ params }: ChatPageProps) {
     // streamingMessages even if currentMessages was cleared).
     // Detect streaming → not-streaming transition for THIS thread.
     // When a stream just finished, onDone already populated currentMessages
-    // with the complete data — skip the background-refresh to avoid a race
+    // with the complete data - skip the background-refresh to avoid a race
     // with the backend's async message save.
     const justEnded = streamJustEndedRef.current;
     streamJustEndedRef.current = false;
@@ -145,8 +145,12 @@ export default function ChatPage({ params }: ChatPageProps) {
   // - messagesLoading is true (fetch in progress), OR
   // - currentThreadId doesn't match (first render before useEffect)
   // Skip when there's a pendingQuestion or an active stream for this
-  // thread — streaming populates messages directly via the streaming slot.
-  const needsLoad = currentThreadId !== chatId && !useStreamingSlot;
+  // thread - streaming populates messages directly via the streaming slot.
+  // Also check threadMessageMap directly - if we have cached data for this
+  // chatId, don't flash a skeleton even if currentMessages hasn't been
+  // populated yet (setCurrentThread in the effect will pick it up).
+  const hasCachedData = useThreadStore((s) => (s.threadMessageMap[chatId]?.length ?? 0) > 0);
+  const needsLoad = currentThreadId !== chatId && !useStreamingSlot && !hasCachedData;
   if ((messagesLoading || needsLoad) && !hasMessages && !pendingQuestion) {
     return (
       <div className="flex flex-col h-full bg-background">

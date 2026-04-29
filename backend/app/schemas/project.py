@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class _StrictRequest(BaseModel):
-    """Base for all request models — rejects unknown fields, strips strings."""
+    """Base for all request models - rejects unknown fields, strips strings."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 

@@ -220,7 +220,7 @@ export function MessageList({ messages, threadId }: MessageListProps) {
 
         // Truncate downstream turns when:
         // 1. A multi-version turn shows a non-latest version (user navigated back), OR
-        // 2. A turn has a streaming version (retry/edit in progress — old downstream is stale)
+        // 2. A turn has a streaming version (retry/edit in progress - old downstream is stale)
         if (!truncated && turn.versions.length > 1) {
           const isStreamingVersion = turn.versions.some((v) =>
             turn.allMessages.get(v)?.some((m) => m.isStreaming),

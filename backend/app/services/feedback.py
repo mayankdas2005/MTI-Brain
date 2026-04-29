@@ -1,4 +1,4 @@
-"""Feedback service — DB persistence for user feedback (no embedding)."""
+"""Feedback service - DB persistence for user feedback (no embedding)."""
 
 import uuid
 

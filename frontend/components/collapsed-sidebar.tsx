@@ -90,12 +90,12 @@ export function CollapsedSidebar() {
     <div className="flex flex-col items-center h-full w-12 bg-sidebar border-sidebar-border">
       {/*
         Row heights mirror the expanded sidebar so icons stay aligned:
-        - Header  : h-12  (48px) — "Q Quest" + toggle
+        - Header  : h-12  (48px) - "Q Quest" + toggle
         - New Chat: pt-3 (12) + h-9 button (36) + pb-2 (8) = 56px
         - Search  : h-8 input (32) + pb-2 (8) = 40px
       */}
 
-      {/* Header — matches expanded sidebar h-12 */}
+      {/* Header - matches expanded sidebar h-12 */}
       <div
         className="h-12 flex items-center justify-center w-full shrink-0 border-b border-sidebar-border"
         style={{ backgroundColor: 'var(--header)' }}
@@ -131,7 +131,7 @@ export function CollapsedSidebar() {
         </IconButton>
       </div>
 
-      {/* Projects + Chats (inside scroll area in expanded — just flow here) */}
+      {/* Projects + Chats (inside scroll area in expanded - just flow here) */}
       <div className="flex flex-col items-center w-full shrink-0">
         <div className="h-9 flex items-center justify-center w-full">
           <IconButton tooltip="Projects" onClick={() => router.push('/projects')}>

@@ -3,6 +3,11 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   Table, TableHeader, TableBody, TableHead, TableRow, TableCell,
 } from '@/components/ui/table';
 import {
@@ -147,7 +152,7 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
   };
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden max-h-96 flex flex-col">
+    <div className="rounded-xl border border-border overflow-hidden max-h-96 flex flex-col">
       <div className="flex-1 overflow-auto [&_[data-slot=table-container]]:overflow-visible">
         <Table>
           <TableHeader className="sticky top-0 z-10">
@@ -155,7 +160,7 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
               {columns.map((col, ci) => (
                 <TableHead
                   key={col}
-                  className="text-xs whitespace-nowrap py-2 cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background"
+                  className="text-xs whitespace-nowrap py-3 cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background"
                   onClick={() => handleSort(ci)}
                 >
                   <div className="font-semibold text-foreground flex items-center gap-1">
@@ -209,7 +214,7 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
       </div>
 
       {/* Footer: row count + pagination + download */}
-      <div className="flex items-center justify-between px-3 py-2 border-t border-border bg-muted/30 text-xs text-muted-foreground">
+      <div className="flex items-center justify-between px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
         <span>
           {totalRows > rows.length
             ? `Showing ${rows.length} of ${totalRows.toLocaleString()} rows`
@@ -218,15 +223,19 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
               : `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'}`}
         </span>
         <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 p-0"
-            onClick={handleDownloadCSV}
-            title="Download CSV"
-          >
-            <Download className="w-3.5 h-3.5" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={handleDownloadCSV}
+              >
+                <Download className="w-3.5 h-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="left">Download CSV</TooltipContent>
+          </Tooltip>
           {totalPages > 1 && (
             <>
               <Button
