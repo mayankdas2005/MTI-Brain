@@ -83,6 +83,18 @@ const TAGLINES_MORNING: string[] = [
   'A new day. A sharper lens on your data',
   'Morning clarity, powered by data',
   'First light. First insights',
+  'Before the day runs away from you',
+  'The early ask gets the early answer',
+  'Set the tone before the noise starts',
+  'Your numbers don\u2019t sleep. Neither should your decisions',
+  'Get ahead of today\u2019s first surprises',
+  'What if your forecast is already wrong?',
+  'What moved while you were away?',
+  'Where does the money actually go?',
+  'What would change if you had perfect visibility?',
+  'What\u2019s worth knowing before anything else?',
+  'What would you want to know before your first meeting?',
+  'What\u2019s the first thing you\u2019d ask if you could ask anything?',
 ];
 
 const TAGLINES_AFTERNOON: string[] = [
@@ -92,8 +104,19 @@ const TAGLINES_AFTERNOON: string[] = [
   'Making this afternoon count',
   'Half the day down. Keep the momentum',
   'Decisions don\u2019t wait. Neither should you',
-  'Your afternoon edge, powered by data',
   'Clear thinking for the second half',
+  'The afternoon is when decisions get made',
+  'Stay sharp through the second half',
+  'Your competitive edge is a question away',
+  'Cut through the afternoon noise',
+  'The data is up to date. Are your decisions?',
+  'What does the data know that you don\u2019t yet?',
+  'Where is risk hiding in plain sight?',
+  'What\u2019s drifting from the plan?',
+  'What\u2019s the real story behind the numbers?',
+  'What would your CFO want to see right now?',
+  'What\u2019s the one thing that could change your afternoon?',
+  'What would you regret not checking today?',
 ];
 
 const TAGLINES_EVENING: string[] = [
@@ -105,6 +128,18 @@ const TAGLINES_EVENING: string[] = [
   'Evening review. No surprises tomorrow',
   'The day\u2019s almost done. Finish strong',
   'Tying up loose ends',
+  'Leave nothing unexamined',
+  'The best close-of-day is an informed one',
+  'Tomorrow starts with what you know tonight',
+  'Finish the day on your terms',
+  'One question can change tomorrow\u2019s outcome',
+  'What do you wish you\u2019d caught earlier?',
+  'What is carrying over that shouldn\u2019t be?',
+  'What would tomorrow look like without the guesswork?',
+  'What\u2019s still unresolved?',
+  'What does closing the day actually look like?',
+  'What\u2019s the one thing worth double-checking before you leave?',
+  'What would a fresh set of eyes see in today\u2019s numbers?',
 ];
 
 const TAGLINES_NIGHT: string[] = [
@@ -116,6 +151,16 @@ const TAGLINES_NIGHT: string[] = [
   'No rush. Take your time with this one',
   'The best insights come after midnight',
   'Working late never looked this smart',
+  'The stillness is yours. Use it',
+  'Some questions deserve the quiet',
+  'Late nights, clear answers',
+  'While others rest, you\u2019re building the edge',
+  'What can\u2019t wait until morning?',
+  'What would you want waiting for you at sunrise?',
+  'What\u2019s worth losing sleep over?',
+  'What if you had the answer before anyone else did?',
+  'What would tomorrow look like if you answered this tonight?',
+  'What\u2019s the question you keep putting off?',
 ];
 
 const TAGLINES_ANYTIME: string[] = [
@@ -135,45 +180,65 @@ const TAGLINES_ANYTIME: string[] = [
   'Intelligence on demand',
   'The signal in your data, surfaced',
   'Precision answers. Zero fluff',
+  'Trusted intelligence. Every time',
+  'The advisor that never clocks out',
+  'Enterprise data. Human decisions',
+  'From signals to strategy',
+  'What does your treasury actually know?',
+  'What if the forecast is the problem?',
+  'What would perfect liquidity feel like?',
+  'What\u2019s the cost of not knowing?',
+  'What is your data trying to tell you?',
+  'Where is the decision hiding?',
+  'What if the risk isn\u2019t where you think it is?',
+  'What would change if you could see everything at once?',
+  'What\u2019s the question behind the question?',
+  'What does your exposure really look like?',
+  'What would you do with one more hour of runway?',
+  'What does good look like in your cash position?',
+  'What would your data say if it could speak?',
+  'What\u2019s the most important number you haven\u2019t looked at today?',
 ];
+
+
 
 // ─── Greetings: day + time aware with multiple options per slot ───
 
 const GREETINGS: Record<string, string[]> = {
-  'mon_early':     ['You\u2019re up before the market', 'Early bird, Monday edition'],
-  'mon_morning':   ['Let\u2019s start the week strong', 'Monday morning. Let\u2019s go', 'New week, new insights'],
-  'mon_afternoon': ['Monday\u2019s moving fast', 'Good afternoon', 'Halfway through Monday'],
-  'mon_evening':   ['Still going strong on Monday', 'Burning the Monday oil'],
-  'mon_night':     ['Monday night deep dive', 'Working late on Monday'],
+  'mon_early':     ['You\u2019re up before the market', 'Early bird, Monday edition', 'The week starts early for you', 'Monday hasn\u2019t woken up yet', 'First one in, as usual'],
+  'mon_morning':   ['Let\u2019s start the week strong', 'Monday morning. Let\u2019s go', 'New week, new insights', 'Monday\u2019s yours to shape', 'Fresh week. Fresh lens'],
+  'mon_afternoon': ['Monday\u2019s moving fast', 'Good afternoon', 'Halfway through Monday', 'The week is already in motion', 'Monday afternoon, still going strong'],
+  'mon_evening':   ['Still going strong on Monday', 'Burning the Monday oil', 'You made it through Monday', 'One day down, four to go', 'Monday\u2019s behind you'],
+  'mon_night':     ['Monday night deep dive', 'Working late on Monday', 'The week starts now', 'You don\u2019t stop on Mondays', 'Late Monday, early edge'],
 
-  'tue_early':     ['You\u2019re up early', 'Early start to Tuesday'],
-  'tue_morning':   ['Good morning', 'Tuesday\u2019s off to a good start', 'Morning check-in'],
-  'tue_afternoon': ['Good afternoon', 'Tuesday afternoon'],
-  'tue_evening':   ['Good evening', 'Wrapping up Tuesday'],
-  'tue_night':     ['Working late', 'Burning the midnight oil'],
+  'tue_early':     ['You\u2019re up early', 'Early start to Tuesday', 'Tuesday\u2019s just beginning', 'Two days in, already ahead', 'Up before the market again'],
+  'tue_morning':   ['Good morning', 'Tuesday\u2019s off to a good start', 'Morning check-in', 'Tuesday momentum building', 'Another day, sharper focus'],
+  'tue_afternoon': ['Good afternoon', 'Tuesday afternoon', 'Tuesday\u2019s in full swing', 'Midweek energy kicking in', 'Still pushing on Tuesday'],
+  'tue_evening':   ['Good evening', 'Wrapping up Tuesday', 'Tuesday done well', 'Another solid day behind you', 'Tuesday\u2019s almost yours'],
+  'tue_night':     ['Working late', 'Burning the midnight oil', 'Tuesday night focus', 'The quiet hours are yours', 'Late night, clear head'],
 
-  'wed_early':     ['Midweek, early start', 'You\u2019re up before the sun'],
-  'wed_morning':   ['Good morning', 'Halfway through the week', 'Happy hump day'],
-  'wed_afternoon': ['Good afternoon', 'Midweek momentum'],
-  'wed_evening':   ['Good evening', 'Wednesday evening'],
-  'wed_night':     ['Midweek midnight oil', 'Working late'],
+  'wed_early':     ['Midweek, early start', 'You\u2019re up before the sun', 'Hump day hasn\u2019t started yet', 'Midweek, early mover', 'Wednesday before the world wakes'],
+  'wed_morning':   ['Good morning', 'Halfway through the week', 'Happy hump day', 'Wednesday. The pivot point', 'Midweek and moving'],
+  'wed_afternoon': ['Good afternoon', 'Midweek momentum', 'Wednesday afternoon', 'Over the hump and going', 'Midweek clarity setting in'],
+  'wed_evening':   ['Good evening', 'Wednesday evening', 'Halfway home', 'Midweek wind-down', 'Two more days to make it count'],
+  'wed_night':     ['Midweek midnight oil', 'Working late', 'Wednesday night deep work', 'Quiet midweek hours', 'The middle of the week, the middle of the night'],
 
-  'thu_early':     ['Almost Friday. Almost', 'You\u2019re up early'],
-  'thu_morning':   ['Good morning', 'Thursday morning', 'One more day after this'],
-  'thu_afternoon': ['Good afternoon', 'Thursday\u2019s flying by'],
-  'thu_evening':   ['Good evening', 'Thursday evening wind-down'],
-  'thu_night':     ['Working late on Thursday', 'Late night'],
+  'thu_early':     ['Almost Friday. Almost', 'You\u2019re up early', 'Thursday before the sun', 'One day from Friday', 'Close enough to almost taste it'],
+  'thu_morning':   ['Good morning', 'Thursday morning', 'One more day after this', 'Thursday. The final push', 'Almost at the finish line'],
+  'thu_afternoon': ['Good afternoon', 'Thursday\u2019s flying by', 'Weekend almost in sight', 'Thursday afternoon focus', 'One day left to make it count'],
+  'thu_evening':   ['Good evening', 'Thursday evening wind-down', 'Almost there', 'Friday is just hours away', 'Thursday done. One more to go'],
+  'thu_night':     ['Working late on Thursday', 'Late night', 'Thursday night. Last push of the week', 'Almost Friday', 'Finishing strong before the weekend'],
 
-  'fri_early':     ['Friday already', 'Up early on a Friday'],
-  'fri_morning':   ['Happy Friday', 'TGIF morning', 'Friday. Let\u2019s finish strong'],
-  'fri_afternoon': ['Happy Friday afternoon', 'Weekend\u2019s almost here'],
-  'fri_evening':   ['Still at it on Friday', 'Friday evening'],
-  'fri_night':     ['Friday night and still working', 'Weekend can wait'],
+  'fri_early':     ['Friday already', 'Up early on a Friday', 'Friday before the world wakes up', 'The last early morning of the week', 'Friday. Earned'],
+  'fri_morning':   ['Happy Friday', 'TGIF morning', 'Friday. Let\u2019s finish strong', 'Last day. Make it count', 'Friday energy. Full send'],
+  'fri_afternoon': ['Happy Friday afternoon', 'Weekend\u2019s almost here', 'Friday afternoon clarity', 'Almost at the finish line', 'Close the week strong'],
+  'fri_evening':   ['Still at it on Friday', 'Friday evening', 'Dedicated. Even on Fridays', 'The weekend can wait a little longer', 'Wrapping up the week right'],
+  'fri_night':     ['Friday night and still working', 'Weekend can wait', 'Friday night deep work', 'The committed ones don\u2019t stop on Fridays', 'The week ends when you say it does'],
 
-  'weekend_morning':   ['Weekend morning', 'Taking the weekend shift'],
-  'weekend_afternoon': ['Weekend warrior mode', 'Working the weekend'],
-  'weekend_evening':   ['Weekend evening', 'Quiet weekend session'],
-  'weekend_night':     ['Weekend late night', 'Burning weekend midnight oil'],
+  'weekend_morning':   ['Weekend morning', 'Taking the weekend shift', 'Even weekends need clarity', 'The weekend doesn\u2019t stop the work', 'Early bird, weekend edition'],
+  'weekend_afternoon': ['Weekend warrior mode', 'Working the weekend', 'Weekend dedication', 'The work doesn\u2019t take weekends off', 'Weekend momentum'],
+  'weekend_evening':   ['Weekend evening', 'Quiet weekend session', 'Weekend wind-down', 'Sunday clarity', 'Weekend reflection time'],
+  'weekend_night':     ['Weekend late night', 'Burning weekend midnight oil', 'Weekend dedication runs deep', 'No days off for the focused', 'Weekend nights build weekday edges'],
 };
 
 const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
@@ -234,6 +299,7 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
   const [greeting, setGreeting] = useState('');
   const [tagline, setTagline] = useState('');
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     const user = getStoredUser();
@@ -241,6 +307,7 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
     setGreeting(getGreeting());
     setTagline(pickTagline());
     setSuggestions(pickSuggestions());
+    setMounted(true);
   }, []);
 
   const handleSuggestion = (prompt: string) => {
@@ -257,14 +324,23 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
       <div className="w-full max-w-2xl space-y-8">
         {/* Greeting */}
         <div className="text-center space-y-2 animate-fade-up">
-          {firstName && (
-            <p className="text-sm text-muted-foreground" suppressHydrationWarning>
-              {greeting || 'Hello'}, {firstName}
-            </p>
+          {!mounted ? (
+            <>
+              <div className="h-4 w-40 rounded-full bg-muted animate-pulse mx-auto" />
+              <div className="h-14 w-3/4 rounded-xl bg-muted animate-pulse mx-auto mt-2" />
+            </>
+          ) : (
+            <>
+              {firstName && (
+                <p className="text-sm text-muted-foreground">
+                  {greeting}, {firstName}
+                </p>
+              )}
+              <h1 className="text-5xl font-light tracking-[-0.03em] text-foreground">
+                {tagline}
+              </h1>
+            </>
           )}
-          <h1 className="text-5xl font-light tracking-[-0.03em] text-foreground" suppressHydrationWarning>
-            {tagline || 'Your treasury advisor is ready'}
-          </h1>
         </div>
 
         {/* Continue where you left off */}
@@ -290,27 +366,65 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
           </div>
         )}
 
-        {/* Suggestion chips */}
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          {suggestions.map((s, i) => {
-            const Icon = s.icon;
-            return (
-              <button
-                key={i}
-                onClick={() => handleSuggestion(s.prompt)}
-                disabled={isStreaming}
-                className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50"
-                style={{
-                  animation: `fade-up 0.4s ease-out ${(i + 1) * 80}ms both, chip-breathe 4s ${1.5 + i * 0.3}s ease-in-out infinite`,
-                }}
-              >
-                <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors" />
-                <span className="text-foreground/80 group-hover:text-foreground transition-colors">
-                  {s.label}
-                </span>
-              </button>
-            );
-          })}
+        {/* Suggestion chips — row 1: first 3, row 2: last 1 centered */}
+        <div className="flex flex-col items-center gap-2">
+          {!mounted ? (
+            <>
+              <div className="flex items-center justify-center gap-2">
+                {[88, 112, 96].map((w, i) => (
+                  <div key={i} className="h-9 rounded-full bg-muted animate-pulse" style={{ width: `${w}px`, animationDelay: `${i * 60}ms` }} />
+                ))}
+              </div>
+              <div className="flex items-center justify-center gap-2">
+                <div className="h-9 w-28 rounded-full bg-muted animate-pulse" style={{ animationDelay: '180ms' }} />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-center gap-2">
+                {suggestions.slice(0, 3).map((s, i) => {
+                  const Icon = s.icon;
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => handleSuggestion(s.prompt)}
+                      disabled={isStreaming}
+                      className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50"
+                      style={{
+                        animation: `fade-up 0.4s ease-out ${(i + 1) * 80}ms both, chip-breathe 4s ${1.5 + i * 0.3}s ease-in-out infinite`,
+                      }}
+                    >
+                      <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors" />
+                      <span className="text-foreground/80 group-hover:text-foreground transition-colors">
+                        {s.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-center gap-2">
+                {suggestions.slice(3).map((s, i) => {
+                  const Icon = s.icon;
+                  return (
+                    <button
+                      key={i + 3}
+                      onClick={() => handleSuggestion(s.prompt)}
+                      disabled={isStreaming}
+                      className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50"
+                      style={{
+                        animation: `fade-up 0.4s ease-out ${(i + 4) * 80}ms both, chip-breathe 4s ${1.5 + (i + 3) * 0.3}s ease-in-out infinite`,
+                      }}
+                    >
+                      <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors" />
+                      <span className="text-foreground/80 group-hover:text-foreground transition-colors">
+                        {s.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

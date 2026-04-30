@@ -1,13 +1,12 @@
 'use client';
 
-import { useState, useRef, useEffect, use, useMemo } from 'react';
+import { useState, useRef, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { useThreadStore } from '@/lib/store/threads';
 import { MessageList } from '@/components/message-list';
 import { ChatComposer } from '@/components/chat-composer';
-import { ArrowDown, Sparkles, X } from 'lucide-react';
+import { ArrowDown } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
-import { formatRelativeTime } from '@/lib/utils/relative-time';
 
 interface ChatPageProps {
   params: Promise<{ chatId: string }>;
@@ -142,29 +141,6 @@ export default function ChatPage({ params }: ChatPageProps) {
 
   const hasMessages = displayedMessages.length > 0;
 
-  // Thread summary - computed from message metadata, no LLM needed
-  const [summaryDismissed, setSummaryDismissed] = useState(() => {
-    try { return sessionStorage.getItem(`summary-dismissed-${chatId}`) === '1'; } catch { return false; }
-  });
-  const dismissSummary = () => {
-    try { sessionStorage.setItem(`summary-dismissed-${chatId}`, '1'); } catch { /* */ }
-    setSummaryDismissed(true);
-  };
-  const threadSummary = useMemo(() => {
-    if (isStreaming || summaryDismissed || displayedMessages.length < 4) return null;
-    const asst = displayedMessages.filter(m => m.role === 'assistant');
-    const sqlCount = asst.filter(m => m.metadata_?.sql).length;
-    if (sqlCount === 0) return null;
-    const totalRows = asst.reduce((s, m) => s + (m.metadata_?.row_count ?? 0), 0);
-    const chartCount = asst.filter(m => m.metadata_?.chart_spec).length;
-    const exchanges = displayedMessages.filter(m => m.role === 'user').length;
-    const first = displayedMessages[0]?.created_at;
-    const last = displayedMessages[displayedMessages.length - 1]?.created_at;
-    const fmt = (d: string) => new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    const timeRange = first && last && first !== last ? `${fmt(first)} → ${fmt(last)}` : null;
-    return { exchanges, sqlCount, totalRows, chartCount, timeRange };
-  }, [displayedMessages, isStreaming, summaryDismissed]);
-
   // Show loading when thread data hasn't arrived yet:
   // - messagesLoading is true (fetch in progress), OR
   // - currentThreadId doesn't match (first render before useEffect)
@@ -216,24 +192,6 @@ export default function ChatPage({ params }: ChatPageProps) {
           ) : (
             <div className="flex-1 py-6">
               <div className="max-w-3xl mx-auto">
-                {threadSummary && (
-                  <div className="mx-4 mb-4 flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/40 px-4 py-2.5 animate-fade-in">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
-                      <p className="text-xs text-muted-foreground truncate">
-                        <span className="text-foreground font-medium">{threadSummary.exchanges} question{threadSummary.exchanges !== 1 ? 's' : ''}</span>
-                        {' · '}
-                        <span className="text-foreground font-medium">{threadSummary.sqlCount} SQL {threadSummary.sqlCount !== 1 ? 'queries' : 'query'}</span>
-                        {threadSummary.totalRows > 0 && <> · <span className="text-foreground font-medium">{threadSummary.totalRows.toLocaleString()} rows</span></>}
-                        {threadSummary.chartCount > 0 && <> · <span className="text-foreground font-medium">{threadSummary.chartCount} chart{threadSummary.chartCount !== 1 ? 's' : ''}</span></>}
-                        {threadSummary.timeRange && <span className="text-muted-foreground/60"> · {threadSummary.timeRange}</span>}
-                      </p>
-                    </div>
-                    <button onClick={dismissSummary} className="shrink-0 text-muted-foreground/50 hover:text-muted-foreground transition-colors">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                )}
                 <MessageList messages={displayedMessages} threadId={chatId} />
               </div>
             </div>

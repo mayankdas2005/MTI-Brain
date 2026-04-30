@@ -1,9 +1,9 @@
 'use client';
 
-import { Message, useThreadStore } from '@/lib/store/threads';
+import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, CheckCheck } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon } from 'lucide-react';
 import hljs from 'highlight.js/lib/core';
 import sql from 'highlight.js/lib/languages/sql';
 hljs.registerLanguage('sql', sql);
@@ -276,81 +276,14 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
     >
-      {/* Streaming pipeline progress stepper - purely data-driven from backend node.start events */}
-      {message.isStreaming && message.streamingSteps && message.streamingSteps.length > 0 && (
-        <div className="flex items-center flex-wrap gap-x-0.5 gap-y-1 px-1 pb-2">
-          {message.streamingSteps.map((step, i) => (
-            <span key={step.node + i} className="flex items-center gap-1 animate-fade-in">
-              {i > 0 && <span className="text-muted-foreground/30 text-[10px] mx-0.5">→</span>}
-              {step.status === 'done' ? (
-                <span className="flex items-center gap-0.5 text-[11px] text-muted-foreground">
-                  <CheckCheck className="w-3 h-3 shrink-0" />
-                  {step.message || step.node}
-                </span>
-              ) : (
-                <span className="flex items-center gap-1 text-[11px] text-primary font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-primary inline-block animate-pulse shrink-0" />
-                  {step.message || step.node}
-                </span>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Reasoning Block - unified thinking indicator (like Claude) */}
-      {prefShowReasoning && (message.isStreaming || message.reasoning) && (
-        <Accordion type="single" collapsible defaultValue={message.isStreaming ? 'reasoning' : undefined} className="mb-2">
-          <AccordionItem
-            value="reasoning"
-            className={`rounded-lg ${
-              message.isStreaming
-                ? 'thinking-glow border border-primary/20'
-                : 'reasoning-complete'
-            }`}
-          >
-            <AccordionTrigger className="py-2 px-3 text-xs text-muted-foreground hover:text-foreground hover:no-underline">
-              {message.isStreaming ? (
-                <span className="flex items-center gap-1.5">
-                  <ThinkingWords interval={2500} />
-                  <span className="tabular-nums text-muted-foreground/60">
-                    <LiveTimer
-                      startTime={new Date(message.created_at).getTime()}
-                      anchor={message._timingAnchor}
-                    />
-                  </span>
-                </span>
-              ) : (
-                <span>
-                  Thought
-                  {message.metadata_?.duration_ms != null &&
-                    ` for ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
-                </span>
-              )}
-            </AccordionTrigger>
-            <AccordionContent>
-              {(() => {
-                const cleaned = (message.reasoning || '')
-                  .replace(/^\*\*[^*]+\*\*\s*$/gm, '')
-                  .replace(/\n---\n/g, '\n')
-                  .replace(/\n{3,}/g, '\n\n')
-                  .trim();
-                return cleaned ? (
-                  <ReasoningContent
-                    ref={reasoningRef}
-                    isStreaming={message.isStreaming}
-                    content={cleaned}
-                  />
-                ) : message.isStreaming ? (
-                  <div className="px-3 py-3 space-y-2">
-                    <div className="h-3 w-3/4 rounded-md skeleton-shimmer" />
-                    <div className="h-3 w-1/2 rounded-md skeleton-shimmer" style={{ animationDelay: '150ms' }} />
-                  </div>
-                ) : null;
-              })()}
-            </AccordionContent>
-          </AccordionItem>
-        </Accordion>
+      {/* Reasoning Block - vertical step timeline. The horizontal strip is gone:
+          all per-step state (running, done, reasoning) lives inside this panel
+          so it scales as the pipeline grows from 4 to 20+ nodes. */}
+      {prefShowReasoning && (message.isStreaming || message.reasoning || (message.streamingSteps?.length ?? 0) > 0) && (
+        <ReasoningPanel
+          message={message}
+          reasoningRef={reasoningRef}
+        />
       )}
 
       {/* SQL Query / Data Table toggle */}
@@ -564,6 +497,174 @@ const ReasoningContent = React.forwardRef<HTMLDivElement, { isStreaming?: boolea
   }
 );
 ReasoningContent.displayName = 'ReasoningContent';
+
+// ─── Reasoning panel: collapsible header + vertical step timeline ───
+
+function ReasoningPanel({
+  message,
+  reasoningRef,
+}: {
+  message: Message;
+  reasoningRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  // Auto-expand while streaming, auto-collapse when it ends, but let the user
+  // override either direction with manual clicks.
+  const [open, setOpen] = useState<boolean>(!!message.isStreaming);
+  const prevStreamingRef = useRef<boolean>(!!message.isStreaming);
+  useEffect(() => {
+    const wasStreaming = prevStreamingRef.current;
+    const nowStreaming = !!message.isStreaming;
+    if (!wasStreaming && nowStreaming) setOpen(true);
+    if (wasStreaming && !nowStreaming) setOpen(false);
+    prevStreamingRef.current = nowStreaming;
+  }, [message.isStreaming]);
+
+  const steps = message.streamingSteps;
+  const hasSteps = !!steps && steps.length > 0;
+
+  // Legacy reasoning text (pre-pipeline_steps messages) used as a fallback
+  // when the timeline can't be rendered.
+  const legacyReasoning = (message.reasoning || '')
+    .replace(/^\*\*[^*]+\*\*\s*$/gm, '')
+    .replace(/\n---\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return (
+    <Accordion
+      type="single"
+      collapsible
+      value={open ? 'reasoning' : ''}
+      onValueChange={(v) => setOpen(v === 'reasoning')}
+      className="mb-2"
+    >
+      <AccordionItem
+        value="reasoning"
+        className={`rounded-lg ${
+          message.isStreaming ? 'thinking-glow border border-primary/20' : 'reasoning-complete'
+        }`}
+      >
+        <AccordionTrigger className="py-2 px-3 text-xs text-muted-foreground hover:text-foreground hover:no-underline">
+          {message.isStreaming ? (
+            <span className="flex items-center gap-1.5">
+              <ThinkingWords interval={2500} />
+              <span className="tabular-nums text-muted-foreground/60">
+                <LiveTimer
+                  startTime={new Date(message.created_at).getTime()}
+                  anchor={message._timingAnchor}
+                />
+              </span>
+            </span>
+          ) : (
+            <span>
+              Thought
+              {message.metadata_?.duration_ms != null &&
+                ` for ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+            </span>
+          )}
+        </AccordionTrigger>
+        <AccordionContent>
+          {hasSteps ? (
+            <PipelineTimeline steps={steps!} />
+          ) : legacyReasoning ? (
+            <ReasoningContent
+              ref={reasoningRef}
+              isStreaming={message.isStreaming}
+              content={legacyReasoning}
+            />
+          ) : message.isStreaming ? (
+            <div className="px-4 py-3 space-y-2">
+              <div className="h-3 w-3/4 rounded-md skeleton-shimmer" />
+              <div className="h-3 w-1/2 rounded-md skeleton-shimmer" style={{ animationDelay: '150ms' }} />
+            </div>
+          ) : null}
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
+  );
+}
+
+// ─── Vertical step timeline ───
+
+function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
+  return (
+    <div className="px-4 pb-3 pt-1 border-t border-border/40">
+      {steps.map((step, i) => {
+        const isLast = i === steps.length - 1;
+        const isActive = step.status === 'active';
+        const isDone = step.status === 'done';
+        const isSkipped = step.status === 'skipped';
+
+        const cleanedReasoning = (step.reasoning || '')
+          .replace(/^\*\*[^*]+\*\*\s*$/gm, '')
+          .replace(/\n---\n/g, '\n')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+
+        const showDuration =
+          step.duration_ms != null && step.duration_ms >= 0
+            ? `${(step.duration_ms / 1000).toFixed(1)}s`
+            : isActive
+            ? 'live'
+            : '';
+
+        return (
+          <div key={step.node + i} className="relative pl-6 pt-2.5 first:pt-0.5">
+            {/* Connector line - drawn from the dot to the next step */}
+            {!isLast && (
+              <span className="absolute left-[7px] top-3.5 w-px bg-border" style={{ bottom: '-0.625rem' }} />
+            )}
+
+            {/* Status dot */}
+            <span
+              className={`absolute left-0 top-[0.6rem] flex items-center justify-center w-3.5 h-3.5 rounded-full transition-colors ${
+                isActive
+                  ? 'bg-primary ring-2 ring-primary/20 animate-pulse'
+                  : isDone
+                  ? 'bg-primary/25'
+                  : 'bg-muted'
+              }`}
+              aria-hidden="true"
+            >
+              {isDone && <Check className="w-2 h-2 text-primary" strokeWidth={3.5} />}
+            </span>
+
+            {/* Step label + duration */}
+            <div className="flex items-center justify-between gap-3">
+              <span
+                className={`text-xs leading-none ${
+                  isActive
+                    ? 'text-foreground font-medium'
+                    : isSkipped
+                    ? 'text-muted-foreground/50 line-through'
+                    : 'text-muted-foreground'
+                }`}
+              >
+                {step.message || step.node}
+              </span>
+              {showDuration && (
+                <span
+                  className={`text-[10px] tabular-nums shrink-0 ${
+                    isActive ? 'text-primary' : 'text-muted-foreground/50'
+                  }`}
+                >
+                  {showDuration}
+                </span>
+              )}
+            </div>
+
+            {/* Per-step reasoning (only when present) */}
+            {cleanedReasoning && (
+              <div className="mt-1.5 pr-1 text-[12px] leading-relaxed text-muted-foreground/85 italic">
+                <MarkdownRenderer content={cleanedReasoning} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ─── Message content with streaming cursor ───
 

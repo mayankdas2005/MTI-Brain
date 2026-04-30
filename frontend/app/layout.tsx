@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import Script from 'next/script'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Providers } from '@/components/providers'
 import './globals.css'
@@ -19,7 +20,12 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-  <script dangerouslySetInnerHTML={{ __html: `
+      </head>
+      <body className={`${geist.variable} ${geistMono.variable} font-sans antialiased`}>
+        <Providers>
+          {children}
+        </Providers>
+        <Script id="mti-easter-egg" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: `
     console.log("%c" +
       "███╗   ███╗████████╗██╗    \\n" +
       "████╗ ████║╚══██╔══╝██║    \\n" +
@@ -46,11 +52,6 @@ export default function RootLayout({
       "color:#6b7a8d;font-size:11px;line-height:1.6"
     );
   `}} />
-</head>
-      <body className={`${geist.variable} ${geistMono.variable} font-sans antialiased`}>
-        <Providers>
-          {children}
-        </Providers>
       </body>
     </html>
   )

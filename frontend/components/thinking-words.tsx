@@ -77,7 +77,7 @@ interface ThinkingWordsProps {
 }
 
 export function ThinkingWords({ interval = 2200 }: ThinkingWordsProps) {
-  const [phrase, setPhrase] = useState(
+  const [phrase, setPhrase] = useState<string>(
     () => THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)],
   );
   const [visible, setVisible] = useState(true);

@@ -16,6 +16,7 @@ import {
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Copy } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
+import { formatNumber, formatNumberWithDecimals } from '@/lib/utils/number';
 
 const ROWS_PER_PAGE = 10;
 
@@ -90,7 +91,7 @@ function compareCells(a: unknown, b: unknown, colType: ColType): number {
   if (colType === 'int' || colType === 'float') {
     return Number(a) - Number(b);
   }
-  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  return String(a).localeCompare(String(b), 'en-US', { numeric: true, sensitivity: 'base' });
 }
 
 interface DataTableProps {
@@ -194,6 +195,10 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
                         <TableCell className={`text-xs whitespace-nowrap py-2 tabular-nums ${isNumeric ? 'text-right font-medium' : ''}`}>
                           {cell === null || cell === undefined ? (
                             <span className="text-muted-foreground/50 italic font-normal">-</span>
+                          ) : isNumeric && typeof cell === 'number' ? (
+                            Number.isInteger(cell)
+                              ? formatNumber(cell)
+                              : formatNumberWithDecimals(cell, { minimumFractionDigits: 2, maximumFractionDigits: 4 })
                           ) : (
                             cellStr
                           )}
@@ -217,10 +222,10 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
       <div className="flex items-center justify-between px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
         <span>
           {totalRows > rows.length
-            ? `Showing ${rows.length} of ${totalRows.toLocaleString()} rows`
+            ? `Showing ${rows.length} of ${totalRows.toLocaleString('en-US')} rows`
             : rows.length > ROWS_PER_PAGE
-              ? `${start + 1}\u2013${Math.min(start + ROWS_PER_PAGE, sortedRows.length)} of ${sortedRows.length.toLocaleString()} rows`
-              : `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'}`}
+              ? `${start + 1}\u2013${Math.min(start + ROWS_PER_PAGE, sortedRows.length)} of ${sortedRows.length.toLocaleString('en-US')} rows`
+              : `${totalRows.toLocaleString('en-US')} row${totalRows === 1 ? '' : 's'}`}
         </span>
         <div className="flex items-center gap-1">
           <Tooltip>

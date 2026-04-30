@@ -122,9 +122,9 @@ function renderTable(columns: string[], rows: unknown[][], rowCount: number, isW
 
   const notes: string[] = [];
   if (shownRows.length < rowCount) {
-    notes.push(`Showing top ${shownRows.length.toLocaleString()} of ${rowCount.toLocaleString()} rows`);
+    notes.push(`Showing top ${shownRows.length.toLocaleString('en-US')} of ${rowCount.toLocaleString('en-US')} rows`);
   } else {
-    notes.push(`${rowCount.toLocaleString()} row${rowCount !== 1 ? 's' : ''}`);
+    notes.push(`${rowCount.toLocaleString('en-US')} row${rowCount !== 1 ? 's' : ''}`);
   }
   if (columns.length > colLimit) notes.push(`${colLimit} of ${columns.length} columns shown`);
 
@@ -162,7 +162,7 @@ function renderSqlBlock(sql: string, questionText: string, index: number, showNu
   const truncated = lines.length > SQL_LINE_LIMIT;
   const sqlText = esc(truncated ? lines.slice(0, SQL_LINE_LIMIT).join('\n') : sql);
   const truncNote = truncated
-    ? `<div class="appendix-trunc">… ${(lines.length - SQL_LINE_LIMIT).toLocaleString()} more lines</div>` : '';
+    ? `<div class="appendix-trunc">… ${(lines.length - SQL_LINE_LIMIT).toLocaleString('en-US')} more lines</div>` : '';
   const prefix = showNum ? `Q${index + 1}  -  ` : '';
   const label = `${prefix}${questionText.slice(0, 72)}${questionText.length > 72 ? '…' : ''}`;
   return `

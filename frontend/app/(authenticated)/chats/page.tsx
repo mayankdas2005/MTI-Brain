@@ -80,7 +80,11 @@ export default function ChatsPage() {
       const results = await api.getRecents({ limit: PAGE_SIZE, offset: newOffset });
       const items = results as ThreadSummary[];
       if (append) {
-        setThreads((prev) => [...prev, ...items]);
+        setThreads((prev) => {
+          const existingIds = new Set(prev.map((t) => t.id));
+          const deduped = items.filter((t) => !existingIds.has(t.id));
+          return [...prev, ...deduped];
+        });
       } else {
         setThreads(items);
         useThreadStore.setState({ threads: items, threadsLastFetched: Date.now() });

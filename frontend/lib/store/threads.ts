@@ -6,6 +6,7 @@ import type {
   ThreadSummary,
   SearchResult,
   MessageMetadata,
+  PipelineStep,
 } from '../types/api';
 
 // ─── Local Message type (superset of MessageOut for streaming state) ───
@@ -13,8 +14,15 @@ import type {
 export interface StreamingStep {
   node: string;
   message: string;
-  status: 'active' | 'done';
+  status: 'active' | 'done' | 'skipped';
+  /** Wall-clock timestamp the client received node.start (used as a tiebreaker). */
   timestamp: number;
+  /** Server-relative ms when this step started. Authoritative for ordering. */
+  started_at_ms?: number;
+  /** Final duration in ms once the step closes. Null while active. */
+  duration_ms?: number | null;
+  /** Reasoning text emitted while this step was active. */
+  reasoning?: string;
 }
 
 export interface Message {
@@ -87,21 +95,35 @@ function parseReasoning(raw: unknown): string | undefined {
 }
 
 /**
- * Reconstruct pipeline steps from reasoning data + message metadata.
+ * Hydrate streamingSteps from a persisted message.
  *
- * During live streaming all nodes emit `node.start` events, but those aren't
- * persisted. The reasoning array only contains nodes that produced reasoning
- * text - non-streaming nodes (classify, validate_sql, run_query, respond)
- * are missing. We fill in the gaps using metadata fields to determine which
- * nodes ran.
+ * The backend stores authoritative pipeline_steps on metadata_. This is the
+ * preferred source - one entry per node with timing and per-step reasoning.
+ *
+ * For older messages persisted before pipeline_steps existed, fall back to
+ * a heuristic reconstruction from the legacy reasoning array + metadata.
  */
 function extractSteps(
   raw: unknown,
   content?: string,
   metadata?: MessageMetadata | null,
 ): StreamingStep[] | undefined {
+  // Preferred path: authoritative pipeline_steps from backend.
+  const pipeline = metadata?.pipeline_steps;
+  if (pipeline && pipeline.length > 0) {
+    return pipeline.map((s: PipelineStep) => ({
+      node: s.node,
+      message: s.message,
+      status: s.status,
+      timestamp: s.started_at_ms,
+      started_at_ms: s.started_at_ms,
+      duration_ms: s.duration_ms,
+      reasoning: s.reasoning,
+    }));
+  }
+
+  // Legacy fallback for messages saved before pipeline_steps existed.
   const arr = parseReasoningArray(raw);
-  // If no reasoning data at all, check if there's content (general_chat path)
   if (!arr || arr.length === 0) {
     if (content) {
       return [{ node: 'responding', message: 'Responding', status: 'done', timestamp: 0 }];
@@ -110,53 +132,90 @@ function extractSteps(
   }
 
   const reasoningLabels = new Set(arr.filter((s) => s.label).map((s) => s.label!));
-
   const steps: StreamingStep[] = [];
   const addStep = (node: string, message: string) => {
     steps.push({ node, message, status: 'done' as const, timestamp: 0 });
   };
 
-  // 1. Understanding your question (classify) - always runs first
   addStep('classify', 'Understanding your question');
-
-  // 2. Resolving entities - from reasoning
-  if (reasoningLabels.has('Resolving entities')) {
-    addStep('resolve', 'Resolving entities');
-  }
-
-  // 3. Analyzing question and building query - from reasoning
+  if (reasoningLabels.has('Resolving entities')) addStep('resolve', 'Resolving entities');
   if (reasoningLabels.has('Analyzing question and building query')) {
     addStep('generate_sql', 'Analyzing question and building query');
   }
-
-  // 4. Validating SQL syntax - ran if SQL exists
-  if (metadata?.sql) {
-    addStep('validate_sql', 'Validating SQL syntax');
-  }
-
-  // 5. Fetching results - ran if columns/rows exist
-  if (metadata?.columns && metadata.columns.length > 0) {
-    addStep('run_query', 'Fetching results');
-  }
-
-  // 5b. Validating results - from reasoning
-  if (reasoningLabels.has('Validating results')) {
-    addStep('validate_results', 'Validating results');
-  }
-
-  // 5c. Fix query + retry cycles - from reasoning
+  if (metadata?.sql) addStep('validate_sql', 'Validating SQL syntax');
+  if (metadata?.columns && metadata.columns.length > 0) addStep('run_query', 'Fetching results');
+  if (reasoningLabels.has('Validating results')) addStep('validate_results', 'Validating results');
   for (const label of reasoningLabels) {
-    if (label.startsWith('Fixing the query')) {
-      addStep('fix_query', label);
-    }
+    if (label.startsWith('Fixing the query')) addStep('fix_query', label);
   }
-
-  // 6. Preparing your answer - ran if message has content
-  if (content) {
-    addStep('respond', 'Preparing your answer');
-  }
+  if (content) addStep('respond', 'Preparing your answer');
 
   return steps.length > 1 ? steps : undefined;
+}
+
+// ─── Step helpers used by SSE handlers ───
+
+/** Append a new active step, closing whatever was previously active. */
+function appendActiveStep(
+  steps: StreamingStep[] | undefined,
+  node: string,
+  message: string,
+  startedAtMs: number,
+): StreamingStep[] {
+  const closed = (steps || []).map((s) =>
+    s.status === 'active'
+      ? {
+          ...s,
+          status: 'done' as const,
+          duration_ms: Math.max(0, startedAtMs - (s.started_at_ms ?? 0)),
+        }
+      : s,
+  );
+  return [
+    ...closed,
+    {
+      node,
+      message,
+      status: 'active' as const,
+      timestamp: Date.now(),
+      started_at_ms: startedAtMs,
+      duration_ms: null,
+      reasoning: '',
+    },
+  ];
+}
+
+/** Append reasoning text to whatever step is currently active. */
+function appendStepReasoning(
+  steps: StreamingStep[] | undefined,
+  text: string,
+): StreamingStep[] | undefined {
+  if (!steps || steps.length === 0) return steps;
+  let attributed = false;
+  // Walk from the end so the most recently active step wins.
+  const next = [...steps];
+  for (let i = next.length - 1; i >= 0; i--) {
+    if (next[i].status === 'active') {
+      next[i] = { ...next[i], reasoning: (next[i].reasoning || '') + text };
+      attributed = true;
+      break;
+    }
+  }
+  return attributed ? next : steps;
+}
+
+/** Replace streamingSteps with the authoritative final list from `done`. */
+function finalizeStepsFromDone(rawSteps: unknown): StreamingStep[] | undefined {
+  if (!Array.isArray(rawSteps) || rawSteps.length === 0) return undefined;
+  return (rawSteps as PipelineStep[]).map((s) => ({
+    node: s.node,
+    message: s.message,
+    status: s.status,
+    timestamp: s.started_at_ms,
+    started_at_ms: s.started_at_ms,
+    duration_ms: s.duration_ms,
+    reasoning: s.reasoning,
+  }));
 }
 
 // ─── Store interface ───
@@ -654,6 +713,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     };
 
     const controller = new AbortController();
+    // Client-side fallback origin for step timing if backend omits started_at_ms.
+    const streamStartedAt = Date.now();
 
     // Optimistic title - set before streaming so the sidebar never shows
     // "Untitled" even if the title.generated SSE event is stopped before it
@@ -711,19 +772,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         });
       },
       onNodeStart: (data) => {
-        mapMsgs((m) => {
-          if (m.id !== assistantMsgId) return m;
-          const prev = (m.streamingSteps || []).map((s) =>
-            s.status === 'active' ? { ...s, status: 'done' as const } : s,
-          );
-          return {
-            ...m,
-            streamingSteps: [
-              ...prev,
-              { node: data.node, message: data.message, status: 'active' as const, timestamp: Date.now() },
-            ],
-          };
-        });
+        const startedAtMs = data.started_at_ms ?? Date.now() - streamStartedAt;
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs) }
+            : m,
+        );
       },
       onAnswerDelta: (data) => {
         mapMsgs((m) =>
@@ -738,7 +792,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onReasoningDelta: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, reasoning: (m.reasoning || '') + data.text, reasoningPending: false }
+            ? {
+                ...m,
+                reasoning: (m.reasoning || '') + data.text,
+                reasoningPending: false,
+                streamingSteps: appendStepReasoning(m.streamingSteps, data.text),
+              }
             : m,
         );
       },
@@ -781,7 +840,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               conversation_id: convId,
               content: m.content || ((data.answer as string) ?? m.content),
               isStreaming: false,
-              streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+              // Replace with authoritative timeline (accurate durations + per-step reasoning)
+              // when the backend included pipeline_steps; otherwise just close the active step.
+              streamingSteps:
+                finalizeStepsFromDone(data.pipeline_steps) ??
+                (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
               metadata_: {
                 ...m.metadata_,
                 run_id: data.run_id as string,
@@ -792,6 +855,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 chart_spec: (data.chart_spec as Record<string, unknown>) ?? m.metadata_?.chart_spec,
                 follow_ups: (data.follow_ups as string[]) ?? m.metadata_?.follow_ups,
                 duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
+                pipeline_steps:
+                  (data.pipeline_steps as PipelineStep[] | undefined) ?? m.metadata_?.pipeline_steps,
               },
             };
           }
@@ -980,6 +1045,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     };
 
     const controller = new AbortController();
+    const streamStartedAt = Date.now();
 
     // streamingMessages holds the FULL thread (history + new turn) so the
     // chat page can render the whole conversation from this slot while the
@@ -1011,19 +1077,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         );
       },
       onNodeStart: (data) => {
-        mapMsgs((m) => {
-          if (m.id !== assistantMsgId) return m;
-          const prev = (m.streamingSteps || []).map((s) =>
-            s.status === 'active' ? { ...s, status: 'done' as const } : s,
-          );
-          return {
-            ...m,
-            streamingSteps: [
-              ...prev,
-              { node: data.node, message: data.message, status: 'active' as const, timestamp: Date.now() },
-            ],
-          };
-        });
+        const startedAtMs = data.started_at_ms ?? Date.now() - streamStartedAt;
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs) }
+            : m,
+        );
       },
       onAnswerDelta: (data) => {
         mapMsgs((m) => (m.id === assistantMsgId ? { ...m, content: m.content + data.text } : m));
@@ -1034,7 +1093,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onReasoningDelta: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, reasoning: (m.reasoning || '') + data.text, reasoningPending: false }
+            ? {
+                ...m,
+                reasoning: (m.reasoning || '') + data.text,
+                reasoningPending: false,
+                streamingSteps: appendStepReasoning(m.streamingSteps, data.text),
+              }
             : m,
         );
       },
@@ -1064,7 +1128,9 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               conversation_id: convId,
               content: m.content || ((data.answer as string) ?? m.content),
               isStreaming: false,
-              streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+              streamingSteps:
+                finalizeStepsFromDone(data.pipeline_steps) ??
+                (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
               metadata_: {
                 ...m.metadata_,
                 run_id: data.run_id as string,
@@ -1075,6 +1141,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 chart_spec: (data.chart_spec as Record<string, unknown>) ?? m.metadata_?.chart_spec,
                 follow_ups: (data.follow_ups as string[]) ?? m.metadata_?.follow_ups,
                 duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
+                pipeline_steps:
+                  (data.pipeline_steps as PipelineStep[] | undefined) ?? m.metadata_?.pipeline_steps,
               },
             };
           }
@@ -1192,6 +1260,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     };
 
     const controller = new AbortController();
+    const streamStartedAt = Date.now();
 
     // streamingMessages holds the FULL thread (history + new turn) so the
     // chat page can render the whole conversation from this slot while the
@@ -1231,19 +1300,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         });
       },
       onNodeStart: (data) => {
-        mapMsgs((m) => {
-          if (m.id !== assistantMsgId) return m;
-          const prev = (m.streamingSteps || []).map((s) =>
-            s.status === 'active' ? { ...s, status: 'done' as const } : s,
-          );
-          return {
-            ...m,
-            streamingSteps: [
-              ...prev,
-              { node: data.node, message: data.message, status: 'active' as const, timestamp: Date.now() },
-            ],
-          };
-        });
+        const startedAtMs = data.started_at_ms ?? Date.now() - streamStartedAt;
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs) }
+            : m,
+        );
       },
       onAnswerDelta: (data) => {
         mapMsgs((m) => (m.id === assistantMsgId ? { ...m, content: m.content + data.text } : m));
@@ -1254,7 +1316,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onReasoningDelta: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, reasoning: (m.reasoning || '') + data.text, reasoningPending: false }
+            ? {
+                ...m,
+                reasoning: (m.reasoning || '') + data.text,
+                reasoningPending: false,
+                streamingSteps: appendStepReasoning(m.streamingSteps, data.text),
+              }
             : m,
         );
       },
@@ -1278,7 +1345,21 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onDone: (data) => {
         const convId = data.conversation_id as string;
         const mapper = (m: Message): Message => {
-          if (m.id === assistantMsgId) return { ...m, conversation_id: convId, content: m.content || ((data.answer as string) ?? m.content), isStreaming: false, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })), metadata_: { ...m.metadata_, duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms } };
+          if (m.id === assistantMsgId) return {
+            ...m,
+            conversation_id: convId,
+            content: m.content || ((data.answer as string) ?? m.content),
+            isStreaming: false,
+            streamingSteps:
+              finalizeStepsFromDone(data.pipeline_steps) ??
+              (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+            metadata_: {
+              ...m.metadata_,
+              duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
+              pipeline_steps:
+                (data.pipeline_steps as PipelineStep[] | undefined) ?? m.metadata_?.pipeline_steps,
+            },
+          };
           if (m.id === userMsgId) return { ...m, conversation_id: convId };
           return m;
         };

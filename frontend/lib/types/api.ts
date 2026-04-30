@@ -5,6 +5,15 @@
 
 // ─── Message Metadata ───
 
+export interface PipelineStep {
+  node: string;
+  message: string;
+  status: 'active' | 'done' | 'skipped';
+  started_at_ms: number;
+  duration_ms: number | null;
+  reasoning?: string;
+}
+
 export interface MessageMetadata {
   sql?: string;
   intent?: string;
@@ -20,6 +29,7 @@ export interface MessageMetadata {
   duration_ms?: number;
   source_conversation_id?: string;
   interrupted?: boolean;
+  pipeline_steps?: PipelineStep[];
 }
 
 // ─── Response Types ───

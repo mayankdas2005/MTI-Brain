@@ -512,7 +512,7 @@ export function Sidebar() {
             <SidebarThreadsSkeleton />
           ) : threads.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-sm text-sidebar-foreground/60">
+              <p className="text-sm text-sidebar-foreground/60" suppressHydrationWarning>
                 {['No conversations yet', 'Your treasury data awaits', 'Ask your first question'][Math.floor(Date.now() / 60000) % 3]}
               </p>
             </div>

@@ -9,7 +9,7 @@ import { getAuthHeaders } from '@/lib/auth';
 export interface SSEHandlers {
   onTimingSync?: (data: { elapsed_ms: number }) => void;
   onTitleGenerated?: (data: { thread_id: string; title: string }) => void;
-  onNodeStart?: (data: { node: string; message: string }) => void;
+  onNodeStart?: (data: { node: string; message: string; started_at_ms?: number }) => void;
   onReasoningPending?: (data: { node: string }) => void;
   onReasoningDelta?: (data: { node: string; text: string }) => void;
   onAnswerDelta?: (data: { node: string; text: string }) => void;
@@ -117,7 +117,7 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       handlers.onTitleGenerated?.(data as { thread_id: string; title: string });
       break;
     case 'node.start':
-      handlers.onNodeStart?.(data as { node: string; message: string });
+      handlers.onNodeStart?.(data as { node: string; message: string; started_at_ms?: number });
       break;
     case 'reasoning.pending':
       handlers.onReasoningPending?.(data as { node: string });

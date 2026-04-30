@@ -133,12 +133,13 @@ def _build_sse_generator(
                 "row_count": save_data.get("row_count", 0),
                 "chart_spec": save_data.get("chart_spec"),
                 "follow_ups": save_data.get("follow_ups", []),
-                "schema_fqn": save_data.get("schema_fqn", ""),
                 "run_id": save_data.get("run_id", ""),
                 "stopped": save_data.get("stopped", False),
-                "needs_clarification": save_data.get("needs_clarification", False),
                 "duration_ms": save_data.get("duration_ms"),
-                "langfuse_trace_id": save_data.get("langfuse_trace_id"),
+                # Authoritative pipeline timeline. Replaces extractSteps
+                # heuristics on the client - each entry has node, message,
+                # status, started_at_ms, duration_ms, and per-step reasoning.
+                "pipeline_steps": save_data.get("pipeline_steps") or [],
             },
         )
         try:
@@ -156,6 +157,41 @@ def _build_sse_generator(
         final_data = _mock_response_payload(question, conversation_id)
         _reasoning_parts: list[str] = []
 
+        # Pipeline step tracker. Each step gets `started_at_ms`, `duration_ms`
+        # and a per-step `reasoning` buffer so the client can render an
+        # accurate timeline on reload without heuristics.
+        _steps: list[dict] = []
+        _current_step: dict | None = None
+
+        def _now_ms() -> int:
+            return int((time.perf_counter() - _stream_start) * 1000)
+
+        def _begin_step(node: str, message: str) -> dict:
+            nonlocal _current_step
+            now = _now_ms()
+            if _current_step is not None:
+                _current_step["status"] = "done"
+                _current_step["duration_ms"] = max(0, now - _current_step["started_at_ms"])
+            step = {
+                "node": node,
+                "message": message,
+                "status": "active",
+                "started_at_ms": now,
+                "duration_ms": None,
+                "reasoning": "",
+            }
+            _steps.append(step)
+            _current_step = step
+            return step
+
+        def _close_steps() -> None:
+            nonlocal _current_step
+            if _current_step is not None:
+                now = _now_ms()
+                _current_step["status"] = "done"
+                _current_step["duration_ms"] = max(0, now - _current_step["started_at_ms"])
+                _current_step = None
+
         try:
             # Emit timing anchor as the very first event so the client
             # can synchronise its live timer with the server's clock.
@@ -171,10 +207,45 @@ def _build_sse_generator(
                         "data": json.dumps({"thread_id": str(thread_id), "title": title}),
                     }
 
-            yield {"event": "node.start", "data": json.dumps({"node": "classify", "message": "Classifying question"})}
+            step = _begin_step("classify", "Classifying question")
+            yield {
+                "event": "node.start",
+                "data": json.dumps({
+                    "node": step["node"],
+                    "message": step["message"],
+                    "started_at_ms": step["started_at_ms"],
+                }),
+            }
+            yield {"event": "reasoning.pending", "data": json.dumps({"node": "classify"})}
+            _classify_chunks = [
+                "**Reading the question**\n\n",
+                "Parsing intent from natural language input. ",
+                "Question references financial data - likely a treasury or cash management query.\n\n",
+                "**Routing decision**\n\n",
+                "Matches pattern: balance enquiry across accounts. ",
+                "Classifying as `data_query` → will route to SQL generation.\n",
+            ]
+            for _chunk in _classify_chunks:
+                if cancel_event.is_set():
+                    break
+                if _current_step is not None:
+                    _current_step["reasoning"] += _chunk
+                yield {"event": "reasoning.delta", "data": json.dumps({"node": "classify", "text": _chunk})}
+                await asyncio.sleep(0.05)
             await asyncio.sleep(0.05)
             yield {"event": "classify", "data": json.dumps({"question_type": "data_query"})}
 
+            # Start the SQL-building step BEFORE the reasoning chunks so each
+            # delta is naturally attributed to the active step on the client.
+            step = _begin_step("generate_sql", "Building SQL query")
+            yield {
+                "event": "node.start",
+                "data": json.dumps({
+                    "node": step["node"],
+                    "message": step["message"],
+                    "started_at_ms": step["started_at_ms"],
+                }),
+            }
             yield {"event": "reasoning.pending", "data": json.dumps({"node": "generate_sql"})}
             _reasoning_chunks = [
                 "**Analyzing question and building query**\n\n",
@@ -193,17 +264,42 @@ def _build_sse_generator(
                 if cancel_event.is_set():
                     break
                 _reasoning_parts.append(_chunk)
+                if _current_step is not None:
+                    _current_step["reasoning"] += _chunk
                 yield {"event": "reasoning.delta", "data": json.dumps({"node": "generate_sql", "text": _chunk})}
                 await asyncio.sleep(0.06)
 
-            yield {"event": "node.start", "data": json.dumps({"node": "generate_sql", "message": "Building SQL query"})}
             await asyncio.sleep(0.05)
             yield {
                 "event": "generate_sql",
                 "data": json.dumps({"sql": final_data["sql"], "intent": final_data["intent"]}),
             }
 
-            yield {"event": "node.start", "data": json.dumps({"node": "execute", "message": "Executing query"})}
+            step = _begin_step("execute", "Executing query")
+            yield {
+                "event": "node.start",
+                "data": json.dumps({
+                    "node": step["node"],
+                    "message": step["message"],
+                    "started_at_ms": step["started_at_ms"],
+                }),
+            }
+            yield {"event": "reasoning.pending", "data": json.dumps({"node": "execute"})}
+            _execute_chunks = [
+                "**Running query against data warehouse**\n\n",
+                "Submitting SQL to execution engine. ",
+                f"Retrieved {final_data['row_count']} row{'s' if final_data['row_count'] != 1 else ''}.\n\n",
+                "**Validating output**\n\n",
+                "No null values in key columns. ",
+                "Row count within expected range - no anomalies detected.\n",
+            ]
+            for _chunk in _execute_chunks:
+                if cancel_event.is_set():
+                    break
+                if _current_step is not None:
+                    _current_step["reasoning"] += _chunk
+                yield {"event": "reasoning.delta", "data": json.dumps({"node": "execute", "text": _chunk})}
+                await asyncio.sleep(0.05)
             await asyncio.sleep(0.05)
             yield {
                 "event": "execute.done",
@@ -221,7 +317,31 @@ def _build_sse_generator(
                     "data": json.dumps({"spec": final_data["chart_spec"]}),
                 }
 
-            yield {"event": "node.start", "data": json.dumps({"node": "respond", "message": "Preparing answer"})}
+            step = _begin_step("respond", "Preparing answer")
+            yield {
+                "event": "node.start",
+                "data": json.dumps({
+                    "node": step["node"],
+                    "message": step["message"],
+                    "started_at_ms": step["started_at_ms"],
+                }),
+            }
+            yield {"event": "reasoning.pending", "data": json.dumps({"node": "respond"})}
+            _respond_chunks = [
+                "**Composing response**\n\n",
+                "Structuring query results into a readable answer. ",
+                "Selecting appropriate chart type based on data shape.\n\n",
+                "**Generating follow-up suggestions**\n\n",
+                "Identifying logical next questions based on the result set. ",
+                "Follow-up chips ready.\n",
+            ]
+            for _chunk in _respond_chunks:
+                if cancel_event.is_set():
+                    break
+                if _current_step is not None:
+                    _current_step["reasoning"] += _chunk
+                yield {"event": "reasoning.delta", "data": json.dumps({"node": "respond", "text": _chunk})}
+                await asyncio.sleep(0.05)
 
             chunks = final_data["answer"].split(" ")
             for chunk in chunks:
@@ -236,7 +356,9 @@ def _build_sse_generator(
                 "data": json.dumps({"questions": final_data["follow_ups"]}),
             }
 
+            _close_steps()
             final_data["reasoning"] = "".join(_reasoning_parts)
+            final_data["pipeline_steps"] = _steps
 
             # Persist the message BEFORE emitting done so any immediate
             # fetchThread from the client sees the saved message.

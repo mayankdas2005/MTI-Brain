@@ -121,6 +121,22 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
       // mid-flight - the next visitor will get fresh data.
       set((state) => ({
         projectDetailMap: { ...state.projectDetailMap, [id]: project },
+        // Reconcile the list entry with the authoritative detail response.
+        // Without this, sidebar (driven by `projects`) and the detail page
+        // (driven by `currentProject`) can disagree on starred / name /
+        // description after a cross-tab edit or stale-cache hydration.
+        projects: state.projects.map((p) =>
+          p.id === id
+            ? {
+                ...p,
+                name: project.name,
+                description: project.description,
+                starred: project.starred,
+                thread_count: project.threads.length,
+                updated_at: project.updated_at,
+              }
+            : p,
+        ),
       }));
       // Race guard: only overwrite currentProject if we're still viewing
       // this id (or holding a header-only seed for it).
@@ -198,28 +214,45 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
     const prev = get().projects;
     const prevCurrent = get().currentProject;
     const prevMap = get().projectDetailMap;
+    // Optimistic toggle across list, currentProject, and detail cache so the
+    // UI reacts instantly. Source of truth is the API response below.
+    const target = prev.find((p) => p.id === id);
+    if (!target) return;
+    const optimistic = !target.starred;
     set({
       projects: prev.map((p) =>
-        p.id === id ? { ...p, starred: !p.starred } : p,
+        p.id === id ? { ...p, starred: optimistic } : p,
       ),
     });
     if (prevCurrent?.id === id) {
-      set({ currentProject: { ...prevCurrent, starred: !prevCurrent.starred } });
+      set({ currentProject: { ...prevCurrent, starred: optimistic } });
     }
     if (prevMap[id]) {
       set((state) => ({
         projectDetailMap: {
           ...state.projectDetailMap,
-          [id]: { ...prevMap[id], starred: !prevMap[id].starred },
+          [id]: { ...prevMap[id], starred: optimistic },
         },
       }));
     }
 
     try {
-      await api.starProject(id);
-      // Re-fetch to sync with server and prevent stale overwrites from
-      // concurrent fetchProjects calls elsewhere in the app.
-      get().fetchProjects();
+      // The endpoint returns the post-toggle authoritative value - apply it
+      // everywhere so list, currentProject, and cache can't drift even if
+      // the local optimistic guess disagreed (stale state, cross-tab edit).
+      const { starred } = await api.starProject(id);
+      set((state) => ({
+        projects: state.projects.map((p) =>
+          p.id === id ? { ...p, starred } : p,
+        ),
+        currentProject:
+          state.currentProject?.id === id
+            ? { ...state.currentProject, starred }
+            : state.currentProject,
+        projectDetailMap: state.projectDetailMap[id]
+          ? { ...state.projectDetailMap, [id]: { ...state.projectDetailMap[id], starred } }
+          : state.projectDetailMap,
+      }));
     } catch {
       set({ projects: prev, currentProject: prevCurrent, projectDetailMap: prevMap });
     }
