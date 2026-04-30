@@ -256,6 +256,10 @@ interface ThreadStore {
   streamingMessages: Message[];
   abortController: AbortController | null;
 
+  // Origin of the current stream: 'ask' (new question), 'retry', or 'edit'.
+  // Used by the chat page to decide scroll behavior.
+  streamingOrigin: 'ask' | 'retry' | 'edit' | null;
+
   // Pending question (from /new page)
   pendingQuestion: string | null;
 
@@ -264,6 +268,12 @@ interface ThreadStore {
 
   // In-memory message map for instant re-visit (not persisted, cleared on page refresh)
   threadMessageMap: Record<string, Message[]>;
+
+  // Active version index per turn, keyed threadId → versionsKey → idx.
+  // versionsKey is the `versions.join(',')` produced by message-list grouping.
+  // Lifted into the store so the composer can read the visible-active version
+  // when deriving source_conversation_id for new questions.
+  activeVersions: Record<string, Record<string, number>>;
 
   // ─── Actions ───
 
@@ -298,6 +308,8 @@ interface ThreadStore {
   toggleThreadSelection: (id: string) => void;
   selectAllThreads: () => void;
   clearSelection: () => void;
+  setActiveVersion: (threadId: string, versionsKey: string, idx: number) => void;
+  clearActiveVersionsForThread: (threadId: string) => void;
 }
 
 // ─── Debounce helper ───
@@ -333,9 +345,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
   streamingThreadId: null,
   streamingMessages: [],
   abortController: null,
+  streamingOrigin: null,
   pendingQuestion: null,
   selectedThreadIds: new Set(),
   threadMessageMap: {},
+  activeVersions: {},
 
   // ─── Fetch ───
 
@@ -471,11 +485,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     // Optimistic: remove from list + search results, clear if active, evict from map
     set((state) => {
       const { [threadId]: _evict, ...remainingMap } = state.threadMessageMap;
+      const { [threadId]: _evictVersions, ...remainingVersions } = state.activeVersions;
       return {
         threads: prev.filter((t) => t.id !== threadId),
         searchResults: prevSearchResults.filter((r) => r.thread_id !== threadId),
         selectedThreadIds: new Set([...state.selectedThreadIds].filter((id) => id !== threadId)),
         threadMessageMap: remainingMap,
+        activeVersions: remainingVersions,
         ...(wasCurrent ? { currentThreadId: null, currentMessages: [] } : {}),
       };
     });
@@ -740,6 +756,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       isStreaming: true,
       streamingMessageId: assistantMsgId,
       streamingThreadId: threadId,
+      streamingOrigin: 'ask',
       abortController: controller,
       pendingQuestion: null,
     });
@@ -1020,6 +1037,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     ) || currentMessages.find(
       (m) => m.conversation_id === rootConvId && m.role === 'user',
     );
+    // Provenance: copy source_conversation_id from the ROOT user message so
+    // the new branch keeps cascading-visibility parity with its siblings.
+    const rootUserMsg = currentMessages.find(
+      (m) => m.conversation_id === rootConvId && m.role === 'user',
+    );
+    const sourceConversationId = rootUserMsg?.source_conversation_id;
 
     const userMsgId = randomId();
     const assistantMsgId = randomId();
@@ -1031,6 +1054,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       role: 'user',
       content: originalUserMsg?.content || '',
       created_at: new Date().toISOString(),
+      source_conversation_id: sourceConversationId,
     };
 
     const assistantMsg: Message = {
@@ -1058,6 +1082,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       isStreaming: true,
       streamingMessageId: assistantMsgId,
       streamingThreadId: threadId,
+      streamingOrigin: 'retry',
       abortController: controller,
     });
 
@@ -1200,7 +1225,9 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     };
 
     try {
-      await streamSSE(`/chat/${threadId}/retry`, { conversation_id: conversationId }, handlers, controller.signal);
+      const retryBody: Record<string, unknown> = { conversation_id: conversationId };
+      if (sourceConversationId) retryBody.source_conversation_id = sourceConversationId;
+      await streamSSE(`/chat/${threadId}/retry`, retryBody, handlers, controller.signal);
     } catch (err: unknown) {
       if ((err as Error).name !== 'AbortError') {
         handlers.onError?.({ message: 'Retry failed' });
@@ -1234,6 +1261,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     // Resolve to root conversation_id for version branching
     const anyMsg = currentMessages.find((m) => m.conversation_id === conversationId);
     const rootConvId = anyMsg?.parent_conversation_id || conversationId;
+    // Provenance: copy source_conversation_id from the ROOT user message so
+    // the new edit branch keeps cascading-visibility parity with its siblings.
+    const rootUserMsg = currentMessages.find(
+      (m) => m.conversation_id === rootConvId && m.role === 'user',
+    );
+    const sourceConversationId = rootUserMsg?.source_conversation_id;
 
     const userMsgId = randomId();
     const assistantMsgId = randomId();
@@ -1246,6 +1279,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       role: 'user',
       content: question,
       created_at: new Date().toISOString(),
+      source_conversation_id: sourceConversationId,
     };
 
     const assistantMsg: Message = {
@@ -1273,6 +1307,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       isStreaming: true,
       streamingMessageId: assistantMsgId,
       streamingThreadId: threadId,
+      streamingOrigin: 'edit',
       abortController: controller,
     });
 
@@ -1412,9 +1447,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     };
 
     try {
+      const editBody: Record<string, unknown> = { conversation_id: conversationId, question };
+      if (sourceConversationId) editBody.source_conversation_id = sourceConversationId;
       await streamSSE(
         `/chat/${threadId}/edit`,
-        { conversation_id: conversationId, question },
+        editBody,
         handlers,
         controller.signal,
       );
@@ -1644,6 +1681,24 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
   clearSelection: () => {
     set({ selectedThreadIds: new Set() });
   },
+
+  setActiveVersion: (threadId, versionsKey, idx) => {
+    set((state) => ({
+      activeVersions: {
+        ...state.activeVersions,
+        [threadId]: { ...(state.activeVersions[threadId] ?? {}), [versionsKey]: idx },
+      },
+    }));
+  },
+
+  clearActiveVersionsForThread: (threadId) => {
+    set((state) => {
+      if (!(threadId in state.activeVersions)) return state;
+      const next = { ...state.activeVersions };
+      delete next[threadId];
+      return { activeVersions: next };
+    });
+  },
 }), {
   name: 'quest-threads-cache',
   storage: createJSONStorage(() => localStorage),
@@ -1655,5 +1710,6 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     threadsLastFetched: state.threadsLastFetched,
     threadsOffset: state.threadsOffset,
     hasMore: state.hasMore,
+    activeVersions: state.activeVersions,
   }),
 }));

@@ -66,6 +66,7 @@ class RetryRequest(_StrictRequest):
     """
 
     conversation_id: uuid.UUID = Field(..., description="The conversation to retry")
+    source_conversation_id: uuid.UUID | None = Field(default=None)
     response_tone: str = Field(default="consultant")
     max_rows: int = Field(default=100, ge=10, le=500)
 
@@ -84,6 +85,7 @@ class EditRequest(_StrictRequest):
     question: str = Field(
         ..., min_length=1, max_length=2000, description="The edited question"
     )
+    source_conversation_id: uuid.UUID | None = Field(default=None)
     response_tone: str = Field(default="consultant")
     max_rows: int = Field(default=100, ge=10, le=500)
 

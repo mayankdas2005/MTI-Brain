@@ -683,6 +683,10 @@ async def retry_response(
     new_conversation_id = uuid.uuid4()
     root = existing_parent or body.conversation_id
 
+    user_meta = None
+    if body.source_conversation_id:
+        user_meta = {"source_conversation_id": str(body.source_conversation_id)}
+
     await conv_service.save_message_and_touch(
         db,
         thread_id=thread_id,
@@ -690,6 +694,7 @@ async def retry_response(
         parent_conversation_id=root,
         role="user",
         content=question,
+        metadata=user_meta,
     )
     await db.commit()
 
@@ -728,6 +733,10 @@ async def edit_question(
     new_conversation_id = uuid.uuid4()
     root = existing_parent or body.conversation_id
 
+    user_meta = None
+    if body.source_conversation_id:
+        user_meta = {"source_conversation_id": str(body.source_conversation_id)}
+
     await conv_service.save_message_and_touch(
         db,
         thread_id=thread_id,
@@ -735,6 +744,7 @@ async def edit_question(
         parent_conversation_id=root,
         role="user",
         content=body.question,
+        metadata=user_meta,
     )
 
     await db.commit()

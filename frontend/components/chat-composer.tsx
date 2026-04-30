@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useThreadStore } from '@/lib/store/threads';
 import { ArrowUp, Square } from 'lucide-react';
+import { getLastVisibleAssistantConvId } from '@/lib/utils/conversation-tree';
 
 export function ChatComposer() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -14,6 +15,19 @@ export function ChatComposer() {
   const askQuestion = useThreadStore((s) => s.askQuestion);
   const stopGeneration = useThreadStore((s) => s.stopGeneration);
   const setPendingQuestion = useThreadStore((s) => s.setPendingQuestion);
+  const currentMessages = useThreadStore((s) => s.currentMessages);
+  const activeVersionsForThread = useThreadStore(
+    (s) => (currentThreadId ? s.activeVersions[currentThreadId] : undefined),
+  );
+
+  // Source for cascading visibility: the conversation_id of the assistant
+  // message in the LAST VISIBLE turn's active version. Walks the same turn
+  // structure / visibility rules as MessageList so the new question's
+  // source_conversation_id matches what the user is actually viewing.
+  const lastAssistantConvId = useMemo(
+    () => getLastVisibleAssistantConvId(currentMessages, activeVersionsForThread),
+    [currentMessages, activeVersionsForThread],
+  );
 
   // Auto-grow textarea
   useEffect(() => {
@@ -46,9 +60,9 @@ export function ChatComposer() {
 
       const question = input.trim();
       setInput('');
-      await askQuestion(currentThreadId, question);
+      await askQuestion(currentThreadId, question, lastAssistantConvId);
     },
-    [input, currentThreadId, isStreaming, askQuestion],
+    [input, currentThreadId, isStreaming, askQuestion, lastAssistantConvId],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

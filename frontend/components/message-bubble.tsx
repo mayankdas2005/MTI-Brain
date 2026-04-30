@@ -150,59 +150,57 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}
       >
-        {/* Actions + version nav row - only on hover */}
+        {/* Actions + version nav row - only on hover, above the bubble */}
         <div className={`flex items-center gap-1.5 mb-1 mr-1 transition-opacity duration-150 ${showActions ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-          <div className="flex items-center gap-1.5">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    if (message.conversation_id && !isStreaming) {
-                      retryResponse(threadId, message.conversation_id);
-                    }
-                  }}
-                  className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
-                  disabled={isStreaming || !message.conversation_id}
-                >
-                  <RotateCcw className="w-3 h-3" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top">Retry</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={async () => {
-                    const ok = await copyText(message.content);
-                    if (ok) toast.success('Copied to clipboard');
-                    else toast.error('Copy failed');
-                  }}
-                  className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
-                >
-                  <Copy className="w-3 h-3" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top">Copy</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleEdit}
-                  className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
-                  disabled={isStreaming}
-                >
-                  <Pencil className="w-3 h-3" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top">Edit</TooltipContent>
-            </Tooltip>
-          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={async () => {
+                  const ok = await copyText(message.content);
+                  if (ok) toast.success('Copied to clipboard');
+                  else toast.error('Copy failed');
+                }}
+                className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
+              >
+                <Copy className="w-3 h-3" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Copy</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (message.conversation_id && !isStreaming) {
+                    retryResponse(threadId, message.conversation_id);
+                  }
+                }}
+                className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
+                disabled={isStreaming || !message.conversation_id}
+              >
+                <RotateCcw className="w-3 h-3" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Retry</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleEdit}
+                className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
+                disabled={isStreaming}
+              >
+                <Pencil className="w-3 h-3" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Edit</TooltipContent>
+          </Tooltip>
           {versionNav && (
             <div className="flex items-center gap-0.5">
               <Button
@@ -272,6 +270,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
 
   return (
     <div
+      id={`msg-${message.id}`}
       className="flex flex-col gap-1 px-4 py-2 animate-fade-in"
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
@@ -702,7 +701,7 @@ function RefineInput({ threadId, conversationId }: { threadId: string; conversat
     const sql = (assistantMsg?.metadata_ as Record<string, unknown> | null)?.sql as string || undefined;
 
     const instruction = `Refine the previous query: ${refinement}`;
-    useThreadStore.getState().askQuestion(threadId, instruction, undefined, sql);
+    useThreadStore.getState().askQuestion(threadId, instruction, conversationId, sql);
     setText('');
     setOpen(false);
   }, [text, isStreaming, threadId, conversationId]);

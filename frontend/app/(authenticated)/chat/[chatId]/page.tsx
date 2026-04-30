@@ -96,23 +96,61 @@ export default function ChatPage({ params }: ChatPageProps) {
 
   // Cmd+K is handled at the layout level (opens search modal)
 
+  const streamingOrigin = useThreadStore((s) => s.streamingOrigin);
+  const streamingMessageId = useThreadStore((s) => s.streamingMessageId);
+
   // Auto-scroll to bottom when messages change.
-  // Force auto-scroll when new messages are added (follow-up, new question).
+  // For new questions / follow-ups → scroll to bottom.
+  // For retry / edit → scroll to the retried/edited turn (not bottom).
   // Use 'instant' during streaming deltas to avoid jittery smooth-scroll restarts.
   const prevLenRef = useRef(displayedMessages.length);
   useEffect(() => {
     const isNewMessage = displayedMessages.length !== prevLenRef.current;
     prevLenRef.current = displayedMessages.length;
 
-    // New message added → force scroll regardless of current position
+    // New message added → decide scroll target based on origin
     if (isNewMessage && scrollRef.current) {
+      const origin = useThreadStore.getState().streamingOrigin;
+
+      if (origin === 'retry' || origin === 'edit') {
+        // Scroll to the streaming assistant message (near the retried/edited question)
+        const msgId = useThreadStore.getState().streamingMessageId;
+        if (msgId) {
+          const el = document.getElementById(`msg-${msgId}`);
+          if (el) {
+            setAutoScroll(true);
+            setHasNewResponse(false);
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+          }
+        }
+      }
+
+      // Default: scroll to bottom (new question / follow-up)
       setAutoScroll(true);
       setHasNewResponse(false);
       scrollRef.current.scrollIntoView({ behavior: 'smooth' });
       return;
     }
 
-    // Streaming delta → scroll only if already following
+    // Streaming delta → keep content in view
+    // For retry/edit: always track the streaming message (ignore autoScroll,
+    // because handleScroll sets it false when we're not near the bottom).
+    if (isStreaming) {
+      const origin = useThreadStore.getState().streamingOrigin;
+      if (origin === 'retry' || origin === 'edit') {
+        const msgId = useThreadStore.getState().streamingMessageId;
+        if (msgId) {
+          const el = document.getElementById(`msg-${msgId}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'instant', block: 'end' });
+            return;
+          }
+        }
+      }
+    }
+
+    // Normal: scroll to bottom only if already following
     if (autoScroll && scrollRef.current) {
       scrollRef.current.scrollIntoView({ behavior: 'instant' });
     }
@@ -120,8 +158,18 @@ export default function ChatPage({ params }: ChatPageProps) {
 
   // Detect response completed while scrolled up
   useEffect(() => {
-    if (prevStreamingRef.current && !isStreaming && !autoScroll) {
-      setHasNewResponse(true);
+    if (prevStreamingRef.current && !isStreaming) {
+      const origin = useThreadStore.getState().streamingOrigin;
+      if (origin === 'retry' || origin === 'edit') {
+        // Final scroll so the completed response isn't cut off mid-screen
+        const msgId = useThreadStore.getState().streamingMessageId;
+        if (msgId) {
+          const el = document.getElementById(`msg-${msgId}`);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
+      } else if (!autoScroll) {
+        setHasNewResponse(true);
+      }
     }
     prevStreamingRef.current = isStreaming;
   }, [isStreaming, autoScroll]);
