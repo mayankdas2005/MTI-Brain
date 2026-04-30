@@ -2,12 +2,12 @@ import { useEffect } from 'react';
 
 interface KeyboardShortcuts {
   'cmd-k'?: () => void;
-  'cmd-n'?: () => void;
+  'cmd-shift-o'?: () => void;
   'cmd-/'?: () => void;
+  'cmd-period'?: () => void;
   'cmd-s'?: () => void;
   'cmd-shift-c'?: () => void;
   'cmd-enter'?: () => void;
-  'cmd-l'?: () => void;
   'escape'?: () => void;
 }
 
@@ -17,51 +17,58 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
       const isCmd = isMac ? e.metaKey : e.ctrlKey;
 
-      // Cmd+K / Ctrl+K - New chat
-      if (isCmd && e.key === 'k') {
+      // Cmd+K / Ctrl+K - Search (Claude-aligned)
+      if (isCmd && !e.shiftKey && e.key === 'k') {
         e.preventDefault();
         shortcuts['cmd-k']?.();
+        return;
       }
 
-      // Cmd+N / Ctrl+N - New chat
-      if (isCmd && e.key === 'n') {
+      // Cmd+Shift+O / Ctrl+Shift+O - New chat (Claude-aligned)
+      if (isCmd && e.shiftKey && (e.key === 'O' || e.key === 'o')) {
         e.preventDefault();
-        shortcuts['cmd-n']?.();
+        shortcuts['cmd-shift-o']?.();
+        return;
       }
 
-      // Cmd+/ - Show keyboard shortcuts
+      // Cmd+/ - Show keyboard shortcuts (Claude-aligned)
       if (isCmd && e.key === '/') {
         e.preventDefault();
         shortcuts['cmd-/']?.();
+        return;
       }
 
-      // Cmd+S - Star current thread
-      if (isCmd && e.key === 's') {
+      // Cmd+. / Ctrl+. - Toggle sidebar (Claude-aligned)
+      if (isCmd && e.key === '.') {
+        e.preventDefault();
+        shortcuts['cmd-period']?.();
+        return;
+      }
+
+      // Cmd+S - Star current thread (custom)
+      if (isCmd && !e.shiftKey && e.key === 's') {
         e.preventDefault();
         shortcuts['cmd-s']?.();
+        return;
       }
 
-      // Cmd+Shift+C - Copy last response
-      if (isCmd && e.shiftKey && e.key === 'C') {
+      // Cmd+Shift+C - Copy last response (custom)
+      if (isCmd && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
         e.preventDefault();
         shortcuts['cmd-shift-c']?.();
+        return;
       }
 
-      // Cmd+Enter / Ctrl+Enter - Send message
+      // Cmd+Enter - Send message
       if (isCmd && e.key === 'Enter') {
         e.preventDefault();
         shortcuts['cmd-enter']?.();
+        return;
       }
 
-      // Cmd+L / Ctrl+L - Focus input
-      if (isCmd && e.key === 'l') {
-        e.preventDefault();
-        shortcuts['cmd-l']?.();
-      }
-
-      // Escape - Close modals / clear
+      // Escape - Stop streaming (Claude-aligned). Don't preventDefault so
+      // dialogs and other UI still get Esc for their own close handling.
       if (e.key === 'Escape') {
-        e.preventDefault();
         shortcuts['escape']?.();
       }
     };

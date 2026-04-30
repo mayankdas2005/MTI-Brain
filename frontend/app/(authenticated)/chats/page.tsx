@@ -109,7 +109,13 @@ export default function ChatsPage() {
   }, []);
 
   // Initial load - seed from Zustand cache so the page renders instantly.
+  // The didInit guard prevents StrictMode's dev double-mount from firing two
+  // network requests; the deps array is already [] so this is the only path
+  // that could re-trigger this effect.
+  const didInitRef = useRef(false);
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     const cached = useThreadStore.getState().threads;
     if (cached.length > 0) {
       setThreads(cached);

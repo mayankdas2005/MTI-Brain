@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Star, Search, FileDown } from 'lucide-react';
 import { exportThread } from '@/lib/utils/export';
+import { exportChartAsCanvas } from '@/components/message-visualization';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -23,9 +24,25 @@ export function Topbar() {
   const starThread = useThreadStore((s) => s.starThread);
   const currentMessages = useThreadStore((s) => s.currentMessages);
 
-  const handleExport = () => {
-    if (!currentThreadTitle || !currentMessages.length) return;
-    exportThread(currentThreadTitle, currentMessages);
+  const handleExport = async () => {
+    if (!currentThreadId || !currentThreadTitle || !currentMessages.length) return;
+    // Capture every on-screen chart as a PNG data URL keyed by the assistant
+    // message's conversation_id, so renderExchange can embed the rendered
+    // visual in the PDF (vector → PNG via canvas, no extra dep).
+    const chartImages = new Map<string, string>();
+    const chartEls = document.querySelectorAll<HTMLElement>('[data-chart-conv-id]');
+    for (const el of Array.from(chartEls)) {
+      const convId = el.dataset.chartConvId;
+      if (!convId) continue;
+      try {
+        const titleEl = el.querySelector('p.text-sm') as HTMLElement | null;
+        const canvas = await exportChartAsCanvas(el, titleEl?.textContent ?? undefined);
+        chartImages.set(convId, canvas.toDataURL('image/png'));
+      } catch {
+        // Skip charts that fail to capture; export.ts will fall back to the data table.
+      }
+    }
+    exportThread(currentThreadId, currentThreadTitle, currentMessages, chartImages);
   };
 
   // Detect platform for shortcut label

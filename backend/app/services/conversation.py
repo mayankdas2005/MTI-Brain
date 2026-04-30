@@ -331,11 +331,15 @@ async def save_message_and_touch(
     metadata: dict | None = None,
     parent_conversation_id: uuid.UUID | None = None,
     auto_title: str | None = None,
-) -> tuple[QuestMessage, bool]:
+    user_id: uuid.UUID | None = None,
+) -> tuple[QuestMessage, bool] | None:
     """Save a message, touch thread, and optionally auto-set title in one flush.
 
     Combines message insert, timestamp bump, and title coalesce in a
-    single flush to minimise round-trips.
+    single flush to minimise round-trips. When ``user_id`` is supplied, the
+    thread UPDATE additionally filters on ``user_id`` and the function
+    returns ``None`` if no matching thread is found — letting the caller
+    issue a 404 without a separate thread_exists round-trip.
 
     Args:
         db: Async database session.
@@ -347,11 +351,34 @@ async def save_message_and_touch(
         metadata: Optional metadata dictionary stored with the message.
         parent_conversation_id: Optional parent conversation for retry/edit flows.
         auto_title: Optional title to set on the thread if it has no title yet.
+        user_id: When provided, scopes the thread UPDATE so the call also
+            serves as an ownership gate; returns None if the thread doesn't
+            belong to this user (or doesn't exist).
 
     Returns:
         A tuple of (QuestMessage, bool) where the bool is True when this is
-        the first user message in the thread (no prior user messages exist).
+        the first user message in the thread (no prior user messages exist),
+        or ``None`` when ``user_id`` was passed and no matching thread was
+        found.
     """
+    # Touch + auto-title in single UPDATE. When user_id is supplied this
+    # doubles as the ownership check — rowcount==0 means thread doesn't
+    # exist OR doesn't belong to the user, which is the same 404 either way.
+    update_stmt = update(QuestThread).where(QuestThread.id == thread_id)
+    if user_id is not None:
+        update_stmt = update_stmt.where(QuestThread.user_id == user_id)
+    if auto_title:
+        update_stmt = update_stmt.values(
+            title=func.coalesce(QuestThread.title, auto_title[:500]),
+            updated_at=datetime.now(timezone.utc),
+        )
+    else:
+        update_stmt = update_stmt.values(updated_at=datetime.now(timezone.utc))
+
+    update_result = await db.execute(update_stmt)
+    if user_id is not None and update_result.rowcount == 0:
+        return None
+
     # Check if any user messages already exist in this thread (before we insert ours)
     exists_result = await db.execute(
         select(
@@ -373,23 +400,6 @@ async def save_message_and_touch(
         metadata_=metadata,
     )
     db.add(message)
-
-    # Touch + auto-title in single UPDATE
-    if auto_title:
-        await db.execute(
-            update(QuestThread)
-            .where(QuestThread.id == thread_id)
-            .values(
-                title=func.coalesce(QuestThread.title, auto_title[:500]),
-                updated_at=datetime.now(timezone.utc),
-            )
-        )
-    else:
-        await db.execute(
-            update(QuestThread)
-            .where(QuestThread.id == thread_id)
-            .values(updated_at=datetime.now(timezone.utc))
-        )
 
     await db.flush()
     return message, is_first_message

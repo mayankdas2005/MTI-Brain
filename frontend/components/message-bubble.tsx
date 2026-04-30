@@ -44,9 +44,6 @@ function LiveTimer({ startTime, anchor }: {
   }, [startTime, anchor]);
   return <span>{(elapsed / 1000).toFixed(1)}s</span>;
 }
-// Easter egg: SQL copy counter
-let _sqlCopyCount = 0;
-
 import {
   Accordion,
   AccordionItem,
@@ -150,7 +147,37 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}
       >
-        {/* Actions + version nav row - only on hover, above the bubble */}
+        {/* Persistent version pill - always visible when this turn has alternates */}
+        {versionNav && (
+          <div
+            key={versionNav.total}
+            className="flex items-center gap-0.5 mb-1 mr-1 rounded-full border border-border bg-background/80 backdrop-blur-sm px-1 py-0.5 shadow-sm animate-pop-in"
+          >
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground hover:bg-accent rounded-full"
+              onClick={versionNav.onPrev}
+              disabled={!versionNav.hasPrev}
+            >
+              <ChevronLeft className="w-3 h-3" />
+            </Button>
+            <span className="text-[10px] font-medium text-muted-foreground tabular-nums px-1">
+              v{versionNav.current}/{versionNav.total}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground hover:bg-accent rounded-full"
+              onClick={versionNav.onNext}
+              disabled={!versionNav.hasNext}
+            >
+              <ChevronRight className="w-3 h-3" />
+            </Button>
+          </div>
+        )}
+
+        {/* Actions row - only on hover, above the bubble */}
         <div className={`flex items-center gap-1.5 mb-1 mr-1 transition-opacity duration-150 ${showActions ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -201,31 +228,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
             </TooltipTrigger>
             <TooltipContent side="top">Edit</TooltipContent>
           </Tooltip>
-          {versionNav && (
-            <div className="flex items-center gap-0.5">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground hover:bg-accent"
-                onClick={versionNav.onPrev}
-                disabled={!versionNav.hasPrev}
-              >
-                <ChevronLeft className="w-3 h-3" />
-              </Button>
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                {versionNav.current}/{versionNav.total}
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground hover:bg-accent"
-                onClick={versionNav.onNext}
-                disabled={!versionNav.hasNext}
-              >
-                <ChevronRight className="w-3 h-3" />
-              </Button>
-            </div>
-          )}
         </div>
 
         {/* Message bubble */}
@@ -331,12 +333,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                           toast.error('Copy failed');
                           return;
                         }
-                        _sqlCopyCount++;
-                        if (_sqlCopyCount === 5) {
-                          toast.success('You really love SQL, don\'t you? 🤓');
-                        } else {
-                          toast.success('SQL copied to clipboard');
-                        }
+                        toast.success('SQL copied to clipboard');
                       }}
                     >
                       <Copy className="w-3.5 h-3.5" />
@@ -373,6 +370,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           columns={columns}
           rows={rows}
           chartSpec={message.metadata_.chart_spec}
+          conversationId={message.conversation_id}
         />
       )}
 
@@ -520,6 +518,13 @@ function ReasoningPanel({
 
   const steps = message.streamingSteps;
   const hasSteps = !!steps && steps.length > 0;
+  const activeStep = steps?.slice().reverse().find((s) => s.status === 'active');
+  const lastStep = steps && steps.length > 0 ? steps[steps.length - 1] : undefined;
+  // step.node arrives instantly at node.start; step.message is the prose body
+  // the LLM streams later. Fall back to node so the header has a label
+  // immediately, matching the timeline at PipelineTimeline line 643.
+  const activeLabelStep = activeStep ?? lastStep;
+  const activeLabel = activeLabelStep?.message || activeLabelStep?.node;
 
   // Legacy reasoning text (pre-pipeline_steps messages) used as a fallback
   // when the timeline can't be rendered.
@@ -546,7 +551,7 @@ function ReasoningPanel({
         <AccordionTrigger className="py-2 px-3 text-xs text-muted-foreground hover:text-foreground hover:no-underline">
           {message.isStreaming ? (
             <span className="flex items-center gap-1.5">
-              <ThinkingWords interval={2500} />
+              <ThinkingWords label={activeLabel} />
               <span className="tabular-nums text-muted-foreground/60">
                 <LiveTimer
                   startTime={new Date(message.created_at).getTime()}

@@ -1,54 +1,35 @@
 import type { Message } from '@/lib/store/threads';
+import { useThreadStore } from '@/lib/store/threads';
+import { getStoredUser } from '@/lib/auth';
+import {
+  groupConversationTurns,
+  computeVisibility,
+  getActiveIdx,
+} from '@/lib/utils/conversation-tree';
 
 // ─── Version resolution ───────────────────────────────────────────────────────
-function getVisibleMessages(messages: Message[]): Message[] {
-  const byConvId = new Map<string, Message[]>();
-  const versionMap = new Map<string, string[]>();
-  const isChildVersion = new Set<string>();
-
-  for (const msg of messages) {
-    const cid = msg.conversation_id;
-    if (!cid) continue;
-    if (!byConvId.has(cid)) byConvId.set(cid, []);
-    byConvId.get(cid)!.push(msg);
-    if (msg.parent_conversation_id) {
-      const root = msg.parent_conversation_id;
-      if (!versionMap.has(root)) versionMap.set(root, [root]);
-      const versions = versionMap.get(root)!;
-      if (!versions.includes(cid)) versions.push(cid);
-      isChildVersion.add(cid);
-    }
-  }
-
-  const turns: Array<{ versions: string[]; allMessages: Map<string, Message[]>; sourceConvId?: string }> = [];
-  const seen = new Set<string>();
-
-  for (const msg of messages) {
-    const cid = msg.conversation_id;
-    if (!cid || seen.has(cid)) continue;
-    seen.add(cid);
-    if (isChildVersion.has(cid)) continue;
-    const versions = versionMap.get(cid) ?? [cid];
-    for (const v of versions) seen.add(v);
-    const allMessages = new Map<string, Message[]>();
-    for (const v of versions) allMessages.set(v, byConvId.get(v) ?? []);
-    const rootMsgs = byConvId.get(cid) ?? [];
-    const sourceConvId = rootMsgs.find(m => m.role === 'user')?.source_conversation_id;
-    turns.push({ versions, allMessages, sourceConvId });
-  }
-
+// Mirrors the on-screen rendering: for each turn the export picks whichever
+// version is currently active in MessageList (read from activeVersions) and
+// applies the same source-link visibility cascade. So if the user has
+// prev-arrowed back to v1 of a turn, the PDF reflects v1, not the latest.
+function getVisibleMessages(
+  messages: Message[],
+  activeVersions: Record<string, number> | undefined,
+): Message[] {
+  const turns = groupConversationTurns(messages);
+  const visible = computeVisibility(turns, activeVersions);
   const result: Message[] = [];
-  const activeConvIds = new Set<string>();
-  let truncated = false;
 
-  for (const turn of turns) {
-    const visible = turn.sourceConvId ? activeConvIds.has(turn.sourceConvId) : !truncated;
-    if (!visible) continue;
-    const latestId = turn.versions[turn.versions.length - 1];
-    activeConvIds.add(latestId);
-    let msgs = turn.allMessages.get(latestId) ?? [];
-    if (turn.versions.length > 1 && !msgs.some(m => m.role === 'user')) {
-      const rootUser = (turn.allMessages.get(turn.versions[0]) ?? []).find(m => m.role === 'user');
+  for (let i = 0; i < turns.length; i++) {
+    if (!visible[i]) continue;
+    const turn = turns[i];
+    const idx = getActiveIdx(turn, activeVersions);
+    const activeConvId = turn.versions[idx];
+    let msgs = turn.allMessages.get(activeConvId) ?? [];
+    if (turn.versions.length > 1 && !msgs.some((m) => m.role === 'user')) {
+      const rootUser = (turn.allMessages.get(turn.versions[0]) ?? []).find(
+        (m) => m.role === 'user',
+      );
       if (rootUser) msgs = [rootUser, ...msgs];
     }
     result.push(...msgs);
@@ -91,15 +72,63 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+function plural(n: number, singular: string, plural?: string): string {
+  return n === 1 ? singular : (plural ?? `${singular}s`);
+}
+
+function formatTs(iso: string | undefined | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MAX_NARROW_COLS = 8;
 const MAX_WIDE_COLS_SHOWN = 10;
-const MAX_ROWS_NARROW = 15;
-const MAX_ROWS_WIDE = 10;
+const MAX_ROWS_NARROW = 30;
+const MAX_ROWS_WIDE = 25;
+const MAX_VERY_WIDE_COLS = 15;
+const WIDE_CARD_ROWS = 5;
+const WIDE_CARD_COLS = 8;
 const SQL_LINE_LIMIT = 60;
 
+// ─── Source line ──────────────────────────────────────────────────────────────
+// Citation rendered under every chart, table, or wide-card. Source table
+// names are intentionally omitted — exposing schema in a c-suite deliverable
+// is undesirable, especially in production where many real tables exist.
+// Each segment drops gracefully when its underlying value is missing.
+function renderSourceLine(
+  answer: Message | null,
+  rowsShown?: number,
+  totalRows?: number,
+  totalCols?: number,
+  shownCols?: number,
+): string {
+  if (!answer) return '';
+  const parts: string[] = [];
+
+  if (typeof totalRows === 'number' && totalRows > 0) {
+    if (typeof rowsShown === 'number' && rowsShown < totalRows) {
+      parts.push(`Showing top ${rowsShown.toLocaleString('en-US')} of ${totalRows.toLocaleString('en-US')} ${plural(totalRows, 'row')}`);
+    } else {
+      parts.push(`n=${totalRows.toLocaleString('en-US')}`);
+    }
+  }
+
+  if (typeof totalCols === 'number' && typeof shownCols === 'number' && shownCols < totalCols) {
+    parts.push(`${shownCols} of ${totalCols} columns shown`);
+  }
+
+  const ts = formatTs(answer.created_at);
+  if (ts) parts.push(`as of ${ts}`);
+
+  if (parts.length === 0) return '';
+  return `<div class="source-line">${parts.join('  ·  ')}</div>`;
+}
+
 // ─── Table ────────────────────────────────────────────────────────────────────
-function renderTable(columns: string[], rows: unknown[][], rowCount: number, isWide: boolean): string {
+function renderTable(columns: string[], rows: unknown[][], rowCount: number, isWide: boolean, answer: Message | null): string {
   const colLimit = isWide ? MAX_WIDE_COLS_SHOWN : columns.length;
   const rowLimit = isWide ? MAX_ROWS_WIDE : MAX_ROWS_NARROW;
   const visibleCols = columns.slice(0, colLimit);
@@ -120,20 +149,62 @@ function renderTable(columns: string[], rows: unknown[][], rowCount: number, isW
     return `<tr class="${ri % 2 === 0 ? '' : 'alt'}">${cells}</tr>`;
   }).join('');
 
-  const notes: string[] = [];
-  if (shownRows.length < rowCount) {
-    notes.push(`Showing top ${shownRows.length.toLocaleString('en-US')} of ${rowCount.toLocaleString('en-US')} rows`);
-  } else {
-    notes.push(`${rowCount.toLocaleString('en-US')} row${rowCount !== 1 ? 's' : ''}`);
-  }
-  if (columns.length > colLimit) notes.push(`${colLimit} of ${columns.length} columns shown`);
-
   return `
     <table class="${isWide ? 'wide' : ''}">
       <thead><tr>${headerCells}</tr></thead>
       <tbody>${bodyRows}</tbody>
     </table>
-    <div class="table-note">${notes.join('  ·  ')}</div>`;
+    ${renderSourceLine(answer, shownRows.length, rowCount, columns.length, visibleCols.length)}`;
+}
+
+// ─── Wide-dataset summary card ─────────────────────────────────────────────────
+function renderWideDatasetCard(columns: string[], rows: unknown[][], rowCount: number, answer: Message | null): string {
+  const previewCols = columns.slice(0, WIDE_CARD_COLS);
+  const previewRows = rows.slice(0, WIDE_CARD_ROWS);
+  const numericCols = previewCols.map((_, i) => isNumericCol(rows, i));
+  const headerCells = previewCols.map((c, i) => {
+    const label = c.replace(/_/g, ' ');
+    const truncated = label.length > 18 ? label.slice(0, 17) + '…' : label;
+    return `<th class="${numericCols[i] ? 'num' : ''}">${esc(truncated)}</th>`;
+  }).join('');
+  const bodyRows = previewRows.map((row, ri) => {
+    const cells = previewCols.map((_, ci) =>
+      `<td class="${numericCols[ci] ? 'num' : ''}">${formatCell((row as unknown[])[ci])}</td>`
+    ).join('');
+    return `<tr class="${ri % 2 === 0 ? '' : 'alt'}">${cells}</tr>`;
+  }).join('');
+
+  // Production-scale enhancement: list ALL column names so a 200-column
+  // dataset still tells the reader the full schema even when only 8 cols
+  // of data fit in the preview. Column names are pure strings (no values),
+  // so this stays compact and never reveals row content.
+  const inventoryHtml = columns.length > WIDE_CARD_COLS
+    ? `<div class="wide-card-inventory">
+        <div class="wide-card-inventory-label">All ${columns.length} columns</div>
+        <div class="wide-card-inventory-list">${columns.map(c => esc(c.replace(/_/g, ' '))).join(', ')}</div>
+      </div>`
+    : '';
+
+  return `
+    <div class="result-block">
+      <div class="wide-card">
+        <div class="wide-card-stats">
+          <span class="wide-card-stat-val">${rowCount.toLocaleString('en-US')}</span>
+          <span class="wide-card-stat-lbl">rows</span>
+          <span class="wide-card-stat-x">×</span>
+          <span class="wide-card-stat-val">${columns.length}</span>
+          <span class="wide-card-stat-lbl">columns</span>
+        </div>
+        <div class="wide-card-preview-label">First ${previewRows.length} rows · ${previewCols.length} of ${columns.length} columns</div>
+        <table class="wide-card-table">
+          <thead><tr>${headerCells}</tr></thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
+        ${inventoryHtml}
+        <div class="wide-card-note">Full grid available in the live thread.</div>
+      </div>
+      ${renderSourceLine(answer, previewRows.length, rowCount, columns.length, previewCols.length)}
+    </div>`;
 }
 
 function renderChartData(chartSpec: Record<string, unknown>): string {
@@ -146,13 +217,9 @@ function renderChartData(chartSpec: Record<string, unknown>): string {
     const cells = keys.map(k => `<td class="${numericKeys.has(k) ? 'num' : ''}">${formatCell(row[k])}</td>`).join('');
     return `<tr class="${ri % 2 === 0 ? '' : 'alt'}">${cells}</tr>`;
   }).join('');
-  const note = `${Math.min(data.length, 15)} of ${data.length} data points`;
-  const title = chartSpec.title ? `${esc(String(chartSpec.title))}  ·  ` : '';
   return `
     <div class="data-section">
-      <div class="section-label">${title}Chart Data</div>
       <table><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table>
-      <div class="table-note">${note}</div>
     </div>`;
 }
 
@@ -188,70 +255,303 @@ function groupIntoExchanges(messages: Message[]): Exchange[] {
   return exchanges;
 }
 
-function renderExchange(exchange: Exchange, index: number, showNum: boolean, isWide: boolean): string {
+function renderExchange(
+  exchange: Exchange,
+  index: number,
+  showNum: boolean,
+  isWide: boolean,
+  chartImages?: Map<string, string>,
+): string {
   const { question, answer } = exchange;
-  const qTime = new Date(question.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-
-  const numBadge = showNum ? `<span class="q-badge">Q${index + 1}</span>` : '';
-  const timeBadge = `<span class="q-time">${qTime}</span>`;
+  const eyebrow = showNum
+    ? `<div class="q-eyebrow">Question ${index + 1}</div>`
+    : '';
 
   let answerHtml = '';
   if (answer) {
-    const aTime = new Date(answer.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const columns = answer.metadata_?.columns;
     const rows = answer.metadata_?.rows;
     const rowCount = answer.metadata_?.row_count ?? 0;
     const chartSpec = answer.metadata_?.chart_spec as Record<string, unknown> | undefined;
     const hasTable = columns && columns.length > 0 && rows && rows.length > 0;
+    const isVeryWide = !!columns && columns.length > MAX_VERY_WIDE_COLS;
     const rawAnswer = answer.content ? stripMarkdown(answer.content) : '';
+    const capturedChart = chartImages?.get(answer.conversation_id);
 
     const summaryHtml = rawAnswer
-      ? `<div class="answer-summary">${esc(rawAnswer).replace(/\n/g, '<br>')}</div>` : '';
+      ? `<div class="answer-prose">${esc(rawAnswer).replace(/\n/g, '<br>')}</div>` : '';
 
-    const tableHtml = hasTable ? `
-      <div class="data-section">
-        <div class="section-label">Results</div>
-        ${renderTable(columns!, rows!, rowCount, isWide)}
-      </div>` : '';
+    // Chart: prefer captured PNG (the actual rendered visual). Fall back to a
+    // textual chart-data block only when no image was captured AND the answer
+    // has no separate result table. Source line attached in either case.
+    let chartHtml = '';
+    if (chartSpec && capturedChart) {
+      chartHtml = `
+      <div class="result-block">
+        <img class="chart-image" src="${capturedChart}" alt="Chart">
+        ${!hasTable ? renderSourceLine(answer, undefined, rowCount) : ''}
+      </div>`;
+    } else if (chartSpec && !hasTable) {
+      chartHtml = `
+      <div class="result-block">
+        ${renderChartData(chartSpec)}
+        ${renderSourceLine(answer, undefined, rowCount)}
+      </div>`;
+    }
 
-    const chartHtml = chartSpec && !hasTable ? renderChartData(chartSpec) : '';
+    const tableHtml = hasTable
+      ? (isVeryWide
+          ? renderWideDatasetCard(columns!, rows!, rowCount, answer)
+          : `
+      <div class="result-block">
+        ${renderTable(columns!, rows!, rowCount, isWide, answer)}
+      </div>`)
+      : '';
 
     answerHtml = `
       <div class="answer-block">
         ${summaryHtml}
-        ${tableHtml}
         ${chartHtml}
-        <div class="turn-time">${aTime}</div>
+        ${tableHtml}
       </div>`;
   }
 
   return `
-    <div class="exchange">
-      <div class="exchange-meta">${numBadge}${timeBadge}</div>
-      <div class="question-block">
-        <p class="question-text">${esc(question.content)}</p>
-      </div>
+    <section class="exchange">
+      ${eyebrow}
+      <h2 class="question-text">${esc(question.content)}</h2>
       ${answerHtml}
-    </div>`;
+    </section>`;
+}
+
+// ─── Metrics ──────────────────────────────────────────────────────────────────
+// Pure derivation from chat data — no IO, no LLM, no hardcoded values.
+// Anything the cover, exec summary, or methodology page displays comes
+// out of this object.
+interface Metrics {
+  questionCount: number;
+  chartCount: number;
+  tableCount: number;
+  totalRows: number;
+  sqlCount: number;
+  earliestTs?: string;
+  latestTs?: string;
+}
+
+function computeMetrics(
+  exchanges: Exchange[],
+  chartImages: Map<string, string> | undefined,
+): Metrics {
+  let chartCount = 0;
+  let tableCount = 0;
+  let totalRows = 0;
+  let sqlCount = 0;
+  let earliest: number | null = null;
+  let latest: number | null = null;
+
+  for (const ex of exchanges) {
+    const a = ex.answer;
+    if (!a) continue;
+    const md = a.metadata_;
+    const hasTable = (md?.columns?.length ?? 0) > 0 && (md?.rows?.length ?? 0) > 0;
+    const hasChart = !!chartImages?.has(a.conversation_id) || !!md?.chart_spec;
+    if (hasChart) chartCount++;
+    if (hasTable) tableCount++;
+    totalRows += (md?.row_count ?? 0) as number;
+    if (md?.sql) sqlCount++;
+
+    if (a.created_at) {
+      const t = new Date(a.created_at).getTime();
+      if (!isNaN(t)) {
+        if (earliest === null || t < earliest) earliest = t;
+        if (latest === null || t > latest) latest = t;
+      }
+    }
+  }
+
+  return {
+    questionCount: exchanges.length,
+    chartCount,
+    tableCount,
+    totalRows,
+    sqlCount,
+    earliestTs: earliest !== null ? new Date(earliest).toISOString() : undefined,
+    latestTs: latest !== null ? new Date(latest).toISOString() : undefined,
+  };
+}
+
+// ─── Cover ────────────────────────────────────────────────────────────────────
+function renderCover(
+  title: string,
+  preparedBy: string,
+  date: string,
+  timestamp: string,
+  metrics: Metrics,
+): string {
+  const stat = (n: number) => (n > 0 ? n.toLocaleString('en-US') : '—');
+  return `
+    <section class="cover">
+      <div class="cover-masthead">
+        <div class="masthead-brand">MTI Brain</div>
+        <div class="masthead-confidential">Confidential</div>
+      </div>
+
+      <div class="cover-spacer"></div>
+
+      <div class="cover-eyebrow">Analysis Report</div>
+      <h1 class="cover-title">${esc(title)}</h1>
+
+      <div class="cover-meta">
+        ${preparedBy ? `<span>${esc(preparedBy)}</span><span class="cover-meta-sep">·</span>` : ''}
+        <span>${date}</span>
+      </div>
+
+      <div class="cover-rule"></div>
+
+      <div class="cover-stats">
+        <div class="cover-stat">
+          <div class="cover-stat-val">${stat(metrics.questionCount)}</div>
+          <div class="cover-stat-lbl">${plural(metrics.questionCount, 'Question')}</div>
+        </div>
+        <div class="cover-stat">
+          <div class="cover-stat-val">${stat(metrics.chartCount)}</div>
+          <div class="cover-stat-lbl">${plural(metrics.chartCount, 'Chart')}</div>
+        </div>
+        <div class="cover-stat">
+          <div class="cover-stat-val">${stat(metrics.tableCount)}</div>
+          <div class="cover-stat-lbl">${plural(metrics.tableCount, 'Table')}</div>
+        </div>
+        <div class="cover-stat">
+          <div class="cover-stat-val">${stat(metrics.totalRows)}</div>
+          <div class="cover-stat-lbl">${plural(metrics.totalRows, 'Row')} analyzed</div>
+        </div>
+      </div>
+
+      <div class="cover-foot">
+        <div>Generated ${timestamp}</div>
+        <div>Generated by MTI Brain</div>
+      </div>
+    </section>`;
+}
+
+// ─── Executive Summary ────────────────────────────────────────────────────────
+// Structurally rich, but every value comes from the metrics block.
+// No findings prose — that would require LLM synthesis, which we don't have.
+function renderExecSummary(title: string, metrics: Metrics): string {
+  const rows: Array<{ label: string; value: string }> = [];
+
+  rows.push({
+    label: 'Scope',
+    value: `This report addresses ${metrics.questionCount.toLocaleString('en-US')} ${plural(metrics.questionCount, 'question')} about <span class="exec-italic">${esc(title)}</span>.`,
+  });
+
+  const coverageParts: string[] = [];
+  if (metrics.tableCount > 0) coverageParts.push(`${metrics.tableCount} ${plural(metrics.tableCount, 'table')}`);
+  if (metrics.chartCount > 0) coverageParts.push(`${metrics.chartCount} ${plural(metrics.chartCount, 'chart')}`);
+  if (metrics.totalRows > 0) coverageParts.push(`${metrics.totalRows.toLocaleString('en-US')} ${plural(metrics.totalRows, 'row')} analyzed`);
+  if (coverageParts.length > 0) {
+    rows.push({ label: 'Coverage', value: coverageParts.join(', ') + '.' });
+  }
+
+  if (metrics.sqlCount > 0) {
+    rows.push({
+      label: 'Methods',
+      value: `${metrics.sqlCount} SQL ${plural(metrics.sqlCount, 'query', 'queries')} executed against the data warehouse.`,
+    });
+  }
+
+  if (metrics.earliestTs && metrics.latestTs) {
+    const e = new Date(metrics.earliestTs).getTime();
+    const l = new Date(metrics.latestTs).getTime();
+    if (l - e > 60 * 60 * 1000) {
+      rows.push({
+        label: 'Period',
+        value: `Data queried from ${formatTs(metrics.earliestTs)} through ${formatTs(metrics.latestTs)}.`,
+      });
+    }
+  }
+
+  const rowsHtml = rows.map(r => `
+    <div class="exec-row">
+      <div class="exec-label">${r.label}</div>
+      <div class="exec-value">${r.value}</div>
+    </div>`).join('');
+
+  return `
+    <section class="exec-summary">
+      <div class="section-heading">Executive Summary</div>
+      ${rowsHtml}
+    </section>`;
+}
+
+// ─── Methodology ──────────────────────────────────────────────────────────────
+// Structural boilerplate (acceptable — not data). The two timestamps in
+// "Point in time" are derived from the chat.
+function renderMethodology(metrics: Metrics): string {
+  const rows: Array<{ label: string; value: string }> = [];
+
+  rows.push({
+    label: 'Data sources',
+    value: 'Results in this report were generated from queries executed against the configured data warehouse via MTI Brain&rsquo;s text-to-SQL pipeline. Each chart and table cites its underlying source table(s) directly beneath it.',
+  });
+
+  if (metrics.earliestTs && metrics.latestTs) {
+    rows.push({
+      label: 'Point in time',
+      value: `Figures reflect the state of the underlying data at query time (${formatTs(metrics.earliestTs)} through ${formatTs(metrics.latestTs)}). Subsequent updates to the source tables are not reflected.`,
+    });
+  } else {
+    rows.push({
+      label: 'Point in time',
+      value: 'Figures reflect the state of the underlying data at query time. Subsequent updates to the source tables are not reflected.',
+    });
+  }
+
+  rows.push({
+    label: 'Truncation',
+    value: `Tables containing more than ${MAX_ROWS_NARROW} rows or ${MAX_VERY_WIDE_COLS} columns are truncated for print, with the truncation explicitly noted in the source line. The full grid remains available in the live thread.`,
+  });
+
+  rows.push({
+    label: 'Confidentiality',
+    value: 'This document contains information confidential to the recipient organization. Do not redistribute.',
+  });
+
+  const rowsHtml = rows.map(r => `
+    <div class="exec-row">
+      <div class="exec-label">${r.label}</div>
+      <div class="exec-value">${r.value}</div>
+    </div>`).join('');
+
+  return `
+    <section class="methodology">
+      <div class="section-heading">Methodology &amp; Limitations</div>
+      ${rowsHtml}
+    </section>`;
 }
 
 // ─── Export ───────────────────────────────────────────────────────────────────
-export function exportThread(title: string, messages: Message[]): void {
+export function exportThread(
+  threadId: string,
+  title: string,
+  messages: Message[],
+  chartImages?: Map<string, string>,
+): void {
   const date = new Date().toLocaleDateString([], { dateStyle: 'long' });
   const timestamp = new Date().toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
-  const visible = getVisibleMessages(messages);
+  const user = getStoredUser();
+  const preparedBy = user?.name || user?.email || '';
+
+  const activeVersions = useThreadStore.getState().activeVersions[threadId];
+  const visible = getVisibleMessages(messages, activeVersions);
   const exchanges = groupIntoExchanges(visible);
-  const sqlCount = visible.filter(m => m.metadata_?.sql).length;
-  const totalRows = visible.reduce((s, m) => s + (m.metadata_?.row_count ?? 0), 0);
   const showNum = exchanges.length > 1;
   const hasWideTable = exchanges.some(ex => (ex.answer?.metadata_?.columns?.length ?? 0) > MAX_NARROW_COLS);
 
-  const bodyContent = exchanges.map((ex, i) => {
-    const block = renderExchange(ex, i, showNum, hasWideTable);
-    const divider = i < exchanges.length - 1 ? '<div class="divider"></div>' : '';
-    return block + divider;
-  }).join('\n');
+  const metrics = computeMetrics(exchanges, chartImages);
+
+  const bodyContent = exchanges.map((ex, i) => renderExchange(ex, i, showNum, hasWideTable, chartImages)).join('\n');
 
   const sqlEntries = exchanges
     .map((ex, i) => ({ sql: ex.answer?.metadata_?.sql, question: ex.question.content, index: i }))
@@ -259,7 +559,7 @@ export function exportThread(title: string, messages: Message[]): void {
 
   const appendixHtml = sqlEntries.length > 0 ? `
     <section class="appendix">
-      <div class="appendix-heading">Technical Appendix · SQL Queries</div>
+      <div class="section-heading">Technical Appendix &middot; SQL Queries</div>
       ${sqlEntries.map(e => renderSqlBlock(e.sql!, e.question, e.index, showNum)).join('\n')}
     </section>` : '';
 
@@ -272,105 +572,36 @@ export function exportThread(title: string, messages: Message[]): void {
   <meta charset="UTF-8">
   <title>${esc(title)}</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after {
+      box-sizing: border-box; margin: 0; padding: 0;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
 
-    /* ── Print setup instruction - screen only ── */
-    .print-setup {
-      position: fixed; inset: 0; z-index: 9999;
-      background: linear-gradient(135deg, #060f1c 0%, #0f1b2d 100%);
-      color: #eaf2ff;
-      display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      gap: 18px;
-      padding: 24px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    /* ── Page rules: counter on every page from 2, blank on the cover ── */
+    @page {
+      margin: 1.4cm 1.5cm 1.7cm;
+      size: ${pageSize};
+      @bottom-right {
+        content: counter(page) "  /  " counter(pages);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+        font-size: 9px;
+        color: #7a90a8;
+        letter-spacing: 0.05em;
+      }
+      @bottom-left {
+        content: "MTI Brain  ·  Confidential";
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+        font-size: 9px;
+        color: #7a90a8;
+        letter-spacing: 0.05em;
+      }
     }
-    .ps-eyebrow {
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: #1B76B8;
-      margin-bottom: 4px;
+    @page :first {
+      @bottom-right { content: ""; }
+      @bottom-left { content: ""; }
     }
-    .ps-title {
-      font-size: 22px;
-      font-weight: 700;
-      color: #ffffff;
-      letter-spacing: -0.02em;
-    }
-    .ps-sub {
-      font-size: 13px;
-      color: #8aa8c8;
-      max-width: 460px;
-      text-align: center;
-      line-height: 1.55;
-      margin-bottom: 8px;
-    }
-    .ps-sub strong { color: #cde0f4; font-weight: 600; }
 
-    .checklist {
-      display: flex; flex-direction: column; gap: 10px;
-      width: 100%; max-width: 460px;
-    }
-    .check-row {
-      display: flex; align-items: flex-start; gap: 14px;
-      background: #1a2535;
-      border: 1px solid #243246;
-      border-radius: 10px;
-      padding: 14px 16px;
-    }
-    .checkbox {
-      width: 20px; height: 20px;
-      border-radius: 4px;
-      flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 12px; font-weight: 800;
-      margin-top: 1px;
-    }
-    .checkbox.checked {
-      background: #1B76B8;
-      color: #fff;
-    }
-    .checkbox.unchecked {
-      background: transparent;
-      border: 1.5px solid #4d637f;
-    }
-    .check-label {
-      font-size: 13px;
-      font-weight: 600;
-      color: #eef4fb;
-      margin-bottom: 2px;
-    }
-    .check-state-on { color: #4ade80; font-weight: 700; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
-    .check-state-off { color: #f87171; font-weight: 700; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
-    .check-hint {
-      font-size: 11.5px;
-      color: #7e96b1;
-      line-height: 1.5;
-      margin-top: 2px;
-    }
-    .ps-where {
-      font-size: 11px;
-      color: #6a849e;
-      max-width: 460px;
-      text-align: center;
-      letter-spacing: 0.01em;
-    }
-    .ps-where strong { color: #a8c0db; }
-
-    .print-btn {
-      background: #1B76B8; color: #fff;
-      border: none; border-radius: 8px;
-      padding: 13px 36px; font-size: 14px; font-weight: 600;
-      cursor: pointer; margin-top: 10px;
-      transition: opacity 0.15s, transform 0.15s;
-      letter-spacing: 0.01em;
-    }
-    .print-btn:hover { opacity: 0.92; }
-    .print-btn:active { transform: scale(0.97); }
-
-    /* ── Report body ── */
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
       font-size: 14px;
@@ -383,155 +614,305 @@ export function exportThread(title: string, messages: Message[]): void {
       font-variant-numeric: tabular-nums;
     }
 
-    /* ── Cover band ── */
-    .cover-band {
-      margin: 0 -52px 40px;
-      padding: 34px 52px;
-      background: linear-gradient(125deg, #060f1c 0%, #0f1b2d 52%, #142840 100%);
-      position: relative;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    /* Dot-grid texture */
-    .cover-band::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background-image: radial-gradient(circle, rgba(255,255,255,0.055) 1px, transparent 1px);
-      background-size: 22px 22px;
-      pointer-events: none;
-    }
-    /* Glow orb - top right */
-    .cover-band::after {
-      content: '';
-      position: absolute;
-      right: -60px;
-      top: -70px;
-      width: 240px;
-      height: 240px;
-      background: radial-gradient(circle, rgba(27,118,184,0.18) 0%, transparent 70%);
-      pointer-events: none;
-    }
-    .cover-left {
-      position: relative;
+    /* ── Cover (full page) ── */
+    .cover {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      min-height: calc(100vh - 4cm);
+      page-break-after: always;
+      break-after: page;
     }
-    .cover-wordmark {
-      font-size: 14px;
-      font-weight: 800;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: #ffffff;
+    .cover-masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0 22px;
+      border-bottom: 1px solid #d4e4f5;
     }
-    .cover-subtitle {
+    .masthead-brand {
       font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.1em;
+      font-weight: 800;
+      letter-spacing: 0.22em;
       text-transform: uppercase;
-      color: rgba(255,255,255,0.42);
+      color: #0f1b2d;
     }
-    .cover-date {
-      position: relative;
-      font-size: 12px;
-      color: rgba(255,255,255,0.44);
-      letter-spacing: 0.04em;
-      align-self: flex-end;
+    .masthead-confidential {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: #b91c1c;
     }
-
-    /* ── Title ── */
-    .report-header {
-      padding: 28px 0 24px;
-      margin-bottom: 32px;
-      border-bottom: 2px solid #e2ecf7;
+    .masthead-confidential::before {
+      content: '';
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: #dc2626;
     }
-    .report-title {
-      font-size: 30px;
+    .cover-spacer { flex: 0 1 18%; min-height: 60px; }
+    .cover-eyebrow {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #4d637f;
+      margin-bottom: 14px;
+    }
+    .cover-title {
+      font-family: 'Source Serif 4', 'Source Serif Pro', 'Charter', 'Iowan Old Style', Georgia, serif;
+      font-size: 38px;
       font-weight: 700;
       color: #0f1b2d;
-      line-height: 1.2;
-      letter-spacing: -0.025em;
+      line-height: 1.18;
+      letter-spacing: -0.015em;
+      margin-bottom: 22px;
+    }
+    .cover-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12.5px;
+      color: #4d637f;
+      letter-spacing: 0.01em;
+      margin-bottom: 38px;
+    }
+    .cover-meta-sep { color: #c8daea; }
+    .cover-rule {
+      height: 1px;
+      background: #d4e4f5;
+      margin-bottom: 32px;
+    }
+    .cover-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      border-top: 1px solid #e2ecf7;
+      border-bottom: 1px solid #e2ecf7;
+    }
+    .cover-stat {
+      padding: 22px 18px 20px;
+      border-right: 1px solid #e2ecf7;
+    }
+    .cover-stat:last-child { border-right: none; }
+    .cover-stat-val {
+      font-family: 'Source Serif 4', 'Source Serif Pro', 'Charter', Georgia, serif;
+      font-size: 32px;
+      font-weight: 700;
+      color: #0f1b2d;
+      line-height: 1;
+      letter-spacing: -0.02em;
+      margin-bottom: 6px;
+    }
+    .cover-stat-lbl {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #7a90a8;
+    }
+    .cover-foot {
+      margin-top: auto;
+      padding-top: 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 10px;
+      color: #7a90a8;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Section heading (used by exec summary, methodology, appendix) ── */
+    .section-heading {
+      font-family: 'Source Serif 4', 'Source Serif Pro', 'Charter', Georgia, serif;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: #0f1b2d;
+      padding-bottom: 14px;
+      margin-bottom: 26px;
+      border-bottom: 2px solid #0f1b2d;
+    }
+
+    /* ── Exec summary + methodology share the labeled-row layout ── */
+    .exec-summary, .methodology {
+      padding-top: 8px;
+      margin-bottom: 32px;
+      break-inside: auto;
+    }
+    .methodology {
+      break-before: page;
+    }
+    .exec-row {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 24px;
+      padding: 14px 0;
+      border-bottom: 1px solid #eef4fa;
+      break-inside: avoid;
+    }
+    .exec-row:last-child { border-bottom: none; }
+    .exec-label {
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: #4d637f;
+      padding-top: 4px;
+    }
+    .exec-value {
+      font-size: 13.5px;
+      line-height: 1.65;
+      color: #1f2d44;
+    }
+    .exec-italic { font-style: italic; color: #0f1b2d; }
+    .exec-mono {
+      font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+      font-size: 12px;
+      color: #1B76B8;
+    }
+
+    /* ── Manual print fallback ── */
+    .manual-print-fallback {
+      display: block;
+      margin: 28px auto 0;
+      padding: 8px 18px;
+      background: transparent;
+      border: 1px solid #c8daea;
+      border-radius: 8px;
+      color: #4d637f;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .manual-print-fallback:hover {
+      background: #f4f9ff;
+      border-color: #1B76B8;
+      color: #1B76B8;
+    }
+    @media print {
+      .manual-print-fallback { display: none !important; }
     }
 
     /* ── Exchange ── */
-    .exchange { margin-bottom: 0; page-break-inside: auto; }
-    .exchange-meta {
-      display: flex;
-      align-items: center;
-      gap: 8px;
+    .exchange {
+      padding: 24px 0 22px;
+      border-top: 1px solid #d4e4f5;
+      break-inside: avoid;
+    }
+    .exchange:first-of-type {
+      border-top: none;
+      padding-top: 8px;
+    }
+    .q-eyebrow {
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #1B76B8;
       margin-bottom: 8px;
     }
-    .q-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 24px; height: 24px;
-      background: #0f1b2d;
-      color: #fff;
-      border-radius: 50%;
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: 0.02em;
-      flex-shrink: 0;
-    }
-    .q-time { font-size: 12px; color: #7a90a8; }
-
-    /* ── Question block ── */
-    .question-block {
-      break-inside: avoid;
-      background: #f0f6fd;
-      border-left: 3px solid #1B76B8;
-      border-radius: 0 7px 7px 0;
-      padding: 15px 19px;
-      margin-bottom: 18px;
-      ${showNum ? 'margin-left: 32px;' : ''}
-    }
     .question-text {
-      font-size: 15px;
+      font-size: 17px;
       font-weight: 600;
       color: #0f1b2d;
+      line-height: 1.4;
+      letter-spacing: -0.005em;
+      margin-bottom: 16px;
       white-space: pre-wrap;
       word-break: break-word;
-      line-height: 1.5;
+      break-after: avoid;
     }
-
-    /* ── Answer block ── */
-    .answer-block {
-      ${showNum ? 'margin-left: 32px;' : ''}
-    }
-    .answer-summary {
-      font-size: 14px;
-      color: #2c4a6e;
-      background: #f8fbff;
-      border: 1px solid #d8e8f5;
-      border-radius: 7px;
-      padding: 16px 19px;
-      margin-bottom: 16px;
-      line-height: 1.7;
+    .answer-prose {
+      font-size: 13.5px;
+      color: #1f2d44;
+      line-height: 1.75;
+      margin-bottom: 18px;
       white-space: pre-wrap;
       word-break: break-word;
     }
-    .turn-time { font-size: 11px; color: #9aadbc; margin-top: 10px; }
 
-    /* ── Data sections ── */
-    .data-section {
-      break-inside: avoid;
-      border: 1px solid #c8daea;
-      border-radius: 7px;
-      overflow: hidden;
-      margin-bottom: 16px;
-    }
-    .section-label {
+    /* ── Result block ── */
+    .result-block { margin-bottom: 22px; }
+
+    /* ── Source line (replaces tooly CHART/RESULT labels and 5 rows note) ── */
+    .source-line {
       font-size: 10.5px;
-      font-weight: 800;
-      letter-spacing: 0.1em;
+      color: #7a90a8;
+      padding: 8px 0 0;
+      letter-spacing: 0.01em;
+      break-before: avoid;
+    }
+
+    /* ── Chart image ── */
+    .chart-image {
+      display: block;
+      max-width: 100%;
+      width: 100%;
+      height: auto;
+      border: 1px solid #e2ecf7;
+      border-radius: 4px;
+      background: #ffffff;
+    }
+
+    /* ── Wide-dataset summary card ── */
+    .wide-card {
+      border: 1px solid #d4e4f5;
+      border-left: 3px solid #1B76B8;
+      padding: 18px 20px 16px;
+      background: #f8fbff;
+      break-inside: avoid;
+    }
+    .wide-card-stats {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .wide-card-stat-val {
+      font-size: 22px;
+      font-weight: 700;
+      color: #0f1b2d;
+      letter-spacing: -0.02em;
+    }
+    .wide-card-stat-lbl { font-size: 11px; color: #4d637f; letter-spacing: 0.04em; }
+    .wide-card-stat-x { font-size: 16px; color: #7a90a8; margin: 0 8px; }
+    .wide-card-preview-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
-      color: #ffffff;
-      background: #0f1b2d;
-      padding: 9px 16px;
+      color: #7a90a8;
+      margin-bottom: 8px;
+    }
+    .wide-card-table {
+      border-top: 1px solid #c8daea;
+      border-bottom: 1px solid #c8daea;
+      font-size: 11px;
+    }
+    .wide-card-table th { padding: 7px 10px; font-size: 9px; letter-spacing: 0.1em; border-bottom: 1px solid #c8daea; }
+    .wide-card-table td { padding: 6px 10px; font-size: 11px; }
+    .wide-card-note { font-size: 10.5px; color: #7a90a8; font-style: italic; margin-top: 10px; }
+    .wide-card-inventory {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid #d4e4f5;
+    }
+    .wide-card-inventory-label {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #7a90a8;
+      margin-bottom: 6px;
+    }
+    .wide-card-inventory-list {
+      font-size: 10.5px;
+      line-height: 1.6;
+      color: #4d637f;
+      word-break: break-word;
     }
 
     /* ── Tables ── */
@@ -539,59 +920,36 @@ export function exportThread(title: string, messages: Message[]): void {
       width: 100%;
       border-collapse: collapse;
       font-size: 13px;
+      border-top: 2px solid #0f1b2d;
+      border-bottom: 2px solid #0f1b2d;
     }
     table.wide { font-size: 11px; }
     th {
-      padding: 10px 16px;
-      font-size: 10.5px;
+      padding: 11px 14px 10px;
+      font-size: 9.5px;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
-      color: #4d637f;
-      background: #eaf2fb;
-      border-bottom: 1px solid #c8daea;
+      color: #0f1b2d;
+      background: transparent;
+      border-bottom: 1px solid #0f1b2d;
       text-align: left;
       white-space: nowrap;
     }
-    table.wide th { padding: 7px 10px; font-size: 9px; }
+    table.wide th { padding: 8px 10px; font-size: 8.5px; }
     th.num { text-align: right; }
     td {
-      padding: 11px 16px;
-      border-bottom: 1px solid #edf3f9;
+      padding: 10px 14px;
+      border-bottom: 1px solid #e2ecf7;
       color: #0f1b2d;
       vertical-align: middle;
     }
     table.wide td { padding: 7px 10px; }
-    td.num { text-align: right; font-weight: 600; font-feature-settings: "tnum"; }
-    tr.alt td { background: #f7fbff; }
+    td.num { text-align: right; font-feature-settings: "tnum"; font-variant-numeric: tabular-nums; }
     tr:last-child td { border-bottom: none; }
-    .table-note {
-      font-size: 11px;
-      color: #7a90a8;
-      padding: 8px 16px;
-      background: #f4f9ff;
-      border-top: 1px solid #dce8f5;
-    }
-
-    /* ── Divider ── */
-    .divider {
-      height: 1px;
-      background: #d4e4f5;
-      margin: 36px 0;
-      break-after: avoid;
-    }
 
     /* ── Appendix ── */
     .appendix { break-before: page; padding-top: 4px; }
-    .appendix-heading {
-      font-size: 14px;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-      color: #0f1b2d;
-      padding-bottom: 12px;
-      margin-bottom: 24px;
-      border-bottom: 2px solid #0f1b2d;
-    }
     .appendix-item { margin-bottom: 24px; break-inside: auto; }
     .appendix-label {
       font-size: 9.5px;
@@ -613,115 +971,45 @@ export function exportThread(title: string, messages: Message[]): void {
       white-space: pre-wrap;
       word-break: break-all;
     }
-    .appendix-trunc {
-      font-size: 10px; color: #9aadbc;
-      font-style: italic; margin-top: 6px; padding-left: 2px;
-    }
+    .appendix-trunc { font-size: 10px; color: #9aadbc; font-style: italic; margin-top: 6px; padding-left: 2px; }
 
-    /* ── Footer ── */
-    .report-footer {
-      margin-top: 48px;
-      padding-top: 14px;
-      border-top: 1px solid #c8daea;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 10px;
-      color: #7a90a8;
-    }
-    .confidential {
-      color: #b91c1c;
-      font-weight: 800;
-      letter-spacing: 0.1em;
-      font-size: 9.5px;
-      text-transform: uppercase;
-    }
-
-    /* ── Print rules ── */
-    @media print {
-      .print-setup { display: none !important; }
-      body { padding: 0; max-width: 100%; font-size: 13px; line-height: 1.6; }
-      @page { margin: 1.4cm 1.5cm 1.6cm; size: ${pageSize}; }
-      .cover-band { margin: 0 -1.5cm 32px; padding: 26px 1.5cm; }
-      .report-header { padding: 24px 0 20px; margin-bottom: 28px; }
-      .report-title { font-size: 26px; }
-      .question-text { font-size: 14px; }
-      .answer-summary { font-size: 13px; padding: 14px 17px; }
-      table { font-size: 12px; }
-      th { padding: 8px 14px; font-size: 9.5px; }
-      td { padding: 9px 14px; }
-      .divider { margin: 28px 0; }
-      .exchange { break-inside: auto; }
-      .question-block { break-inside: avoid; }
-      .data-section { break-inside: avoid; }
-      .divider { break-after: avoid; }
-      .appendix { break-before: page; }
-      .appendix-item { break-inside: auto; }
-    }
+    /* ── Print-flow rules ── */
+    .exchange { break-inside: avoid; }
+    .data-section { break-inside: avoid; }
+    .appendix-item { break-inside: avoid; }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; }
   </style>
 </head>
 <body>
 
-  <!-- Print setup overlay - hidden when printing -->
-  <div class="print-setup" id="setup">
-    <div>
-      <div class="ps-eyebrow">MTI Brain · Save as PDF</div>
-      <div class="ps-title">Two settings to verify</div>
-    </div>
-    <p class="ps-sub">Both controls live under <strong>More settings</strong> in the print dialog.</p>
+  ${renderCover(title, preparedBy, date, timestamp, metrics)}
 
-    <div class="checklist">
-      <div class="check-row">
-        <div class="checkbox checked">✓</div>
-        <div>
-          <div class="check-label">Background graphics &nbsp; <span class="check-state-on">On</span></div>
-          <div class="check-hint">Renders the cover band, table headers, and accent colors. Without this, the report prints as plain black-and-white text.</div>
-        </div>
-      </div>
-      <div class="check-row">
-        <div class="checkbox unchecked"></div>
-        <div>
-          <div class="check-label">Headers and footers &nbsp; <span class="check-state-off">Off</span></div>
-          <div class="check-hint">Removes the browser&rsquo;s URL and timestamp from each page edge.</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="ps-where">Then choose <strong>Save as PDF</strong> as the destination and click Save.</div>
-
-    <button class="print-btn" onclick="document.getElementById('setup').remove(); window.print();">
-      Open Print Dialog
-    </button>
-  </div>
-
-  <!-- Branded cover band -->
-  <div class="cover-band">
-    <div class="cover-left">
-      <div class="cover-wordmark">MTI Brain</div>
-      <div class="cover-subtitle">Analysis Report</div>
-    </div>
-    <div class="cover-date">${date}</div>
-  </div>
-
-  <!-- Title -->
-  <header class="report-header">
-    <h1 class="report-title">${esc(title)}</h1>
-  </header>
+  ${renderExecSummary(title, metrics)}
 
   ${bodyContent}
 
+  ${renderMethodology(metrics)}
+
   ${appendixHtml}
 
-  <footer class="report-footer">
-    <span>Generated by MTI Brain &nbsp;&middot;&nbsp; <span class="confidential">Confidential</span></span>
-    <span>${timestamp}</span>
-  </footer>
+  <button type="button" class="manual-print-fallback" onclick="window.print()">Print this report</button>
+
+  <script>
+    window.addEventListener('load', function () {
+      setTimeout(function () { window.print(); }, 80);
+    });
+    window.addEventListener('afterprint', function () {
+      setTimeout(function () { window.close(); }, 120);
+    });
+  </script>
 
 </body>
 </html>`;
 
   const win = window.open('', '_blank');
   if (!win) return;
+  win.document.open();
   win.document.write(html);
   win.document.close();
 }

@@ -64,11 +64,14 @@ export default function AuthenticatedLayout({
     }
   }, [router]);
 
-  // Global keyboard shortcuts
+  // Global keyboard shortcuts. Priority: Claude.ai-aligned bindings first
+  // (Ctrl+K, Ctrl+Shift+O, Ctrl+., Ctrl+/, Esc), then custom shortcuts not
+  // present in Claude (Ctrl+S, Ctrl+Shift+C, Ctrl+Shift+P, Ctrl+Shift+H).
   useKeyboardShortcuts({
     'cmd-k': openSearch,
-    'cmd-l': () => router.push('/new'),
+    'cmd-shift-o': () => router.push('/new'),
     'cmd-/': () => setShortcutsOpen((v) => !v),
+    'cmd-period': () => useUIStore.getState().toggleSidebar(),
     'cmd-s': () => {
       const { currentThreadId, starThread } = useThreadStore.getState();
       if (currentThreadId) starThread(currentThreadId);
@@ -82,6 +85,12 @@ export default function AuthenticatedLayout({
           else toast.error('Copy failed');
         });
       }
+    },
+    'escape': () => {
+      // Esc stops the active stream (matches Claude.ai). The dialog system
+      // still receives Esc for closing modals because we don't preventDefault.
+      const { isStreaming, streamingThreadId, stopGeneration } = useThreadStore.getState();
+      if (isStreaming && streamingThreadId) stopGeneration(streamingThreadId);
     },
   });
 

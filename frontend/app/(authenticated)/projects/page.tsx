@@ -11,10 +11,27 @@ import {
   Star,
   FolderOpen,
   MessageSquare,
+  ArrowRight,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { CreateProjectDialog } from '@/components/create-project-dialog';
 import { ProjectContextMenu } from '@/components/project-context-menu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+
+type SortMode = 'activity' | 'created' | 'name';
+
+const SORT_LABELS: Record<SortMode, string> = {
+  activity: 'Activity',
+  created: 'Date created',
+  name: 'Name',
+};
 
 export default function ProjectsPage() {
   const router = useRouter();
@@ -26,6 +43,7 @@ export default function ProjectsPage() {
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [sortMode, setSortMode] = useState<SortMode>('activity');
 
   useEffect(() => {
     fetchProjects();
@@ -57,7 +75,7 @@ export default function ProjectsPage() {
         </div>
 
         {/* Search */}
-        <div className="relative mb-6">
+        <div className="relative mb-3">
           <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
           <Input
             value={searchQuery}
@@ -65,6 +83,31 @@ export default function ProjectsPage() {
             placeholder="Search projects..."
             className="pl-10"
           />
+        </div>
+
+        {/* Sort by */}
+        <div className="flex items-center justify-end mb-3">
+          <span className="text-xs text-muted-foreground mr-2">Sort by</span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
+                {SORT_LABELS[sortMode]}
+                <ChevronDown className="w-3 h-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[160px]">
+              {(Object.keys(SORT_LABELS) as SortMode[]).map((mode) => (
+                <DropdownMenuItem
+                  key={mode}
+                  onSelect={() => setSortMode(mode)}
+                  className="flex items-center justify-between gap-3 text-xs"
+                >
+                  <span>{SORT_LABELS[mode]}</span>
+                  {sortMode === mode && <Check className="w-3.5 h-3.5 text-primary" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {/* Project Grid */}
@@ -83,48 +126,71 @@ export default function ProjectsPage() {
             </Button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {projects.map((project) => (
-              <ProjectContextMenu
-                key={project.id}
-                projectId={project.id}
-                projectName={project.name}
-                projectDescription={project.description || ''}
-                starred={project.starred}
-              >
-                <button
-                  onClick={() => router.push(`/projects/${project.id}`)}
-                  onMouseEnter={() => router.prefetch(`/projects/${project.id}`)}
-                  className="text-left rounded-xl border border-border bg-background p-4 shadow-sm hover:shadow-md hover:bg-muted/30 hover:border-primary/20 transition-all duration-200 group"
-                >
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <FolderOpen className="w-4 h-4 text-primary shrink-0" />
-                      <h3 className="text-sm font-medium text-foreground truncate">
-                        {project.name}
-                      </h3>
-                    </div>
-                    {project.starred && (
-                      <Star className="w-3.5 h-3.5 fill-[var(--color-star)] text-[var(--color-star)] shrink-0" />
-                    )}
-                  </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 auto-rows-fr">
+            {[...projects]
+              .sort((a, b) => {
+                // Empty projects always sink to the bottom regardless of sort mode.
+                const emptyDelta = (a.thread_count === 0 ? 1 : 0) - (b.thread_count === 0 ? 1 : 0);
+                if (emptyDelta !== 0) return emptyDelta;
+                if (sortMode === 'name') return a.name.localeCompare(b.name);
+                if (sortMode === 'created') return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+                return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+              })
+              .map((project) => {
+                const isEmpty = project.thread_count === 0;
+                return (
+                  <ProjectContextMenu
+                    key={project.id}
+                    projectId={project.id}
+                    projectName={project.name}
+                    projectDescription={project.description || ''}
+                    starred={project.starred}
+                  >
+                    <button
+                      onClick={() => router.push(`/projects/${project.id}`)}
+                      onMouseEnter={() => router.prefetch(`/projects/${project.id}`)}
+                      className={
+                        isEmpty
+                          ? 'flex flex-col h-full text-left rounded-xl border border-dashed border-border bg-muted/20 p-4 hover:bg-muted/40 hover:border-primary/30 transition-all duration-200 group'
+                          : 'flex flex-col h-full text-left rounded-xl border border-border bg-background p-4 shadow-sm hover:shadow-md hover:bg-muted/30 hover:border-primary/20 transition-all duration-200 group'
+                      }
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FolderOpen className={`w-4 h-4 shrink-0 ${isEmpty ? 'text-muted-foreground/60' : 'text-primary'}`} />
+                          <h3 className={`text-sm font-medium truncate ${isEmpty ? 'text-foreground/80' : 'text-foreground'}`}>
+                            {project.name}
+                          </h3>
+                        </div>
+                        {project.starred && (
+                          <Star className="w-3.5 h-3.5 fill-[var(--color-star)] text-[var(--color-star)] shrink-0" />
+                        )}
+                      </div>
 
-                  {project.description && (
-                    <p className="text-xs text-muted-foreground line-clamp-2 mb-3">
-                      {project.description}
-                    </p>
-                  )}
+                      {project.description && (
+                        <p className="text-xs text-muted-foreground line-clamp-2 mb-3">
+                          {project.description}
+                        </p>
+                      )}
 
-                  <div className="flex items-center justify-between text-xs text-muted-foreground/70">
-                    <span className="flex items-center gap-1">
-                      <MessageSquare className="w-3 h-3" />
-                      {project.thread_count} {project.thread_count === 1 ? 'thread' : 'threads'}
-                    </span>
-                    <span>{formatDate(project.updated_at)}</span>
-                  </div>
-                </button>
-              </ProjectContextMenu>
-            ))}
+                      {isEmpty ? (
+                        <div className="mt-auto flex items-center gap-1.5 text-xs text-muted-foreground/80 group-hover:text-primary transition-colors">
+                          <span>Start your first chat</span>
+                          <ArrowRight className="w-3 h-3" />
+                        </div>
+                      ) : (
+                        <div className="mt-auto flex items-center justify-between text-xs text-muted-foreground/70">
+                          <span className="flex items-center gap-1">
+                            <MessageSquare className="w-3 h-3" />
+                            {project.thread_count} {project.thread_count === 1 ? 'thread' : 'threads'}
+                          </span>
+                          <span>{formatDate(project.updated_at)}</span>
+                        </div>
+                      )}
+                    </button>
+                  </ProjectContextMenu>
+                );
+              })}
           </div>
         )}
       </div>

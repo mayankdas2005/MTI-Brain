@@ -196,12 +196,18 @@ def _build_sse_generator(
             # Emit timing anchor as the very first event so the client
             # can synchronise its live timer with the server's clock.
             _elapsed = int((time.perf_counter() - _stream_start) * 1000)
+            logger.info(
+                f"[sse] generator first yield for thread {thread_id}: "
+                f"elapsed_since_request={_elapsed}ms"
+            )
             yield {"event": "timing.sync", "data": json.dumps({"elapsed_ms": _elapsed})}
 
             if generate_title:
                 title = conv_service.make_title(question)
                 if title:
-                    await conv_service.save_smart_title(thread_id, title)
+                    # DB save is kicked off as a background task by the caller
+                    # before the generator runs (see ask_question). We only
+                    # emit the SSE event here for the live frontend update.
                     yield {
                         "event": "title.generated",
                         "data": json.dumps({"thread_id": str(thread_id), "title": title}),
@@ -362,13 +368,20 @@ def _build_sse_generator(
 
             # Persist the message BEFORE emitting done so any immediate
             # fetchThread from the client sees the saved message.
+            _t_save_start = time.perf_counter()
             await _save_assistant_message(final_data)
+            _t_save_assistant = (time.perf_counter() - _t_save_start) * 1000
 
             # Compute duration_ms RIGHT BEFORE yielding done - this is the
             # value the client displays, so it must be as close as possible
             # to the LiveTimer's last tick. The DB patch runs as a
             # fire-and-forget task so it doesn't add latency.
             final_data["duration_ms"] = int((time.perf_counter() - _stream_start) * 1000)
+            logger.info(
+                f"[sse] stream done for thread {thread_id}: "
+                f"total_duration={final_data['duration_ms']}ms, "
+                f"save_assistant={_t_save_assistant:.0f}ms"
+            )
 
             async def _patch_duration(conv_id: uuid.UUID, duration: int) -> None:
                 try:
@@ -624,14 +637,15 @@ async def ask_question(
     request_time = time.perf_counter()
     conversation_id = body.conversation_id or uuid.uuid4()
 
-    if not await conv_service.thread_exists(db, thread_id, user_id=current_user.id):
-        raise HTTPException(status_code=404, detail="Thread not found")
-
     user_meta = None
     if body.source_conversation_id:
         user_meta = {"source_conversation_id": str(body.source_conversation_id)}
 
-    _, is_first_message = await conv_service.save_message_and_touch(
+    # Single round-trip: the thread UPDATE inside save_message_and_touch
+    # filters by user_id, so it doubles as the ownership check. No separate
+    # thread_exists query needed — saves ~1.3s of pre-SSE DB latency.
+    _t1 = time.perf_counter()
+    save_result = await conv_service.save_message_and_touch(
         db,
         thread_id=thread_id,
         conversation_id=conversation_id,
@@ -639,8 +653,13 @@ async def ask_question(
         content=body.question,
         auto_title=body.question[:200],
         metadata=user_meta,
+        user_id=current_user.id,
     )
+    if save_result is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    _, is_first_message = save_result
     await db.commit()
+    _t_save = (time.perf_counter() - _t1) * 1000
 
     # Fire-and-forget title save as a background task so it is guaranteed to
     # complete even if the client aborts the SSE stream before the generator
@@ -650,6 +669,12 @@ async def ask_question(
         title = conv_service.make_title(body.question)
         if title:
             asyncio.create_task(conv_service.save_smart_title(thread_id, title))
+
+    logger.info(
+        f"[ask] pre-SSE timing for thread {thread_id}: "
+        f"save_user_msg={_t_save:.0f}ms, "
+        f"total_handler={(time.perf_counter() - request_time) * 1000:.0f}ms"
+    )
 
     generator = _build_sse_generator(
         question=body.question,
@@ -687,7 +712,7 @@ async def retry_response(
     if body.source_conversation_id:
         user_meta = {"source_conversation_id": str(body.source_conversation_id)}
 
-    await conv_service.save_message_and_touch(
+    save_result = await conv_service.save_message_and_touch(
         db,
         thread_id=thread_id,
         conversation_id=new_conversation_id,
@@ -695,7 +720,10 @@ async def retry_response(
         role="user",
         content=question,
         metadata=user_meta,
+        user_id=current_user.id,
     )
+    if save_result is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
     await db.commit()
 
     generator = _build_sse_generator(
@@ -737,7 +765,7 @@ async def edit_question(
     if body.source_conversation_id:
         user_meta = {"source_conversation_id": str(body.source_conversation_id)}
 
-    await conv_service.save_message_and_touch(
+    save_result = await conv_service.save_message_and_touch(
         db,
         thread_id=thread_id,
         conversation_id=new_conversation_id,
@@ -745,7 +773,10 @@ async def edit_question(
         role="user",
         content=body.question,
         metadata=user_meta,
+        user_id=current_user.id,
     )
+    if save_result is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
 
     await db.commit()
 

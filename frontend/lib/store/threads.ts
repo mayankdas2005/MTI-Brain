@@ -322,6 +322,11 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null;
 // network requests and the slower one's stale result can overwrite the faster one.
 let fetchRecentsFlight: Promise<void> | null = null;
 
+// Per-threadId in-flight dedup. React StrictMode double-mounts effects in dev,
+// and the chat page's effect runs alongside any layout-level priming - both
+// hit the same threadId within ms. Coalesce overlapping calls to one request.
+const fetchThreadFlights = new Map<string, Promise<void>>();
+
 // ─── Store ───
 
 export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
@@ -403,58 +408,67 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
   },
 
   fetchThread: async (threadId) => {
-    // Show skeleton only when no messages are available (neither current nor map)
-    const hasMessages =
-      (get().currentThreadId === threadId && get().currentMessages.length > 0) ||
-      (get().threadMessageMap[threadId]?.length ?? 0) > 0;
-    set({ messagesLoading: !hasMessages, currentThreadId: threadId });
-    try {
-      const detail = await api.getThread(threadId);
-      const messages: Message[] = detail.messages.map((m) => ({
-        id: m.id,
-        conversation_id: m.conversation_id,
-        parent_conversation_id: m.parent_conversation_id ?? undefined,
-        source_conversation_id: m.role === 'user'
-          ? (m.metadata_?.source_conversation_id as string | undefined)
-          : undefined,
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-        reasoning: parseReasoning(m.reasoning),
-        streamingSteps: m.role === 'assistant' ? extractSteps(m.reasoning, m.content, m.metadata_) : undefined,
-        metadata_: m.metadata_,
-        feedback: m.feedback ? { liked: m.feedback.liked, comment: m.feedback.comment ?? undefined } : undefined,
-        created_at: m.created_at,
-      }));
-      // Don't overwrite messages if askQuestion already populated them (race with pendingQuestion)
-      const current = get().currentMessages;
-      const shouldKeepMessages = current.length > 0 && messages.length === 0 && get().currentThreadId === threadId;
-      const resolved = shouldKeepMessages ? current : messages;
-      // Race guard: user may have navigated to a different thread while
-      // this fetch was in flight. Always update the cache map, but only
-      // commit to current* state if we're still viewing this thread.
-      const stillViewing = get().currentThreadId === threadId;
-      if (stillViewing) {
-        set((state) => ({
-          currentMessages: resolved,
-          currentThreadTitle: detail.title,
-          currentThreadStarred: detail.starred,
-          currentThreadProjectId: detail.project_id,
-          messagesLoading: false,
-          threadMessageMap: { ...state.threadMessageMap, [threadId]: resolved },
+    const inflight = fetchThreadFlights.get(threadId);
+    if (inflight) return inflight;
+
+    const run = async () => {
+      // Show skeleton only when no messages are available (neither current nor map)
+      const hasMessages =
+        (get().currentThreadId === threadId && get().currentMessages.length > 0) ||
+        (get().threadMessageMap[threadId]?.length ?? 0) > 0;
+      set({ messagesLoading: !hasMessages, currentThreadId: threadId });
+      try {
+        const detail = await api.getThread(threadId);
+        const messages: Message[] = detail.messages.map((m) => ({
+          id: m.id,
+          conversation_id: m.conversation_id,
+          parent_conversation_id: m.parent_conversation_id ?? undefined,
+          source_conversation_id: m.role === 'user'
+            ? (m.metadata_?.source_conversation_id as string | undefined)
+            : undefined,
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          reasoning: parseReasoning(m.reasoning),
+          streamingSteps: m.role === 'assistant' ? extractSteps(m.reasoning, m.content, m.metadata_) : undefined,
+          metadata_: m.metadata_,
+          feedback: m.feedback ? { liked: m.feedback.liked, comment: m.feedback.comment ?? undefined } : undefined,
+          created_at: m.created_at,
         }));
-      } else {
-        // Still cache for future visits, but don't touch current view
-        set((state) => ({
-          threadMessageMap: { ...state.threadMessageMap, [threadId]: resolved },
-        }));
+        // Don't overwrite messages if askQuestion already populated them (race with pendingQuestion)
+        const current = get().currentMessages;
+        const shouldKeepMessages = current.length > 0 && messages.length === 0 && get().currentThreadId === threadId;
+        const resolved = shouldKeepMessages ? current : messages;
+        // Race guard: user may have navigated to a different thread while
+        // this fetch was in flight. Always update the cache map, but only
+        // commit to current* state if we're still viewing this thread.
+        const stillViewing = get().currentThreadId === threadId;
+        if (stillViewing) {
+          set((state) => ({
+            currentMessages: resolved,
+            currentThreadTitle: detail.title,
+            currentThreadStarred: detail.starred,
+            currentThreadProjectId: detail.project_id,
+            messagesLoading: false,
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: resolved },
+          }));
+        } else {
+          // Still cache for future visits, but don't touch current view
+          set((state) => ({
+            threadMessageMap: { ...state.threadMessageMap, [threadId]: resolved },
+          }));
+        }
+      } catch {
+        // Only clear loading if we're still on this thread
+        if (get().currentThreadId === threadId) {
+          set({ messagesLoading: false });
+        }
+        throw new Error('Thread not found');
       }
-    } catch {
-      // Only clear loading if we're still on this thread
-      if (get().currentThreadId === threadId) {
-        set({ messagesLoading: false });
-      }
-      throw new Error('Thread not found');
-    }
+    };
+
+    const p = run();
+    fetchThreadFlights.set(threadId, p.finally(() => fetchThreadFlights.delete(threadId)));
+    return p;
   },
 
   // ─── Thread CRUD ───

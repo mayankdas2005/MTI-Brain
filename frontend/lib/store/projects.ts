@@ -5,6 +5,12 @@ import type { ProjectOut, ProjectDetail } from '../types/api';
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
+// In-flight dedup. Layout fires fetchProjects on every navigation; the projects
+// page also fires it on mount; React StrictMode double-mounts both in dev.
+// One flight for the default no-search call, one Map keyed by id for details.
+let fetchProjectsFlight: Promise<void> | null = null;
+const fetchProjectFlights = new Map<string, Promise<void>>();
+
 interface ProjectStore {
   // List
   projects: ProjectOut[];
@@ -60,14 +66,25 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
   projectDetailMap: {},
 
   fetchProjects: async (search) => {
-    // Only show loading skeleton on first fetch, not on background revalidation
-    if (!get().fetched) set({ loading: true });
-    try {
-      const projects = await api.listProjects(search);
-      set({ projects, loading: false, fetched: true, lastFetched: Date.now() });
-    } catch {
-      set({ loading: false });
+    const isDefault = search === undefined;
+    if (isDefault && fetchProjectsFlight) return fetchProjectsFlight;
+
+    const run = async () => {
+      // Only show loading skeleton on first fetch, not on background revalidation
+      if (!get().fetched) set({ loading: true });
+      try {
+        const projects = await api.listProjects(search);
+        set({ projects, loading: false, fetched: true, lastFetched: Date.now() });
+      } catch {
+        set({ loading: false });
+      }
+    };
+
+    const p = run();
+    if (isDefault) {
+      fetchProjectsFlight = p.finally(() => { fetchProjectsFlight = null; });
     }
+    return p;
   },
 
   setSearchQuery: (query) => {
@@ -85,74 +102,83 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
   },
 
   fetchProject: async (id) => {
-    // Three-tier seeding to match the chat detail page's instant feel:
-    //  1. Full cache hit  → render header + threads immediately, refresh quietly.
-    //  2. List-only seed  → render header now, show a thread-list skeleton
-    //                       while the detail request lands.
-    //  3. Cold            → full-page skeleton (rare; only on first ever visit).
-    const cached = get().projectDetailMap[id];
-    const currentId = get().currentProject?.id;
+    const inflight = fetchProjectFlights.get(id);
+    if (inflight) return inflight;
 
-    if (cached) {
-      if (currentId !== id) set({ currentProject: cached });
-      set({ currentProjectLoading: false });
-    } else {
-      const listEntry = get().projects.find((p) => p.id === id);
-      if (listEntry && currentId !== id) {
-        set({
-          currentProject: {
-            id: listEntry.id,
-            name: listEntry.name,
-            description: listEntry.description,
-            starred: listEntry.starred,
-            threads: [],
-            created_at: listEntry.created_at,
-            updated_at: listEntry.updated_at,
-          },
-        });
-      }
-      // Threads aren't available yet either way - flag for the page.
-      set({ currentProjectLoading: true });
-    }
+    const run = async () => {
+      // Three-tier seeding to match the chat detail page's instant feel:
+      //  1. Full cache hit  → render header + threads immediately, refresh quietly.
+      //  2. List-only seed  → render header now, show a thread-list skeleton
+      //                       while the detail request lands.
+      //  3. Cold            → full-page skeleton (rare; only on first ever visit).
+      const cached = get().projectDetailMap[id];
+      const currentId = get().currentProject?.id;
 
-    try {
-      const project = await api.getProject(id);
-      // Always update the per-id cache, even if the user navigated away
-      // mid-flight - the next visitor will get fresh data.
-      set((state) => ({
-        projectDetailMap: { ...state.projectDetailMap, [id]: project },
-        // Reconcile the list entry with the authoritative detail response.
-        // Without this, sidebar (driven by `projects`) and the detail page
-        // (driven by `currentProject`) can disagree on starred / name /
-        // description after a cross-tab edit or stale-cache hydration.
-        projects: state.projects.map((p) =>
-          p.id === id
-            ? {
-                ...p,
-                name: project.name,
-                description: project.description,
-                starred: project.starred,
-                thread_count: project.threads.length,
-                updated_at: project.updated_at,
-              }
-            : p,
-        ),
-      }));
-      // Race guard: only overwrite currentProject if we're still viewing
-      // this id (or holding a header-only seed for it).
-      const latest = get().currentProject;
-      if (!latest || latest.id === id) {
-        set({ currentProject: project, currentProjectLoading: false });
-      } else {
+      if (cached) {
+        if (currentId !== id) set({ currentProject: cached });
         set({ currentProjectLoading: false });
+      } else {
+        const listEntry = get().projects.find((p) => p.id === id);
+        if (listEntry && currentId !== id) {
+          set({
+            currentProject: {
+              id: listEntry.id,
+              name: listEntry.name,
+              description: listEntry.description,
+              starred: listEntry.starred,
+              threads: [],
+              created_at: listEntry.created_at,
+              updated_at: listEntry.updated_at,
+            },
+          });
+        }
+        // Threads aren't available yet either way - flag for the page.
+        set({ currentProjectLoading: true });
       }
-    } catch {
-      set({ currentProjectLoading: false });
-      // Only surface a hard error when we have nothing to render. With a
-      // cache hit the user keeps seeing the stale-but-valid view and the
-      // next mutation/refresh will reconcile.
-      if (!cached) throw new Error('Project not found');
-    }
+
+      try {
+        const project = await api.getProject(id);
+        // Always update the per-id cache, even if the user navigated away
+        // mid-flight - the next visitor will get fresh data.
+        set((state) => ({
+          projectDetailMap: { ...state.projectDetailMap, [id]: project },
+          // Reconcile the list entry with the authoritative detail response.
+          // Without this, sidebar (driven by `projects`) and the detail page
+          // (driven by `currentProject`) can disagree on starred / name /
+          // description after a cross-tab edit or stale-cache hydration.
+          projects: state.projects.map((p) =>
+            p.id === id
+              ? {
+                  ...p,
+                  name: project.name,
+                  description: project.description,
+                  starred: project.starred,
+                  thread_count: project.threads.length,
+                  updated_at: project.updated_at,
+                }
+              : p,
+          ),
+        }));
+        // Race guard: only overwrite currentProject if we're still viewing
+        // this id (or holding a header-only seed for it).
+        const latest = get().currentProject;
+        if (!latest || latest.id === id) {
+          set({ currentProject: project, currentProjectLoading: false });
+        } else {
+          set({ currentProjectLoading: false });
+        }
+      } catch {
+        set({ currentProjectLoading: false });
+        // Only surface a hard error when we have nothing to render. With a
+        // cache hit the user keeps seeing the stale-but-valid view and the
+        // next mutation/refresh will reconcile.
+        if (!cached) throw new Error('Project not found');
+      }
+    };
+
+    const p = run();
+    fetchProjectFlights.set(id, p.finally(() => fetchProjectFlights.delete(id)));
+    return p;
   },
 
   updateProject: async (id, name, description) => {

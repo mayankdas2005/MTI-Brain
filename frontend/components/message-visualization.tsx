@@ -65,6 +65,9 @@ interface MessageVisualizationProps {
   columns?: string[];
   rows?: unknown[][];
   chartSpec?: Record<string, unknown>;
+  /** Conversation id of the assistant message — used by the PDF export to
+   *  locate this rendered chart in the DOM and capture it as an image. */
+  conversationId?: string;
 }
 
 // ─── Font family for SVG text - explicit so exports/copies keep the same font ───
@@ -453,7 +456,7 @@ function inlineStyles(source: Element, target: Element) {
   }
 }
 
-async function exportChartAsCanvas(container: HTMLDivElement, title?: string): Promise<HTMLCanvasElement> {
+export async function exportChartAsCanvas(container: HTMLElement, title?: string): Promise<HTMLCanvasElement> {
   // Select the Recharts SVG, not the lucide icon SVGs in the action buttons
   const svgEl = container.querySelector('.recharts-wrapper svg') || container.querySelector('svg:last-of-type');
   if (!svgEl) throw new Error('No SVG found');
@@ -570,6 +573,7 @@ export function MessageVisualization({
   columns,
   rows,
   chartSpec,
+  conversationId,
 }: MessageVisualizationProps) {
   const chartRef = useRef<HTMLDivElement>(null);
 
@@ -610,7 +614,7 @@ export function MessageVisualization({
 
   return (
     <div className="mt-3">
-      <div ref={chartRef} className="group relative rounded-xl border border-border pt-4 px-4 pb-2 bg-sidebar">
+      <div ref={chartRef} data-chart-conv-id={conversationId} className="group relative rounded-xl border border-border pt-4 px-4 pb-2 bg-sidebar">
         {/* Chart action buttons */}
         <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
           <Tooltip>
