@@ -280,7 +280,7 @@ interface ThreadStore {
 
   // Bulk
   bulkDeleteThreads: () => Promise<void>;
-  bulkMoveThreads: (projectId: string | null) => Promise<void>;
+  bulkMoveThreads: (projectId: string | null, threadIds?: string[]) => Promise<void>;
 
   // Streaming
   askQuestion: (threadId: string, question: string, sourceConversationId?: string, priorSql?: string) => Promise<void>;
@@ -655,8 +655,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     }
   },
 
-  bulkMoveThreads: async (projectId) => {
-    const ids = [...get().selectedThreadIds];
+  bulkMoveThreads: async (projectId, threadIds?) => {
+    const ids = threadIds ?? [...get().selectedThreadIds];
     if (ids.length === 0) return;
     const prev = get().threads;
     const affectedProjectIds = new Set(

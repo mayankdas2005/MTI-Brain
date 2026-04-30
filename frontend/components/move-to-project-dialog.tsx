@@ -59,7 +59,7 @@ export function MoveToProjectDialog({
     setSaving(true);
     try {
       if (isBulk) {
-        await bulkMoveThreads(selectedProjectId);
+        await bulkMoveThreads(selectedProjectId, threadIds);
       } else if (threadIds.length === 1) {
         await moveThread(threadIds[0], selectedProjectId);
       }
