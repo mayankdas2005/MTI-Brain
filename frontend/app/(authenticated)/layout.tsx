@@ -139,7 +139,23 @@ export default function AuthenticatedLayout({
     ];
 
     const handler = (e: KeyboardEvent) => {
-      // Skip if user is typing in an input
+      const isCmdMod = navigator.platform.toUpperCase().indexOf('MAC') >= 0 ? e.metaKey : e.ctrlKey;
+
+      // Cmd+/ → keyboard shortcuts dialog. Checked BEFORE the input/textarea
+      // guard because the user almost always has the chat composer focused
+      // when they hit this. react-hotkeys-hook's `mod+/` binding gets flaky
+      // on Edge (browser intercepts it for built-in commands when a PWA is
+      // installed for the origin), so this manual handler is the reliable
+      // path. We accept both `/` and `?` because some layouts emit `?` for
+      // shift+/ and we want either to fire the dialog.
+      if (isCmdMod && (e.key === '/' || e.key === '?')) {
+        e.preventDefault();
+        useUIStore.getState().toggleShortcuts();
+        return;
+      }
+
+      // Skip if user is typing in an input (only matters for the easter
+      // eggs / nav shortcuts below — Cmd+/ is handled above unconditionally).
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
