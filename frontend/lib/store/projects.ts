@@ -4,6 +4,7 @@ import * as api from '../api';
 import type { ProjectOut, ProjectDetail } from '../types/api';
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchController: AbortController | null = null;
 
 // In-flight dedup. Layout fires fetchProjects on every navigation; the projects
 // page also fires it on mount; React StrictMode double-mounts both in dev.
@@ -14,6 +15,11 @@ const fetchProjectFlights = new Map<string, Promise<void>>();
 interface ProjectStore {
   // List
   projects: ProjectOut[];
+  // Search results live here, separate from `projects`, so the sidebar /
+  // starred list (which reads `projects`) keeps showing the full set when
+  // the user is searching from the Projects page.
+  searchResults: ProjectOut[];
+  searchLoading: boolean;
   loading: boolean;
   fetched: boolean;
   lastFetched: number;
@@ -57,6 +63,8 @@ interface ProjectStore {
 
 export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
   projects: [],
+  searchResults: [],
+  searchLoading: false,
   loading: false,
   fetched: false,
   lastFetched: 0,
@@ -70,13 +78,34 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
     if (isDefault && fetchProjectsFlight) return fetchProjectsFlight;
 
     const run = async () => {
-      // Only show loading skeleton on first fetch, not on background revalidation
-      if (!get().fetched) set({ loading: true });
-      try {
-        const projects = await api.listProjects(search);
-        set({ projects, loading: false, fetched: true, lastFetched: Date.now() });
-      } catch {
-        set({ loading: false });
+      if (isDefault) {
+        // Master cache fetch: only show loading skeleton on first fetch,
+        // not on background revalidation.
+        if (!get().fetched) set({ loading: true });
+        try {
+          const projects = await api.listProjects(undefined);
+          set({ projects, loading: false, fetched: true, lastFetched: Date.now() });
+        } catch {
+          set({ loading: false });
+        }
+      } else {
+        // Search call: writes to `searchResults` only, leaves `projects` alone
+        // so the sidebar (which reads `projects`) stays populated.
+        if (searchController) searchController.abort();
+        const controller = new AbortController();
+        searchController = controller;
+        set({ searchLoading: true });
+        try {
+          const results = await api.listProjects(search, controller.signal);
+          if (controller.signal.aborted) return;
+          set({ searchResults: results, searchLoading: false });
+        } catch (err) {
+          if (controller.signal.aborted) return;
+          if ((err as { name?: string })?.name === 'AbortError') return;
+          set({ searchLoading: false });
+        } finally {
+          if (searchController === controller) searchController = null;
+        }
       }
     };
 
@@ -90,8 +119,19 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
   setSearchQuery: (query) => {
     set({ searchQuery: query });
     if (searchTimer) clearTimeout(searchTimer);
+    // Clear any in-flight search immediately on keystroke.
+    if (searchController) {
+      searchController.abort();
+      searchController = null;
+    }
+    if (!query) {
+      // Clearing the input: drop search results, sidebar/page fall back
+      // to the `projects` cache.
+      set({ searchResults: [], searchLoading: false });
+      return;
+    }
     searchTimer = setTimeout(() => {
-      get().fetchProjects(query || undefined);
+      get().fetchProjects(query);
     }, 300);
   },
 

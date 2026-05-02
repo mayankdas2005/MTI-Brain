@@ -28,7 +28,7 @@ export class ApiError extends Error {
 
 export async function apiFetch<T>(
   path: string,
-  options: RequestInit = {},
+  options: RequestInit & { signal?: AbortSignal } = {},
 ): Promise<T> {
   const url = `${apiBase}${path}`;
 

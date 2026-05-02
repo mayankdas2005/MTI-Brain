@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: list[str] = Field(default_factory=list)
 
-    JWT_SECRET: str = Field(default="change-me-in-production")
+    JWT_SECRET: str = Field(..., min_length=32)
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
@@ -76,6 +76,15 @@ class Settings(BaseSettings):
         if value not in allowed:
             raise ValueError(f"DATABASE_SSL_MODE must be one of {allowed}")
         return value
+
+    @field_validator("JWT_SECRET")
+    @classmethod
+    def validate_jwt_secret(cls, v: str) -> str:
+        if v == "change-me-in-production":
+            raise ValueError(
+                "JWT_SECRET must be set to a real secret, not the placeholder default"
+            )
+        return v
 
     @property
     def DATABASE_URL(self) -> str:

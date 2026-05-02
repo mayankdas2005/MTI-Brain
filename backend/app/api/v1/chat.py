@@ -518,7 +518,9 @@ async def get_chat(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_read_session),
 ):
-    thread, messages = await conv_service.get_thread(db, thread_id)
+    thread, messages = await conv_service.get_thread(
+        db, thread_id, user_id=current_user.id
+    )
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
@@ -827,9 +829,9 @@ async def submit_feedback(
             liked=body.liked,
             comment=body.comment,
         )
-    except Exception as e:
-        logger.error(f"Feedback save failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to save feedback: {e}")
+    except Exception:
+        logger.exception("Feedback save failed")
+        raise HTTPException(status_code=500, detail="Failed to save feedback")
 
     return FeedbackOut(
         id=feedback.id,

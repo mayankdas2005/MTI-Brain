@@ -54,6 +54,8 @@ class QuestProject(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     starred: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Full-text search vector - auto-populated by DB trigger on (name, description)
+    search_vector = mapped_column(TSVECTOR, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -70,6 +72,19 @@ class QuestProject(Base):
 
     __table_args__ = (
         Index("ix_quest_project_user", "user_id"),
+        Index("ix_quest_project_search", "search_vector", postgresql_using="gin"),
+        Index(
+            "ix_quest_project_name_trgm",
+            "name",
+            postgresql_using="gin",
+            postgresql_ops={"name": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_quest_project_description_trgm",
+            "description",
+            postgresql_using="gin",
+            postgresql_ops={"description": "gin_trgm_ops"},
+        ),
     )
 
 

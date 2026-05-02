@@ -97,15 +97,19 @@ export default function ChatsPage() {
     setLoading(false);
   }, [offset, threads.length]);
 
-  const fetchSearch = useCallback(async (query: string) => {
+  const fetchSearch = useCallback(async (query: string, signal?: AbortSignal) => {
     setSearchLoading(true);
     try {
-      const results = await api.getRecents({ search: query, limit: 50 });
+      const results = await api.getRecents({ search: query, limit: 50 }, signal);
+      if (signal?.aborted) return;
       setSearchResults(results as SearchResult[]);
-    } catch {
+    } catch (err) {
+      // Aborted requests are expected during fast typing; don't toast.
+      if ((err as { name?: string })?.name === 'AbortError') return;
       toast.error('Search failed');
+    } finally {
+      if (!signal?.aborted) setSearchLoading(false);
     }
-    setSearchLoading(false);
   }, []);
 
   // Initial load - seed from Zustand cache so the page renders instantly.
@@ -157,8 +161,12 @@ export default function ChatsPage() {
       return;
     }
     setSearchLoading(true);
-    const timer = setTimeout(() => fetchSearch(trimmed), 150);
-    return () => clearTimeout(timer);
+    const controller = new AbortController();
+    const timer = setTimeout(() => fetchSearch(trimmed, controller.signal), 300);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [search, fetchSearch]);
 
   // Reset focused search index when results change.
@@ -308,7 +316,7 @@ export default function ChatsPage() {
 
         {/* Selection bar */}
         {!isSearching && (
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3 min-h-8">
             <div className="flex items-center gap-3">
               {selectMode ? (
                 <>
@@ -407,7 +415,7 @@ export default function ChatsPage() {
                     router.prefetch(`/chat/${result.thread_id}`);
                     setFocusedSearchIndex(index);
                   }}
-                  className={`w-full text-left rounded-lg px-4 py-3 transition-colors group animate-in fade-in slide-in-from-bottom-1 duration-150 fill-mode-both ${
+                  className={`w-full text-left rounded-lg px-4 py-3 transition-all duration-100 group animate-in fade-in slide-in-from-bottom-1 fill-mode-both ${
                     focusedSearchIndex === index
                       ? 'bg-muted/70 ring-1 ring-border'
                       : 'hover:bg-muted/50'
@@ -419,7 +427,7 @@ export default function ChatsPage() {
                   </p>
                   {result.headline && (
                     <p
-                      className="text-xs text-muted-foreground mt-0.5 line-clamp-2 [&_b]:text-foreground [&_b]:font-semibold"
+                      className="text-xs text-muted-foreground mt-0.5 line-clamp-4 leading-relaxed [&_b]:text-foreground [&_b]:font-semibold"
                       dangerouslySetInnerHTML={{ __html: result.headline }}
                     />
                   )}
@@ -473,23 +481,32 @@ export default function ChatsPage() {
                   <div
                     onClick={() => selectMode ? toggleSelect(thread.id) : router.push(`/chat/${thread.id}`)}
                     onMouseEnter={() => { if (!selectMode) { router.prefetch(`/chat/${thread.id}`); setFocusedIndex(index); } }}
-                    className={`flex items-center px-4 py-3.5 cursor-pointer transition-colors rounded-lg ${
+                    className={`group flex items-center px-4 py-3.5 cursor-pointer transition-all duration-100 rounded-lg ${
                       selectedIds.has(thread.id)
-                        ? 'bg-primary/8'
+                        ? 'bg-primary/15 ring-1 ring-primary/40'
                         : focusedIndex === index
-                        ? 'bg-muted/70 ring-1 ring-border'
+                        ? 'bg-muted/40 ring-1 ring-border'
                         : 'hover:bg-muted/50'
                     }`}
                   >
-                    {selectMode && (
-                      <div className="mr-3 shrink-0" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox
-                          checked={selectedIds.has(thread.id)}
-                          onCheckedChange={() => toggleSelect(thread.id)}
-                          className="h-5 w-5"
-                        />
-                      </div>
-                    )}
+                    <div
+                      className={`mr-3 shrink-0 transition-opacity duration-100 ${
+                        selectMode || selectedIds.has(thread.id)
+                          ? 'opacity-100'
+                          : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
+                      }`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Checkbox
+                        checked={selectedIds.has(thread.id)}
+                        onCheckedChange={() => {
+                          if (!selectMode) setSelectMode(true);
+                          toggleSelect(thread.id);
+                        }}
+                        className="h-5 w-5"
+                        aria-label={`Select chat: ${thread.title || 'Untitled'}`}
+                      />
+                    </div>
 
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">

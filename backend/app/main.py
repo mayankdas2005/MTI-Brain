@@ -11,11 +11,19 @@ from app.api.health import router as health_router
 from app.api.v1 import v1_router
 from app.core.config import settings
 from app.core.logger import logger
-from app.core.middleware import RequestIDMiddleware, TimingMiddleware
+from app.core.middleware import (
+    RequestIDMiddleware,
+    SecurityHeadersMiddleware,
+    TimingMiddleware,
+)
+from app.core.rate_limit import limiter
 from app.db import dispose_engine, warm_pool
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 
 @asynccontextmanager
@@ -31,6 +39,11 @@ app = FastAPI(
     title=settings.APP_NAME, lifespan=lifespan, description="MTI Brain Backend API"
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(TimingMiddleware)
 app.add_middleware(

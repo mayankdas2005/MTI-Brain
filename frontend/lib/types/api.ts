@@ -40,7 +40,6 @@ export interface ThreadSummary {
   title: string | null;
   starred: boolean;
   last_message: string | null;
-  message_count: number;
   created_at: string;
   updated_at: string;
 }

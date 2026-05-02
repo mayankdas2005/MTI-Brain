@@ -2,9 +2,10 @@
 
 from app.api.v1.deps import CurrentUser, get_current_user
 from app.core.logger import logger
+from app.core.rate_limit import limiter
 from app.db import get_async_session
 from app.services import auth as auth_service
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,12 +32,17 @@ class MeResponse(BaseModel):
 
 
 @router.post("/login", response_model=AuthResponse)
+@limiter.limit("5/minute")
 async def login(
+    request: Request,
     body: LoginRequest,
     db: AsyncSession = Depends(get_async_session),
 ):
     user_data = auth_service.authenticate_user(body.username, body.password)
     if not user_data:
+        logger.warning(
+            f"Failed login for username={body.username!r} from {request.client.host if request.client else 'unknown'}"
+        )
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
     user = await auth_service.upsert_user(

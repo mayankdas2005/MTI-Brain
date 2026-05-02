@@ -29,6 +29,9 @@ loguru>=0.7.3
 # Auth (JWT)
 PyJWT>=2.8.0
 
+# Rate limiting
+slowapi>=0.1.9
+
 # HTTP client
 httpx>=0.28.1
 

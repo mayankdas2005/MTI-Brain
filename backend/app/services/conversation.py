@@ -1,5 +1,6 @@
 """Service layer for conversation thread and project CRUD operations."""
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -7,6 +8,28 @@ from app.core.logger import logger
 from app.models.conversation import QuestMessage, QuestProject, QuestThread
 from sqlalchemy import delete, exists, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+# Filter predicates injected into raw ``text()`` queries are expected to be
+# hardcoded literals like ``"t.user_id = :user_id"``. This regex permits
+# only characters that appear in such literals (identifiers, dots, whitespace,
+# parens for casts, comparison operators, commas, and ``:`` for bound params)
+# and forbids quotes, dashes, semicolons, braces, etc. ``_safe_filter`` runs
+# every predicate through it so a future commit can't slip an interpolated
+# value into the WHERE clause.
+_SAFE_FILTER_RE = re.compile(r"^[\w\s\.\(\)=<>!,:]+$")
+
+
+def _safe_filter(predicate: str) -> str:
+    """Validate that a SQL filter predicate contains only safe characters.
+
+    Raises:
+        ValueError: if the predicate contains anything that could carry
+            a SQL injection (string literals, f-string remnants, etc.).
+    """
+    if not _SAFE_FILTER_RE.fullmatch(predicate):
+        raise ValueError(f"Unsafe SQL filter predicate: {predicate!r}")
+    return predicate
 
 
 # ─── Threads ───
@@ -66,7 +89,9 @@ async def thread_exists(
 
 
 async def get_thread(
-    db: AsyncSession, thread_id: uuid.UUID
+    db: AsyncSession,
+    thread_id: uuid.UUID,
+    user_id: uuid.UUID | None = None,
 ) -> tuple[QuestThread, list[QuestMessage]] | tuple[None, None]:
     """Get thread with messages, excluding conversations with empty assistant responses.
 
@@ -75,14 +100,21 @@ async def get_thread(
     Args:
         db: Async database session.
         thread_id: The thread identifier to retrieve.
+        user_id: Optional owner filter; when provided, threads owned by other
+            users return as ``(None, None)``.
 
     Returns:
         A tuple of (QuestThread, list[QuestMessage]) if found, or (None, None)
-        if the thread does not exist.
+        if the thread does not exist or the caller does not own it.
     """
+    user_filter = _safe_filter("AND t.user_id = :uid") if user_id else ""
+    params: dict = {"tid": str(thread_id)}
+    if user_id:
+        params["uid"] = str(user_id)
+
     # Single query: thread columns + filtered messages + feedback via raw SQL
     result = await db.execute(
-        text("""
+        text(f"""
             WITH valid_convos AS (
                 SELECT DISTINCT conversation_id
                 FROM quest_message
@@ -109,7 +141,7 @@ async def get_thread(
                 ORDER BY f.created_at DESC
                 LIMIT 1
             ) f ON true
-            WHERE t.id = :tid
+            WHERE t.id = :tid {user_filter}
             ORDER BY m.created_at ASC,
                      CASE m.role
                          WHEN 'user' THEN 0
@@ -117,7 +149,7 @@ async def get_thread(
                          ELSE 2
                      END ASC
         """),
-        {"tid": str(thread_id)},
+        params,
     )
     rows = result.fetchall()
 
@@ -427,15 +459,15 @@ async def list_threads(
 
     Returns:
         A list of thread dictionaries containing id, project_id, title,
-        starred, last_message preview, message_count, created_at, and updated_at.
+        starred, last_message preview, created_at, and updated_at.
     """
-    filters = []
+    filters: list[str] = []
     params: dict = {"limit": limit, "offset": offset}
     if user_id:
-        filters.append("t.user_id = :user_id")
+        filters.append(_safe_filter("t.user_id = :user_id"))
         params["user_id"] = str(user_id)
     if project_id:
-        filters.append("t.project_id = :project_id")
+        filters.append(_safe_filter("t.project_id = :project_id"))
         params["project_id"] = str(project_id)
 
     where_clause = ("WHERE " + " AND ".join(filters)) if filters else ""
@@ -445,8 +477,7 @@ async def list_threads(
             SELECT
                 t.id, t.project_id, t.title, t.starred,
                 t.created_at, t.updated_at,
-                lm.content AS last_message,
-                mc.message_count
+                lm.content AS last_message
             FROM quest_thread t
             LEFT JOIN LATERAL (
                 SELECT m.content
@@ -460,11 +491,6 @@ async def list_threads(
                          END ASC
                 LIMIT 1
             ) lm ON true
-            LEFT JOIN LATERAL (
-                SELECT count(*) AS message_count
-                FROM quest_message m
-                WHERE m.thread_id = t.id
-            ) mc ON true
             {where_clause}
             ORDER BY t.updated_at DESC
             LIMIT :limit OFFSET :offset
@@ -479,7 +505,6 @@ async def list_threads(
             "title": row.title,
             "starred": row.starred,
             "last_message": (row.last_message[:150] + "...") if row.last_message and len(row.last_message) > 150 else row.last_message,
-            "message_count": row.message_count or 0,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
@@ -490,18 +515,40 @@ async def list_threads(
 # ─── Full-text search ───
 
 
+# Split tokens at digit-letter boundaries so "4week" is treated like "4 week"
+# (and "week4" like "week 4") before the FTS parser sees it. Without this,
+# PostgreSQL's default tokenizer keeps mixed alphanumeric runs as a single
+# token, and the trigram path (>= 0.55) doesn't match either side of the
+# boundary against the indexed words.
+_DIGIT_LETTER_BOUNDARY = re.compile(r"(\d)([a-zA-Z])|([a-zA-Z])(\d)")
+
+
+def _normalize_search(text: str) -> str:
+    """Insert spaces at digit-letter boundaries (``"4week"`` → ``"4 week"``)."""
+    return _DIGIT_LETTER_BOUNDARY.sub(
+        lambda m: f"{m.group(1) or m.group(3)} {m.group(2) or m.group(4)}",
+        text,
+    )
+
+
 def _build_search_sql(with_project: bool = False, with_user: bool = False) -> str:
-    """Build thread search SQL with 3-layer matching.
+    """Build thread search SQL with layered matching.
 
-    Layers:
-      1. Full-text search (tsvector) - handles stemming.
-      2. Per-word trigram (word_similarity) - handles typos like "volmue" -> "volume".
-      3. Per-word phonetic (dmetaphone) - handles phonetic typos like
-         "descripency" -> "discrepancy".
+    Match layers (combined via OR):
+      1. Full-text search on tsvector (stemming, English stopword removal).
+      2. Exact substring on title/content.
+      3. Per-word trigram fuzzy: every non-stopword in the query must
+         word_similarity > 0.55 with some word in the target text. Catches
+         typos like "volmue" -> "volume".
 
-    Multi-word searches require each search word to match at least one word
-    in the target text (via trigram OR phonetic), preventing "og ew" from
-    matching random text. A minimum rank filter (> 0.3) cuts noise.
+    Search words are pre-filtered to drop English stopwords (via
+    ``to_tsvector('english')``) and tokens shorter than 3 characters, so
+    queries like "the volume report" behave like "volume report" and the
+    Layer 3 guard isn't satisfied vacuously by short or common words.
+
+    Results are ordered by ``rank DESC`` (relevance first), with
+    ``updated_at`` as the recency tiebreaker. Rows below ``rank > 0.4``
+    are dropped as noise.
 
     Args:
         with_project: If True, include a ``project_id`` filter clause in the SQL.
@@ -510,20 +557,26 @@ def _build_search_sql(with_project: bool = False, with_user: bool = False) -> st
     Returns:
         The raw SQL string for the thread search query.
     """
-    project_filter_thread = "AND t.project_id = :project_id" if with_project else ""
-    project_filter_msg = "AND t.project_id = :project_id" if with_project else ""
-    user_filter_thread = "AND t.user_id = CAST(:user_id AS uuid)" if with_user else ""
-    user_filter_msg = "AND t.user_id = CAST(:user_id AS uuid)" if with_user else ""
+    project_filter_thread = _safe_filter("AND t.project_id = :project_id") if with_project else ""
+    project_filter_msg = _safe_filter("AND t.project_id = :project_id") if with_project else ""
+    user_filter_thread = _safe_filter("AND t.user_id = CAST(:user_id AS uuid)") if with_user else ""
+    user_filter_msg = _safe_filter("AND t.user_id = CAST(:user_id AS uuid)") if with_user else ""
 
     return f"""
 WITH params AS (
     SELECT
         websearch_to_tsquery('english', :search_text) AS q,
         :search_text AS raw_text,
-        string_to_array(lower(trim(:search_text)), ' ') AS search_words
+        ARRAY(
+            SELECT word
+            FROM unnest(string_to_array(lower(trim(:search_text)), ' ')) AS word
+            WHERE length(word) >= 3
+              AND to_tsvector('english', word)::text != ''
+        ) AS search_words
 ),
--- Helper: check if ALL search words fuzzy-match at least one word in the target text
--- A search word "matches" if it has word_similarity > 0.4 OR same dmetaphone with any target word
+-- Helper: ALL search words must fuzzy-match (word_similarity > 0.55)
+-- at least one word in the target text. Stopwords are already filtered
+-- out of search_words by the params CTE.
 thread_hits AS (
     SELECT
         t.id AS thread_id, t.project_id, t.title, t.created_at, t.updated_at,
@@ -538,17 +591,22 @@ thread_hits AS (
         t.search_vector @@ q
         -- Layer 2: exact substring
         OR t.title ILIKE '%' || p.raw_text || '%'
-        -- Layer 3: per-word fuzzy + phonetic - ALL search words must match
+        -- Layer 3: per-word fuzzy match (typo-tolerant). Each search word
+        -- matches a target word if EITHER trigram similarity is high OR edit
+        -- distance is small (Levenshtein, length-bounded). No `%` pre-filter:
+        -- it was too strict on length-mismatched query/content pairs (e.g.
+        -- one-word query vs. multi-sentence message diluted overall similarity
+        -- below 0.3). The NOT EXISTS short-circuits cheaply on its own.
         OR (
             array_length(p.search_words, 1) > 0
             AND NOT EXISTS (
                 SELECT 1 FROM unnest(p.search_words) AS sw(word)
-                WHERE length(sw.word) >= 2
-                  AND NOT EXISTS (
+                WHERE NOT EXISTS (
                     SELECT 1 FROM unnest(string_to_array(lower(t.title), ' ')) AS tw(word)
-                    WHERE word_similarity(sw.word, tw.word) > 0.4
-                       OR (length(sw.word) >= 3 AND dmetaphone(sw.word) = dmetaphone(tw.word)
-                           AND dmetaphone(sw.word) != '')
+                    WHERE word_similarity(sw.word, tw.word) > 0.55
+                       OR (length(sw.word) >= 4
+                           AND levenshtein_less_equal(sw.word, tw.word, 2)
+                                <= (CASE WHEN length(sw.word) <= 5 THEN 1 ELSE 2 END))
                   )
             )
         )
@@ -561,7 +619,7 @@ message_hits AS (
         m.thread_id, t.project_id, t.title, t.created_at, t.updated_at,
         m.content AS matched_content,
         ts_headline('english', m.content, q,
-            'MaxWords=35, MinWords=15, ShortWord=3, HighlightAll=true, StartSel=<b>, StopSel=</b>'
+            'MaxWords=60, MinWords=30, ShortWord=3, HighlightAll=false, StartSel=<b>, StopSel=</b>'
         ) AS headline,
         'message' AS match_type,
         COALESCE(ts_rank(m.search_vector, q), 0) * 1.0
@@ -581,16 +639,19 @@ message_hits AS (
       AND (
         m.search_vector @@ q
         OR m.content ILIKE '%' || p.raw_text || '%'
+        -- Layer 3: per-word fuzzy match (typo-tolerant). No `%` pre-filter:
+        -- with long messages and short queries, the symmetric `%` similarity
+        -- gets diluted below threshold even when individual words match well.
         OR (
             array_length(p.search_words, 1) > 0
             AND NOT EXISTS (
                 SELECT 1 FROM unnest(p.search_words) AS sw(word)
-                WHERE length(sw.word) >= 2
-                  AND NOT EXISTS (
+                WHERE NOT EXISTS (
                     SELECT 1 FROM unnest(string_to_array(lower(m.content), ' ')) AS tw(word)
-                    WHERE word_similarity(sw.word, tw.word) > 0.4
-                       OR (length(sw.word) >= 3 AND dmetaphone(sw.word) = dmetaphone(tw.word)
-                           AND dmetaphone(sw.word) != '')
+                    WHERE word_similarity(sw.word, tw.word) > 0.55
+                       OR (length(sw.word) >= 4
+                           AND levenshtein_less_equal(sw.word, tw.word, 2)
+                                <= (CASE WHEN length(sw.word) <= 5 THEN 1 ELSE 2 END))
                   )
             )
         )
@@ -604,19 +665,18 @@ all_hits AS (
 best_per_thread AS (
     SELECT DISTINCT ON (thread_id)
         thread_id, project_id, title, created_at, updated_at,
-        match_type, matched_content, headline, rank,
-        rank + (EXTRACT(EPOCH FROM updated_at) / 100000000.0) AS final_score
+        match_type, matched_content, headline, rank
     FROM all_hits
-    WHERE rank > 0.1
+    WHERE rank > 0.4
     ORDER BY thread_id, rank DESC
 )
 SELECT thread_id, project_id, title, created_at, updated_at,
     match_type, matched_content, headline, rank,
     CASE WHEN match_type = 'thread' THEN title
          ELSE COALESCE(headline, LEFT(matched_content, 120))
-    END AS preview, final_score
+    END AS preview
 FROM best_per_thread
-ORDER BY final_score DESC
+ORDER BY rank DESC, updated_at DESC
 LIMIT :limit OFFSET :offset
 """
 
@@ -652,6 +712,7 @@ async def search_threads(
     if len(search_text.strip()) < 2:
         return []
 
+    search_text = _normalize_search(search_text)
     params: dict = {"search_text": search_text, "limit": limit, "offset": offset}
 
     if project_id and user_id:
@@ -876,7 +937,7 @@ async def get_project(
         A dictionary with project details and a nested threads list, or None
         if the project does not exist.
     """
-    user_filter = "AND p.user_id = :user_id" if user_id else ""
+    user_filter = _safe_filter("AND p.user_id = :user_id") if user_id else ""
     params: dict = {"pid": str(project_id)}
     if user_id:
         params["user_id"] = str(user_id)
@@ -924,83 +985,150 @@ async def get_project(
 _PROJECT_SEARCH_SQL = text("""
     WITH params AS (
         SELECT
+            websearch_to_tsquery('english', :search_text) AS q,
             :search_text AS raw_text,
-            string_to_array(lower(trim(:search_text)), ' ') AS search_words
-    )
-    SELECT
-        p.id, p.name, p.description, p.starred, p.created_at, p.updated_at,
-        COUNT(t.id) AS thread_count,
-        GREATEST(
-            COALESCE(word_similarity(params.raw_text, p.name), 0),
-            COALESCE(word_similarity(params.raw_text, COALESCE(p.description, '')), 0)
-        ) AS sim_score
-    FROM quest_project p
-    LEFT JOIN quest_thread t ON t.project_id = p.id
-    CROSS JOIN params
-    WHERE (
-        -- Exact substring
-        p.name ILIKE '%' || params.raw_text || '%'
-        OR p.description ILIKE '%' || params.raw_text || '%'
-        -- Per-word fuzzy + phonetic: ALL search words must match some word in name+description
-        OR (
-            array_length(params.search_words, 1) > 0
-            AND NOT EXISTS (
-                SELECT 1 FROM unnest(params.search_words) AS sw(word)
-                WHERE length(sw.word) >= 2
-                  AND NOT EXISTS (
-                    SELECT 1 FROM unnest(string_to_array(
-                        lower(p.name || ' ' || COALESCE(p.description, '')), ' '
-                    )) AS tw(word)
-                    WHERE word_similarity(sw.word, tw.word) > 0.4
-                       OR (length(sw.word) >= 3 AND dmetaphone(sw.word) = dmetaphone(tw.word)
-                           AND dmetaphone(sw.word) != '')
-                  )
+            ARRAY(
+                SELECT word
+                FROM unnest(string_to_array(lower(trim(:search_text)), ' ')) AS word
+                WHERE length(word) >= 3
+                  AND to_tsvector('english', word)::text != ''
+            ) AS search_words,
+            -- Whitespace-collapsed lowercase form, used for Layer 4
+            -- so "kitkat" matches "Kit Kat" and vice versa.
+            regexp_replace(lower(trim(:search_text)), '\\s+', '', 'g') AS smushed_text
+    ),
+    matched AS (
+        SELECT
+            p.id, p.name, p.description, p.starred,
+            p.created_at, p.updated_at,
+            GREATEST(
+                COALESCE(ts_rank(p.search_vector, params.q), 0),
+                COALESCE(word_similarity(params.raw_text, p.name), 0),
+                COALESCE(word_similarity(params.raw_text, COALESCE(p.description, '')), 0)
+            ) AS sim_score
+        FROM quest_project p, params
+        WHERE (
+            -- Layer 1: full-text search on (name + description) tsvector
+            p.search_vector @@ params.q
+            -- Layer 2: exact substring (uses trigram GIN on name/description)
+            OR p.name ILIKE '%' || params.raw_text || '%'
+            OR p.description ILIKE '%' || params.raw_text || '%'
+            -- Layer 4: whitespace-collapsed comparison for short labels.
+            -- Handles concatenation and noise typos that per-word Layer 3
+            -- can't see because of the space boundary:
+            --   "kitkat"   ↔ "Kit Kat"  (smushed substring, either direction)
+            --   "kitkattt" → "Kit Kat"  (search contains smushed name)
+            --   "kkitakat" → "Kit Kat"  (Levenshtein on smushed name)
+            OR (params.smushed_text != '' AND (
+                replace(lower(p.name), ' ', '') ILIKE '%' || params.smushed_text || '%'
+                OR replace(lower(COALESCE(p.description, '')), ' ', '') ILIKE '%' || params.smushed_text || '%'
+                OR (length(replace(lower(p.name), ' ', '')) >= 3
+                    AND params.smushed_text ILIKE '%' || replace(lower(p.name), ' ', '') || '%')
+                OR (length(params.smushed_text) >= 4
+                    AND length(replace(lower(p.name), ' ', '')) >= 4
+                    AND levenshtein_less_equal(params.smushed_text, replace(lower(p.name), ' ', ''), 3)
+                        <= GREATEST(2, length(params.smushed_text) / 3))
+            ))
+            -- Layer 3: per-word trigram fuzzy (>= 0.55), pre-filtered by `%`
+            -- so the per-word loop only runs on rows with overall trigram similarity.
+            OR (
+                array_length(params.search_words, 1) > 0
+                AND NOT EXISTS (
+                    SELECT 1 FROM unnest(params.search_words) AS sw(word)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM unnest(string_to_array(
+                            lower(p.name || ' ' || COALESCE(p.description, '')), ' '
+                        )) AS tw(word)
+                        WHERE word_similarity(sw.word, tw.word) > 0.55
+                           OR (length(sw.word) >= 4
+                               AND levenshtein_less_equal(sw.word, tw.word, 2)
+                                    <= (CASE WHEN length(sw.word) <= 5 THEN 1 ELSE 2 END))
+                    )
+                )
             )
         )
     )
-    GROUP BY p.id, params.raw_text, params.search_words
-    ORDER BY sim_score DESC, p.updated_at DESC
+    SELECT
+        m.id, m.name, m.description, m.starred,
+        m.created_at, m.updated_at,
+        (SELECT count(*) FROM quest_thread t WHERE t.project_id = m.id) AS thread_count,
+        m.sim_score
+    FROM matched m
+    ORDER BY m.sim_score DESC, m.updated_at DESC
 """)
 
 
 _PROJECT_SEARCH_SQL_WITH_USER = text("""
     WITH params AS (
         SELECT
+            websearch_to_tsquery('english', :search_text) AS q,
             :search_text AS raw_text,
-            string_to_array(lower(trim(:search_text)), ' ') AS search_words
-    )
-    SELECT
-        p.id, p.name, p.description, p.starred, p.created_at, p.updated_at,
-        COUNT(t.id) AS thread_count,
-        GREATEST(
-            COALESCE(word_similarity(params.raw_text, p.name), 0),
-            COALESCE(word_similarity(params.raw_text, COALESCE(p.description, '')), 0)
-        ) AS sim_score
-    FROM quest_project p
-    LEFT JOIN quest_thread t ON t.project_id = p.id
-    CROSS JOIN params
-    WHERE p.user_id = CAST(:user_id AS uuid)
-      AND (
-        p.name ILIKE '%' || params.raw_text || '%'
-        OR p.description ILIKE '%' || params.raw_text || '%'
-        OR (
-            array_length(params.search_words, 1) > 0
-            AND NOT EXISTS (
-                SELECT 1 FROM unnest(params.search_words) AS sw(word)
-                WHERE length(sw.word) >= 2
-                  AND NOT EXISTS (
-                    SELECT 1 FROM unnest(string_to_array(
-                        lower(p.name || ' ' || COALESCE(p.description, '')), ' '
-                    )) AS tw(word)
-                    WHERE word_similarity(sw.word, tw.word) > 0.4
-                       OR (length(sw.word) >= 3 AND dmetaphone(sw.word) = dmetaphone(tw.word)
-                           AND dmetaphone(sw.word) != '')
-                  )
+            ARRAY(
+                SELECT word
+                FROM unnest(string_to_array(lower(trim(:search_text)), ' ')) AS word
+                WHERE length(word) >= 3
+                  AND to_tsvector('english', word)::text != ''
+            ) AS search_words,
+            regexp_replace(lower(trim(:search_text)), '\\s+', '', 'g') AS smushed_text
+    ),
+    matched AS (
+        SELECT
+            p.id, p.name, p.description, p.starred,
+            p.created_at, p.updated_at,
+            GREATEST(
+                COALESCE(ts_rank(p.search_vector, params.q), 0),
+                COALESCE(word_similarity(params.raw_text, p.name), 0),
+                COALESCE(word_similarity(params.raw_text, COALESCE(p.description, '')), 0)
+            ) AS sim_score
+        FROM quest_project p, params
+        WHERE p.user_id = CAST(:user_id AS uuid)
+          AND (
+            -- Layer 1: full-text search
+            p.search_vector @@ params.q
+            -- Layer 2: exact substring (uses trigram GIN)
+            OR p.name ILIKE '%' || params.raw_text || '%'
+            OR p.description ILIKE '%' || params.raw_text || '%'
+            -- Layer 4: whitespace-collapsed comparison for short labels.
+            -- Handles concatenation and noise typos that per-word Layer 3
+            -- can't see because of the space boundary:
+            --   "kitkat"   ↔ "Kit Kat"  (smushed substring, either direction)
+            --   "kitkattt" → "Kit Kat"  (search contains smushed name)
+            --   "kkitakat" → "Kit Kat"  (Levenshtein on smushed name)
+            OR (params.smushed_text != '' AND (
+                replace(lower(p.name), ' ', '') ILIKE '%' || params.smushed_text || '%'
+                OR replace(lower(COALESCE(p.description, '')), ' ', '') ILIKE '%' || params.smushed_text || '%'
+                OR (length(replace(lower(p.name), ' ', '')) >= 3
+                    AND params.smushed_text ILIKE '%' || replace(lower(p.name), ' ', '') || '%')
+                OR (length(params.smushed_text) >= 4
+                    AND length(replace(lower(p.name), ' ', '')) >= 4
+                    AND levenshtein_less_equal(params.smushed_text, replace(lower(p.name), ' ', ''), 3)
+                        <= GREATEST(2, length(params.smushed_text) / 3))
+            ))
+            -- Layer 3: per-word trigram fuzzy (>= 0.55), pre-filtered by `%`
+            OR (
+                array_length(params.search_words, 1) > 0
+                AND NOT EXISTS (
+                    SELECT 1 FROM unnest(params.search_words) AS sw(word)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM unnest(string_to_array(
+                            lower(p.name || ' ' || COALESCE(p.description, '')), ' '
+                        )) AS tw(word)
+                        WHERE word_similarity(sw.word, tw.word) > 0.55
+                           OR (length(sw.word) >= 4
+                               AND levenshtein_less_equal(sw.word, tw.word, 2)
+                                    <= (CASE WHEN length(sw.word) <= 5 THEN 1 ELSE 2 END))
+                    )
+                )
             )
         )
     )
-    GROUP BY p.id, params.raw_text, params.search_words
-    ORDER BY sim_score DESC, p.updated_at DESC
+    SELECT
+        m.id, m.name, m.description, m.starred,
+        m.created_at, m.updated_at,
+        (SELECT count(*) FROM quest_thread t WHERE t.project_id = m.id) AS thread_count,
+        m.sim_score
+    FROM matched m
+    ORDER BY m.sim_score DESC, m.updated_at DESC
 """)
 
 
@@ -1023,7 +1151,7 @@ async def list_projects(
         thread_count, created_at, and updated_at.
     """
     if search and search.strip():
-        params: dict = {"search_text": search.strip()}
+        params: dict = {"search_text": _normalize_search(search.strip())}
         if user_id:
             sql = _PROJECT_SEARCH_SQL_WITH_USER
             params["user_id"] = str(user_id)

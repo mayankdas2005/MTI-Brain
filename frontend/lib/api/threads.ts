@@ -23,12 +23,15 @@ export async function createThread(body: NewChatRequest = {}): Promise<NewChatRe
   });
 }
 
-export async function getRecents(params?: {
-  search?: string;
-  project_id?: string;
-  limit?: number;
-  offset?: number;
-}): Promise<ThreadSummary[] | SearchResult[]> {
+export async function getRecents(
+  params?: {
+    search?: string;
+    project_id?: string;
+    limit?: number;
+    offset?: number;
+  },
+  signal?: AbortSignal,
+): Promise<ThreadSummary[] | SearchResult[]> {
   const query = new URLSearchParams();
   if (params?.search) query.set('search', params.search);
   if (params?.project_id) query.set('project_id', params.project_id);
@@ -38,6 +41,7 @@ export async function getRecents(params?: {
   const qs = query.toString();
   return apiFetch<ThreadSummary[] | SearchResult[]>(
     `/chat/recents${qs ? `?${qs}` : ''}`,
+    { signal },
   );
 }
 

@@ -18,6 +18,11 @@ env/
 !.env.example
 
 
+# Not copied into the image (Dockerfile only COPYs requirements.txt + ./app)
+alembic/
+alembic.ini
+scripts/
+
 # Docs
 README.md
 

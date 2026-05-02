@@ -9,9 +9,12 @@ import type {
   DeleteProjectResponse,
 } from '../types/api';
 
-export async function listProjects(search?: string): Promise<ProjectOut[]> {
+export async function listProjects(
+  search?: string,
+  signal?: AbortSignal,
+): Promise<ProjectOut[]> {
   const qs = search ? `?search=${encodeURIComponent(search)}` : '';
-  return apiFetch<ProjectOut[]>(`/projects${qs}`);
+  return apiFetch<ProjectOut[]>(`/projects${qs}`, { signal });
 }
 
 export async function createProject(

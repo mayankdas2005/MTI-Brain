@@ -2,8 +2,11 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+ResponseTone = Literal["consultant", "operator", "brief"]
 
 
 # ─── Requests ───
@@ -45,7 +48,7 @@ class AskRequest(_StrictRequest):
     question: str = Field(..., min_length=1, max_length=2000)
     conversation_id: uuid.UUID | None = Field(default=None)
     source_conversation_id: uuid.UUID | None = Field(default=None)
-    response_tone: str = Field(default="consultant")
+    response_tone: ResponseTone = Field(default="consultant")
     max_rows: int = Field(default=100, ge=10, le=500)
     prior_sql: str | None = Field(
         default=None,
@@ -67,7 +70,7 @@ class RetryRequest(_StrictRequest):
 
     conversation_id: uuid.UUID = Field(..., description="The conversation to retry")
     source_conversation_id: uuid.UUID | None = Field(default=None)
-    response_tone: str = Field(default="consultant")
+    response_tone: ResponseTone = Field(default="consultant")
     max_rows: int = Field(default=100, ge=10, le=500)
 
 
@@ -86,7 +89,7 @@ class EditRequest(_StrictRequest):
         ..., min_length=1, max_length=2000, description="The edited question"
     )
     source_conversation_id: uuid.UUID | None = Field(default=None)
-    response_tone: str = Field(default="consultant")
+    response_tone: ResponseTone = Field(default="consultant")
     max_rows: int = Field(default=100, ge=10, le=500)
 
 
@@ -160,7 +163,6 @@ class ThreadSummary(BaseModel):
         title: Thread title.
         starred: Whether the thread is starred.
         last_message: Preview of the most recent message.
-        message_count: Total number of messages in the thread.
         created_at: When the thread was created.
         updated_at: When the thread was last updated.
     """
@@ -170,7 +172,6 @@ class ThreadSummary(BaseModel):
     title: str | None
     starred: bool = False
     last_message: str | None = None
-    message_count: int = 0
     created_at: datetime
     updated_at: datetime
 

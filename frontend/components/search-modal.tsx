@@ -162,7 +162,7 @@ export function SearchModal() {
                         <p className="text-sm truncate">{result.title || 'Untitled'}</p>
                         {hasContentMatch && (
                           <p
-                            className="text-xs text-muted-foreground line-clamp-2 mt-0.5 leading-relaxed [&_b]:text-foreground [&_b]:font-semibold"
+                            className="text-xs text-muted-foreground line-clamp-4 mt-0.5 leading-relaxed [&_b]:text-foreground [&_b]:font-semibold"
                             dangerouslySetInnerHTML={{ __html: result.headline ?? '' }}
                           />
                         )}

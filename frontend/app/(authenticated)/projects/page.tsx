@@ -36,11 +36,16 @@ const SORT_LABELS: Record<SortMode, string> = {
 export default function ProjectsPage() {
   const router = useRouter();
   const projects = useProjectStore((s) => s.projects);
+  const searchResults = useProjectStore((s) => s.searchResults);
+  const searchLoading = useProjectStore((s) => s.searchLoading);
   const loading = useProjectStore((s) => s.loading);
   const fetched = useProjectStore((s) => s.fetched);
   const searchQuery = useProjectStore((s) => s.searchQuery);
   const setSearchQuery = useProjectStore((s) => s.setSearchQuery);
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
+
+  const isSearching = searchQuery.trim().length > 0;
+  const displayedProjects = isSearching ? searchResults : projects;
 
   const [createOpen, setCreateOpen] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>('activity');
@@ -111,9 +116,19 @@ export default function ProjectsPage() {
         </div>
 
         {/* Project Grid */}
-        {projects.length === 0 && (loading || !fetched) ? (
+        {!isSearching && projects.length === 0 && (loading || !fetched) ? (
           <ProjectGridSkeleton />
-        ) : projects.length === 0 ? (
+        ) : isSearching && searchLoading && displayedProjects.length === 0 ? (
+          <ProjectGridSkeleton />
+        ) : isSearching && displayedProjects.length === 0 ? (
+          <div className="text-center py-16">
+            <Search className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-sm font-medium text-foreground mb-1">No projects match &quot;{searchQuery}&quot;</p>
+            <p className="text-xs text-muted-foreground">
+              Try different keywords or check your spelling
+            </p>
+          </div>
+        ) : !isSearching && projects.length === 0 ? (
           <div className="text-center py-20">
             <FolderOpen className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-foreground mb-1">No projects yet</h3>
@@ -127,7 +142,7 @@ export default function ProjectsPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 auto-rows-fr">
-            {[...projects]
+            {[...displayedProjects]
               .sort((a, b) => {
                 // Empty projects always sink to the bottom regardless of sort mode.
                 const emptyDelta = (a.thread_count === 0 ? 1 : 0) - (b.thread_count === 0 ? 1 : 0);
