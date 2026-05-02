@@ -1,10 +1,22 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { useThreadStore } from '@/lib/store/threads';
+import { useUIStore } from '@/lib/store/ui';
 import { ArrowUp, Square } from 'lucide-react';
 import { getLastVisibleAssistantConvId } from '@/lib/utils/conversation-tree';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
+import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
+import { useActivityStore } from '@/lib/store/activity';
+import { track, Events } from '@/lib/analytics';
+import { toast } from '@/lib/toast';
+import { copyText } from '@/lib/utils';
+import {
+  SlashCommandPopover,
+  matchSlashCommands,
+  type SlashCommand,
+} from './slash-command-popover';
 
 export function ChatComposer() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -61,6 +73,30 @@ export function ChatComposer() {
     setGhostIdx(Math.floor(Math.random() * GHOST_PROMPTS.length));
   }, []);
 
+  // Restore any draft saved for this thread on mount / thread change.
+  useEffect(() => {
+    if (!currentThreadId) return;
+    let cancelled = false;
+    void loadDraft(currentThreadId).then((draft) => {
+      if (cancelled) return;
+      if (draft && !input) setInput(draft);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // input intentionally omitted: we only restore on thread switch, not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentThreadId]);
+
+  // Debounced save while typing. Clears on send (handled in handleSubmit).
+  useEffect(() => {
+    if (!currentThreadId) return;
+    const t = setTimeout(() => {
+      void saveDraft(currentThreadId, input);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [currentThreadId, input]);
+
   // Rotate ghost-text starters while the textarea is empty.
   useEffect(() => {
     if (input.length > 0) return;
@@ -74,13 +110,20 @@ export function ChatComposer() {
     return () => clearInterval(id);
   }, [input.length]);
 
-  // Auto-stream pending question (from /new page)
+  // Auto-stream pending question (from /new page). The dedup ref prevents a
+  // single (thread, question) pair from auto-firing twice if the effect
+  // re-runs in the same mount. We reset the ref whenever threadId changes so
+  // navigating away and back lets a fresh pending question fire even if it
+  // happens to match the one we previously handled.
   const pendingHandled = useRef<string | null>(null);
   useEffect(() => {
+    pendingHandled.current = null;
+  }, [currentThreadId]);
+  useEffect(() => {
     if (!currentThreadId || !pendingQuestion) return;
-    if (pendingHandled.current === `${currentThreadId}:${pendingQuestion}`) return;
-
-    pendingHandled.current = `${currentThreadId}:${pendingQuestion}`;
+    const key = `${currentThreadId}:${pendingQuestion}`;
+    if (pendingHandled.current === key) return;
+    pendingHandled.current = key;
     askQuestion(currentThreadId, pendingQuestion);
   }, [currentThreadId, pendingQuestion, askQuestion]);
 
@@ -90,19 +133,152 @@ export function ChatComposer() {
     }
   };
 
+  // ─── Slash commands ───
+  const router = useRouter();
+  const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen);
+  const retryResponse = useThreadStore((s) => s.retryResponse);
+
+  const slashMatches = useMemo(() => matchSlashCommands(input), [input]);
+  const slashOpen = slashMatches.length > 0 && input.startsWith('/');
+  const [slashIndex, setSlashIndex] = useState(0);
+
+  // Reset highlight when the candidate set changes.
+  useEffect(() => {
+    setSlashIndex(0);
+  }, [slashMatches.length]);
+
+  const runSlashCommand = useCallback(
+    (cmd: SlashCommand) => {
+      track(Events.SlashCommandUsed, { command: cmd.id });
+      const lastAssistant = [...currentMessages]
+        .reverse()
+        .find((m) => m.role === 'assistant' && m.content);
+      // Validate prerequisites; if unmet, surface a toast and bail.
+      if (cmd.requires === 'last-assistant' && !lastAssistant) {
+        toast.warning('No assistant response yet for that command.', {
+          id: 'slash-no-assistant',
+        });
+        setInput('');
+        return;
+      }
+      setInput('');
+      if (currentThreadId) void clearDraft(currentThreadId);
+
+      switch (cmd.id) {
+        case 'clear':
+          // already cleared above
+          break;
+        case 'retry':
+          if (currentThreadId && lastAssistant?.conversation_id) {
+            void retryResponse(currentThreadId, lastAssistant.conversation_id);
+          }
+          break;
+        case 'copy':
+          if (lastAssistant) {
+            void copyText(lastAssistant.content).then((ok) => {
+              if (ok) toast.success('Last response copied');
+              else toast.error('Copy failed', { id: 'copy-failed' });
+            });
+          }
+          break;
+        case 'new':
+          router.push('/new');
+          break;
+        case 'help':
+          setShortcutsOpen(true);
+          break;
+      }
+    },
+    [currentMessages, currentThreadId, retryResponse, router, setShortcutsOpen],
+  );
+
   const handleSubmit = useCallback(
     async (e?: React.FormEvent) => {
       e?.preventDefault();
+      // If a slash command is open, Enter selects the highlighted command
+      // instead of sending the literal "/foo" as a chat message.
+      if (slashOpen) {
+        const cmd = slashMatches[slashIndex];
+        if (cmd) {
+          runSlashCommand(cmd);
+          return;
+        }
+      }
       if (!input.trim() || !currentThreadId || isStreaming) return;
 
       const question = input.trim();
       setInput('');
+      void clearDraft(currentThreadId);
+      // Silently track active days — gates the install-prompt eligibility.
+      useActivityStore.getState().recordQuestion();
+      track(Events.QuestionAsked, {
+        thread_id: currentThreadId,
+        is_followup: !!lastAssistantConvId,
+        length: question.length,
+      });
       await askQuestion(currentThreadId, question, lastAssistantConvId);
     },
-    [input, currentThreadId, isStreaming, askQuestion, lastAssistantConvId],
+    [
+      input,
+      currentThreadId,
+      isStreaming,
+      askQuestion,
+      lastAssistantConvId,
+      slashOpen,
+      slashMatches,
+      slashIndex,
+      runSlashCommand,
+    ],
   );
 
+  // Paste / drag-drop affordance: backend doesn't accept attachments yet,
+  // but silently ignoring a paste-image makes the app feel broken.
+  // Surface a one-time toast (sonner dedupes via id) so the user knows
+  // it's recognized.
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    if (items.some((it) => it.kind === 'file' && it.type.startsWith('image/'))) {
+      e.preventDefault();
+      toast.info('File attachments are coming soon — paste text only for now.', {
+        id: 'paste-attachment',
+      });
+    }
+  }, []);
+  const handleDrop = useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
+    if (e.dataTransfer?.files?.length) {
+      e.preventDefault();
+      toast.info('File attachments are coming soon.', { id: 'drop-attachment' });
+    }
+  }, []);
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
+    if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+  }, []);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Slash menu navigation takes priority while it's open.
+    if (slashOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashIndex((i) => (i + 1) % slashMatches.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const cmd = slashMatches[slashIndex];
+        if (cmd) setInput(`/${cmd.trigger} `);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setInput('');
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -112,17 +288,30 @@ export function ChatComposer() {
   const canSend = input.trim().length > 0 && !!currentThreadId && !isStreaming;
 
   return (
-    <div className="px-4 pb-4 pt-2">
-      <div className="max-w-3xl mx-auto">
+    <div className="px-4 pb-4 pt-2" data-onboarding="composer">
+      <div className="max-w-3xl mx-auto relative">
+        {slashOpen && (
+          <SlashCommandPopover
+            commands={slashMatches}
+            activeIndex={Math.min(slashIndex, slashMatches.length - 1)}
+            onSelect={runSlashCommand}
+            onHover={setSlashIndex}
+          />
+        )}
         <div className="relative rounded-2xl border border-border bg-background shadow-lg shadow-black/5 overflow-hidden">
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
             placeholder=""
-            disabled={isStreaming && !input}
             rows={1}
+            aria-label="Message"
+            aria-expanded={slashOpen}
+            aria-haspopup="listbox"
             className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm leading-relaxed focus:outline-none disabled:opacity-50 min-h-[52px]"
           />
           {input.length === 0 && (

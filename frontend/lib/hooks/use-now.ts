@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react';
 let sharedNow = new Date();
 const subscribers = new Set<() => void>();
 let timerId: ReturnType<typeof setTimeout> | null = null;
+let visibilityListenerInstalled = false;
 
 function tick() {
   sharedNow = new Date();
@@ -22,12 +23,35 @@ function tick() {
   timerId = setTimeout(tick, msUntilNextMinute);
 }
 
+function pauseTimer() {
+  if (timerId !== null) {
+    clearTimeout(timerId);
+    timerId = null;
+  }
+}
+
 function ensureRunning() {
   if (timerId !== null) return;
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
   const now = new Date();
+  // Snap to "now" immediately on resume so relative times don't lag.
+  sharedNow = now;
+  subscribers.forEach((cb) => cb());
   const msUntilNextMinute =
     60_000 - (now.getSeconds() * 1_000 + now.getMilliseconds());
   timerId = setTimeout(tick, msUntilNextMinute);
+}
+
+function ensureVisibilityListener() {
+  if (visibilityListenerInstalled || typeof document === 'undefined') return;
+  visibilityListenerInstalled = true;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      pauseTimer();
+    } else if (subscribers.size > 0) {
+      ensureRunning();
+    }
+  });
 }
 
 export function useNow(): Date {
@@ -42,14 +66,12 @@ export function useNow(): Date {
 
     const update = () => setNow(sharedNow);
     subscribers.add(update);
+    ensureVisibilityListener();
     ensureRunning();
 
     return () => {
       subscribers.delete(update);
-      if (subscribers.size === 0 && timerId !== null) {
-        clearTimeout(timerId);
-        timerId = null;
-      }
+      if (subscribers.size === 0) pauseTimer();
     };
   }, []);
 

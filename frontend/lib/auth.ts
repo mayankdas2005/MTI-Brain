@@ -37,12 +37,22 @@ export function getStoredToken(): string | null {
 
 export function setStoredToken(token: string): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(TOKEN_KEY, token);
+  try {
+    localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // Safari private mode / quota exceeded — token only lives in-memory for
+    // this tab. Subsequent reads will return null and the user will be sent
+    // back to /login. Nothing more we can do safely here.
+  }
 }
 
 export function clearStoredToken(): void {
   if (typeof window === 'undefined') return;
-  localStorage.removeItem(TOKEN_KEY);
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 // ─── User helpers ───
@@ -59,12 +69,20 @@ export function getStoredUser(): User | null {
 
 export function setStoredUser(user: User): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  try {
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+  } catch {
+    // ignore quota / private-mode write failures
+  }
 }
 
 function clearStoredUser(): void {
   if (typeof window === 'undefined') return;
-  localStorage.removeItem(USER_KEY);
+  try {
+    localStorage.removeItem(USER_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 // ─── JWT decode (lightweight, no dependency) ───
@@ -126,9 +144,28 @@ export async function login(username: string, password: string): Promise<void> {
 
 // ─── Logout ───
 
-export function logout(): void {
+export async function logout(): Promise<void> {
+  // Abort any active stream before tearing down auth so we don't leak
+  // partial assistant content into a half-cleared store, and so the
+  // backend can finalize the conversation row before we redirect.
+  try {
+    const { useThreadStore } = await import('./store/threads');
+    const state = useThreadStore.getState();
+    if (state.isStreaming && state.streamingThreadId) {
+      await state.stopGeneration(state.streamingThreadId);
+    }
+  } catch {
+    // Store import shouldn't fail, but if it does, proceed with logout.
+  }
+
   clearStoredToken();
   clearStoredUser();
+  try {
+    const { resetAnalytics } = await import('./analytics');
+    resetAnalytics();
+  } catch {
+    // Analytics reset is best-effort.
+  }
   if (typeof window !== 'undefined') {
     window.location.href = '/';
   }

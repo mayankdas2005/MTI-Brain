@@ -4,6 +4,8 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 export type ResponseTone = 'consultant' | 'operator' | 'brief';
 export type DefaultDataView = 'sql' | 'table';
 
+export type NotifyOnComplete = 'when-hidden' | 'off';
+
 interface PreferencesState {
   responseTone: ResponseTone;
   showSQL: boolean;
@@ -12,6 +14,12 @@ interface PreferencesState {
   defaultDataView: DefaultDataView;
   showReasoning: boolean;
   maxResultRows: number;
+  /** Stream-completion notification policy. */
+  notifyOnComplete: NotifyOnComplete;
+  /** Play a soft ping alongside the notification. */
+  notifySound: boolean;
+  /** Set true once we've shown the soft permission prompt; prevents re-asks. */
+  softPromptShown: boolean;
 }
 
 interface PreferencesActions {
@@ -22,6 +30,9 @@ interface PreferencesActions {
   setDefaultDataView: (view: DefaultDataView) => void;
   setShowReasoning: (show: boolean) => void;
   setMaxResultRows: (rows: number) => void;
+  setNotifyOnComplete: (val: NotifyOnComplete) => void;
+  setNotifySound: (val: boolean) => void;
+  setSoftPromptShown: (val: boolean) => void;
   /** True after user-scoped preferences have been loaded. */
   hydrated: boolean;
   /** Re-load preferences for the current user from localStorage. */
@@ -38,6 +49,9 @@ const DEFAULTS: PreferencesState = {
   defaultDataView: 'table',
   showReasoning: true,
   maxResultRows: 100,
+  notifyOnComplete: 'when-hidden',
+  notifySound: true,
+  softPromptShown: false,
 };
 
 const STORAGE_PREFIX = 'quest-prefs';
@@ -55,6 +69,9 @@ export const usePreferencesStore = create<PreferencesStore>()(
       setDefaultDataView: (view) => set({ defaultDataView: view }),
       setShowReasoning: (show) => set({ showReasoning: show }),
       setMaxResultRows: (rows) => set({ maxResultRows: rows }),
+      setNotifyOnComplete: (val) => set({ notifyOnComplete: val }),
+      setNotifySound: (val) => set({ notifySound: val }),
+      setSoftPromptShown: (val) => set({ softPromptShown: val }),
 
       rehydrateForUser: (userId: string) => {
         // Load this user's preferences from localStorage, fall back to defaults

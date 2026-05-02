@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   Dialog,
@@ -16,6 +16,12 @@ import {
   type ResponseTone,
   type DefaultDataView,
 } from '@/lib/store/preferences';
+import {
+  getPermission,
+  notificationsSupported,
+  requestPermission,
+  type NotificationPermissionState,
+} from '@/lib/utils/notifications';
 
 interface SettingsModalProps {
   open: boolean;
@@ -45,6 +51,10 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const setDefaultDataView = usePreferencesStore((s) => s.setDefaultDataView);
   const maxResultRows = usePreferencesStore((s) => s.maxResultRows);
   const setMaxResultRows = usePreferencesStore((s) => s.setMaxResultRows);
+  const notifyOnComplete = usePreferencesStore((s) => s.notifyOnComplete);
+  const setNotifyOnComplete = usePreferencesStore((s) => s.setNotifyOnComplete);
+  const notifySound = usePreferencesStore((s) => s.notifySound);
+  const setNotifySound = usePreferencesStore((s) => s.setNotifySound);
   const hydrated = usePreferencesStore((s) => s.hydrated);
 
   // Only show selection styling after user prefs have loaded - prevents flash
@@ -59,7 +69,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Customize how Quest responds and displays data
+            Customize how MTI Brain responds and displays data
           </DialogDescription>
         </DialogHeader>
 
@@ -171,6 +181,17 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
           <div className="border-t border-border" />
 
+          {/* Notifications */}
+          <NotificationsSection
+            notifyOnComplete={notifyOnComplete}
+            setNotifyOnComplete={setNotifyOnComplete}
+            notifySound={notifySound}
+            setNotifySound={setNotifySound}
+            modalOpen={open}
+          />
+
+          <div className="border-t border-border" />
+
           {/* About */}
           <VersionEasterEgg />
         </div>
@@ -179,24 +200,116 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   );
 }
 
+function NotificationsSection({
+  notifyOnComplete,
+  setNotifyOnComplete,
+  notifySound,
+  setNotifySound,
+  modalOpen,
+}: {
+  notifyOnComplete: 'when-hidden' | 'off';
+  setNotifyOnComplete: (val: 'when-hidden' | 'off') => void;
+  notifySound: boolean;
+  setNotifySound: (val: boolean) => void;
+  modalOpen: boolean;
+}) {
+  const [permission, setPermission] = useState<NotificationPermissionState>(
+    notificationsSupported() ? 'default' : 'unsupported',
+  );
+
+  // Re-read permission when the modal opens — covers the case where the user
+  // changed it in another tab or via browser site settings.
+  useEffect(() => {
+    if (!modalOpen) return;
+    setPermission(getPermission());
+  }, [modalOpen]);
+
+  const handleEnable = async () => {
+    const next = await requestPermission();
+    setPermission(next);
+  };
+
+  const enabled = notifyOnComplete === 'when-hidden';
+
+  return (
+    <div className="space-y-4">
+      <Label className="text-sm font-medium">Notifications</Label>
+
+      <SettingRow
+        label="Notify when answers finish"
+        description="Pings you when a stream completes and you're not on that chat"
+        checked={enabled}
+        onCheckedChange={(v) => setNotifyOnComplete(v ? 'when-hidden' : 'off')}
+      />
+      <SettingRow
+        label="Play a sound"
+        description={
+          enabled
+            ? 'Soft ping alongside notifications'
+            : 'Enable notifications above to use this'
+        }
+        checked={enabled && notifySound}
+        onCheckedChange={setNotifySound}
+        disabled={!enabled}
+      />
+
+      {/* Permission status pill */}
+      <div className="flex items-center justify-between gap-4 pt-1">
+        <div className="min-w-0">
+          <p className="text-sm text-foreground">Browser permission</p>
+          <p className="text-[11px] text-muted-foreground">
+            {permission === 'granted' &&
+              'Allowed — to revoke, click the lock/site-info icon in the address bar.'}
+            {permission === 'default' && 'Not yet granted — click Enable to allow'}
+            {permission === 'denied' &&
+              'Blocked — change in your browser\'s site settings to re-enable'}
+            {permission === 'unsupported' &&
+              'Your browser doesn\'t support desktop notifications'}
+          </p>
+        </div>
+        {permission === 'default' && (
+          <button
+            type="button"
+            onClick={handleEnable}
+            className="shrink-0 rounded-md bg-foreground text-background text-xs px-3 py-1.5 font-medium hover:opacity-85 transition-opacity"
+          >
+            Enable
+          </button>
+        )}
+        {permission === 'granted' && (
+          <span className="shrink-0 inline-flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden />
+            Allowed
+          </span>
+        )}
+        {permission === 'denied' && (
+          <span className="shrink-0 text-[11px] text-muted-foreground">Blocked</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SettingRow({
   label,
   description,
   checked,
   onCheckedChange,
+  disabled,
 }: {
   label: string;
   description: string;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4">
+    <div className={`flex items-center justify-between gap-4 ${disabled ? 'opacity-50' : ''}`}>
       <div className="min-w-0">
         <p className="text-sm text-foreground">{label}</p>
         <p className="text-[11px] text-muted-foreground">{description}</p>
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
     </div>
   );
 }

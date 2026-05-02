@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { ThumbsUp, ThumbsDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -10,6 +10,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { useThreadStore } from '@/lib/store/threads';
+import { track, Events } from '@/lib/analytics';
 import {
   Tooltip,
   TooltipContent,
@@ -28,9 +29,12 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
   const [comment, setComment] = useState('');
   const [pendingLiked, setPendingLiked] = useState<boolean | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Ref-based guard so a fast double-click can't get past the check before
+  // the setSubmitting state flush. setState is async; the ref is synchronous.
+  const submittingRef = useRef(false);
 
   const openFeedback = (liked: boolean) => {
-    if (submitting) return;
+    if (submittingRef.current) return;
     if (feedback?.liked === liked) return; // already submitted same
     setPendingLiked(liked);
     setComment('');
@@ -38,13 +42,19 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
   };
 
   const handleSubmit = async () => {
-    if (pendingLiked === null || submitting) return;
+    if (pendingLiked === null || submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitting(true);
     try {
       await submitFeedback(threadId, conversationId, pendingLiked, comment || undefined);
+      track(Events.FeedbackGiven, {
+        liked: pendingLiked,
+        has_comment: comment.trim().length > 0,
+      });
     } catch {
       // handled by store
     }
+    submittingRef.current = false;
     setSubmitting(false);
     setDialogOpen(false);
     setComment('');
@@ -63,13 +73,15 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
               size="sm"
               className={`h-7 w-7 p-0 rounded-lg transition-colors ${
                 feedback?.liked === true
-                  ? 'text-green-600 bg-green-500/20 ring-1 ring-green-500/30'
+                  ? 'text-green-700 dark:text-green-500 bg-green-500/20 ring-1 ring-green-500/30'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent'
               }`}
               onClick={() => openFeedback(true)}
               disabled={submitting || feedback?.liked === true}
+              aria-label={feedback?.liked === true ? 'Positive feedback submitted' : 'Give positive feedback'}
+              aria-pressed={feedback?.liked === true}
             >
-              <ThumbsUp className={`w-3.5 h-3.5 ${feedback?.liked === true ? 'fill-green-600' : ''}`} />
+              <ThumbsUp className={`w-3.5 h-3.5 ${feedback?.liked === true ? 'fill-green-700 dark:fill-green-500' : ''}`} />
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">Give positive feedback</TooltipContent>
@@ -82,13 +94,15 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
               size="sm"
               className={`h-7 w-7 p-0 rounded-lg transition-colors ${
                 feedback?.liked === false
-                  ? 'text-red-600 bg-red-500/20 ring-1 ring-red-500/30'
+                  ? 'text-red-700 dark:text-red-500 bg-red-500/20 ring-1 ring-red-500/30'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent'
               }`}
               onClick={() => openFeedback(false)}
               disabled={submitting || feedback?.liked === false}
+              aria-label={feedback?.liked === false ? 'Negative feedback submitted' : 'Give negative feedback'}
+              aria-pressed={feedback?.liked === false}
             >
-              <ThumbsDown className={`w-3.5 h-3.5 ${feedback?.liked === false ? 'fill-red-600' : ''}`} />
+              <ThumbsDown className={`w-3.5 h-3.5 ${feedback?.liked === false ? 'fill-red-700 dark:fill-red-500' : ''}`} />
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">Give negative feedback</TooltipContent>

@@ -14,6 +14,7 @@ import {
 
 import { useThreadStore } from '@/lib/store/threads';
 import { useSearchStore } from '@/lib/store/search';
+import { useActivityStore } from '@/lib/store/activity';
 
 export function Topbar() {
   const openSearch = useSearchStore((s) => s.openModal);
@@ -23,6 +24,16 @@ export function Topbar() {
   const currentThreadStarred = useThreadStore((s) => s.currentThreadStarred);
   const starThread = useThreadStore((s) => s.starThread);
   const currentMessages = useThreadStore((s) => s.currentMessages);
+  const threads = useThreadStore((s) => s.threads);
+
+  // Seed activity history from already-loaded threads' updated_at the first
+  // time they're available. Lets a returning user see their honest streak
+  // even if the device was wiped or this is a new browser.
+  useEffect(() => {
+    if (threads.length === 0) return;
+    const stamps = threads.map((t) => t.updated_at).filter(Boolean);
+    useActivityStore.getState().seedFromUpdatedAts(stamps);
+  }, [threads.length]);
 
   const handleExport = async () => {
     if (!currentThreadId || !currentThreadTitle || !currentMessages.length) return;
@@ -84,6 +95,9 @@ export function Topbar() {
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label={currentThreadStarred ? 'Unstar this conversation' : 'Star this conversation'}
+                aria-pressed={currentThreadStarred}
+                data-onboarding="star"
                 className="shrink-0 h-8 w-8 border border-transparent hover:border-[var(--header-control-border)] hover:bg-[var(--header-control-bg)] transition-spring active:scale-[0.82]"
                 onClick={handleStar}
               >
@@ -115,9 +129,11 @@ export function Topbar() {
             <TooltipTrigger asChild>
               <button
                 onClick={handleExport}
+                aria-label="Export conversation as PDF"
+                data-onboarding="export-pdf"
                 className="flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] transition-spring active:scale-[0.88]"
               >
-                <FileDown className="w-3.5 h-3.5" />
+                <FileDown className="w-3.5 h-3.5" aria-hidden />
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom">Export as PDF</TooltipContent>
@@ -127,16 +143,18 @@ export function Topbar() {
           <TooltipTrigger asChild>
             <button
               onClick={openSearch}
+              aria-label="Search"
+              data-onboarding="cmd-k"
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
             >
-            <Search className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Search</span>
-            <kbd className="hidden sm:inline rounded border border-[var(--header-control-border)] bg-[var(--header-control-bg)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--header-foreground)]/60">
-              {isMac ? '⌘K' : 'Ctrl+K'}
-            </kbd>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{`Search (${isMac ? '⌘' : 'Ctrl+'}K)`}</TooltipContent>
+              <Search className="w-3.5 h-3.5" aria-hidden />
+              <span className="hidden sm:inline">Search</span>
+              <kbd className="hidden sm:inline rounded border border-[var(--header-control-border)] bg-[var(--header-control-bg)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--header-foreground)]/60">
+                {isMac ? '⌘K' : 'Ctrl+K'}
+              </kbd>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{`Search (${isMac ? '⌘' : 'Ctrl+'}K)`}</TooltipContent>
         </Tooltip>
       </div>
     </div>

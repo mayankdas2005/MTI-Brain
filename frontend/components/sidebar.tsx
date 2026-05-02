@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useNow } from '@/lib/hooks/use-now';
-import { formatRelativeTime } from '@/lib/utils/relative-time';
+import { formatRelativeTime, groupByRecencyBucket } from '@/lib/utils/relative-time';
 import Image from 'next/image';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,8 +30,19 @@ import {
   Monitor,
   Settings,
   MessageSquare,
+  Download,
+  Sparkles,
+  Bell,
 } from 'lucide-react';
 import { logout, getStoredUser, getStoredToken, userFromToken, setStoredUser } from '@/lib/auth';
+import { renderHighlightedSnippet } from '@/lib/utils/highlight';
+import { track, Events } from '@/lib/analytics';
+import { useInstallStore } from '@/lib/store/install';
+import {
+  getPermission,
+  requestPermission,
+  notificationsSupported,
+} from '@/lib/utils/notifications';
 import { useTheme } from 'next-themes';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useRouter } from 'next/navigation';
@@ -107,9 +118,37 @@ function ThreadItem({
   const [renameOpen, setRenameOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [inlineRenaming, setInlineRenaming] = useState(false);
+  const [inlineDraft, setInlineDraft] = useState(title);
+  const inlineInputRef = useRef<HTMLInputElement>(null);
   const starThread = useThreadStore((s) => s.starThread);
   const deleteThread = useThreadStore((s) => s.deleteThread);
+  const renameThread = useThreadStore((s) => s.renameThread);
   const now = useNow();
+
+  useEffect(() => {
+    if (inlineRenaming) {
+      setInlineDraft(title);
+      // Focus + select on next tick so the input is mounted.
+      requestAnimationFrame(() => {
+        inlineInputRef.current?.focus();
+        inlineInputRef.current?.select();
+      });
+    }
+  }, [inlineRenaming, title]);
+
+  const commitInlineRename = () => {
+    const next = inlineDraft.trim();
+    setInlineRenaming(false);
+    if (!next || next === title) return;
+    track(Events.ThreadRenamed, { method: 'inline' });
+    void renameThread(thread.id, next);
+  };
+
+  const cancelInlineRename = () => {
+    setInlineRenaming(false);
+    setInlineDraft(title);
+  };
 
   return (
     <>
@@ -132,25 +171,95 @@ function ThreadItem({
             </div>
           )}
 
-          <button
-            onClick={() => router.push(`/chat/${thread.id}`)}
-            onMouseEnter={() => router.prefetch(`/chat/${thread.id}`)}
-            className="flex-1 text-left min-w-0"
-          >
-            <p className="text-sm font-medium truncate">{title}</p>
-            <p className="text-xs opacity-55 mt-0.5" suppressHydrationWarning>
-              {formatRelativeTime(thread.updated_at, now)}
-            </p>
-          </button>
+          {inlineRenaming ? (
+            <div className="flex-1 min-w-0">
+              <input
+                ref={inlineInputRef}
+                value={inlineDraft}
+                onChange={(e) => setInlineDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    commitInlineRename();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelInlineRename();
+                  }
+                }}
+                onBlur={commitInlineRename}
+                onClick={(e) => e.stopPropagation()}
+                aria-label="Rename conversation"
+                maxLength={200}
+                className="w-full text-sm font-medium bg-background border border-ring rounded px-1 py-0.5 outline-none"
+              />
+              <p className="text-xs opacity-55 mt-0.5" suppressHydrationWarning>
+                {formatRelativeTime(thread.updated_at, now)}
+              </p>
+            </div>
+          ) : (
+            <button
+              data-thread-row
+              data-thread-id={thread.id}
+              onClick={() => router.push(`/chat/${thread.id}`)}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setInlineRenaming(true);
+              }}
+              onKeyDown={(e) => {
+                // Roving keyboard nav across all thread rows (works across
+                // grouped Today / Yesterday / older sections, since the
+                // selector is global within the sidebar).
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  const rows = Array.from(
+                    document.querySelectorAll<HTMLButtonElement>('[data-thread-row]'),
+                  );
+                  const idx = rows.indexOf(e.currentTarget);
+                  if (idx === -1) return;
+                  e.preventDefault();
+                  const next =
+                    e.key === 'ArrowDown'
+                      ? rows[Math.min(idx + 1, rows.length - 1)]
+                      : rows[Math.max(idx - 1, 0)];
+                  next?.focus();
+                }
+              }}
+              onMouseEnter={() => router.prefetch(`/chat/${thread.id}`)}
+              className="flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+            >
+              <p className="text-sm font-medium truncate">{title}</p>
+              <p className="text-xs opacity-55 mt-0.5" suppressHydrationWarning>
+                {formatRelativeTime(thread.updated_at, now)}
+              </p>
+            </button>
+          )}
+
+          {/* Hover-revealed quick rename */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                aria-label="Rename"
+                className="shrink-0 mt-0.5 p-1 rounded-md opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setInlineRenaming(true);
+                }}
+              >
+                <Pencil className="w-3.5 h-3.5" aria-hidden />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Rename</TooltipContent>
+          </Tooltip>
 
           {/* Three-dot menu */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
-                className="shrink-0 mt-0.5 p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                aria-label="More actions"
+                className="shrink-0 mt-0.5 p-1 rounded-md opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                 onClick={(e) => e.stopPropagation()}
               >
-                <MoreHorizontal className="w-3.5 h-3.5" />
+                <MoreHorizontal className="w-3.5 h-3.5" aria-hidden />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className="w-44">
@@ -258,6 +367,18 @@ export function Sidebar() {
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showAllStarred, setShowAllStarred] = useState(false);
+  const canInstall = useInstallStore((s) => s.canInstall);
+  const installed = useInstallStore((s) => s.installed);
+  const promptInstall = useInstallStore((s) => s.promptInstall);
+  const startTourReplay = useUIStore((s) => s.startTourReplay);
+  // Re-renders the user menu after the user grants/denies notification
+  // permission so the "Enable notifications" entry hides itself.
+  const [notifyPermission, setNotifyPermission] = useState<string>(
+    notificationsSupported() ? 'default' : 'unsupported',
+  );
+  useEffect(() => {
+    setNotifyPermission(getPermission());
+  }, []);
 
   // Note: initial fetch of threads & projects is handled once in the
   // authenticated layout so toggling the sidebar open/closed does not
@@ -271,26 +392,9 @@ export function Sidebar() {
   };
 
   const handleLogout = () => {
-    logout();
+    void logout();
   };
 
-  // Easter egg: click Q logo 7 times
-  const logoClickCount = useRef(0);
-  const logoClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleLogoClick = () => {
-    logoClickCount.current++;
-    if (logoClickTimer.current) clearTimeout(logoClickTimer.current);
-    logoClickTimer.current = setTimeout(() => { logoClickCount.current = 0; }, 2000);
-    if (logoClickCount.current >= 7) {
-      logoClickCount.current = 0;
-      if (!localStorage.getItem('quest-logo-achievement')) {
-        localStorage.setItem('quest-logo-achievement', '1');
-        toast.success('Achievement unlocked: Logo Clicker 🏆');
-      } else {
-        toast.info('You already unlocked this one 😉');
-      }
-    }
-  };
 
   const handleLoadMore = () => {
     fetchRecents({ append: true });
@@ -317,10 +421,9 @@ export function Sidebar() {
             {title}
           </p>
           {result.headline && (
-            <p
-              className="text-xs opacity-60 mt-0.5 line-clamp-2"
-              dangerouslySetInnerHTML={{ __html: result.headline }}
-            />
+            <p className="text-xs opacity-60 mt-0.5 line-clamp-2">
+              {renderHighlightedSnippet(result.headline, 'bg-transparent text-current font-semibold')}
+            </p>
           )}
           <p className="text-xs opacity-40 mt-0.5" suppressHydrationWarning>{formatTime(result.updated_at)}</p>
         </button>
@@ -348,14 +451,14 @@ export function Sidebar() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-sidebar border-sidebar-border w-[280px]">
+    <div className="flex flex-col h-full bg-sidebar border-sidebar-border w-[280px]" data-onboarding="sidebar">
       {/* Header */}
       <div
         className="px-3 h-12 flex items-center justify-between border-b border-sidebar-border"
         style={{ backgroundColor: 'var(--header)' }}
       >
         <Image
-          src="/Milestone%20Logo%2016x9%20Transparent%20MAIN%20LOGO%20(white%20text).png"
+          src="/milestone-logo-white.png"
           alt="Milestone"
           width={0}
           height={0}
@@ -363,8 +466,7 @@ export function Sidebar() {
           style={{ width: '168px', height: '55px', objectFit: 'contain', objectPosition: 'left' }}
           loading="eager"
           priority
-          className="cursor-pointer select-none"
-          onClick={handleLogoClick}
+          className="select-none"
         />
         <button
           type="button"
@@ -377,7 +479,7 @@ export function Sidebar() {
       </div>
 
       {/* New Chat */}
-      <div className="px-3 pt-3 pb-2">
+      <div className="px-3 pt-3 pb-2" data-onboarding="new-chat">
         <Button
           onClick={handleNewChat}
           className="w-full h-10 rounded-xl justify-center gap-2 font-semibold active:scale-[0.98] transition-transform"
@@ -518,7 +620,22 @@ export function Sidebar() {
             </div>
           ) : (
             <>
-              {threads.filter((t) => !t.starred).slice(0, 8).map(renderThread)}
+              {(() => {
+                const recents = threads.filter((t) => !t.starred).slice(0, 8);
+                const groups = groupByRecencyBucket(
+                  recents,
+                  (t) => t.updated_at,
+                  sidebarNow,
+                );
+                return groups.map(({ bucket, label, items }) => (
+                  <div key={bucket} className="space-y-0.5">
+                    <p className="text-[10px] uppercase tracking-widest font-medium text-sidebar-foreground/40 px-2 pt-2 pb-1">
+                      {label}
+                    </p>
+                    {items.map(renderThread)}
+                  </div>
+                ));
+              })()}
               {(threads.filter((t) => !t.starred).length > 8 || hasMore) && (
                 <button
                   onClick={() => router.push('/chats')}
@@ -550,7 +667,7 @@ export function Sidebar() {
         ) : (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="w-full flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-sidebar-accent transition-colors">
+            <button data-onboarding="user-menu" className="w-full flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-sidebar-accent transition-colors">
               <Avatar className="h-8 w-8">
                 <AvatarFallback className="bg-primary/15 text-primary text-sm font-semibold">
                   {(user.name || user.email)?.charAt(0).toUpperCase()}
@@ -602,6 +719,43 @@ export function Sidebar() {
               <Settings className="w-4 h-4" />
               Settings
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => startTourReplay()} className="gap-2">
+              <Sparkles className="w-4 h-4" />
+              Replay product tour
+            </DropdownMenuItem>
+            {notifyPermission === 'default' && (
+              <DropdownMenuItem
+                onClick={async () => {
+                  const next = await requestPermission();
+                  setNotifyPermission(next);
+                  if (next === 'granted') {
+                    toast.success('Notifications enabled', {
+                      id: 'notifications-enabled',
+                    });
+                  } else if (next === 'denied') {
+                    toast.info(
+                      'Notifications blocked — you can re-enable from your browser\'s site settings.',
+                      { id: 'notifications-denied' },
+                    );
+                  }
+                }}
+                className="gap-2"
+              >
+                <Bell className="w-4 h-4" />
+                Enable notifications
+              </DropdownMenuItem>
+            )}
+            {!installed && canInstall && (
+              <DropdownMenuItem
+                onClick={async () => {
+                  await promptInstall();
+                }}
+                className="gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Install MTI Brain
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={handleLogout}

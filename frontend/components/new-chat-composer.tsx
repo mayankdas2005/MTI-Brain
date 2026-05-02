@@ -5,6 +5,11 @@ import { useRouter } from 'next/navigation';
 import { useThreadStore } from '@/lib/store/threads';
 import { ArrowUp, Loader2 } from 'lucide-react';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
+import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
+import { useActivityStore } from '@/lib/store/activity';
+import { track, Events } from '@/lib/analytics';
+
+const NEW_DRAFT_KEY = '__new__';
 
 interface NewChatComposerProps {
   initialValue?: string;
@@ -33,6 +38,28 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   useEffect(() => {
     setGhostIdx(Math.floor(Math.random() * GHOST_PROMPTS.length));
   }, []);
+
+  // Restore /new draft on mount unless an explicit initialValue was provided
+  // (e.g. clicking a suggestion which sets the input directly).
+  useEffect(() => {
+    if (initialValue) return;
+    let cancelled = false;
+    void loadDraft(NEW_DRAFT_KEY).then((draft) => {
+      if (cancelled) return;
+      if (draft) setInput(draft);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialValue]);
+
+  // Debounced save while typing.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void saveDraft(NEW_DRAFT_KEY, input);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [input]);
 
   // Rotate ghost-text starters while the textarea is empty.
   useEffect(() => {
@@ -71,6 +98,16 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
     try {
       const threadId = await createThread(undefined, projectId);
       setPendingQuestion(message);
+      void clearDraft(NEW_DRAFT_KEY);
+      track(Events.ChatCreated, { thread_id: threadId, project_id: projectId ?? null });
+      track(Events.QuestionAsked, {
+        thread_id: threadId,
+        is_followup: false,
+        length: message.length,
+        from: 'new',
+      });
+      // Silently track active days — gates the install-prompt eligibility.
+      useActivityStore.getState().recordQuestion();
       router.push(`/chat/${threadId}`);
     } catch {
       setSubmitting(false);
@@ -87,7 +124,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   const canSend = input.trim().length > 0 && !submitting;
 
   return (
-    <div className={centered ? '' : 'px-4 pb-4 pt-2'}>
+    <div className={centered ? '' : 'px-4 pb-4 pt-2'} data-onboarding="composer">
       <div className={centered ? 'w-full' : 'max-w-3xl mx-auto'}>
         <div className="relative rounded-2xl border border-border bg-background shadow-lg shadow-black/5 overflow-hidden">
           <textarea
@@ -98,6 +135,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
             placeholder=""
             autoFocus
             rows={1}
+            aria-label="Start a new conversation"
             className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm leading-relaxed focus:outline-none min-h-[52px]"
           />
           {input.length === 0 && (

@@ -312,9 +312,49 @@ interface ThreadStore {
   clearActiveVersionsForThread: (threadId: string) => void;
 }
 
+// ─── threadMessageMap LRU eviction ───
+// Keep the in-memory message cache bounded. Without this, a long session
+// browsing many threads accumulates ~1MB+ of cached message arrays.
+const THREAD_CACHE_MAX = 25;
+const threadCacheAccess = new Map<string, number>();
+
+function recordCacheAccess(threadId: string) {
+  threadCacheAccess.set(threadId, Date.now());
+}
+
+function pruneThreadCache<T>(map: Record<string, T>): Record<string, T> {
+  const keys = Object.keys(map);
+  if (keys.length <= THREAD_CACHE_MAX) return map;
+  // Evict the least-recently-accessed entries until we're under the cap.
+  // Threads with no recorded access (just inserted) score Infinity so they
+  // survive — newer entries are kept over older idle ones.
+  const sorted = keys
+    .map((id) => [id, threadCacheAccess.get(id) ?? Infinity] as const)
+    .sort((a, b) => a[1] - b[1]);
+  const toEvict = sorted.slice(0, keys.length - THREAD_CACHE_MAX).map(([id]) => id);
+  const next = { ...map };
+  for (const id of toEvict) {
+    delete next[id];
+    threadCacheAccess.delete(id);
+  }
+  return next;
+}
+
 // ─── Debounce helper ───
 
-let searchTimer: ReturnType<typeof setTimeout> | null = null;
+// Stored on globalThis so HMR (which re-evaluates this module) doesn't leak
+// timers across reloads. A plain `let` would orphan the previous timer when
+// the module re-evaluates.
+const SEARCH_TIMER_KEY = '__questSearchTimer';
+type GlobalWithTimer = typeof globalThis & {
+  [SEARCH_TIMER_KEY]?: ReturnType<typeof setTimeout> | null;
+};
+function getSearchTimer(): ReturnType<typeof setTimeout> | null {
+  return (globalThis as GlobalWithTimer)[SEARCH_TIMER_KEY] ?? null;
+}
+function setSearchTimer(t: ReturnType<typeof setTimeout> | null) {
+  (globalThis as GlobalWithTimer)[SEARCH_TIMER_KEY] = t;
+}
 
 // In-flight deduplication for default (no-search, no-append) fetchRecents calls.
 // Layout fires fetchRecents on every navigation; mutations also call it after
@@ -442,6 +482,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         // this fetch was in flight. Always update the cache map, but only
         // commit to current* state if we're still viewing this thread.
         const stillViewing = get().currentThreadId === threadId;
+        recordCacheAccess(threadId);
         if (stillViewing) {
           set((state) => ({
             currentMessages: resolved,
@@ -449,12 +490,18 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             currentThreadStarred: detail.starred,
             currentThreadProjectId: detail.project_id,
             messagesLoading: false,
-            threadMessageMap: { ...state.threadMessageMap, [threadId]: resolved },
+            threadMessageMap: pruneThreadCache({
+              ...state.threadMessageMap,
+              [threadId]: resolved,
+            }),
           }));
         } else {
           // Still cache for future visits, but don't touch current view
           set((state) => ({
-            threadMessageMap: { ...state.threadMessageMap, [threadId]: resolved },
+            threadMessageMap: pruneThreadCache({
+              ...state.threadMessageMap,
+              [threadId]: resolved,
+            }),
           }));
         }
       } catch {
@@ -1640,6 +1687,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
     // Otherwise (different thread, or no preserved state). Load from the
     // in-memory map for instant render; fetchThread will background-refresh.
+    recordCacheAccess(id);
     const cached = get().threadMessageMap[id];
     // Look up metadata from the sidebar threads list so we don't flash
     // null/false defaults while fetchThread loads the full detail.
@@ -1668,10 +1716,14 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
   setSearchQuery: (query) => {
     set({ searchQuery: query });
-    if (searchTimer) clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      get().fetchRecents({ search: query });
-    }, 300);
+    const existing = getSearchTimer();
+    if (existing) clearTimeout(existing);
+    setSearchTimer(
+      setTimeout(() => {
+        setSearchTimer(null);
+        get().fetchRecents({ search: query });
+      }, 300),
+    );
   },
 
   setPendingQuestion: (question) => {

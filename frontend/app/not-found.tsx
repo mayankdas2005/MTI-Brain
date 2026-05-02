@@ -24,7 +24,7 @@ export default function NotFound() {
             href="/new"
             className="inline-block text-sm text-primary hover:underline font-medium"
           >
-            Back to Quest
+            Back to MTI Brain
           </Link>
         </div>
       </div>

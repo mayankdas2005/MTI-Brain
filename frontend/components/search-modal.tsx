@@ -8,7 +8,6 @@ import {
   MessageSquare,
   FileText,
   FolderOpen,
-  Plus,
   Loader2,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -27,7 +26,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import { useThreadStore } from '@/lib/store/threads';
+import { renderHighlightedSnippet } from '@/lib/utils/highlight';
 
 export function SearchModal() {
   const router = useRouter();
@@ -41,20 +40,12 @@ export function SearchModal() {
   const search = useSearchStore((s) => s.search);
   const closeModal = useSearchStore((s) => s.closeModal);
 
-  const createThread = useThreadStore((s) => s.createThread);
-  const setPendingQuestion = useThreadStore((s) => s.setPendingQuestion);
-
   const hasQuery = query.trim().length > 0;
   const hasResults = chatResults.length > 0 || projectResults.length > 0;
 
   const navigate = (path: string) => {
     closeModal();
     router.push(path);
-  };
-
-  const handleNewChat = async () => {
-    closeModal();
-    router.push('/new');
   };
 
   return (
@@ -80,19 +71,6 @@ export function SearchModal() {
             {!loading && hasQuery && !hasResults && (
               <CommandEmpty>No results found for &quot;{query}&quot;</CommandEmpty>
             )}
-
-            {/* New Chat action - always available */}
-            <CommandGroup>
-              <CommandItem onSelect={handleNewChat} className="gap-2">
-                <Plus className="w-4 h-4" />
-                <span>New Chat</span>
-                <span className="ml-auto text-xs text-muted-foreground">
-                  Start a new conversation
-                </span>
-              </CommandItem>
-            </CommandGroup>
-
-            <CommandSeparator />
 
             {/* Loading skeletons - recents empty state */}
             {loading && !hasQuery && recentChats.length === 0 && (
@@ -161,10 +139,9 @@ export function SearchModal() {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm truncate">{result.title || 'Untitled'}</p>
                         {hasContentMatch && (
-                          <p
-                            className="text-xs text-muted-foreground line-clamp-4 mt-0.5 leading-relaxed [&_b]:text-foreground [&_b]:font-semibold"
-                            dangerouslySetInnerHTML={{ __html: result.headline ?? '' }}
-                          />
+                          <p className="text-xs text-muted-foreground line-clamp-4 mt-0.5 leading-relaxed">
+                            {renderHighlightedSnippet(result.headline)}
+                          </p>
                         )}
                       </div>
                       <span className="text-xs text-muted-foreground/60 shrink-0 self-start">

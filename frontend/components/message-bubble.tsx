@@ -67,7 +67,6 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ message, threadId, versionNav }: MessageBubbleProps) {
-  const [showActions, setShowActions] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
   const [dataView, setDataView] = useState<'sql' | 'table'>(() => {
@@ -104,11 +103,20 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     setEditing(true);
   };
 
+  // Synchronous lockout so a fast double-click can't fire two edits before
+  // isStreaming flips. Cleared when the editor opens again.
+  const editSubmittingRef = useRef(false);
   const handleEditSubmit = () => {
     const trimmed = editText.trim();
-    if (!trimmed || !message.conversation_id || isStreaming) return;
+    if (!trimmed || !message.conversation_id || isStreaming || editSubmittingRef.current) return;
+    editSubmittingRef.current = true;
     editQuestion(threadId, message.conversation_id, trimmed);
     setEditing(false);
+    // Release the lock on the next tick — by then the store has flipped
+    // isStreaming, which prevents subsequent submits via the existing guard.
+    queueMicrotask(() => {
+      editSubmittingRef.current = false;
+    });
   };
 
   const isUser = message.role === 'user';
@@ -142,11 +150,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     const timeStr = `${messageDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${messageDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 
     return (
-      <div
-        className="flex flex-col items-end px-4 py-1 group"
-        onMouseEnter={() => setShowActions(true)}
-        onMouseLeave={() => setShowActions(false)}
-      >
+      <div className="flex flex-col items-end px-4 py-1 group">
         {/* Persistent version pill - always visible when this turn has alternates */}
         {versionNav && (
           <div
@@ -177,8 +181,9 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           </div>
         )}
 
-        {/* Actions row - only on hover, above the bubble */}
-        <div className={`flex items-center gap-1.5 mb-1 mr-1 transition-opacity duration-150 ${showActions ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+        {/* Actions row — visible at low opacity by default (mobile-friendly),
+            full opacity on hover. Mirrors the assistant-message action pills. */}
+        <div className="flex items-center gap-1.5 mb-1 mr-1 opacity-60 hover:opacity-100 transition-opacity duration-150">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -274,8 +279,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     <div
       id={`msg-${message.id}`}
       className="flex flex-col gap-1 px-4 py-2 animate-fade-in"
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
     >
       {/* Reasoning Block - vertical step timeline. The horizontal strip is gone:
           all per-step state (running, done, reasoning) lives inside this panel
@@ -397,20 +400,20 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               </TooltipContent>
             </Tooltip>
           )}
-          <div
-            className={`flex items-center gap-0.5 transition-opacity duration-150 ${
-              showActions ? 'opacity-100' : 'opacity-0'
-            }`}
-          >
+          {/* Actions sit immediately after the timestamp on the LEFT.
+              Visible at low opacity by default (mobile-friendly), full opacity
+              on hover. */}
+          <div className="flex items-center gap-0.5 opacity-60 hover:opacity-100 transition-opacity duration-150">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={copyToClipboard}
+                  aria-label="Copy response"
                   className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent"
                 >
-                  <Copy className="w-3.5 h-3.5" />
+                  <Copy className="w-3.5 h-3.5" aria-hidden />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Copy</TooltipContent>
@@ -421,10 +424,11 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                   variant="ghost"
                   size="sm"
                   onClick={handleRetry}
+                  aria-label="Regenerate response"
                   className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent"
                   disabled={isStreaming || !message.conversation_id}
                 >
-                  <RotateCcw className="w-3.5 h-3.5" />
+                  <RotateCcw className="w-3.5 h-3.5" aria-hidden />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Retry</TooltipContent>
@@ -443,42 +447,67 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   );
 }
 
-// ─── Shared: find last text node and inject cursor ───
-
 import React from 'react';
 
-function useStreamingCursor(containerRef: React.RefObject<HTMLDivElement | null>, active: boolean) {
+// ─── Streaming cursor: stable DOM node, re-parented per render ───
+// Why imperative: the cursor must sit INLINE inside the deepest last-leaf
+// of streaming markdown (e.g. the last `<p>`'s last text node). React can't
+// easily inject siblings into ReactMarkdown's output. CSS `::after` ends
+// up on a new line below the prose container because Tailwind's prose
+// styles force it to break. The fix: keep ONE persistent <span> element
+// and `appendChild` it to the new last-leaf on each render — appendChild
+// moves an existing node, so the breathe animation never restarts.
+function useStreamingCursor(
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  active: boolean,
+) {
+  const cursorRef = useRef<HTMLSpanElement | null>(null);
+
   useEffect(() => {
-    if (!active || !containerRef.current) return;
-
-    // Walk the entire DOM tree to find the very last Text node with content
-    const walker = document.createTreeWalker(containerRef.current, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => node.textContent?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP,
-    });
-    let lastTextNode: Node | null = null;
-    while (walker.nextNode()) lastTextNode = walker.currentNode;
-
-    if (!lastTextNode?.parentElement) return;
-
-    // Remove any existing cursors
-    containerRef.current.querySelectorAll('.streaming-cursor').forEach((c) => c.remove());
-
-    // Insert cursor right after the last text node
-    const cursor = document.createElement('span');
-    cursor.className = 'streaming-cursor';
-    lastTextNode.parentElement.insertBefore(cursor, lastTextNode.nextSibling);
-
-    return () => { cursor.remove(); };
+    if (!active || !containerRef.current) {
+      cursorRef.current?.remove();
+      cursorRef.current = null;
+      return;
+    }
+    if (!cursorRef.current) {
+      const span = document.createElement('span');
+      span.className = 'streaming-cursor';
+      span.setAttribute('aria-hidden', 'true');
+      cursorRef.current = span;
+    }
+    const cursor = cursorRef.current;
+    // Walk to the deepest last-leaf descendant, IGNORING the cursor node
+    // itself — otherwise on the next render we'd descend into the cursor
+    // and try to append it to itself (HierarchyRequestError).
+    let target: Element = containerRef.current;
+    while (true) {
+      let last = target.lastElementChild;
+      if (last === cursor) last = last.previousElementSibling;
+      if (!last) break;
+      target = last;
+    }
+    if (target === cursor) return;
+    // Already at end of the right parent? No-op (keeps animation continuous).
+    if (cursor.parentElement === target && cursor === target.lastElementChild) return;
+    // appendChild MOVES an existing node — animation stays alive.
+    target.appendChild(cursor);
   });
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      cursorRef.current?.remove();
+      cursorRef.current = null;
+    };
+  }, []);
 }
 
-// ─── Reasoning content with streaming cursor ───
+// ─── Reasoning content (italic, dim) ───
 
 const ReasoningContent = React.forwardRef<HTMLDivElement, { isStreaming?: boolean; content: string }>(
   ({ isStreaming, content }, ref) => {
-    const innerRef = useRef<HTMLDivElement>(null);
+    const innerRef = useRef<HTMLDivElement | null>(null);
     useStreamingCursor(innerRef, !!(isStreaming && content));
-
     return (
       <div
         ref={(el) => {
@@ -486,6 +515,7 @@ const ReasoningContent = React.forwardRef<HTMLDivElement, { isStreaming?: boolea
           if (typeof ref === 'function') ref(el);
           else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
         }}
+        data-streaming={isStreaming && content ? 'true' : undefined}
         className="px-3 pb-2 border-t border-border/40 pt-2 text-sm text-muted-foreground leading-relaxed italic"
       >
         <MarkdownRenderer content={content} />
@@ -657,11 +687,12 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
               )}
             </div>
 
-            {/* Per-step reasoning (only when present) */}
+            {/* Per-step reasoning. When the step is active we mount the
+                streaming cursor inside the deepest last-leaf so the user
+                sees a live breathing caret at the end of the streaming
+                reasoning text. */}
             {cleanedReasoning && (
-              <div className="mt-1.5 pr-1 text-[12px] leading-relaxed text-muted-foreground/85 italic">
-                <MarkdownRenderer content={cleanedReasoning} />
-              </div>
+              <StepReasoning text={cleanedReasoning} active={isActive} />
             )}
           </div>
         );
@@ -674,11 +705,31 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
 
 function StreamingContent({ isStreaming, hasContent, children }: { isStreaming?: boolean; hasContent: boolean; children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
-  useStreamingCursor(ref, !!(isStreaming && hasContent));
-
+  const active = !!(isStreaming && hasContent);
+  useStreamingCursor(ref, active);
   return (
-    <div ref={ref} className="text-sm leading-relaxed text-foreground">
+    <div
+      ref={ref}
+      data-streaming={active ? 'true' : undefined}
+      className="text-sm leading-relaxed text-foreground"
+    >
       {children}
+    </div>
+  );
+}
+
+// Per-step reasoning block in the thinking panel. Owns its own container
+// ref so the cursor lives inside the active step's deepest last-leaf.
+function StepReasoning({ text, active }: { text: string; active: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useStreamingCursor(ref, active);
+  return (
+    <div
+      ref={ref}
+      data-streaming={active ? 'true' : undefined}
+      className="mt-1.5 pr-1 text-[12px] leading-relaxed text-muted-foreground/85 italic"
+    >
+      <MarkdownRenderer content={text} />
     </div>
   );
 }

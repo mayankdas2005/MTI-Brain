@@ -83,7 +83,7 @@ export function CollapsedSidebar() {
   }, []);
 
   const handleLogout = () => {
-    logout();
+    void logout();
   };
 
   return (
@@ -106,7 +106,7 @@ export function CollapsedSidebar() {
           className="flex items-center justify-center h-9 w-9 text-[var(--header-foreground)]"
         >
           <Image
-            src="/Milestone%20Icon.png"
+            src="/milestone-icon.png"
             alt="Milestone"
             width={0}
             height={0}

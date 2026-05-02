@@ -38,7 +38,7 @@
   --sidebar-foreground: #0f1b2d;
   --sidebar-primary: #1B76B8;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #cdddef;
+  --sidebar-accent: #b6cce6;
   --sidebar-accent-foreground: #0f1b2d;
   --sidebar-border: #b8cce3;
   --sidebar-ring: #1B76B8;
@@ -56,6 +56,13 @@
   --star: #f59e0b;
   /* Easing */
   --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* Motion duration tokens — reference instead of hardcoding values. */
+  --duration-fast: 150ms;
+  --duration-base: 250ms;
+  --duration-slow: 400ms;
+  /* Focus ring tokens for consistent interactive affordances. */
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
 }
 
 .dark {
@@ -199,6 +206,66 @@
   }
 }
 
+/* Respect OS-level "reduce motion" preferences. Animations and transitions
+   are nudged to nearly-zero duration so users with vestibular sensitivities
+   don't have to disable functionality to escape motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Print stylesheet for the "Export as PDF" flow. Hides chrome (sidebar,
+   topbar, composer, action affordances), forces a light theme so dark
+   mode doesn't waste toner, and lets code blocks wrap so long lines
+   aren't truncated by the page edge. */
+@media print {
+  :root {
+    color-scheme: light;
+    --background: #ffffff;
+    --foreground: #000000;
+  }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    background-image: none !important;
+  }
+  /* Hide application chrome */
+  [data-print="hide"],
+  aside,
+  nav,
+  header,
+  footer,
+  .no-print,
+  [role="dialog"],
+  [role="tooltip"] {
+    display: none !important;
+  }
+  main {
+    overflow: visible !important;
+  }
+  /* Code blocks readable in print */
+  pre,
+  code {
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    page-break-inside: avoid;
+    background: #f5f5f5 !important;
+    color: #000 !important;
+  }
+  /* Page break between message turns */
+  [data-conversation-turn] {
+    page-break-inside: avoid;
+  }
+  a {
+    text-decoration: underline;
+    color: #000 !important;
+  }
+}
+
 /* Thinking glow - CSS custom properties per theme */
 :root {
   --glow-rest: 0 0 8px -2px #1B76B826, 0 0 20px -4px #1B76B814;
@@ -266,6 +333,12 @@
   animation: cursor-breathe 1.4s ease-in-out infinite;
   box-shadow: 0 0 6px 1px color-mix(in oklch, var(--primary) 40%, transparent);
 }
+
+/* The streaming-cursor span (`.streaming-cursor`, defined above) is now
+   imperatively re-parented to the deepest last-leaf element of the streaming
+   container on every render via the `useStreamingCursor` hook. The
+   `[data-streaming="true"]` attribute is kept on the container as a
+   semantic hook for tests / debug overlays but no longer styled directly. */
 
 @keyframes cursor-breathe {
   0%, 100% { opacity: 1; transform: scale(1); }

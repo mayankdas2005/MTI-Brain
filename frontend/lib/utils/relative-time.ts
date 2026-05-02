@@ -23,3 +23,73 @@ export function formatRelativeTime(dateStr: string, now: Date = new Date()): str
   const diffYears = Math.floor(diffDays / 365);
   return `${diffYears}y ago`;
 }
+
+// ─── Bucket grouping ───
+// Recency buckets used by the sidebar / chats list. Order is intentional —
+// rendering iterates buckets in this sequence and shows headings only for
+// buckets that have items.
+
+export type RecencyBucket = 'today' | 'yesterday' | 'this-week' | 'this-month' | 'older';
+
+export const RECENCY_BUCKET_LABELS: Record<RecencyBucket, string> = {
+  today: 'Today',
+  yesterday: 'Yesterday',
+  'this-week': 'This week',
+  'this-month': 'This month',
+  older: 'Older',
+};
+
+export const RECENCY_BUCKET_ORDER: RecencyBucket[] = [
+  'today',
+  'yesterday',
+  'this-week',
+  'this-month',
+  'older',
+];
+
+function startOfLocalDay(d: Date): Date {
+  const out = new Date(d);
+  out.setHours(0, 0, 0, 0);
+  return out;
+}
+
+export function bucketOf(dateStr: string, now: Date = new Date()): RecencyBucket {
+  const date = new Date(dateStr);
+  const today = startOfLocalDay(now);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  const monthAgo = new Date(today);
+  monthAgo.setDate(monthAgo.getDate() - 30);
+
+  if (date >= today) return 'today';
+  if (date >= yesterday) return 'yesterday';
+  if (date >= weekAgo) return 'this-week';
+  if (date >= monthAgo) return 'this-month';
+  return 'older';
+}
+
+/**
+ * Groups items by recency bucket while preserving the input order inside
+ * each bucket. Returns ONLY buckets that actually contain items, so the
+ * caller can render headings without checking for empties.
+ */
+export function groupByRecencyBucket<T>(
+  items: T[],
+  getDate: (item: T) => string,
+  now: Date = new Date(),
+): Array<{ bucket: RecencyBucket; label: string; items: T[] }> {
+  const map = new Map<RecencyBucket, T[]>();
+  for (const item of items) {
+    const b = bucketOf(getDate(item), now);
+    const arr = map.get(b);
+    if (arr) arr.push(item);
+    else map.set(b, [item]);
+  }
+  return RECENCY_BUCKET_ORDER.filter((b) => map.has(b)).map((b) => ({
+    bucket: b,
+    label: RECENCY_BUCKET_LABELS[b],
+    items: map.get(b)!,
+  }));
+}

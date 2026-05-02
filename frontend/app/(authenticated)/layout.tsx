@@ -5,7 +5,7 @@ import { CollapsedSidebar } from '@/components/collapsed-sidebar';
 import { Topbar } from '@/components/topbar';
 import { SearchModal } from '@/components/search-modal';
 import { ShortcutsDialog } from '@/components/shortcuts-dialog';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, startTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { isAuthenticated, getStoredUser } from '@/lib/auth';
 import { useUIStore } from '@/lib/store/ui';
@@ -15,7 +15,16 @@ import { useThreadStore } from '@/lib/store/threads';
 import { useProjectStore } from '@/lib/store/projects';
 import { copyText } from '@/lib/utils';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
+import { useStreamCompletionNotice } from '@/lib/hooks/use-stream-completion-notice';
 import { CreditsOverlay } from '@/components/credits-overlay';
+import { OnboardingTour } from '@/components/onboarding-tour';
+import { InstallPrompt } from '@/components/install-prompt';
+
+function OnboardingTourGate() {
+  const replay = useUIStore((s) => s.tourReplay);
+  const stopReplay = useUIStore((s) => s.stopTourReplay);
+  return <OnboardingTour forceOpen={replay} onClose={stopReplay} />;
+}
 import { toast } from '@/lib/toast';
 
 export default function AuthenticatedLayout({
@@ -26,8 +35,15 @@ export default function AuthenticatedLayout({
   const router = useRouter();
   const sidebarOpen = useUIStore((state) => state.sidebarOpen);
   const openSearch = useSearchStore((s) => s.openModal);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const shortcutsOpen = useUIStore((s) => s.shortcutsOpen);
+  const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen);
+  const toggleShortcuts = useUIStore((s) => s.toggleShortcuts);
   const [creditsOpen, setCreditsOpen] = useState(false);
+
+  // Cross-context stream-completion notifications. Routes each completion
+  // to the right channel based on tab visibility and current route:
+  // in-app toast for same-tab nav, OS notification for hidden tabs.
+  useStreamCompletionNotice();
 
   // Listen for 401s dispatched by the API client and redirect via the router
   // (avoids the full-page reload that window.location.href would trigger).
@@ -35,6 +51,15 @@ export default function AuthenticatedLayout({
     const onUnauth = () => router.replace('/');
     window.addEventListener('quest:unauthenticated', onUnauth);
     return () => window.removeEventListener('quest:unauthenticated', onUnauth);
+  }, [router]);
+
+  // Prefetch the routes that keyboard shortcuts can jump to so the first
+  // Cmd+Shift+O / Cmd+Shift+P / Cmd+Shift+H feels instant. Only prefetches
+  // once per mount; Next.js dedupes anyway.
+  useEffect(() => {
+    router.prefetch('/new');
+    router.prefetch('/projects');
+    router.prefetch('/chats');
   }, [router]);
 
   // Redirect unauthenticated users - runs client-side only
@@ -69,8 +94,8 @@ export default function AuthenticatedLayout({
   // present in Claude (Ctrl+S, Ctrl+Shift+C, Ctrl+Shift+P, Ctrl+Shift+H).
   useKeyboardShortcuts({
     'cmd-k': openSearch,
-    'cmd-shift-o': () => router.push('/new'),
-    'cmd-/': () => setShortcutsOpen((v) => !v),
+    'cmd-shift-o': () => startTransition(() => router.push('/new')),
+    'cmd-/': () => toggleShortcuts(),
     'cmd-period': () => useUIStore.getState().toggleSidebar(),
     'cmd-s': () => {
       const { currentThreadId, starThread } = useThreadStore.getState();
@@ -145,13 +170,29 @@ export default function AuthenticatedLayout({
       // Cmd+Shift+P → /projects
       if (isCmd && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
         e.preventDefault();
-        router.push('/projects');
+        startTransition(() => router.push('/projects'));
       }
 
       // Cmd+Shift+H → /chats (H for history)
       if (isCmd && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
         e.preventDefault();
-        router.push('/chats');
+        startTransition(() => router.push('/chats'));
+      }
+
+      // Cmd+1..9 → jump to Nth recent (non-starred) thread.
+      // Power-user signal that pays off for daily-drivers; mirrors Linear's
+      // workspace-switcher and Slack's channel-jump.
+      if (isCmd && !e.shiftKey && /^[1-9]$/.test(e.key)) {
+        const n = parseInt(e.key, 10);
+        const recents = useThreadStore
+          .getState()
+          .threads.filter((t) => !t.starred)
+          .slice(0, 9);
+        const target = recents[n - 1];
+        if (target) {
+          e.preventDefault();
+          startTransition(() => router.push(`/chat/${target.id}`));
+        }
       }
     };
 
@@ -182,6 +223,8 @@ export default function AuthenticatedLayout({
       <SearchModal />
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <CreditsOverlay open={creditsOpen} onClose={() => setCreditsOpen(false)} />
+      <OnboardingTourGate />
+      <InstallPrompt />
     </div>
   );
 }

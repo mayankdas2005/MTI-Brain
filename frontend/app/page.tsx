@@ -45,7 +45,7 @@ export default function LoginPage() {
           <div className="text-center space-y-8">
             <div className="flex justify-center">
               <Image
-                src="/Milestone Logo 16x9 Transparent MAIN LOGO (black text).png"
+                src="/milestone-logo-black.png"
                 alt="Milestone"
                 width={200}
                 height={113}
@@ -53,7 +53,7 @@ export default function LoginPage() {
                 className="dark:hidden"
               />
               <Image
-                src="/Milestone Logo 16x9 Transparent MAIN LOGO (white text).png"
+                src="/milestone-logo-white.png"
                 alt="Milestone"
                 width={200}
                 height={113}
@@ -64,7 +64,7 @@ export default function LoginPage() {
 
             <div className="space-y-2">
               <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-                Welcome to Quest
+                Welcome to MTI Brain
               </h1>
               <p className="text-muted-foreground text-sm">
                 Your treasury intelligence, in a single question.

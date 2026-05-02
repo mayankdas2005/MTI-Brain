@@ -30,12 +30,34 @@ const allowedDevOrigins = Array.from(new Set([...autoDetected, ...fromEnv]));
 const nextConfig = {
   output: "standalone",
   typescript: {
-    ignoreBuildErrors: true,
+    // Was true. Flipped to false after a clean tsc --noEmit pass; keep
+    // it strict so future regressions fail the build instead of shipping.
+    ignoreBuildErrors: false,
   },
+  // Auto-memoize most hooks/components without manual useMemo/useCallback.
+  // React 19.2 + React Compiler is stable; the visible chat-streaming work is
+  // exactly the kind of high-frequency render path that benefits most.
+  reactCompiler: true,
   images: {
     unoptimized: true,
   },
   allowedDevOrigins,
+  // Defense-in-depth security headers. CSP is permissive (matches the
+  // permissive local-dev posture) — but X-Content-Type-Options, Referrer-Policy,
+  // and X-Frame-Options survive the Okta migration and cost nothing.
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

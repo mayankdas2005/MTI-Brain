@@ -129,13 +129,19 @@ export default function ProjectsPage() {
             </p>
           </div>
         ) : !isSearching && projects.length === 0 ? (
-          <div className="text-center py-20">
-            <FolderOpen className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-foreground mb-1">No projects yet</h3>
-            <p className="text-sm text-muted-foreground mb-4">
-              Create a project to start organizing your conversations.
+          <div className="text-center py-20 max-w-md mx-auto">
+            <div className="relative inline-flex items-center justify-center mb-5">
+              <div className="absolute inset-0 rounded-full bg-primary/10 blur-2xl" aria-hidden />
+              <FolderOpen className="relative w-14 h-14 text-primary/60" />
+            </div>
+            <h3 className="text-lg font-semibold text-foreground mb-1.5">Your first project</h3>
+            <p className="text-sm text-muted-foreground mb-1">
+              Group related conversations so context stays connected.
             </p>
-            <Button onClick={() => setCreateOpen(true)} variant="outline" className="gap-2">
+            <p className="text-xs text-muted-foreground/70 mb-6">
+              Great for ongoing investigations, recurring reports, or a single client engagement.
+            </p>
+            <Button onClick={() => setCreateOpen(true)} className="gap-2">
               <Plus className="w-4 h-4" />
               Create your first project
             </Button>
