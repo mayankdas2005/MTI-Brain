@@ -51,25 +51,16 @@ function makeSteps(): Step[] {
       selector: '[data-onboarding="composer"]',
       title: 'Ask anything',
       body:
-        'Type your question and press Enter. Drafts auto-save while you type — you can navigate away and come back without losing work.',
+        'Type your question and press Enter. Drafts auto-save as you type. Type "/" for quick commands.',
       icon: MessageSquare,
-      placement: 'top',
-    },
-    {
-      id: 'slash',
-      selector: '[data-onboarding="composer"]',
-      title: 'Slash commands',
-      body:
-        'Type "/" at the start of a message to open quick commands: /clear, /retry, /copy, /new, /help. ↑/↓ to pick, Tab to autocomplete.',
-      icon: Sparkles,
       placement: 'top',
     },
     {
       id: 'sidebar',
       selector: '[data-onboarding="sidebar"]',
-      title: 'Your conversations',
+      title: 'Your sidebar',
       body:
-        'Recent chats group by Today / Yesterday / This week. Hover any thread for a rename pencil. Press ↑/↓ to walk the list.',
+        'Projects and Chats sit at the top — jump to either with one click. Starred items pin below for quick access, then Recents groups threads by Today / Yesterday / This week. Hover any thread for a rename pencil; ↑/↓ walks the list.',
       icon: FolderOpen,
       placement: 'right',
     },
@@ -246,8 +237,8 @@ export function OnboardingTour({ forceOpen, onClose }: OnboardingTourProps = {})
   // raw popover (no transforms) so vertical AND horizontal clamping is
   // straightforward — we work with the visible bounding box, not a translated
   // anchor. Falls back to centered if there's no selector or target is missing.
-  const popoverWidth = popoverSize.w || 340;
-  const popoverHeight = popoverSize.h || 220;
+  const popoverWidth = popoverSize.w || 380;
+  const popoverHeight = popoverSize.h || 200;
   const edge = 8;
   const margin = 12;
   let popStyle: React.CSSProperties;
@@ -313,7 +304,7 @@ export function OnboardingTour({ forceOpen, onClose }: OnboardingTourProps = {})
       <div
         ref={popoverRef}
         className="absolute pointer-events-auto rounded-2xl border border-border bg-popover text-popover-foreground shadow-xl p-4"
-        style={{ ...popStyle, width: 340 }}
+        style={{ ...popStyle, width: 380 }}
       >
         <div className="flex items-start gap-3">
           <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary/10 text-primary shrink-0">

@@ -124,9 +124,12 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   const canSend = input.trim().length > 0 && !submitting;
 
   return (
-    <div className={centered ? '' : 'px-4 pb-4 pt-2'} data-onboarding="composer">
+    <div className={centered ? '' : 'px-4 pb-4 pt-2'}>
       <div className={centered ? 'w-full' : 'max-w-3xl mx-auto'}>
-        <div className="relative rounded-2xl border border-border bg-background shadow-lg shadow-black/5 overflow-hidden">
+        <div
+          data-onboarding="composer"
+          className="relative rounded-2xl border border-border bg-background shadow-lg shadow-black/5 overflow-hidden"
+        >
           <textarea
             ref={textareaRef}
             value={input}

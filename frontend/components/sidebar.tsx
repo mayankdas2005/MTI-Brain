@@ -479,9 +479,10 @@ export function Sidebar() {
       </div>
 
       {/* New Chat */}
-      <div className="px-3 pt-3 pb-2" data-onboarding="new-chat">
+      <div className="px-3 pt-3 pb-2">
         <Button
           onClick={handleNewChat}
+          data-onboarding="new-chat"
           className="w-full h-10 rounded-xl justify-center gap-2 font-semibold active:scale-[0.98] transition-transform"
           variant="outline"
         >
