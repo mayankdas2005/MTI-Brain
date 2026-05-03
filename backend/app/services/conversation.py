@@ -443,6 +443,7 @@ async def list_threads(
     limit: int = 20,
     offset: int = 0,
     user_id: uuid.UUID | None = None,
+    starred: bool | None = None,
 ) -> list[dict]:
     """List threads with last message preview. 1 round-trip (single query).
 
@@ -456,6 +457,8 @@ async def list_threads(
         limit: Maximum number of threads to return.
         offset: Pagination offset.
         user_id: Optional user filter; returns only threads owned by this user.
+        starred: Optional starred filter; True returns only starred threads,
+            False returns only non-starred, None returns both.
 
     Returns:
         A list of thread dictionaries containing id, project_id, title,
@@ -469,6 +472,9 @@ async def list_threads(
     if project_id:
         filters.append(_safe_filter("t.project_id = :project_id"))
         params["project_id"] = str(project_id)
+    if starred is not None:
+        filters.append(_safe_filter("t.starred = :starred"))
+        params["starred"] = starred
 
     where_clause = ("WHERE " + " AND ".join(filters)) if filters else ""
 
@@ -531,7 +537,11 @@ def _normalize_search(text: str) -> str:
     )
 
 
-def _build_search_sql(with_project: bool = False, with_user: bool = False) -> str:
+def _build_search_sql(
+    with_project: bool = False,
+    with_user: bool = False,
+    with_starred: bool = False,
+) -> str:
     """Build thread search SQL with layered matching.
 
     Match layers (combined via OR):
@@ -561,6 +571,8 @@ def _build_search_sql(with_project: bool = False, with_user: bool = False) -> st
     project_filter_msg = _safe_filter("AND t.project_id = :project_id") if with_project else ""
     user_filter_thread = _safe_filter("AND t.user_id = CAST(:user_id AS uuid)") if with_user else ""
     user_filter_msg = _safe_filter("AND t.user_id = CAST(:user_id AS uuid)") if with_user else ""
+    starred_filter_thread = _safe_filter("AND t.starred = :starred") if with_starred else ""
+    starred_filter_msg = _safe_filter("AND t.starred = :starred") if with_starred else ""
 
     return f"""
 WITH params AS (
@@ -580,8 +592,28 @@ WITH params AS (
 thread_hits AS (
     SELECT
         t.id AS thread_id, t.project_id, t.title, t.created_at, t.updated_at,
+        t.starred,
         NULL::text AS matched_content, NULL::text AS headline,
         'thread' AS match_type,
+        -- Words from the title that fuzzy/exact-matched any search word.
+        -- Lets the frontend highlight what FTS/Levenshtein actually hit
+        -- (e.g. "stress" when the user typed "stressss"). Empty array
+        -- when only Layer 1 (full-text/stemming) matched.
+        COALESCE(
+            ARRAY(
+                SELECT DISTINCT tw.word
+                FROM unnest(string_to_array(lower(t.title), ' ')) AS tw(word)
+                WHERE EXISTS (
+                    SELECT 1 FROM unnest(p.search_words) AS sw(word)
+                    WHERE word_similarity(sw.word, tw.word) > 0.55
+                       OR (length(sw.word) >= 4
+                           AND levenshtein_less_equal(sw.word, tw.word, 2)
+                                <= (CASE WHEN length(sw.word) <= 5 THEN 1 ELSE 2 END))
+                       OR tw.word ILIKE '%' || sw.word || '%'
+                )
+            ),
+            ARRAY[]::text[]
+        ) AS matched_terms,
         COALESCE(ts_rank(t.search_vector, q), 0) * 1.5
             + COALESCE(word_similarity(raw_text, t.title), 0) * 0.8
             + CASE WHEN t.title ILIKE '%' || raw_text || '%' THEN 1.0 ELSE 0 END AS rank
@@ -613,15 +645,35 @@ thread_hits AS (
     )
     {project_filter_thread}
     {user_filter_thread}
+    {starred_filter_thread}
 ),
 message_hits AS (
     SELECT
         m.thread_id, t.project_id, t.title, t.created_at, t.updated_at,
+        t.starred,
         m.content AS matched_content,
         ts_headline('english', m.content, q,
             'MaxWords=60, MinWords=30, ShortWord=3, HighlightAll=false, StartSel=<b>, StopSel=</b>'
         ) AS headline,
         'message' AS match_type,
+        -- Same fuzzy/exact word extraction as thread_hits, but applied to
+        -- the matched message body. Used for fuzzy/typo highlighting that
+        -- ts_headline can't catch (it only highlights FTS-matched tokens).
+        COALESCE(
+            ARRAY(
+                SELECT DISTINCT mw.word
+                FROM unnest(string_to_array(lower(m.content), ' ')) AS mw(word)
+                WHERE EXISTS (
+                    SELECT 1 FROM unnest(p.search_words) AS sw(word)
+                    WHERE word_similarity(sw.word, mw.word) > 0.55
+                       OR (length(sw.word) >= 4
+                           AND levenshtein_less_equal(sw.word, mw.word, 2)
+                                <= (CASE WHEN length(sw.word) <= 5 THEN 1 ELSE 2 END))
+                       OR mw.word ILIKE '%' || sw.word || '%'
+                )
+            ),
+            ARRAY[]::text[]
+        ) AS matched_terms,
         COALESCE(ts_rank(m.search_vector, q), 0) * 1.0
             + COALESCE(word_similarity(p.raw_text, m.content), 0) * 0.6
             + CASE WHEN m.content ILIKE '%' || p.raw_text || '%' THEN 0.8 ELSE 0 END AS rank
@@ -658,20 +710,21 @@ message_hits AS (
       )
       {project_filter_msg}
       {user_filter_msg}
+      {starred_filter_msg}
 ),
 all_hits AS (
     SELECT * FROM thread_hits UNION ALL SELECT * FROM message_hits
 ),
 best_per_thread AS (
     SELECT DISTINCT ON (thread_id)
-        thread_id, project_id, title, created_at, updated_at,
-        match_type, matched_content, headline, rank
+        thread_id, project_id, title, starred, created_at, updated_at,
+        match_type, matched_content, headline, matched_terms, rank
     FROM all_hits
     WHERE rank > 0.4
     ORDER BY thread_id, rank DESC
 )
-SELECT thread_id, project_id, title, created_at, updated_at,
-    match_type, matched_content, headline, rank,
+SELECT thread_id, project_id, title, starred, created_at, updated_at,
+    match_type, matched_content, headline, matched_terms, rank,
     CASE WHEN match_type = 'thread' THEN title
          ELSE COALESCE(headline, LEFT(matched_content, 120))
     END AS preview
@@ -681,10 +734,24 @@ LIMIT :limit OFFSET :offset
 """
 
 
-_SEARCH_SQL = text(_build_search_sql(with_project=False, with_user=False))
-_SEARCH_SQL_WITH_PROJECT = text(_build_search_sql(with_project=True, with_user=False))
-_SEARCH_SQL_WITH_USER = text(_build_search_sql(with_project=False, with_user=True))
-_SEARCH_SQL_WITH_PROJECT_AND_USER = text(_build_search_sql(with_project=True, with_user=True))
+def _search_sql_for(
+    with_project: bool, with_user: bool, with_starred: bool,
+):
+    return text(_build_search_sql(
+        with_project=with_project,
+        with_user=with_user,
+        with_starred=with_starred,
+    ))
+
+
+# Pre-build every variant once at module load. Cheap (~8 strings); avoids
+# per-request SQL string concatenation cost.
+_SEARCH_SQL_VARIANTS: dict[tuple[bool, bool, bool], object] = {
+    (p, u, s): _search_sql_for(with_project=p, with_user=u, with_starred=s)
+    for p in (False, True)
+    for u in (False, True)
+    for s in (False, True)
+}
 
 
 async def search_threads(
@@ -694,6 +761,7 @@ async def search_threads(
     user_id: uuid.UUID | None = None,
     limit: int = 20,
     offset: int = 0,
+    starred: bool | None = None,
 ) -> list[dict]:
     """Full-text search across threads and messages. 1 round-trip.
 
@@ -704,29 +772,29 @@ async def search_threads(
         user_id: Optional user filter; searches only this user's threads.
         limit: Maximum number of results to return.
         offset: Pagination offset.
+        starred: Optional starred filter; True returns only starred threads,
+            False only non-starred, None returns both.
 
     Returns:
         A list of result dictionaries with thread_id, project_id, title,
-        match_type, preview, headline, rank, created_at, and updated_at.
+        starred, match_type, preview, headline, matched_terms, rank,
+        created_at, and updated_at.
     """
     if len(search_text.strip()) < 2:
         return []
 
     search_text = _normalize_search(search_text)
     params: dict = {"search_text": search_text, "limit": limit, "offset": offset}
+    if project_id is not None:
+        params["project_id"] = str(project_id)
+    if user_id is not None:
+        params["user_id"] = str(user_id)
+    if starred is not None:
+        params["starred"] = starred
 
-    if project_id and user_id:
-        query = _SEARCH_SQL_WITH_PROJECT_AND_USER
-        params["project_id"] = str(project_id)
-        params["user_id"] = str(user_id)
-    elif project_id:
-        query = _SEARCH_SQL_WITH_PROJECT
-        params["project_id"] = str(project_id)
-    elif user_id:
-        query = _SEARCH_SQL_WITH_USER
-        params["user_id"] = str(user_id)
-    else:
-        query = _SEARCH_SQL
+    query = _SEARCH_SQL_VARIANTS[
+        (project_id is not None, user_id is not None, starred is not None)
+    ]
 
     result = await db.execute(query, params)
     return [
@@ -734,9 +802,11 @@ async def search_threads(
             "thread_id": row.thread_id,
             "project_id": row.project_id,
             "title": row.title,
+            "starred": row.starred,
             "match_type": row.match_type,
             "preview": row.preview,
             "headline": row.headline,
+            "matched_terms": list(row.matched_terms) if row.matched_terms else [],
             "rank": round(float(row.rank), 3),
             "created_at": row.created_at,
             "updated_at": row.updated_at,

@@ -161,12 +161,18 @@ export function ChatComposer() {
         setInput('');
         return;
       }
+      // Capture the prior input length so /clear can surface visible
+      // feedback only when the user actually had a draft worth wiping
+      // (saying "Draft cleared" with an empty composer would be noise).
+      const hadDraft = input.trim().length > cmd.label.length;
       setInput('');
       if (currentThreadId) void clearDraft(currentThreadId);
 
       switch (cmd.id) {
         case 'clear':
-          // already cleared above
+          toast.success(hadDraft ? 'Draft cleared' : 'Composer cleared', {
+            id: 'slash-cleared',
+          });
           break;
         case 'retry':
           if (currentThreadId && lastAssistant?.conversation_id) {
@@ -380,7 +386,7 @@ export function ChatComposer() {
           </div>
         </div>
 
-        <p className="text-center text-xs text-muted-foreground/60 mt-2">
+        <p className="text-center text-xs text-muted-foreground/80 mt-2">
           MTI Brain is AI and can make mistakes. Please double-check responses.
         </p>
       </div>

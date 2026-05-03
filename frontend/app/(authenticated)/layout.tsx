@@ -19,6 +19,7 @@ import { useStreamCompletionNotice } from '@/lib/hooks/use-stream-completion-not
 import { CreditsOverlay } from '@/components/credits-overlay';
 import { OnboardingTour } from '@/components/onboarding-tour';
 import { InstallPrompt } from '@/components/install-prompt';
+import { LiveAnnouncer } from '@/components/live-announcer';
 
 function OnboardingTourGate() {
   const replay = useUIStore((s) => s.tourReplay);
@@ -60,6 +61,7 @@ export default function AuthenticatedLayout({
     router.prefetch('/new');
     router.prefetch('/projects');
     router.prefetch('/chats');
+    router.prefetch('/starred');
   }, [router]);
 
   // Redirect unauthenticated users - runs client-side only
@@ -95,6 +97,8 @@ export default function AuthenticatedLayout({
   useKeyboardShortcuts({
     'cmd-k': openSearch,
     'cmd-shift-o': () => startTransition(() => router.push('/new')),
+    'cmd-shift-p': () => startTransition(() => router.push('/projects')),
+    'cmd-shift-h': () => startTransition(() => router.push('/chats')),
     'cmd-/': () => toggleShortcuts(),
     'cmd-period': () => useUIStore.getState().toggleSidebar(),
     'cmd-s': () => {
@@ -111,6 +115,11 @@ export default function AuthenticatedLayout({
         });
       }
     },
+    // Plain `?` opens the cheat sheet (GitHub/Linear convention). Plain
+    // `/` opens the search palette (also a Linear/GitHub convention).
+    // Both opt out of firing from form fields via the hook.
+    'question-mark': () => useUIStore.getState().setShortcutsOpen(true),
+    'slash': openSearch,
     'escape': () => {
       // Esc stops the active stream (matches Claude.ai). The dialog system
       // still receives Esc for closing modals because we don't preventDefault.
@@ -221,6 +230,16 @@ export default function AuthenticatedLayout({
 
   return (
     <div className="flex h-screen bg-background overflow-hidden" suppressHydrationWarning>
+      {/* Skip link — visually hidden until keyboard-focused. Lets SR /
+          keyboard users jump straight to the page content without
+          tabbing through every sidebar item first. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+      >
+        Skip to main content
+      </a>
+
       {sidebarOpen ? (
         <div className="w-[280px] shrink-0 transition-all duration-200 ease-in-out overflow-hidden">
           <Sidebar />
@@ -231,7 +250,7 @@ export default function AuthenticatedLayout({
 
       <div className="flex-1 flex flex-col min-w-0">
         <Topbar />
-        <main className="flex-1 overflow-hidden">
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-hidden">
           {children}
         </main>
       </div>
@@ -241,6 +260,7 @@ export default function AuthenticatedLayout({
       <CreditsOverlay open={creditsOpen} onClose={() => setCreditsOpen(false)} />
       <OnboardingTourGate />
       <InstallPrompt />
+      <LiveAnnouncer />
     </div>
   );
 }

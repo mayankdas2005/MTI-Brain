@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import { usePathname } from 'next/navigation';
 import { Star, Search, FileDown } from 'lucide-react';
 import { exportThread } from '@/lib/utils/export';
 import { exportChartAsCanvas } from '@/components/message-visualization';
@@ -18,6 +19,12 @@ import { useActivityStore } from '@/lib/store/activity';
 
 export function Topbar() {
   const openSearch = useSearchStore((s) => s.openModal);
+  // The thread chrome (title + star + export) only belongs in the topbar
+  // while the user is actually viewing a chat. Without this gate the
+  // last-viewed thread's title leaks onto /chats, /starred, /settings, etc.
+  // because `currentThreadId` is sticky in the store across navigations.
+  const pathname = usePathname();
+  const onThreadRoute = pathname?.startsWith('/chat/') ?? false;
 
   const currentThreadId = useThreadStore((s) => s.currentThreadId);
   const currentThreadTitle = useThreadStore((s) => s.currentThreadTitle);
@@ -25,6 +32,8 @@ export function Topbar() {
   const starThread = useThreadStore((s) => s.starThread);
   const currentMessages = useThreadStore((s) => s.currentMessages);
   const threads = useThreadStore((s) => s.threads);
+
+  const showThreadChrome = onThreadRoute && !!currentThreadId;
 
   // Seed activity history from already-loaded threads' updated_at the first
   // time they're available. Lets a returning user see their honest streak
@@ -88,7 +97,7 @@ export function Topbar() {
       <div className="flex items-center gap-1" />
 
       {/* Center: Thread title */}
-      {currentThreadId && currentThreadTitle ? (
+      {showThreadChrome && currentThreadTitle ? (
         <div className="flex items-center gap-2 min-w-0 max-w-md">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -116,7 +125,7 @@ export function Topbar() {
             {currentThreadTitle}
           </span>
         </div>
-      ) : currentThreadId ? (
+      ) : showThreadChrome ? (
         <Skeleton className="h-4 w-40" />
       ) : (
         <div />
@@ -124,7 +133,7 @@ export function Topbar() {
 
       {/* Right: Export + Search */}
       <div className="flex items-center gap-2">
-        {currentThreadId && currentMessages.length > 0 && (
+        {showThreadChrome && currentMessages.length > 0 && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button

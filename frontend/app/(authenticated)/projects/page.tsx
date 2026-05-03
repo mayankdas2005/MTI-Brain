@@ -172,8 +172,8 @@ export default function ProjectsPage() {
                       onMouseEnter={() => router.prefetch(`/projects/${project.id}`)}
                       className={
                         isEmpty
-                          ? 'flex flex-col h-full text-left rounded-xl border border-dashed border-border bg-muted/20 p-4 hover:bg-muted/40 hover:border-primary/30 transition-all duration-200 group'
-                          : 'flex flex-col h-full text-left rounded-xl border border-border bg-background p-4 shadow-sm hover:shadow-md hover:bg-muted/30 hover:border-primary/20 transition-all duration-200 group'
+                          ? 'flex flex-col h-full text-left rounded-xl border border-dashed border-border bg-muted/20 p-[var(--density-card-pad)] hover:bg-muted/40 hover:border-primary/30 transition-all duration-200 group'
+                          : 'flex flex-col h-full text-left rounded-xl border border-border bg-background p-[var(--density-card-pad)] shadow-sm hover:shadow-md hover:bg-muted/30 hover:border-primary/20 transition-all duration-200 group'
                       }
                     >
                       <div className="flex items-start justify-between mb-2">
@@ -228,7 +228,7 @@ function ProjectGridSkeleton() {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
       {Array.from({ length: 6 }, (_, i) => (
-        <div key={i} className="rounded-xl border border-border p-5">
+        <div key={i} className="rounded-xl border border-border p-[var(--density-card-pad)]">
           <Skeleton className="h-5 w-3/5 mb-3" />
           <Skeleton className="h-3 w-4/5 mb-4" />
           <div className="flex items-center gap-2">

@@ -21,6 +21,12 @@ import {
   ChartLegendContent,
   type ChartConfig,
 } from '@/components/ui/chart';
+import {
+  CHART_PALETTE,
+  CHART_FONT,
+  CHART_GRID_PROPS,
+  CHART_TOOLTIP_CURSOR,
+} from '@/components/charts/theme';
 
 // ─── Chart Spec Types ───
 
@@ -70,26 +76,9 @@ interface MessageVisualizationProps {
   conversationId?: string;
 }
 
-// ─── Font family for SVG text - explicit so exports/copies keep the same font ───
-
-const CHART_FONT = "'Geist', system-ui, sans-serif";
-
-// ─── Color palette - vibrant, accessible, distinct on light & dark ───
-
-const CHART_COLORS = [
-  '#3B82F6', // blue
-  '#F97316', // orange
-  '#10B981', // emerald
-  '#8B5CF6', // violet
-  '#EC4899', // pink
-  '#14B8A6', // teal
-  '#F59E0B', // amber
-  '#6366F1', // indigo
-  '#EF4444', // red
-  '#06B6D4', // cyan
-  '#84CC16', // lime
-  '#D946EF', // fuchsia
-];
+// CHART_FONT and palette now live in `components/charts/theme.ts`.
+// Local alias kept for migration brevity in the chart renderers below.
+const CHART_COLORS = CHART_PALETTE;
 
 // ─── Normalize spec (backward compat with old x_col/y_col format) ───
 
@@ -205,7 +194,7 @@ function BarLineAreaChart({ spec }: { spec: BarLineAreaSpec }) {
             data={dataSlice}
             margin={{ top: 10, right: 24, bottom: 14, left: spec.y_label ? 20 : 4 }}
           >
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" strokeOpacity={0.5} />
+            <CartesianGrid {...CHART_GRID_PROPS} />
             <XAxis
               dataKey={spec.x_key}
               tick={{ fontSize: 11, fontFamily: CHART_FONT, dy: 6 }}
@@ -231,7 +220,7 @@ function BarLineAreaChart({ spec }: { spec: BarLineAreaSpec }) {
                 style: { fontSize: 11, fontFamily: CHART_FONT, fill: 'var(--muted-foreground)', textAnchor: 'middle' },
               } : undefined}
             />
-            <ChartTooltip content={<ChartTooltipContent />} cursor={{ fill: 'var(--border)', fillOpacity: 0.3 }} />
+            <ChartTooltip content={<ChartTooltipContent />} cursor={CHART_TOOLTIP_CURSOR} />
             {spec.y_keys.map((field, i) =>
               spec.type === 'line' ? (
                 <Line

@@ -127,9 +127,24 @@ export function useStreamCompletionNotice() {
     const completedId = lastStreamingThreadRef.current;
     if (!completedId) return;
 
-    const { threads } = useThreadStore.getState();
+    const { threads, threadMessageMap, currentMessages, currentThreadId } =
+      useThreadStore.getState();
     const threadTitle =
       threads.find((t) => t.id === completedId)?.title || 'New chat';
+    // Notification body uses the user's question, not the thread title —
+    // people remember what they asked, not which thread carried it.
+    // Fall back to the title only if we somehow lost the messages.
+    const messages =
+      currentThreadId === completedId
+        ? currentMessages
+        : threadMessageMap[completedId] ?? [];
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+    const rawQuestion = lastUserMsg?.content?.trim();
+    const noticeBody = rawQuestion
+      ? rawQuestion.length > 120
+        ? rawQuestion.slice(0, 117) + '…'
+        : rawQuestion
+      : threadTitle;
     const prefs = usePreferencesStore.getState();
 
     if (prefs.notifyOnComplete === 'off') return;
@@ -143,7 +158,7 @@ export function useStreamCompletionNotice() {
     // Visible + elsewhere in the app → quieter in-app toast with Open action.
     if (visible) {
       toast.info('Response ready', {
-        description: threadTitle,
+        description: noticeBody,
         id: `completion-${completedId}`,
         action: {
           label: 'Open',
@@ -170,7 +185,7 @@ export function useStreamCompletionNotice() {
       // `attachPrimeListeners`), so `play()` works even when the tab is
       // hidden or the browser is minimized.
       notify('Response ready', {
-        body: threadTitle,
+        body: noticeBody,
         threadId: completedId,
         // Always suppress the OS chime so we don't double up. When the user
         // has sound on, we play /notify.mp3 ourselves; when off, no sound.

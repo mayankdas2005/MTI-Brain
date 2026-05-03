@@ -70,7 +70,6 @@ frontend/
 │   ├── feedback-widget.tsx              # Thumbs up/down + comment
 │   ├── welcome-state.tsx                # Welcome screen with suggestion chips
 │   ├── search-modal.tsx                 # Global search (Cmd+K)
-│   ├── settings-modal.tsx               # User preferences (tone, SQL, charts, …)
 │   ├── shortcuts-dialog.tsx             # Keyboard shortcuts help
 │   ├── create-project-dialog.tsx        # New project form
 │   ├── edit-project-dialog.tsx          # Edit project name/description

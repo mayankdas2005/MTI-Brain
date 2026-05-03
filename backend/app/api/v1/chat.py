@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from app.api.v1.deps import CurrentUser, get_current_user
 from app.core.logger import logger
@@ -30,6 +31,7 @@ from app.schemas.chat import (
 )
 from app.services import conversation as conv_service
 from app.services import feedback as fb_service
+from app.services.sql_analysis import extract_source_tables
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -67,14 +69,23 @@ def _mock_response_payload(question: str, conversation_id: uuid.UUID) -> dict:
         ["FX Hedge", 920_000],
         ["Liquidity Buffer", 3_100_000],
     ]
+    sql = (
+        "SELECT account, balance_usd\n"
+        "FROM treasury_accounts\n"
+        "WHERE snapshot_date = CURRENT_DATE - INTERVAL '1 day'\n"
+        "ORDER BY balance_usd DESC;"
+    )
+    # Trust-strip fields. `source_tables` is real (sqlglot on the SQL above).
+    # `data_freshness_at` is mocked at "two hours ago" until the Snowflake
+    # integration ships a real value (e.g. INFORMATION_SCHEMA.TABLES.LAST_ALTERED).
+    # Metric metadata stays None until the metric catalog backend lands.
+    source_tables = extract_source_tables(sql, dialect="snowflake")
+    data_freshness_at = (
+        datetime.now(timezone.utc) - timedelta(hours=2)
+    ).isoformat()
     return {
         "answer": answer,
-        "sql": (
-            "SELECT account, balance_usd\n"
-            "FROM treasury_accounts\n"
-            "WHERE snapshot_date = CURRENT_DATE - INTERVAL '1 day'\n"
-            "ORDER BY balance_usd DESC;"
-        ),
+        "sql": sql,
         "intent": "cash_position",
         "resolved_filters": "",
         "columns": columns,
@@ -102,6 +113,12 @@ def _mock_response_payload(question: str, conversation_id: uuid.UUID) -> dict:
         "duration_ms": 50,
         "langfuse_trace_id": None,
         "conversation_id": str(conversation_id),
+        # Trust-strip provenance — see comment above.
+        "source_tables": source_tables,
+        "data_freshness_at": data_freshness_at,
+        "metric_name": None,
+        "metric_owner": None,
+        "metric_defined_at": None,
     }
 
 
@@ -140,6 +157,14 @@ def _build_sse_generator(
                 # heuristics on the client - each entry has node, message,
                 # status, started_at_ms, duration_ms, and per-step reasoning.
                 "pipeline_steps": save_data.get("pipeline_steps") or [],
+                # Trust-strip provenance. source_tables comes from sqlglot
+                # on the executed SQL; data_freshness_at + metric_* come
+                # from Snowflake/catalog integrations once they ship.
+                "source_tables": save_data.get("source_tables") or [],
+                "data_freshness_at": save_data.get("data_freshness_at"),
+                "metric_name": save_data.get("metric_name"),
+                "metric_owner": save_data.get("metric_owner"),
+                "metric_defined_at": save_data.get("metric_defined_at"),
             },
         )
         try:
@@ -314,6 +339,13 @@ def _build_sse_generator(
                     "columns": final_data["columns"],
                     "rows": final_data["rows"],
                     "row_count": final_data["row_count"],
+                    # Trust-strip fields land with the data so the strip
+                    # lights up the moment results arrive, not later at done.
+                    "source_tables": final_data.get("source_tables") or [],
+                    "data_freshness_at": final_data.get("data_freshness_at"),
+                    "metric_name": final_data.get("metric_name"),
+                    "metric_owner": final_data.get("metric_owner"),
+                    "metric_defined_at": final_data.get("metric_defined_at"),
                 }),
             }
 
@@ -456,6 +488,7 @@ async def create_chat(
 async def list_recent_chats(
     search: str | None = Query(default=None),
     project_id: uuid.UUID | None = Query(default=None),
+    starred: bool | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user: CurrentUser = Depends(get_current_user),
@@ -467,6 +500,7 @@ async def list_recent_chats(
             search_text=search.strip(),
             project_id=project_id,
             user_id=current_user.id,
+            starred=starred,
             limit=limit,
             offset=offset,
         )
@@ -474,7 +508,7 @@ async def list_recent_chats(
 
     threads = await conv_service.list_threads(
         db, project_id=project_id, limit=limit, offset=offset,
-        user_id=current_user.id,
+        user_id=current_user.id, starred=starred,
     )
     return [ThreadSummary(**t) for t in threads]
 

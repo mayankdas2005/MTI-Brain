@@ -3,7 +3,7 @@
 import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info } from 'lucide-react';
 import hljs from 'highlight.js/lib/core';
 import sql from 'highlight.js/lib/languages/sql';
 hljs.registerLanguage('sql', sql);
@@ -16,6 +16,8 @@ import { FollowUpChips } from './follow-up-chips';
 import { MessageVisualization } from './message-visualization';
 import { DataTable } from './data-table';
 import { ThinkingWords } from './thinking-words';
+import { TrustStrip } from './messages/trust-strip';
+import { AboutPanel } from './messages/about-panel';
 import {
   Tooltip,
   TooltipContent,
@@ -74,7 +76,21 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     // If SQL is hidden, always default to table
     return pref.showSQL ? pref.defaultDataView : 'table';
   });
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [aboutQuestion, setAboutQuestion] = useState<string | null>(null);
   const reasoningRef = useRef<HTMLDivElement>(null);
+
+  // Resolve the user's question for the About panel at click time. We
+  // read from the store imperatively so the bubble doesn't re-render on
+  // every store update — currentMessages thrashes during streaming.
+  const handleOpenAbout = () => {
+    const all = useThreadStore.getState().currentMessages;
+    const userMsg = all.find(
+      (m) => m.role === 'user' && m.conversation_id === message.conversation_id,
+    );
+    setAboutQuestion(userMsg?.content ?? null);
+    setAboutOpen(true);
+  };
 
   // Auto-scroll reasoning block while streaming
   useEffect(() => {
@@ -278,7 +294,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   return (
     <div
       id={`msg-${message.id}`}
-      className="flex flex-col gap-1 px-4 py-2 animate-fade-in"
+      className="flex flex-col gap-[var(--density-row-gap)] px-4 py-[var(--density-pad-y)] animate-fade-in"
     >
       {/* Reasoning Block - vertical step timeline. The horizontal strip is gone:
           all per-step state (running, done, reasoning) lives inside this panel
@@ -385,13 +401,35 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         <RefineInput threadId={threadId} conversationId={message.conversation_id} />
       )}
 
+      {/* Trust strip — provenance for the answer. The strip renders only
+          the fields the backend has populated; missing fields just hide
+          their cells (we never invent trust data on the client). All
+          source tables come from backend SQL analysis, not the UI. */}
+      {!message.isStreaming && (() => {
+        const m = message.metadata_;
+        if (!m) return null;
+        const metric = m.metric_name
+          ? { name: m.metric_name, owner: m.metric_owner, definedAt: m.metric_defined_at }
+          : null;
+        return (
+          <div className="mt-1.5">
+            <TrustStrip
+              sources={m.source_tables}
+              freshnessAt={m.data_freshness_at}
+              metric={metric}
+              rowCount={m.row_count}
+            />
+          </div>
+        );
+      })()}
+
       {/* Timestamp + Actions row */}
       {!message.isStreaming && (
         <div className="flex items-center gap-1.5 mt-1">
           {message.created_at && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="text-[11px] text-muted-foreground/40 cursor-default">
+                <span className="text-[11px] text-muted-foreground/70 cursor-default">
                   {`${new Date(message.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${new Date(message.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
                 </span>
               </TooltipTrigger>
@@ -440,9 +478,29 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 feedback={message.feedback}
               />
             )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleOpenAbout}
+                  aria-label="About this answer"
+                  className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent"
+                >
+                  <Info className="w-3.5 h-3.5" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">About this answer</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       )}
+      <AboutPanel
+        open={aboutOpen}
+        onOpenChange={setAboutOpen}
+        message={message}
+        question={aboutQuestion}
+      />
     </div>
   );
 }
@@ -784,12 +842,14 @@ function RefineInput({ threadId, conversationId }: { threadId: string; conversat
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') handleSubmit(); if (e.key === 'Escape') { setOpen(false); setText(''); } }}
         placeholder="Add filters or modify..."
+        aria-label="Refine this query"
         className="flex-1 text-xs bg-transparent border-b border-border focus:border-primary outline-none py-1 text-foreground placeholder:text-muted-foreground/50 transition-colors"
       />
       <button
         onClick={handleSubmit}
         disabled={!text.trim()}
-        className="flex items-center justify-center h-6 w-6 rounded-md bg-foreground text-background disabled:opacity-25 hover:opacity-80 transition-opacity"
+        aria-label="Submit refinement"
+        className="flex items-center justify-center h-6 w-6 rounded-md bg-foreground text-background disabled:opacity-25 hover:opacity-80 transition-opacity outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <ArrowUp className="w-3 h-3" />
       </button>

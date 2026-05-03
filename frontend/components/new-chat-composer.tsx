@@ -158,7 +158,8 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
               type="button"
               onClick={() => handleSubmit()}
               disabled={!canSend}
-              className="group/btn flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring disabled:opacity-25 hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85]"
+              aria-label={submitting ? 'Sending message' : 'Send message'}
+              className="group/btn flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring disabled:opacity-25 hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               {submitting ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -169,7 +170,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
           </div>
         </div>
 
-        <p className="text-center text-xs text-muted-foreground/60 mt-2">
+        <p className="text-center text-xs text-muted-foreground/80 mt-2">
           MTI Brain is AI and can make mistakes. Please double-check responses.
         </p>
       </div>

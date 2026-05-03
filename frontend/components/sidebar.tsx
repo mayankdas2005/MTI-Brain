@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, startTransition } from 'react';
 import { useNow } from '@/lib/hooks/use-now';
 import { formatRelativeTime, groupByRecencyBucket } from '@/lib/utils/relative-time';
 import Image from 'next/image';
@@ -45,13 +45,12 @@ import {
 } from '@/lib/utils/notifications';
 import { useTheme } from 'next-themes';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { ProjectContextMenu } from './project-context-menu';
 import { BulkActionBar } from './bulk-action-bar';
 import { CreateProjectDialog } from './create-project-dialog';
 import { RenameDialog } from './rename-dialog';
 import { MoveToProjectDialog } from './move-to-project-dialog';
-import { SettingsModal } from './settings-modal';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -85,11 +84,27 @@ import type { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.
 
 const SIDEBAR_WIDTHS = ['w-3/4', 'w-1/2', 'w-4/5', 'w-2/3', 'w-3/5', 'w-3/4'] as const;
 
+// Sidebar Recents empty-state phrases. The visible string is picked by
+// `Math.floor(Date.now() / 60000) % length`, so it rotates roughly every
+// minute on render. Keep the tone professional and action-inviting —
+// these are the first words a fresh user reads on the home surface, so
+// no jokes and no nags. Matching the "premium analyst tool" voice.
+const RECENTS_EMPTY_PHRASES = [
+  'No conversations yet',
+  'Your treasury data awaits',
+  'Ask your first question',
+  'Insights start with a question',
+  'Ready when you are',
+  'A clean slate awaits',
+  'Your analyst is on standby',
+  'What can we look at today?',
+] as const;
+
 function SidebarThreadsSkeleton() {
   return (
-    <div className="space-y-1">
+    <div className="space-y-[var(--density-list-gap)]">
       {SIDEBAR_WIDTHS.map((w, i) => (
-        <div key={i} className="rounded-lg px-2.5 py-1.5">
+        <div key={i} className="rounded-lg px-2.5 py-[var(--density-pad-y-tight)]">
           <Skeleton className={`h-4 mb-1.5 ${w}`} />
           <Skeleton className="h-3 w-1/3" />
         </div>
@@ -153,7 +168,7 @@ function ThreadItem({
   return (
     <>
       <div
-        className={`group relative rounded-lg px-2.5 py-1.5 cursor-pointer transition-colors ${
+        className={`group relative rounded-lg px-2.5 py-[var(--density-pad-y-tight)] cursor-pointer transition-colors ${
           isCurrent
             ? 'bg-sidebar-accent text-sidebar-accent-foreground'
             : 'hover:bg-sidebar-accent text-sidebar-foreground'
@@ -329,6 +344,15 @@ function ThreadItem({
 
 export function Sidebar() {
   const router = useRouter();
+  const pathname = usePathname() ?? '';
+  // Highlight the "Chats" nav only on the chats LIST page. On a specific
+  // /chat/[id] the active thread row in Recents/Starred already shows the
+  // current location — adding a second highlight on the nav button reads
+  // as a double-selection bug. Same is intentionally NOT done for
+  // Projects: project rows in the sidebar don't have their own active
+  // state, so the Projects nav is the only visual cue on /projects/[id].
+  const onChats = pathname === '/chats';
+  const onProjects = pathname.startsWith('/projects');
   const { theme, setTheme } = useTheme();
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const [user, setUser] = useState<ReturnType<typeof getStoredUser>>(null);
@@ -364,9 +388,10 @@ export function Sidebar() {
   const projectsLoading = useProjectStore((s) => s.loading);
 
   const [projectsOpen, setProjectsOpen] = useState(true);
-  const [createProjectOpen, setCreateProjectOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [showAllStarred, setShowAllStarred] = useState(false);
+  // Settings + create-project visibility lives in the UI store so Cmd+K
+  // commands (and any other surface) can open them without prop-drilling.
+  const createProjectOpen = useUIStore((s) => s.createProjectOpen);
+  const setCreateProjectOpen = useUIStore((s) => s.setCreateProjectOpen);
   const canInstall = useInstallStore((s) => s.canInstall);
   const installed = useInstallStore((s) => s.installed);
   const promptInstall = useInstallStore((s) => s.promptInstall);
@@ -410,7 +435,7 @@ export function Sidebar() {
     return (
       <div
         key={result.thread_id}
-        className="rounded-lg px-2.5 py-2 cursor-pointer transition-colors hover:bg-sidebar-accent text-sidebar-foreground"
+        className="rounded-lg px-2.5 py-[var(--density-pad-y)] cursor-pointer transition-colors hover:bg-sidebar-accent text-sidebar-foreground"
       >
         <button
           onClick={() => router.push(`/chat/${result.thread_id}`)}
@@ -433,7 +458,12 @@ export function Sidebar() {
 
   const renderThread = (thread: ThreadSummary) => {
     const isSelected = selectedThreadIds.has(thread.id);
-    const isCurrent = currentThreadId === thread.id;
+    // Drive the highlighted-row state from the URL, not the store. The
+    // store's currentThreadId stays set to the last-loaded thread (useful
+    // for caching) even after navigating to /chats or /settings — without
+    // this gate the sidebar would keep showing a thread as "current"
+    // long after the user left it.
+    const isCurrent = pathname === `/chat/${thread.id}`;
     const title = thread.title || 'Untitled';
 
     return (
@@ -498,7 +528,8 @@ export function Sidebar() {
             const { useSearchStore } = require('@/lib/store/search');
             useSearchStore.getState().openModal();
           }}
-          className="w-full flex items-center gap-2 px-2.5 h-9 rounded-xl border border-sidebar-border bg-sidebar text-sm text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
+          aria-label="Open search"
+          className="w-full flex items-center gap-2 px-2.5 h-9 rounded-xl border border-sidebar-border bg-sidebar text-sm text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
         >
           <Search className="w-4 h-4 shrink-0" />
           <span>Search...</span>
@@ -512,7 +543,8 @@ export function Sidebar() {
             <button
               onClick={() => router.push('/projects')}
               onMouseEnter={() => router.prefetch('/projects')}
-              className="flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground"
+              aria-current={onProjects ? 'page' : undefined}
+              className={`flex-1 flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar ${onProjects ? 'bg-sidebar-accent' : ''}`}
             >
               <FolderOpen className="w-[18px] h-[18px] text-sidebar-foreground/50 shrink-0" />
               <span className="text-sm font-medium">Projects</span>
@@ -538,7 +570,8 @@ export function Sidebar() {
           <button
             onClick={() => router.push('/chats')}
             onMouseEnter={() => router.prefetch('/chats')}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground"
+            aria-current={onChats ? 'page' : undefined}
+            className={`w-full flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar ${onChats ? 'bg-sidebar-accent' : ''}`}
           >
             <MessageSquare className="w-[18px] h-[18px] text-sidebar-foreground/50 shrink-0" />
             <span className="text-sm font-medium">Chats</span>
@@ -552,12 +585,15 @@ export function Sidebar() {
           const starredThreads = threads.filter((t) => t.starred);
           if (starredProjects.length === 0 && starredThreads.length === 0) return null;
           const totalStarred = starredProjects.length + starredThreads.length;
-          const starredProjectsVisible = showAllStarred
-            ? starredProjects
-            : starredProjects.slice(0, STARRED_LIMIT);
-          const starredThreadsVisible = showAllStarred
-            ? starredThreads
-            : starredThreads.slice(0, Math.max(0, STARRED_LIMIT - starredProjects.length));
+          // Sidebar always shows up to STARRED_LIMIT; overflow links out to
+          // /starred (the full saved/important surface) instead of expanding
+          // inline. Keeps the sidebar scannable and gives the user a real
+          // browse view when they have many.
+          const starredProjectsVisible = starredProjects.slice(0, STARRED_LIMIT);
+          const starredThreadsVisible = starredThreads.slice(
+            0,
+            Math.max(0, STARRED_LIMIT - starredProjects.length),
+          );
           const starredOverflow = totalStarred > STARRED_LIMIT;
           return (
             <>
@@ -566,7 +602,7 @@ export function Sidebar() {
                   Starred
                 </p>
               </div>
-              <div className="px-2 pb-1 space-y-0.5">
+              <div className="px-2 pb-1 space-y-[var(--density-list-gap)]">
                 {starredProjectsVisible.map((project) => (
                   <ProjectContextMenu
                     key={project.id}
@@ -578,7 +614,7 @@ export function Sidebar() {
                     <button
                       onClick={() => router.push(`/projects/${project.id}`)}
                       onMouseEnter={() => router.prefetch(`/projects/${project.id}`)}
-                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left transition-colors hover:bg-sidebar-accent"
+                      className="w-full flex items-center gap-2 px-2.5 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent"
                     >
                       <FolderOpen className="w-3.5 h-3.5 text-sidebar-foreground/50 shrink-0" />
                       <span className="text-sm text-sidebar-foreground truncate flex-1">
@@ -588,14 +624,17 @@ export function Sidebar() {
                   </ProjectContextMenu>
                 ))}
                 {starredThreadsVisible.map(renderThread)}
-                {starredOverflow && (
-                  <button
-                    onClick={() => setShowAllStarred((v) => !v)}
-                    className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-1 rounded-lg hover:bg-sidebar-accent transition-colors"
-                  >
-                    {showAllStarred ? 'Show less' : `Show ${totalStarred - STARRED_LIMIT} more`}
-                  </button>
-                )}
+                {/* Always show "See all starred" so users have a clear path
+                    to the full /starred page, not only when the sidebar
+                    truncates. Matches the Recents footer pattern below. */}
+                <button
+                  onClick={() => router.push('/starred')}
+                  onMouseEnter={() => router.prefetch('/starred')}
+                  className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
+                >
+                  <span>{starredOverflow ? `See all ${totalStarred} starred` : 'See all starred'}</span>
+                  <ChevronRight className="w-3 h-3" />
+                </button>
               </div>
               <div className="px-3 py-1">
                 <div className="border-t border-sidebar-border" />
@@ -610,13 +649,13 @@ export function Sidebar() {
             Recents
           </p>
         </div>
-        <div className="px-2 pb-3 pt-0 space-y-0.5">
+        <div className="px-2 pb-3 pt-0 space-y-[var(--density-list-gap)]">
           {threads.length === 0 && threadsLoading ? (
             <SidebarThreadsSkeleton />
           ) : threads.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-sm text-sidebar-foreground/60" suppressHydrationWarning>
-                {['No conversations yet', 'Your treasury data awaits', 'Ask your first question'][Math.floor(Date.now() / 60000) % 3]}
+                {RECENTS_EMPTY_PHRASES[Math.floor(Date.now() / 60000) % RECENTS_EMPTY_PHRASES.length]}
               </p>
             </div>
           ) : (
@@ -629,7 +668,7 @@ export function Sidebar() {
                   sidebarNow,
                 );
                 return groups.map(({ bucket, label, items }) => (
-                  <div key={bucket} className="space-y-0.5">
+                  <div key={bucket} className="space-y-[var(--density-list-gap)]">
                     <p className="text-[10px] uppercase tracking-widest font-medium text-sidebar-foreground/40 px-2 pt-2 pb-1">
                       {label}
                     </p>
@@ -641,7 +680,7 @@ export function Sidebar() {
                 <button
                   onClick={() => router.push('/chats')}
                   onMouseEnter={() => router.prefetch('/chats')}
-                  className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-1.5 rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
+                  className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
                 >
                   <span>See all chats</span>
                   <ChevronRight className="w-3 h-3" />
@@ -658,7 +697,7 @@ export function Sidebar() {
       {/* Footer - User menu */}
       <div className="px-3 py-2 border-t border-sidebar-border">
         {!user ? (
-          <div className="flex items-center gap-2.5 px-2 py-1.5">
+          <div className="flex items-center gap-2.5 px-2 py-[var(--density-pad-y-tight)]">
             <Skeleton className="h-8 w-8 rounded-full shrink-0" />
             <div className="flex-1 min-w-0">
               <Skeleton className="h-4 w-24 mb-1.5" />
@@ -668,7 +707,7 @@ export function Sidebar() {
         ) : (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button data-onboarding="user-menu" className="w-full flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-sidebar-accent transition-colors">
+            <button data-onboarding="user-menu" className="w-full flex items-center gap-2.5 rounded-lg px-2 py-[var(--density-pad-y-tight)] hover:bg-sidebar-accent transition-colors">
               <Avatar className="h-8 w-8">
                 <AvatarFallback className="bg-primary/15 text-primary text-sm font-semibold">
                   {(user.name || user.email)?.charAt(0).toUpperCase()}
@@ -688,12 +727,14 @@ export function Sidebar() {
           </DropdownMenuTrigger>
           <DropdownMenuContent side="top" align="start" className="w-56 mb-1">
             {/* Theme options */}
-            <div className="px-2 py-1.5">
+            <div className="px-2 py-[var(--density-pad-y-tight)]">
               <p className="text-xs font-medium text-muted-foreground mb-1.5">Theme</p>
               <div className="flex gap-1">
                 <button
                   onClick={() => setTheme('light')}
-                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                  aria-pressed={theme === 'light'}
+                  aria-label="Light theme"
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-[var(--density-pad-y-tight)] text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                     theme === 'light'
                       ? 'bg-accent text-accent-foreground font-medium'
                       : 'hover:bg-accent text-muted-foreground hover:text-foreground'
@@ -704,7 +745,9 @@ export function Sidebar() {
                 </button>
                 <button
                   onClick={() => setTheme('dark')}
-                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                  aria-pressed={theme === 'dark'}
+                  aria-label="Dark theme"
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-[var(--density-pad-y-tight)] text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                     theme === 'dark'
                       ? 'bg-accent text-accent-foreground font-medium'
                       : 'hover:bg-accent text-muted-foreground hover:text-foreground'
@@ -716,7 +759,10 @@ export function Sidebar() {
               </div>
             </div>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => setSettingsOpen(true)} className="gap-2">
+            <DropdownMenuItem
+              onClick={() => startTransition(() => router.push('/settings'))}
+              className="gap-2"
+            >
               <Settings className="w-4 h-4" />
               Settings
             </DropdownMenuItem>
@@ -776,8 +822,6 @@ export function Sidebar() {
         onOpenChange={setCreateProjectOpen}
       />
 
-      {/* Settings Modal */}
-      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   );
 }

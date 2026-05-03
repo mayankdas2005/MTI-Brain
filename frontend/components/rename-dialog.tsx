@@ -51,6 +51,7 @@ export function RenameDialog({ open, onOpenChange, threadId, currentTitle }: Ren
           value={title}
           onChange={(e) => setTitle(e.target.value.slice(0, 500))}
           placeholder="Enter a title..."
+          aria-label="Chat title"
           maxLength={500}
           onKeyDown={(e) => e.key === 'Enter' && handleSave()}
           autoFocus

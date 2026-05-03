@@ -9,6 +9,9 @@ interface UIStore {
   shortcutsOpen: boolean;
   setShortcutsOpen: (open: boolean) => void;
   toggleShortcuts: () => void;
+  // Create-project dialog visibility.
+  createProjectOpen: boolean;
+  setCreateProjectOpen: (open: boolean) => void;
   // Onboarding tour replay flag — set true from the user menu to re-open
   // the guided tour after the user has dismissed it once.
   tourReplay: boolean;
@@ -23,6 +26,8 @@ export const useUIStore = create<UIStore>((set) => ({
   shortcutsOpen: false,
   setShortcutsOpen: (open) => set({ shortcutsOpen: open }),
   toggleShortcuts: () => set((state) => ({ shortcutsOpen: !state.shortcutsOpen })),
+  createProjectOpen: false,
+  setCreateProjectOpen: (open) => set({ createProjectOpen: open }),
   tourReplay: false,
   startTourReplay: () => set({ tourReplay: true }),
   stopTourReplay: () => set({ tourReplay: false }),

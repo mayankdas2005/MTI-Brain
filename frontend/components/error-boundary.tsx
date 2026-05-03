@@ -32,10 +32,19 @@ class ErrorBoundaryClass extends Component<
     return { error };
   }
 
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // Keep technical details in the console for developers; the user-facing
+    // card never surfaces stack traces.
+    console.error('[ErrorBoundary]', error, info);
+  }
+
   componentDidMount() {
     if (typeof window === 'undefined') return;
     const handler = (event: ErrorEvent) => {
-      if (event.error instanceof Error) this.setState({ error: event.error });
+      if (event.error instanceof Error) {
+        console.error('[ErrorBoundary] window error', event.error);
+        this.setState({ error: event.error });
+      }
     };
     window.addEventListener('error', handler);
     this.removeWindowListener = () => window.removeEventListener('error', handler);
@@ -73,11 +82,7 @@ class ErrorBoundaryClass extends Component<
               An unexpected error occurred. Try again, or refresh the page.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <details className="text-xs text-muted-foreground p-3 bg-muted rounded">
-              <summary className="cursor-pointer font-medium mb-2">Error details</summary>
-              <pre className="overflow-auto">{error.toString()}</pre>
-            </details>
+          <CardContent>
             <div className="flex gap-2">
               <Button onClick={this.reset} variant="outline" className="flex-1">
                 Try again

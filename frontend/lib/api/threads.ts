@@ -27,6 +27,7 @@ export async function getRecents(
   params?: {
     search?: string;
     project_id?: string;
+    starred?: boolean;
     limit?: number;
     offset?: number;
   },
@@ -35,6 +36,7 @@ export async function getRecents(
   const query = new URLSearchParams();
   if (params?.search) query.set('search', params.search);
   if (params?.project_id) query.set('project_id', params.project_id);
+  if (params?.starred != null) query.set('starred', String(params.starred));
   if (params?.limit != null) query.set('limit', String(params.limit));
   if (params?.offset != null) query.set('offset', String(params.offset));
 

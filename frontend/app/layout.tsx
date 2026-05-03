@@ -65,8 +65,15 @@ export default function RootLayout({
             in particular fires this event very early; if our store's
             listener attaches after parse, we miss the event entirely and
             never offer install. The captured event is read by
-            lib/store/install.ts on init. */}
-        <script
+            lib/store/install.ts on init.
+
+            Using `next/script` with `strategy="beforeInteractive"` so the
+            tag is hoisted into the real document <head> before hydration —
+            a raw <script> rendered as a React element doesn't execute on
+            the client (React 19 / Next 16 warning). */}
+        <Script
+          id="quest-pwa-prompt-capture"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html:
               "window.__questPwaPrompt=null;" +

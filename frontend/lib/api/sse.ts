@@ -20,6 +20,13 @@ export interface SSEHandlers {
     columns: string[];
     rows: unknown[][];
     row_count: number;
+    /** Trust-strip fields. Backend populates them when available
+     *  (sqlglot for source_tables, Snowflake/catalog later). */
+    source_tables?: string[];
+    data_freshness_at?: string;
+    metric_name?: string | null;
+    metric_owner?: string | null;
+    metric_defined_at?: string | null;
   }) => void;
   onChart?: (data: { spec: Record<string, unknown> }) => void;
   onFollowUps?: (data: { questions: string[] }) => void;
@@ -138,6 +145,11 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
         columns: string[];
         rows: unknown[][];
         row_count: number;
+        source_tables?: string[];
+        data_freshness_at?: string;
+        metric_name?: string | null;
+        metric_owner?: string | null;
+        metric_defined_at?: string | null;
       });
       break;
     case 'chart':

@@ -163,7 +163,7 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
                 return (
                   <TableHead
                     key={col}
-                    className={`whitespace-nowrap py-2 cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background ${isNumeric ? 'text-right' : ''}`}
+                    className={`whitespace-nowrap py-[var(--density-pad-y)] cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background ${isNumeric ? 'text-right' : ''}`}
                     onClick={() => handleSort(ci)}
                   >
                     <div className={`flex items-center gap-1 ${isNumeric ? 'justify-end' : ''}`}>
@@ -192,9 +192,9 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
                   return (
                     <ContextMenu key={ci}>
                       <ContextMenuTrigger asChild>
-                        <TableCell className={`text-xs whitespace-nowrap py-2 tabular-nums ${isNumeric ? 'text-right font-medium' : ''}`}>
+                        <TableCell className={`text-xs whitespace-nowrap py-[var(--density-pad-y)] tabular-nums ${isNumeric ? 'text-right font-medium' : ''}`}>
                           {cell === null || cell === undefined ? (
-                            <span className="text-muted-foreground/50 italic font-normal">-</span>
+                            <span className="text-muted-foreground/70 italic font-normal" aria-label="empty cell">-</span>
                           ) : isNumeric && typeof cell === 'number' ? (
                             Number.isInteger(cell)
                               ? formatNumber(cell)

@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 
 export type ResponseTone = 'consultant' | 'operator' | 'brief';
 export type DefaultDataView = 'sql' | 'table';
+export type Density = 'comfortable' | 'compact';
 
 export type NotifyOnComplete = 'when-hidden' | 'off';
 
@@ -20,6 +21,9 @@ interface PreferencesState {
   notifySound: boolean;
   /** Set true once we've shown the soft permission prompt; prevents re-asks. */
   softPromptShown: boolean;
+  /** Display density — applied to <html data-density> via a Providers-level
+   *  effect. Drives the --density-* CSS variables in globals.css. */
+  density: Density;
 }
 
 interface PreferencesActions {
@@ -33,6 +37,12 @@ interface PreferencesActions {
   setNotifyOnComplete: (val: NotifyOnComplete) => void;
   setNotifySound: (val: boolean) => void;
   setSoftPromptShown: (val: boolean) => void;
+  setDensity: (density: Density) => void;
+  /** Reset every persisted preference back to its DEFAULT value. The
+   *  `softPromptShown` flag is preserved — it tracks whether we've ever
+   *  shown the notification permission soft-prompt and resetting it
+   *  would re-trigger that prompt for no reason. */
+  resetToDefaults: () => void;
   /** True after user-scoped preferences have been loaded. */
   hydrated: boolean;
   /** Re-load preferences for the current user from localStorage. */
@@ -41,7 +51,7 @@ interface PreferencesActions {
 
 type PreferencesStore = PreferencesState & PreferencesActions;
 
-const DEFAULTS: PreferencesState = {
+export const PREFERENCES_DEFAULTS: PreferencesState = {
   responseTone: 'consultant',
   showSQL: true,
   autoShowCharts: true,
@@ -52,6 +62,7 @@ const DEFAULTS: PreferencesState = {
   notifyOnComplete: 'when-hidden',
   notifySound: true,
   softPromptShown: false,
+  density: 'comfortable',
 };
 
 const STORAGE_PREFIX = 'quest-prefs';
@@ -59,7 +70,7 @@ const STORAGE_PREFIX = 'quest-prefs';
 export const usePreferencesStore = create<PreferencesStore>()(
   persist(
     (set) => ({
-      ...DEFAULTS,
+      ...PREFERENCES_DEFAULTS,
       hydrated: false,
 
       setResponseTone: (tone) => set({ responseTone: tone }),
@@ -72,6 +83,15 @@ export const usePreferencesStore = create<PreferencesStore>()(
       setNotifyOnComplete: (val) => set({ notifyOnComplete: val }),
       setNotifySound: (val) => set({ notifySound: val }),
       setSoftPromptShown: (val) => set({ softPromptShown: val }),
+      setDensity: (density) => set({ density }),
+
+      resetToDefaults: () =>
+        set((state) => ({
+          ...PREFERENCES_DEFAULTS,
+          // preserve flags that aren't user-facing settings
+          softPromptShown: state.softPromptShown,
+          hydrated: state.hydrated,
+        })),
 
       rehydrateForUser: (userId: string) => {
         // Load this user's preferences from localStorage, fall back to defaults
@@ -80,7 +100,7 @@ export const usePreferencesStore = create<PreferencesStore>()(
           if (raw) {
             const parsed = JSON.parse(raw);
             if (parsed?.state) {
-              set({ ...DEFAULTS, ...parsed.state });
+              set({ ...PREFERENCES_DEFAULTS, ...parsed.state });
             }
           }
         } catch {

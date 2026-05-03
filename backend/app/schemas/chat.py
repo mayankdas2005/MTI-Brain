@@ -185,9 +185,17 @@ class SearchResult(BaseModel):
         thread_id: ID of the matching thread.
         project_id: Associated project ID, if any.
         title: Thread title.
+        starred: Whether the thread is starred (lets the frontend render
+            the star icon on results without a second lookup).
         match_type: Type of match (e.g. title, message).
         preview: Short preview of the matching content.
-        headline: Highlighted headline snippet.
+        headline: Highlighted headline snippet (Postgres ``ts_headline``
+            output with ``<b>``-wrapped FTS matches in body content).
+        matched_terms: Words in the title/content that fuzzy/Levenshtein/
+            substring-matched any search term. Empty when only the FTS
+            stem path matched (in which case the headline already wraps
+            the matches in ``<b>``). Lets the frontend bold the right
+            words even for typo and trigram matches.
         rank: Relevance ranking score.
         created_at: When the thread was created.
         updated_at: When the thread was last updated.
@@ -196,9 +204,11 @@ class SearchResult(BaseModel):
     thread_id: uuid.UUID
     project_id: uuid.UUID | None = None
     title: str | None
+    starred: bool = False
     match_type: str
     preview: str | None = None
     headline: str | None = None
+    matched_terms: list[str] = []
     rank: float = 0.0
     created_at: datetime
     updated_at: datetime

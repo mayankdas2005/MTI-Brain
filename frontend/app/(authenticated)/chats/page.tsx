@@ -38,6 +38,7 @@ import { useThreadStore } from '@/lib/store/threads';
 import { toast } from '@/lib/toast';
 import * as api from '@/lib/api/threads';
 import type { ThreadSummary, SearchResult } from '@/lib/types/api';
+import { highlightQueryInText, renderSearchSnippet } from '@/lib/utils/highlight';
 
 const PAGE_SIZE = 20;
 
@@ -272,6 +273,16 @@ export default function ChatsPage() {
     setSelectedIds(new Set());
   };
 
+  // If the user enters select mode and then deletes everything, the
+  // remaining "Select all" UI strands them with no Cancel button to exit.
+  // Reset whenever threads goes empty so a fresh re-entry is clean.
+  useEffect(() => {
+    if (threads.length === 0 && (selectMode || selectedIds.size > 0)) {
+      setSelectMode(false);
+      setSelectedIds(new Set());
+    }
+  }, [threads.length, selectMode, selectedIds.size]);
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-4xl mx-auto px-6 py-8">
@@ -314,8 +325,11 @@ export default function ChatsPage() {
           )}
         </div>
 
-        {/* Selection bar */}
-        {!isSearching && (
+        {/* Selection bar — hidden when there are no threads, since the bar
+            has no useful state to show (and the Select/Cancel button in
+            this row only renders when threads exist, which would otherwise
+            strand the user in select mode after deleting the last thread). */}
+        {!isSearching && threads.length > 0 && (
           <div className="flex items-center justify-between mb-3 min-h-8">
             <div className="flex items-center gap-3">
               {selectMode ? (
@@ -382,7 +396,7 @@ export default function ChatsPage() {
         )}
 
         {/* Thread / Search List */}
-        <div className="space-y-1">
+        <div className="space-y-[var(--density-list-gap)]">
           {isSearching ? (
             <>
               {/* Search result count */}
@@ -415,7 +429,7 @@ export default function ChatsPage() {
                     router.prefetch(`/chat/${result.thread_id}`);
                     setFocusedSearchIndex(index);
                   }}
-                  className={`w-full text-left rounded-lg px-4 py-3 transition-all duration-100 group animate-in fade-in slide-in-from-bottom-1 fill-mode-both ${
+                  className={`w-full text-left rounded-lg px-4 py-[var(--density-pad-y-loose)] transition-all duration-100 group animate-in fade-in slide-in-from-bottom-1 fill-mode-both ${
                     focusedSearchIndex === index
                       ? 'bg-muted/70 ring-1 ring-border'
                       : 'hover:bg-muted/50'
@@ -423,21 +437,24 @@ export default function ChatsPage() {
                   style={{ animationDelay: `${Math.min(index, 6) * 35}ms` }}
                 >
                   <p className="text-sm font-medium text-foreground truncate">
-                    {result.title || 'Untitled'}
+                    {highlightQueryInText(result.title || 'Untitled', search, {
+                      matchedTerms: result.matched_terms,
+                    })}
                   </p>
                   {result.headline && (
-                    <p
-                      className="text-xs text-muted-foreground mt-0.5 line-clamp-4 leading-relaxed [&_b]:text-foreground [&_b]:font-semibold"
-                      dangerouslySetInnerHTML={{ __html: result.headline }}
-                    />
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-4 leading-relaxed">
+                      {renderSearchSnippet(result.headline, search, {
+                        matchedTerms: result.matched_terms,
+                      })}
+                    </p>
                   )}
                   <div className="flex items-center gap-1.5 mt-0.5">
                     {result.match_type === 'message' && (
-                      <FileText className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+                      <FileText className="w-3 h-3 text-muted-foreground/70 shrink-0" />
                     )}
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="text-xs text-muted-foreground/60 cursor-default">
+                        <span className="text-xs text-muted-foreground/80 cursor-default">
                           {formatTime(result.updated_at)}
                         </span>
                       </TooltipTrigger>
@@ -447,8 +464,8 @@ export default function ChatsPage() {
                     </Tooltip>
                     {result.project_id && projectNameMap.get(result.project_id) && (
                       <>
-                        <span className="text-muted-foreground/40 text-xs">in</span>
-                        <span className="text-xs text-muted-foreground/60">
+                        <span className="text-muted-foreground/60 text-xs">in</span>
+                        <span className="text-xs text-muted-foreground/80">
                           {projectNameMap.get(result.project_id)}
                         </span>
                       </>
@@ -481,7 +498,7 @@ export default function ChatsPage() {
                   <div
                     onClick={() => selectMode ? toggleSelect(thread.id) : router.push(`/chat/${thread.id}`)}
                     onMouseEnter={() => { if (!selectMode) { router.prefetch(`/chat/${thread.id}`); setFocusedIndex(index); } }}
-                    className={`group flex items-center px-4 py-3.5 cursor-pointer transition-all duration-100 rounded-lg ${
+                    className={`group flex items-center px-4 py-[var(--density-pad-y-loose)] cursor-pointer transition-all duration-100 rounded-lg ${
                       selectedIds.has(thread.id)
                         ? 'bg-primary/15 ring-1 ring-primary/40'
                         : focusedIndex === index
@@ -523,7 +540,7 @@ export default function ChatsPage() {
                         </Tooltip>
                         {thread.project_id && projectNameMap.get(thread.project_id) && (
                           <>
-                            <span className="text-muted-foreground/40">in</span>
+                            <span className="text-muted-foreground/60">in</span>
                             <span className="text-muted-foreground">{projectNameMap.get(thread.project_id)}</span>
                           </>
                         )}
@@ -587,9 +604,9 @@ const THREAD_WIDTHS = ['w-3/5', 'w-4/5', 'w-3/4', 'w-full', 'w-3/5', 'w-4/5', 'w
 
 function ThreadListSkeleton() {
   return (
-    <div className="space-y-1">
+    <div className="space-y-[var(--density-list-gap)]">
       {THREAD_WIDTHS.map((w, i) => (
-        <div key={i} className="rounded-lg px-4 py-3">
+        <div key={i} className="rounded-lg px-4 py-[var(--density-pad-y-loose)]">
           <Skeleton className={`h-4 mb-2 ${w}`} />
           <Skeleton className="h-3 w-1/4" />
         </div>
@@ -600,7 +617,7 @@ function ThreadListSkeleton() {
 
 function SearchResultSkeleton() {
   return (
-    <div className="space-y-1">
+    <div className="space-y-[var(--density-list-gap)]">
       {[0.6, 0.8, 0.7, 0.5].map((opacity, i) => (
         <div key={i} className="rounded-lg px-4 py-3" style={{ opacity }}>
           <Skeleton className="h-4 w-3/5 mb-1.5" />

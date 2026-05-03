@@ -113,11 +113,11 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
             <Skeleton className="h-6 w-6 rounded" />
           </div>
           <Skeleton className="h-4 w-64 mb-8" />
-          <div className="space-y-1">
-            <div className="rounded-lg px-4 py-3"><Skeleton className="h-4 mb-2 w-1/2" /><Skeleton className="h-3 w-1/4" /></div>
-            <div className="rounded-lg px-4 py-3"><Skeleton className="h-4 mb-2 w-3/4" /><Skeleton className="h-3 w-1/4" /></div>
-            <div className="rounded-lg px-4 py-3"><Skeleton className="h-4 mb-2 w-2/3" /><Skeleton className="h-3 w-1/4" /></div>
-            <div className="rounded-lg px-4 py-3"><Skeleton className="h-4 mb-2 w-3/5" /><Skeleton className="h-3 w-1/4" /></div>
+          <div className="space-y-[var(--density-list-gap)]">
+            <div className="rounded-lg px-4 py-[var(--density-pad-y-loose)]"><Skeleton className="h-4 mb-2 w-1/2" /><Skeleton className="h-3 w-1/4" /></div>
+            <div className="rounded-lg px-4 py-[var(--density-pad-y-loose)]"><Skeleton className="h-4 mb-2 w-3/4" /><Skeleton className="h-3 w-1/4" /></div>
+            <div className="rounded-lg px-4 py-[var(--density-pad-y-loose)]"><Skeleton className="h-4 mb-2 w-2/3" /><Skeleton className="h-3 w-1/4" /></div>
+            <div className="rounded-lg px-4 py-[var(--density-pad-y-loose)]"><Skeleton className="h-4 mb-2 w-3/5" /><Skeleton className="h-3 w-1/4" /></div>
           </div>
         </div>
       </div>
@@ -219,9 +219,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
         {/* Thread List */}
         {showThreadSkeleton ? (
-          <div className="space-y-2">
+          <div className="space-y-[var(--density-list-gap)]">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="rounded-xl border border-border bg-background p-4">
+              <div key={i} className="rounded-xl border border-border bg-background p-[var(--density-card-pad)]">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Skeleton className="h-4 w-4 rounded" />
@@ -250,7 +250,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
             </Button>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-[var(--density-list-gap)]">
             {currentProject.threads.map((thread) => (
               <div
                 key={thread.id}
@@ -258,7 +258,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               >
                 <button
                   onClick={() => router.push(`/chat/${thread.id}`)}
-                  className="flex-1 text-left p-4 min-w-0"
+                  className="flex-1 text-left p-[var(--density-card-pad)] min-w-0"
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 min-w-0">

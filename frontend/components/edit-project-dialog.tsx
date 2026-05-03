@@ -73,8 +73,9 @@ export function EditProjectDialog({
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <label className="text-sm font-medium text-foreground">Name</label>
+            <label htmlFor="edit-project-name" className="text-sm font-medium text-foreground">Name</label>
             <Input
+              id="edit-project-name"
               value={name}
               onChange={(e) => setName(e.target.value.slice(0, 255))}
               placeholder="Project name..."
@@ -85,10 +86,11 @@ export function EditProjectDialog({
             <p className="text-xs text-muted-foreground mt-1">{name.length}/255</p>
           </div>
           <div>
-            <label className="text-sm font-medium text-foreground">
+            <label htmlFor="edit-project-description" className="text-sm font-medium text-foreground">
               Description <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
             <textarea
+              id="edit-project-description"
               value={description}
               onChange={(e) => setDescription(e.target.value.slice(0, 2000))}
               placeholder="Describe the project..."

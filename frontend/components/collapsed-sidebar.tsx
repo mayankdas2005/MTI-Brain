@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, startTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import {
@@ -31,7 +31,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { SettingsModal } from './settings-modal';
 
 function IconButton({
   tooltip,
@@ -71,8 +70,6 @@ export function CollapsedSidebar() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const openSearch = useSearchStore((s) => s.openModal);
   const [initials, setInitials] = useState('');
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
   useEffect(() => {
     const user = getStoredUser() || (() => {
       const token = getStoredToken();
@@ -172,7 +169,9 @@ export function CollapsedSidebar() {
                 <div className="flex gap-1">
                   <button
                     onClick={() => setTheme('light')}
-                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                    aria-pressed={theme === 'light'}
+                    aria-label="Light theme"
+                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                       theme === 'light'
                         ? 'bg-accent text-accent-foreground font-medium'
                         : 'hover:bg-accent text-muted-foreground hover:text-foreground'
@@ -183,7 +182,9 @@ export function CollapsedSidebar() {
                   </button>
                   <button
                     onClick={() => setTheme('dark')}
-                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                    aria-pressed={theme === 'dark'}
+                    aria-label="Dark theme"
+                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                       theme === 'dark'
                         ? 'bg-accent text-accent-foreground font-medium'
                         : 'hover:bg-accent text-muted-foreground hover:text-foreground'
@@ -195,7 +196,10 @@ export function CollapsedSidebar() {
                 </div>
               </div>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setSettingsOpen(true)} className="gap-2">
+              <DropdownMenuItem
+                onClick={() => startTransition(() => router.push('/settings'))}
+                className="gap-2"
+              >
                 <Settings className="w-4 h-4" />
                 Settings
               </DropdownMenuItem>
@@ -209,8 +213,6 @@ export function CollapsedSidebar() {
         )}
       </div>
 
-      {/* Settings Modal */}
-      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   );
 }

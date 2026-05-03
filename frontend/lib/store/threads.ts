@@ -527,12 +527,33 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     });
     // Refresh sidebar
     get().fetchRecents();
-    // Drop any stale detail cache for the parent project (thread_count and
-    // threads list both shifted) and refresh if the detail page is open.
+    // For threads created inside a project, optimistically prepend the new
+    // thread (with the real thread_id from the API response) into the
+    // project detail. This way the user sees it instantly if they're on
+    // the project page, and if they navigate away and back, the cached
+    // entry already has it — no skeleton flash. We don't invalidate here
+    // because that would clobber the optimistic insert; the next natural
+    // fetch (e.g. revisiting the page later) will reconcile against the
+    // server, and fetchProjects below refreshes counts.
     if (projectId) {
       const { useProjectStore } = await import('./projects');
-      useProjectStore.getState().invalidateProjectDetail(projectId);
-      useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
+      const now = new Date().toISOString();
+      useProjectStore.getState().mutateProjectDetail(projectId, (p) => ({
+        ...p,
+        threads: [
+          {
+            id: res.thread_id,
+            project_id: projectId,
+            title: res.title ?? title ?? null,
+            starred: false,
+            last_message: null,
+            created_at: now,
+            updated_at: now,
+          },
+          ...p.threads,
+        ],
+      }));
+      useProjectStore.getState().fetchProjects();
     }
     return res.thread_id;
   },
@@ -556,6 +577,16 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         ...(wasCurrent ? { currentThreadId: null, currentMessages: [] } : {}),
       };
     });
+    // Mirror the optimistic delete into the project detail (open page +
+    // any cached entry) so the parent project's list updates instantly,
+    // not after the post-API refetch finishes. Same pattern as starThread.
+    if (affectedProjectId) {
+      const { useProjectStore } = await import('./projects');
+      useProjectStore.getState().mutateProjectDetail(affectedProjectId, (p) => ({
+        ...p,
+        threads: p.threads.filter((t) => t.id !== threadId),
+      }));
+    }
     try {
       await api.deleteThread(threadId);
       // Refresh project list (counts) + drop stale detail cache + refresh
@@ -567,7 +598,14 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         useProjectStore.getState().refreshCurrentProjectIfMatches(affectedProjectId);
       }
     } catch {
-      set({ threads: prev, searchResults: prevSearchResults }); // rollback
+      set({ threads: prev, searchResults: prevSearchResults });
+      // Roll back the project detail mutation by refetching the server
+      // truth — the optimistic removal would otherwise leave a hole.
+      if (affectedProjectId) {
+        const { useProjectStore } = await import('./projects');
+        useProjectStore.getState().invalidateProjectDetail(affectedProjectId);
+        useProjectStore.getState().refreshCurrentProjectIfMatches(affectedProjectId);
+      }
     }
     return wasCurrent;
   },
@@ -668,27 +706,46 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
   moveThread: async (threadId, projectId) => {
     const prev = get().threads;
-    const fromProjectId = prev.find((t) => t.id === threadId)?.project_id ?? null;
+    const movedThread = prev.find((t) => t.id === threadId);
+    const fromProjectId = movedThread?.project_id ?? null;
     // Optimistic: update sidebar list and current thread meta immediately
     set({ threads: prev.map((t) => t.id === threadId ? { ...t, project_id: projectId } : t) });
     if (get().currentThreadId === threadId) set({ currentThreadProjectId: projectId });
+    // Mirror the move into project detail caches so both the source and
+    // destination project pages reflect the change instantly.
+    const { useProjectStore } = await import('./projects');
+    if (fromProjectId) {
+      useProjectStore.getState().mutateProjectDetail(fromProjectId, (p) => ({
+        ...p,
+        threads: p.threads.filter((t) => t.id !== threadId),
+      }));
+    }
+    if (projectId && movedThread) {
+      useProjectStore.getState().mutateProjectDetail(projectId, (p) => ({
+        ...p,
+        threads: [
+          { ...movedThread, project_id: projectId },
+          ...p.threads.filter((t) => t.id !== threadId),
+        ],
+      }));
+    }
     try {
       await api.moveThread(threadId, projectId);
-      const { useProjectStore } = await import('./projects');
-      // Both sides of the move have stale thread lists + counts. Drop the
-      // detail cache for each so the next visit re-fetches; refresh the open
-      // detail page (if any) immediately.
-      if (fromProjectId) useProjectStore.getState().invalidateProjectDetail(fromProjectId);
-      if (projectId) useProjectStore.getState().invalidateProjectDetail(projectId);
-      await Promise.all([
-        get().fetchRecents(),
-        useProjectStore.getState().fetchProjects(),
-        useProjectStore.getState().refreshCurrentProjectIfMatches(fromProjectId),
-        useProjectStore.getState().refreshCurrentProjectIfMatches(projectId),
-      ]);
+      // Counts shifted; refresh project list (sidebar/projects page).
+      get().fetchRecents();
+      useProjectStore.getState().fetchProjects();
     } catch {
+      // Roll back sidebar list, current thread meta, and both project caches.
       set({ threads: prev });
       if (get().currentThreadId === threadId) set({ currentThreadProjectId: fromProjectId });
+      if (fromProjectId) {
+        useProjectStore.getState().invalidateProjectDetail(fromProjectId);
+        useProjectStore.getState().refreshCurrentProjectIfMatches(fromProjectId);
+      }
+      if (projectId) {
+        useProjectStore.getState().invalidateProjectDetail(projectId);
+        useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
+      }
     }
   },
 
@@ -703,14 +760,26 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     const affectedProjectIds = new Set(
       prev.filter((t) => ids.includes(t.id)).map((t) => t.project_id).filter(Boolean) as string[],
     );
+    const idSet = new Set(ids);
     set({
-      threads: prev.filter((t) => !ids.includes(t.id)),
-      searchResults: prevSearchResults.filter((r) => !ids.includes(r.thread_id)),
+      threads: prev.filter((t) => !idSet.has(t.id)),
+      searchResults: prevSearchResults.filter((r) => !idSet.has(r.thread_id)),
       selectedThreadIds: new Set(),
     });
+    // Mirror the optimistic delete into project detail caches so the open
+    // project page (and any cached detail) reflects the removal instantly.
+    if (affectedProjectIds.size > 0) {
+      const { useProjectStore } = await import('./projects');
+      for (const pid of affectedProjectIds) {
+        useProjectStore.getState().mutateProjectDetail(pid, (p) => ({
+          ...p,
+          threads: p.threads.filter((t) => !idSet.has(t.id)),
+        }));
+      }
+    }
     try {
       await api.bulkDeleteThreads(ids);
-      if (ids.includes(get().currentThreadId ?? '')) {
+      if (idSet.has(get().currentThreadId ?? '')) {
         set({ currentThreadId: null, currentMessages: [] });
       }
       // Evict cached message data for every deleted thread so a stale id
@@ -729,6 +798,14 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       }
     } catch {
       set({ threads: prev, searchResults: prevSearchResults });
+      // Roll back project detail by refetching server truth.
+      if (affectedProjectIds.size > 0) {
+        const { useProjectStore } = await import('./projects');
+        for (const pid of affectedProjectIds) {
+          useProjectStore.getState().invalidateProjectDetail(pid);
+          useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
+        }
+      }
     }
   },
 
@@ -736,20 +813,41 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     const ids = threadIds ?? [...get().selectedThreadIds];
     if (ids.length === 0) return;
     const prev = get().threads;
+    const idSet = new Set(ids);
+    const movedThreads = prev.filter((t) => idSet.has(t.id));
     const affectedProjectIds = new Set(
-      prev.filter((t) => ids.includes(t.id)).map((t) => t.project_id).filter(Boolean) as string[],
+      movedThreads.map((t) => t.project_id).filter(Boolean) as string[],
     );
     // Optimistic: update project_id on all selected threads immediately
     set({
-      threads: prev.map((t) => ids.includes(t.id) ? { ...t, project_id: projectId } : t),
+      threads: prev.map((t) => idSet.has(t.id) ? { ...t, project_id: projectId } : t),
       selectedThreadIds: new Set(),
     });
+    // Mirror the move into project detail caches so source and destination
+    // project pages reflect the change instantly.
+    const { useProjectStore } = await import('./projects');
+    for (const pid of affectedProjectIds) {
+      useProjectStore.getState().mutateProjectDetail(pid, (p) => ({
+        ...p,
+        threads: p.threads.filter((t) => !idSet.has(t.id)),
+      }));
+    }
+    if (projectId && movedThreads.length > 0) {
+      useProjectStore.getState().mutateProjectDetail(projectId, (p) => ({
+        ...p,
+        threads: [
+          ...movedThreads.map((t) => ({ ...t, project_id: projectId })),
+          ...p.threads.filter((t) => !idSet.has(t.id)),
+        ],
+      }));
+    }
     try {
       await api.bulkMoveThreads(ids, projectId);
-      const { useProjectStore } = await import('./projects');
       get().fetchRecents();
       useProjectStore.getState().fetchProjects();
-      // Drop detail caches on every project that lost or gained threads.
+    } catch {
+      set({ threads: prev });
+      // Roll back project caches by refetching server truth.
       for (const pid of affectedProjectIds) {
         useProjectStore.getState().invalidateProjectDetail(pid);
         useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
@@ -758,8 +856,6 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         useProjectStore.getState().invalidateProjectDetail(projectId);
         useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
       }
-    } catch {
-      set({ threads: prev });
     }
   },
 
@@ -890,6 +986,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                   columns: data.columns,
                   rows: data.rows,
                   row_count: data.row_count,
+                  source_tables: (data.source_tables as string[] | undefined) ?? m.metadata_?.source_tables,
+                  data_freshness_at: (data.data_freshness_at as string | undefined) ?? m.metadata_?.data_freshness_at,
+                  metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
+                  metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
+                  metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
                 },
               }
             : m,
@@ -935,6 +1036,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
                 pipeline_steps:
                   (data.pipeline_steps as PipelineStep[] | undefined) ?? m.metadata_?.pipeline_steps,
+                source_tables: (data.source_tables as string[] | undefined) ?? m.metadata_?.source_tables,
+                data_freshness_at: (data.data_freshness_at as string | undefined) ?? m.metadata_?.data_freshness_at,
+                metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
+                metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
+                metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
               },
             };
           }
@@ -1191,7 +1297,21 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onExecuteDone: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, metadata_: { ...m.metadata_, sql: data.sql, columns: data.columns, rows: data.rows, row_count: data.row_count } }
+            ? {
+                ...m,
+                metadata_: {
+                  ...m.metadata_,
+                  sql: data.sql,
+                  columns: data.columns,
+                  rows: data.rows,
+                  row_count: data.row_count,
+                  source_tables: (data.source_tables as string[] | undefined) ?? m.metadata_?.source_tables,
+                  data_freshness_at: (data.data_freshness_at as string | undefined) ?? m.metadata_?.data_freshness_at,
+                  metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
+                  metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
+                  metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
+                },
+              }
             : m,
         );
       },
@@ -1229,6 +1349,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
                 pipeline_steps:
                   (data.pipeline_steps as PipelineStep[] | undefined) ?? m.metadata_?.pipeline_steps,
+                source_tables: (data.source_tables as string[] | undefined) ?? m.metadata_?.source_tables,
+                data_freshness_at: (data.data_freshness_at as string | undefined) ?? m.metadata_?.data_freshness_at,
+                metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
+                metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
+                metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
               },
             };
           }
@@ -1424,7 +1549,21 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onExecuteDone: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, metadata_: { ...m.metadata_, sql: data.sql, columns: data.columns, rows: data.rows, row_count: data.row_count } }
+            ? {
+                ...m,
+                metadata_: {
+                  ...m.metadata_,
+                  sql: data.sql,
+                  columns: data.columns,
+                  rows: data.rows,
+                  row_count: data.row_count,
+                  source_tables: (data.source_tables as string[] | undefined) ?? m.metadata_?.source_tables,
+                  data_freshness_at: (data.data_freshness_at as string | undefined) ?? m.metadata_?.data_freshness_at,
+                  metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
+                  metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
+                  metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
+                },
+              }
             : m,
         );
       },
@@ -1454,6 +1593,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
               pipeline_steps:
                 (data.pipeline_steps as PipelineStep[] | undefined) ?? m.metadata_?.pipeline_steps,
+              source_tables: (data.source_tables as string[] | undefined) ?? m.metadata_?.source_tables,
+              data_freshness_at: (data.data_freshness_at as string | undefined) ?? m.metadata_?.data_freshness_at,
+              metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
+              metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
+              metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
             },
           };
           if (m.id === userMsgId) return { ...m, conversation_id: convId };

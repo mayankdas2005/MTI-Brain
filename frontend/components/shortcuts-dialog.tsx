@@ -9,25 +9,34 @@ import {
 const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 const mod = isMac ? '⌘' : 'Ctrl';
 
-// Order: Claude-aligned bindings first (most-used at top), then custom
-// shortcuts not present in Claude. Two sections: General and In chats.
-const SHORTCUTS: Array<{ keys: string; label: string; section: 'general' | 'chat' }> = [
-  // ─── General — Claude-aligned ───
-  { keys: `${mod} K`, label: 'Search conversations', section: 'general' },
-  { keys: `${mod} ⇧ O`, label: 'New chat', section: 'general' },
-  { keys: `${mod} .`, label: 'Toggle sidebar', section: 'general' },
-  { keys: `${mod} /`, label: 'Keyboard shortcuts', section: 'general' },
-  // ─── General — Custom ───
-  { keys: `${mod} ⇧ P`, label: 'Open projects', section: 'general' },
-  { keys: `${mod} ⇧ H`, label: 'Chat history', section: 'general' },
+/**
+ * Each shortcut row is one action with one or more keybindings. When an
+ * action has multiple bindings (e.g. Cmd+K AND `/` both open search),
+ * the variants are rendered side-by-side separated by "or" — one row,
+ * not duplicate rows.
+ */
+type Shortcut = {
+  /** One or more keybinding variants, each as a space-delimited string. */
+  variants: string[];
+  label: string;
+  section: 'general' | 'chat';
+};
 
-  // ─── In chats — Claude-aligned ───
-  { keys: 'Enter', label: 'Send message', section: 'chat' },
-  { keys: '⇧ Enter', label: 'New line in message', section: 'chat' },
-  { keys: 'Esc', label: 'Stop response', section: 'chat' },
-  // ─── In chats — Custom ───
-  { keys: `${mod} S`, label: 'Star / unstar thread', section: 'chat' },
-  { keys: `${mod} ⇧ C`, label: 'Copy last response', section: 'chat' },
+const SHORTCUTS: Shortcut[] = [
+  // ─── General ───
+  { variants: [`${mod} K`, '/'], label: 'Search', section: 'general' },
+  { variants: [`${mod} ⇧ O`], label: 'New chat', section: 'general' },
+  { variants: [`${mod} ⇧ P`], label: 'Open projects', section: 'general' },
+  { variants: [`${mod} ⇧ H`], label: 'Chat history', section: 'general' },
+  { variants: [`${mod} .`], label: 'Toggle sidebar', section: 'general' },
+  { variants: [`${mod} /`, '?'], label: 'Keyboard shortcuts', section: 'general' },
+
+  // ─── In chats ───
+  { variants: ['Enter'], label: 'Send message', section: 'chat' },
+  { variants: ['⇧ Enter'], label: 'New line in message', section: 'chat' },
+  { variants: ['Esc'], label: 'Stop response', section: 'chat' },
+  { variants: [`${mod} S`], label: 'Star / unstar thread', section: 'chat' },
+  { variants: [`${mod} ⇧ C`], label: 'Copy last response', section: 'chat' },
 ];
 
 interface ShortcutsDialogProps {
@@ -54,12 +63,27 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
   );
 }
 
+function KeyChord({ chord }: { chord: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      {chord.split(' ').map((k, i) => (
+        <kbd
+          key={`${k}-${i}`}
+          className="inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 rounded border border-border bg-muted text-[11px] font-mono text-muted-foreground"
+        >
+          {k}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
 function ShortcutSection({
   title,
   shortcuts,
 }: {
   title: string;
-  shortcuts: Array<{ keys: string; label: string }>;
+  shortcuts: Shortcut[];
 }) {
   return (
     <div>
@@ -68,16 +92,16 @@ function ShortcutSection({
       </h3>
       <div className="space-y-1">
         {shortcuts.map((s) => (
-          <div key={s.keys + s.label} className="flex items-center justify-between py-1.5 text-sm">
+          <div key={s.label} className="flex items-center justify-between py-1.5 text-sm">
             <span className="text-foreground/85">{s.label}</span>
-            <div className="flex items-center gap-1">
-              {s.keys.split(' ').map((k, i) => (
-                <kbd
-                  key={`${k}-${i}`}
-                  className="inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 rounded border border-border bg-muted text-[11px] font-mono text-muted-foreground"
-                >
-                  {k}
-                </kbd>
+            <div className="flex items-center gap-2">
+              {s.variants.map((variant, i) => (
+                <span key={variant} className="inline-flex items-center gap-2">
+                  {i > 0 && (
+                    <span className="text-[11px] text-muted-foreground/60">or</span>
+                  )}
+                  <KeyChord chord={variant} />
+                </span>
               ))}
             </div>
           </div>

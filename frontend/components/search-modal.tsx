@@ -26,7 +26,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import { renderHighlightedSnippet } from '@/lib/utils/highlight';
+import { highlightQueryInText, renderSearchSnippet } from '@/lib/utils/highlight';
 
 export function SearchModal() {
   const router = useRouter();
@@ -122,7 +122,12 @@ export function SearchModal() {
               </CommandGroup>
             )}
 
-            {/* When searching: show chat results */}
+            {/* When searching: show chat results.
+                - Title: client-side tokenised highlight (catches multi-word
+                  queries even when the backend doesn't wrap titles).
+                - Headline: render the backend's <b>-tagged snippet, since
+                  Postgres FTS may match via stemming/fuzzy that the
+                  client-side substring matcher would miss. */}
             {hasQuery && chatResults.length > 0 && (
               <CommandGroup heading="Conversations">
                 {chatResults.map((result) => {
@@ -137,10 +142,16 @@ export function SearchModal() {
                     >
                       <Icon className="w-4 h-4 shrink-0 mt-0.5 self-start" />
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm truncate">{result.title || 'Untitled'}</p>
+                        <p className="text-sm truncate">
+                          {highlightQueryInText(result.title || 'Untitled', query, {
+                            matchedTerms: result.matched_terms,
+                          })}
+                        </p>
                         {hasContentMatch && (
                           <p className="text-xs text-muted-foreground line-clamp-4 mt-0.5 leading-relaxed">
-                            {renderHighlightedSnippet(result.headline)}
+                            {renderSearchSnippet(result.headline, query, {
+                              matchedTerms: result.matched_terms,
+                            })}
                           </p>
                         )}
                       </div>
@@ -167,10 +178,12 @@ export function SearchModal() {
                     >
                       <FolderOpen className="w-4 h-4 shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm truncate">{project.name}</p>
+                        <p className="text-sm truncate">
+                          {highlightQueryInText(project.name, query)}
+                        </p>
                         {project.description && (
                           <p className="text-xs text-muted-foreground truncate mt-0.5">
-                            {project.description}
+                            {highlightQueryInText(project.description, query)}
                           </p>
                         )}
                       </div>
@@ -206,4 +219,3 @@ export function SearchModal() {
     </Dialog>
   );
 }
-

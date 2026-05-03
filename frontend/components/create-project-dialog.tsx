@@ -61,10 +61,11 @@ export function CreateProjectDialog({
 
         <div className="space-y-4">
           <div>
-            <label className="text-sm font-medium text-foreground">
+            <label htmlFor="create-project-name" className="text-sm font-medium text-foreground">
               What are you working on?
             </label>
             <input
+              id="create-project-name"
               value={name}
               onChange={(e) => setName(e.target.value.slice(0, 255))}
               placeholder="Name your project"
@@ -76,10 +77,11 @@ export function CreateProjectDialog({
           </div>
 
           <div>
-            <label className="text-sm font-medium text-foreground">
+            <label htmlFor="create-project-description" className="text-sm font-medium text-foreground">
               What are you trying to achieve?
             </label>
             <textarea
+              id="create-project-description"
               value={description}
               onChange={(e) => setDescription(e.target.value.slice(0, 2000))}
               placeholder="Describe your project, goals, subject, etc..."

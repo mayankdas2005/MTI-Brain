@@ -127,6 +127,7 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
                 ? 'What was satisfying about this response?'
                 : 'What was incorrect, unhelpful, or could be improved?'
             }
+            aria-label={isPositive ? 'Positive feedback comment' : 'Negative feedback comment'}
             className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm resize-none h-24 focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
             maxLength={2000}
             autoFocus
