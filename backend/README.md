@@ -38,14 +38,15 @@ backend/
 │   │   ├── config.py            # Pydantic Settings (all env vars)
 │   │   ├── logger.py            # Loguru configuration
 │   │   ├── middleware.py        # RequestIDMiddleware + TimingMiddleware
-│   │   └── circuit_breaker.py   # pybreaker instances for external services
+│   │   ├── circuit_breaker.py   # pybreaker instances for external services
+│   │   └── rate_limit.py        # Shared rate limiter used by route handlers
 │   ├── db/
 │   │   ├── session.py           # SQLAlchemy async engine + session factory + pool warmup
 │   │   └── base.py              # Declarative ORM base
 │   ├── models/
-│   │   ├── conversation.py      # QuestProject / QuestThread / QuestMessage / QuestFeedback
-│   │   ├── user.py              # QuestUser
-│   │   └── execution_log.py     # QuestExecutionLog (per-run telemetry)
+│   │   ├── conversation.py      # MTIBrainProject / MTIBrainThread / MTIBrainMessage / MTIBrainFeedback
+│   │   ├── user.py              # MTIBrainUser
+│   │   └── execution_log.py     # MTIBrainExecutionLog (per-run telemetry)
 │   ├── schemas/
 │   │   ├── chat.py              # Pydantic request/response schemas for chat
 │   │   └── project.py           # Pydantic schemas for projects
@@ -53,9 +54,13 @@ backend/
 │       ├── auth.py              # Credential validation + JWT issue/decode + user upsert
 │       ├── conversation.py      # Thread/message/project CRUD + 3-layer search
 │       ├── feedback.py          # Feedback storage + pgvector similarity
+│       ├── sql_analysis.py      # Trust-strip metadata: source tables / freshness via sqlglot
 │       └── health/
 │           └── service.py       # Circuit-breaker-protected Postgres health check
-├── alembic/                     # Database migrations (alembic upgrade head)
+├── alembic/
+│   ├── env.py                   # Imports all model modules so autogenerate sees every table
+│   └── versions/
+│       └── 0001_baseline.py     # Single baseline: extensions + tables + search_vector triggers
 ├── scripts/
 │   └── render_graph.py          # Utility: export pipeline graph diagram
 ├── requirements.txt
@@ -88,6 +93,8 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 `status` is `"healthy"`, `"degraded"` (circuit open), or `"unhealthy"` (Postgres unreachable → HTTP 503).
 
 ### Auth (`/api/v1/auth`)
+
+> **Okta OIDC migration is planned.** The `MTIBrainUser` model already carries `okta_id` (unique, nullable), but the active flow is still credential-based via `app/services/auth.py`. Routes below describe what ships today.
 
 | Method | Path | Auth required | Description |
 |--------|------|---------------|-------------|
@@ -160,21 +167,28 @@ All tables live in the app PostgreSQL database.
 
 | Model | Table | Purpose |
 |-------|-------|---------|
-| **QuestUser** | `quest_user` | User record keyed by email. Fields: `id`, `okta_id`, `email`, `name`, `groups` (JSONB), `organization`, `last_login`, `created_at`. |
-| **QuestProject** | `quest_project` | Named collection of threads. Fields: `id`, `user_id`, `name`, `description`, `starred`, timestamps. |
-| **QuestThread** | `quest_thread` | Conversation thread (= LangGraph `thread_id`). Fields: `id`, `user_id`, `project_id`, `title`, `starred`, `search_vector` (tsvector GIN). |
-| **QuestMessage** | `quest_message` | Individual user or assistant message. Fields: `id`, `thread_id`, `conversation_id`, `parent_conversation_id`, `role`, `content`, `reasoning`, `metadata` (JSONB: `sql`, `chart_spec`, `intent`, `columns`, `rows`, `follow_ups`, etc.), `search_vector`. |
-| **QuestFeedback** | `quest_feedback` | Thumbs-up/down + optional comment. Fields: `id`, `message_id`, `thread_id`, `liked`, `comment`, `embedding` (Vector 1536 - pgvector). |
-| **QuestExecutionLog** | `quest_execution_log` | Per-run telemetry. Fields: `question`, `question_type`, `schema_fqn`, `sql`, `row_count`, `retry_count`, `valid`, `exec_error`, `duration_ms`, `pattern_matched`, implicit/explicit feedback flags, user context. |
+| **MTIBrainUser** | `mti_brain_user` | User record keyed by email. Fields: `id`, `okta_id`, `email`, `name`, `groups` (JSONB), `organization`, `last_login`, `created_at`. |
+| **MTIBrainProject** | `mti_brain_project` | Named collection of threads. Fields: `id`, `user_id`, `name`, `description`, `starred`, timestamps. |
+| **MTIBrainThread** | `mti_brain_thread` | Conversation thread (= LangGraph `thread_id`). Fields: `id`, `user_id`, `project_id`, `title`, `starred`, `search_vector` (tsvector GIN). |
+| **MTIBrainMessage** | `mti_brain_message` | Individual user or assistant message. Fields: `id`, `thread_id`, `conversation_id`, `parent_conversation_id`, `role`, `content`, `reasoning`, `metadata` (JSONB: `sql`, `chart_spec`, `intent`, `columns`, `rows`, `follow_ups`, etc.), `search_vector`. |
+| **MTIBrainFeedback** | `mti_brain_feedback` | Thumbs-up/down + optional comment. Fields: `id`, `message_id`, `thread_id`, `liked`, `comment`, `embedding` (Vector 1536 - pgvector). |
+| **MTIBrainExecutionLog** | `mti_brain_execution_log` | Per-run telemetry. Fields: `question`, `question_type`, `schema_fqn`, `sql`, `row_count`, `retry_count`, `valid`, `exec_error`, `duration_ms`, `pattern_matched`, implicit/explicit feedback flags, user context. |
 
 ## Middleware
+
+Defined in `app/core/middleware.py`:
 
 | Middleware | Purpose |
 |-----------|---------|
 | **RequestIDMiddleware** | Generates and attaches `X-Request-ID` to every request/response |
 | **TimingMiddleware** | Logs request duration; attaches `X-Response-Time` header |
+
+Wired in `app/main.py` (Starlette built-ins, configured but not subclassed):
+
+| Middleware | Purpose |
+|-----------|---------|
 | **CORSMiddleware** | Origins controlled by `CORS_ORIGINS`; credentials enabled |
-| **TrustedHostMiddleware** | Host header validation (wildcard in dev) |
+| **TrustedHostMiddleware** | Host header validation (wildcard in dev — intentional, since the team works across many laptops/VMs) |
 
 ## Resilience
 
@@ -182,6 +196,20 @@ All tables live in the app PostgreSQL database.
 - **Tenacity retries** available for transient external service errors.
 - **Graceful pool warmup** - 3 connections pre-opened at startup; engine disposed cleanly on shutdown.
 - **Pool pre-ping** disabled (aggressive recycle via `DB_POOL_RECYCLE` instead) to avoid checkout latency.
+
+## Migrations
+
+Single baseline at [`alembic/versions/0001_baseline.py`](alembic/versions/0001_baseline.py):
+
+- Installs `pg_trgm`, `fuzzystrmatch`, and `vector` extensions (idempotent — `CREATE EXTENSION IF NOT EXISTS`).
+- Creates every table on `Base.metadata` (all `mti_brain_*` tables, FKs, GIN trigram indexes).
+- Installs `search_vector` trigger functions and triggers on `mti_brain_thread`, `mti_brain_message`, and `mti_brain_project`.
+
+`alembic/env.py` imports all three model modules (`conversation`, `execution_log`, `user`) so future `--autogenerate` runs see the full schema.
+
+> **Trigger functions are not autogenerated.** If you change `search_vector` semantics (e.g. add weighting on a column), the autogenerated revision will only catch column/index diffs — hand-edit the new revision to also `CREATE OR REPLACE FUNCTION` the trigger.
+
+The migrating Postgres role needs `CREATE EXTENSION` privilege. If it doesn't, install the three extensions once as a superuser before running `alembic upgrade head`; the migration's `IF NOT EXISTS` guards make repeat runs safe.
 
 ## Getting Started
 
@@ -206,7 +234,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env - at minimum set POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_DB, JWT_SECRET
 
-# 4. Run database migrations
+# 4. Run database migrations (see Migrations section above for what this does + extension prereqs)
 alembic upgrade head
 
 # 5. Start the development server

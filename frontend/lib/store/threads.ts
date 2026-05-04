@@ -345,7 +345,7 @@ function pruneThreadCache<T>(map: Record<string, T>): Record<string, T> {
 // Stored on globalThis so HMR (which re-evaluates this module) doesn't leak
 // timers across reloads. A plain `let` would orphan the previous timer when
 // the module re-evaluates.
-const SEARCH_TIMER_KEY = '__questSearchTimer';
+const SEARCH_TIMER_KEY = '__mtiBrainSearchTimer';
 type GlobalWithTimer = typeof globalThis & {
   [SEARCH_TIMER_KEY]?: ReturnType<typeof setTimeout> | null;
 };
@@ -1910,7 +1910,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     });
   },
 }), {
-  name: 'quest-threads-cache',
+  name: 'mti-brain-threads-cache',
   storage: createJSONStorage(() => localStorage),
   // Only persist cacheable list data - never persist streaming/SSE state,
   // active controllers, or per-thread message buffers (those refresh on

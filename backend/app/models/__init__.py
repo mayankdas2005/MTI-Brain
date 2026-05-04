@@ -1,14 +1,14 @@
-from app.models.conversation import QuestFeedback
-from app.models.conversation import QuestMessage
-from app.models.conversation import QuestProject
-from app.models.conversation import QuestThread
-from app.models.execution_log import QuestExecutionLog
+from app.models.conversation import MTIBrainFeedback
+from app.models.conversation import MTIBrainMessage
+from app.models.conversation import MTIBrainProject
+from app.models.conversation import MTIBrainThread
+from app.models.execution_log import MTIBrainExecutionLog
 
 
 __all__ = [
-    "QuestProject",
-    "QuestThread",
-    "QuestMessage",
-    "QuestFeedback",
-    "QuestExecutionLog",
+    "MTIBrainProject",
+    "MTIBrainThread",
+    "MTIBrainMessage",
+    "MTIBrainFeedback",
+    "MTIBrainExecutionLog",
 ]

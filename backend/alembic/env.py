@@ -14,9 +14,12 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import settings
 from app.db.base import Base
-# Importing the models package registers tables on Base.metadata so that
-# autogenerate sees them. Avoid removing this even if it looks unused.
-from app.models import conversation as _models  # noqa: F401
+# Importing every model module registers their tables on Base.metadata
+# so that autogenerate sees them. Avoid removing these even if they look
+# unused — drop one and the corresponding table disappears from diffs.
+from app.models import conversation as _conversation  # noqa: F401
+from app.models import execution_log as _execution_log  # noqa: F401
+from app.models import user as _user  # noqa: F401
 
 config = context.config
 

@@ -8,16 +8,22 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 |-------|-----------|
 | Framework | Next.js 16 (App Router, standalone output) |
 | Language | TypeScript (strict mode) |
-| UI | React 19, shadcn/ui (Radix UI), Lucide icons |
-| Styling | Tailwind CSS 4 with OKLCH CSS variables, dark/light theme |
-| State | Zustand (8 stores) |
+| UI | React 19 with React Compiler (auto-memoization), shadcn/ui (Radix UI), Lucide icons |
+| Styling | Tailwind CSS 4 (PostCSS plugin — no `tailwind.config.*`; tokens live in `app/globals.css` with `@custom-variant dark`) |
+| State | Zustand (11 stores — see [State Management](#state-management)) |
 | Streaming | POST-based SSE via fetch + ReadableStream |
-| Auth | Username/password → JWT (stored in localStorage) |
+| Auth | Username/password → JWT in localStorage. **Okta OIDC planned** (callback page stub at `app/auth/callback/page.tsx`) |
 | Markdown | react-markdown + remark-gfm + rehype-highlight |
 | Charts | recharts |
 | Forms | react-hook-form + zod |
 | Notifications | Sonner |
 | Theme | next-themes |
+| Analytics | PostHog (gracefully no-ops when key is unset) + Vercel Analytics |
+| Local persistence | Dexie (IndexedDB) for composer drafts |
+| Animations | Framer Motion |
+| Virtualization | @tanstack/react-virtual |
+| Keyboard | react-hotkeys-hook (wrapped by `hooks/use-keyboard-shortcuts.ts`) |
+| PWA | Service worker (`public/sw.js`), install prompt with 3-day re-show logic |
 | Containerization | Docker (multi-stage, non-root, standalone) |
 
 ## Project Structure
@@ -26,34 +32,35 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 frontend/
 ├── app/
 │   ├── page.tsx                         # Login page (username/password form)
-│   ├── layout.tsx                       # Root layout with providers
-│   ├── globals.css                      # Global styles + Tailwind theme tokens
+│   ├── layout.tsx                       # Root layout with providers + Vercel Analytics
+│   ├── globals.css                      # Global styles + Tailwind v4 theme tokens (@custom-variant dark)
 │   ├── not-found.tsx                    # 404 page
 │   ├── auth/
 │   │   └── callback/
-│   │       └── page.tsx                 # Auth callback handler (planned: Okta OIDC)
+│   │       └── page.tsx                 # Stub for upcoming Okta OIDC callback
 │   ├── (authenticated)/                 # Route group - all pages require JWT
 │   │   ├── layout.tsx                   # Auth guard + sidebar + topbar shell
-│   │   ├── new/
-│   │   │   ├── page.tsx                 # Welcome state + new chat composer
-│   │   │   └── layout.tsx
+│   │   ├── new/                         # Welcome + new chat composer
 │   │   ├── chat/
 │   │   │   ├── page.tsx                 # Redirects to /new
-│   │   │   ├── [chatId]/
-│   │   │   │   └── page.tsx             # Chat detail with message stream
+│   │   │   ├── [chatId]/page.tsx        # Chat detail with message stream
 │   │   │   └── layout.tsx
-│   │   ├── chats/
-│   │   │   └── page.tsx                 # All chats list with search
+│   │   ├── chats/page.tsx               # All chats list with search
+│   │   ├── starred/page.tsx             # Starred threads view
+│   │   ├── settings/page.tsx            # User preferences settings
 │   │   └── projects/
 │   │       ├── page.tsx                 # Projects grid
-│   │       └── [projectId]/
-│   │           └── page.tsx             # Project detail with threads
-│   └── api/                             # Legacy mock routes (unused, backend is FastAPI)
+│   │       └── [projectId]/page.tsx     # Project detail with threads
+│   └── api/                             # Legacy mock routes (unused, kept for reference; backend is FastAPI)
 │       ├── chat/route.ts
 │       ├── completions/route.ts
 │       └── thinking/route.ts
 ├── components/
 │   ├── ui/                              # shadcn/ui primitives (button, dialog, tabs, …)
+│   ├── charts/                          # Chart helpers (theme module)
+│   ├── messages/
+│   │   ├── about-panel.tsx              # Per-message metadata panel
+│   │   └── trust-strip.tsx              # Trust strip: source tables / freshness (backend-owned data)
 │   ├── sidebar.tsx                      # Thread list, project switcher, user menu
 │   ├── collapsed-sidebar.tsx            # Minimized sidebar (icons only)
 │   ├── topbar.tsx                       # Thread title, star, search trigger
@@ -69,7 +76,8 @@ frontend/
 │   ├── thinking-words.tsx               # Reasoning / chain-of-thought display
 │   ├── feedback-widget.tsx              # Thumbs up/down + comment
 │   ├── welcome-state.tsx                # Welcome screen with suggestion chips
-│   ├── search-modal.tsx                 # Global search (Cmd+K)
+│   ├── search-modal.tsx                 # Global search (Cmd+K, search-only — no Commands group)
+│   ├── slash-command-popover.tsx        # In-composer slash commands (/clear, /retry, …)
 │   ├── shortcuts-dialog.tsx             # Keyboard shortcuts help
 │   ├── create-project-dialog.tsx        # New project form
 │   ├── edit-project-dialog.tsx          # Edit project name/description
@@ -79,49 +87,58 @@ frontend/
 │   ├── project-context-menu.tsx         # Project right-click menu
 │   ├── thread-context-menu.tsx          # Thread right-click menu
 │   ├── agent-selector.tsx               # AI model selector
+│   ├── analytics-bridge.tsx             # PostHog identify + pageviews + service-worker registration
+│   ├── feature-pulse.tsx                # Dismissible "new feature" indicator
+│   ├── install-prompt.tsx               # PWA install prompt with 3-day re-show window
+│   ├── live-announcer.tsx               # ARIA live-region announcer (accessibility)
+│   ├── onboarding-tour.tsx              # First-run UI walkthrough
 │   ├── error-boundary.tsx               # Error handling wrapper
-│   ├── providers.tsx                    # Theme + Tooltip providers
+│   ├── providers.tsx                    # Theme + Tooltip + AnalyticsBridge providers
 │   ├── theme-provider.tsx               # next-themes wrapper
-│   ├── credits-overlay.tsx              # Easter egg (Konami code)
-│   └── sonner.tsx                       # Toast notification config
+│   └── credits-overlay.tsx              # Easter egg (Konami code)
 ├── hooks/
-│   ├── use-keyboard-shortcuts.ts        # Global keyboard shortcut handler
-│   ├── use-mobile.ts                    # Mobile viewport detection
-│   └── use-toast.ts                     # Toast notification hook
+│   ├── use-keyboard-shortcuts.ts        # Global keyboard shortcut handler (wraps react-hotkeys-hook)
+│   └── use-mobile.ts                    # Mobile viewport detection
 ├── lib/
 │   ├── auth.ts                          # Login (username/password → JWT), logout, token helpers
 │   ├── utils.ts                         # Utility functions (cn for classnames)
 │   ├── toast.ts                         # Toast wrapper (sonner)
+│   ├── analytics.ts                     # PostHog identify / pageview / event helpers
 │   ├── api/
 │   │   ├── client.ts                    # Base fetch wrapper with auth headers + 401 redirect
 │   │   ├── sse.ts                       # POST-based SSE stream parser
 │   │   ├── threads.ts                   # Thread/chat API functions
 │   │   ├── projects.ts                  # Project API functions
 │   │   └── index.ts                     # API exports
-│   ├── store/
-│   │   ├── threads.ts                   # Thread/message CRUD, SSE streaming, version branching
-│   │   ├── projects.ts                  # Project list + CRUD
-│   │   ├── auth.ts                      # Auth state (user, token)
-│   │   ├── ui.ts                        # UI state (sidebar open/close)
-│   │   ├── preferences.ts              # Per-user preferences (persisted to localStorage)
-│   │   ├── search.ts                    # Global search with 200ms debounce
-│   │   ├── agents.ts                    # AI model selection
-│   │   └── thinking.ts                  # Extended thinking toggle
+│   ├── store/                           # 11 Zustand stores (see State Management section)
+│   │   ├── threads.ts
+│   │   ├── projects.ts
+│   │   ├── auth.ts
+│   │   ├── ui.ts
+│   │   ├── preferences.ts
+│   │   ├── search.ts
+│   │   ├── agents.ts
+│   │   ├── thinking.ts
+│   │   ├── activity.ts                  # User activity tracking
+│   │   ├── drafts.ts                    # Composer drafts (Dexie / IndexedDB)
+│   │   └── install.ts                   # PWA install prompt state
 │   └── types/
 │       └── api.ts                       # TypeScript types for API responses
-├── styles/
-│   └── globals.css                      # Tailwind imports + CSS variables
-├── public/                              # Static assets (favicon, logos, icons)
+├── public/
+│   ├── sw.js                            # Service worker for PWA install support
+│   └── …                                # Static assets (favicon, logos, icons)
 ├── package.json
 ├── tsconfig.json
-├── next.config.mjs
-├── postcss.config.mjs
+├── next.config.mjs                      # React Compiler + standalone output config
+├── postcss.config.mjs                   # @tailwindcss/postcss plugin
 ├── components.json                      # shadcn/ui config (new-york style)
 ├── Dockerfile
 ├── .dockerignore
 ├── .env.example
 └── .gitignore
 ```
+
+> **Note:** there is no `tailwind.config.*` file — Tailwind v4 with the PostCSS plugin reads tokens directly from `app/globals.css`. Likewise there's no `styles/` directory.
 
 ## Routes
 
@@ -138,24 +155,34 @@ frontend/
 | `/new` | Welcome screen with suggestion chips and centered composer |
 | `/chat/[chatId]` | Chat detail - message stream, data tables, charts, follow-ups |
 | `/chats` | All chats list with search and pagination |
+| `/starred` | Starred threads view (filtered list) |
 | `/projects` | Projects grid with search |
 | `/projects/[projectId]` | Project detail with its threads |
+| `/settings` | User preferences (response tone, visibility toggles, max rows) |
+
+### Auth callback (placeholder)
+
+| Route | Purpose |
+|-------|---------|
+| `/auth/callback` | Stub awaiting Okta OIDC wire-up — present so the redirect URL can be registered with the IdP early |
 
 ## Authentication
+
+> **Okta OIDC migration is planned.** The `app/auth/callback/page.tsx` route is a stub today; the backend `MTIBrainUser` model already carries `okta_id`. Until that flow lands, the live path is the username/password flow described below.
 
 Direct username/password flow:
 
 1. User submits the login form on `/`
 2. Frontend calls `POST /api/v1/auth/login` with `{ username, password }`
 3. Backend validates credentials and returns a signed JWT + user object
-4. Frontend stores both in localStorage under `quest_token` and `quest_user`
+4. Frontend stores both in localStorage under `mti_brain_token` and `mti_brain_user`
 5. All subsequent API calls include `Authorization: Bearer <token>`
 6. On 401 response, token is cleared and user is redirected to `/`
 7. Logout clears localStorage and redirects to `/`
 
 ## State Management
 
-Eight Zustand stores, each with a single responsibility:
+Eleven Zustand stores under `lib/store/`, each with a single responsibility:
 
 | Store | Key State | Purpose |
 |-------|-----------|---------|
@@ -163,10 +190,13 @@ Eight Zustand stores, each with a single responsibility:
 | `useProjectStore` | projects, currentProject | Project list + CRUD |
 | `useAuthStore` | user, token | Auth state, login/logout |
 | `useUIStore` | sidebarOpen | Sidebar open/close toggle |
-| `usePreferencesStore` | responseTone, showSQL, autoShowCharts, showFollowUps, showReasoning, maxResultRows | Per-user preferences, persisted to localStorage under `quest-prefs:{userId}` |
+| `usePreferencesStore` | responseTone, showSQL, autoShowCharts, showFollowUps, showReasoning, maxResultRows | Per-user preferences, persisted to localStorage under `mti-brain-prefs:{userId}` |
 | `useSearchStore` | query, chatResults, projectResults | Global search with 200ms debounce |
 | `useAgentStore` | agents, currentAgentId | AI model selection |
 | `useThinkingStore` | enableDeepThinking, isThinking | Extended thinking toggle |
+| `useActivityStore` | activity events | Per-user activity tracking (Activity framing — not gamification/streaks) |
+| `useDraftsStore` | composer drafts | Per-thread composer drafts persisted to IndexedDB via Dexie |
+| `useInstallStore` | install prompt visibility, last-shown timestamp | PWA install prompt state with 3-day re-show window |
 
 ## SSE Streaming
 
@@ -177,6 +207,7 @@ The frontend uses a custom POST-based SSE parser (since `EventSource` only suppo
 | `timing.sync` | `onTimingSync` | Elapsed time sync during stream |
 | `title.generated` | `onTitleGenerated` | Set thread title in sidebar |
 | `node.start` | `onNodeStart` | Show pipeline step progress |
+| `reasoning.pending` | `onReasoningPending` | Render the "thinking" placeholder before tokens arrive |
 | `reasoning.delta` | `onReasoningDelta` | Append to reasoning accordion |
 | `answer.delta` | `onAnswerDelta` | Stream answer text into message bubble |
 | `validation` | `onValidation` | Show SQL validation status |
@@ -260,6 +291,13 @@ Variables prefixed `NEXT_PUBLIC_` are embedded at build time and exposed to the 
 | Variable | Description |
 |----------|-------------|
 | `NEXT_PUBLIC_API_URL` | FastAPI backend base URL (e.g., `http://localhost:8000`) |
+
+### Optional
+
+| Variable | Description |
+|----------|-------------|
+| `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project key. When unset, `lib/analytics.ts` no-ops and `AnalyticsBridge` skips identify/pageview calls — analytics are entirely optional. |
+| `NEXT_PUBLIC_POSTHOG_HOST` | PostHog ingest host. Defaults to PostHog Cloud when unset. |
 
 ### Dev-only
 

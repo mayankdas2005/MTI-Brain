@@ -65,7 +65,7 @@ export const PREFERENCES_DEFAULTS: PreferencesState = {
   density: 'comfortable',
 };
 
-const STORAGE_PREFIX = 'quest-prefs';
+const STORAGE_PREFIX = 'mti-brain-prefs';
 
 export const usePreferencesStore = create<PreferencesStore>()(
   persist(

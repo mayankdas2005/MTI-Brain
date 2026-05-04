@@ -6,7 +6,7 @@ import { useStreak } from '@/lib/store/activity';
 import { useInstallStore } from '@/lib/store/install';
 import { track } from '@/lib/analytics';
 
-const DISMISS_KEY = 'quest:install-prompt-dismissed';
+const DISMISS_KEY = 'mti-brain:install-prompt-dismissed';
 const MIN_DAYS_BEFORE_PROMPT = 3;
 
 /**

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from app.core.config import settings
 from app.core.logger import logger
-from app.models.user import QuestUser
+from app.models.user import MTIBrainUser
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,16 +71,16 @@ async def upsert_user(
     email: str,
     name: str,
     groups: list[str] | None = None,
-) -> QuestUser:
+) -> MTIBrainUser:
     """Create or update a user record on login (keyed by email)."""
-    result = await db.execute(select(QuestUser).where(QuestUser.email == email))
+    result = await db.execute(select(MTIBrainUser).where(MTIBrainUser.email == email))
     user = result.scalar_one_or_none()
     now = datetime.now(timezone.utc)
 
     if user:
         await db.execute(
-            update(QuestUser)
-            .where(QuestUser.id == user.id)
+            update(MTIBrainUser)
+            .where(MTIBrainUser.id == user.id)
             .values(name=name, groups=groups, last_login=now)
         )
         await db.flush()
@@ -88,7 +88,7 @@ async def upsert_user(
         user.groups = groups
         user.last_login = now
     else:
-        user = QuestUser(
+        user = MTIBrainUser(
             okta_id=email,
             email=email,
             name=name,

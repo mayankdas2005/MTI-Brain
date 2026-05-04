@@ -21,8 +21,8 @@ interface JWTPayload {
 
 // ─── Storage keys ───
 
-const TOKEN_KEY = 'quest_token';
-const USER_KEY = 'quest_user';
+const TOKEN_KEY = 'mti_brain_token';
+const USER_KEY = 'mti_brain_user';
 
 // ─── Token helpers ───
 

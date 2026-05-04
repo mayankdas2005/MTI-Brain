@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
-class QuestUser(Base):
+class MTIBrainUser(Base):
     """An authenticated user synced from Okta.
 
     Attributes:
@@ -25,7 +25,7 @@ class QuestUser(Base):
         projects: Projects owned by this user.
     """
 
-    __tablename__ = "quest_user"
+    __tablename__ = "mti_brain_user"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -44,13 +44,13 @@ class QuestUser(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    threads: Mapped[list["QuestThread"]] = relationship(  # noqa: F821
+    threads: Mapped[list["MTIBrainThread"]] = relationship(  # noqa: F821
         back_populates="user", lazy="noload"
     )
-    projects: Mapped[list["QuestProject"]] = relationship(  # noqa: F821
+    projects: Mapped[list["MTIBrainProject"]] = relationship(  # noqa: F821
         back_populates="user", lazy="noload"
     )
 
     __table_args__ = (
-        Index("ix_quest_user_email", "email"),
+        Index("ix_mti_brain_user_email", "email"),
     )

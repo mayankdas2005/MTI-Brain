@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 
-const STORAGE_KEY = 'quest:feature-seen';
+const STORAGE_KEY = 'mti-brain:feature-seen';
 
 /**
  * Wraps a child with a small breathing dot that signals "new feature here".

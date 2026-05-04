@@ -70,7 +70,7 @@ export const useActivityStore = create<ActivityState>()(
       },
     }),
     {
-      name: 'quest-activity',
+      name: 'mti-brain-activity',
       storage: createJSONStorage(() => localStorage),
       version: 1,
     },

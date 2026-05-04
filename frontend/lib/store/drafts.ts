@@ -19,7 +19,7 @@ interface DraftRecord {
 class DraftDB extends Dexie {
   drafts!: Table<DraftRecord, string>;
   constructor() {
-    super('quest-drafts-v1');
+    super('mti-brain-drafts-v1');
     this.version(1).stores({ drafts: '&threadId, updatedAt' });
   }
 }

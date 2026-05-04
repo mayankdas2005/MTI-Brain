@@ -248,7 +248,7 @@ export function useStreamCompletionNotice() {
         router.push(`/chat/${detail.threadId}`);
       });
     };
-    window.addEventListener('quest:notification-click', onClick);
-    return () => window.removeEventListener('quest:notification-click', onClick);
+    window.addEventListener('mti-brain:notification-click', onClick);
+    return () => window.removeEventListener('mti-brain:notification-click', onClick);
   }, [router]);
 }

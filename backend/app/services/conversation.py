@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from app.core.logger import logger
-from app.models.conversation import QuestMessage, QuestProject, QuestThread
+from app.models.conversation import MTIBrainMessage, MTIBrainProject, MTIBrainThread
 from sqlalchemy import delete, exists, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,7 +41,7 @@ async def create_thread(
     project_id: uuid.UUID | None = None,
     title: str | None = None,
     user_id: uuid.UUID | None = None,
-) -> QuestThread:
+) -> MTIBrainThread:
     """Create a new conversation thread. 1 round-trip (INSERT).
 
     Args:
@@ -52,9 +52,9 @@ async def create_thread(
         user_id: Owner user UUID.
 
     Returns:
-        The newly created QuestThread instance.
+        The newly created MTIBrainThread instance.
     """
-    thread = QuestThread(
+    thread = MTIBrainThread(
         id=thread_id or uuid.uuid4(),
         project_id=project_id,
         title=title,
@@ -81,9 +81,9 @@ async def thread_exists(
     Returns:
         True if a thread with the given ID exists, False otherwise.
     """
-    stmt = select(QuestThread.id).where(QuestThread.id == thread_id).limit(1)
+    stmt = select(MTIBrainThread.id).where(MTIBrainThread.id == thread_id).limit(1)
     if user_id:
-        stmt = stmt.where(QuestThread.user_id == user_id)
+        stmt = stmt.where(MTIBrainThread.user_id == user_id)
     result = await db.execute(stmt)
     return result.scalar_one_or_none() is not None
 
@@ -92,7 +92,7 @@ async def get_thread(
     db: AsyncSession,
     thread_id: uuid.UUID,
     user_id: uuid.UUID | None = None,
-) -> tuple[QuestThread, list[QuestMessage]] | tuple[None, None]:
+) -> tuple[MTIBrainThread, list[MTIBrainMessage]] | tuple[None, None]:
     """Get thread with messages, excluding conversations with empty assistant responses.
 
     Uses a single query with a subquery filter. 1 round-trip.
@@ -104,7 +104,7 @@ async def get_thread(
             users return as ``(None, None)``.
 
     Returns:
-        A tuple of (QuestThread, list[QuestMessage]) if found, or (None, None)
+        A tuple of (MTIBrainThread, list[MTIBrainMessage]) if found, or (None, None)
         if the thread does not exist or the caller does not own it.
     """
     user_filter = _safe_filter("AND t.user_id = :uid") if user_id else ""
@@ -117,7 +117,7 @@ async def get_thread(
         text(f"""
             WITH valid_convos AS (
                 SELECT DISTINCT conversation_id
-                FROM quest_message
+                FROM mti_brain_message
                 WHERE thread_id = :tid
                   AND role = 'assistant'
                   AND (
@@ -130,13 +130,13 @@ async def get_thread(
                 m.id AS msg_id, m.conversation_id, m.parent_conversation_id,
                 m.role, m.content, m.reasoning, m.metadata, m.created_at AS msg_created_at,
                 f.liked AS feedback_liked, f.comment AS feedback_comment
-            FROM quest_thread t
-            LEFT JOIN quest_message m
+            FROM mti_brain_thread t
+            LEFT JOIN mti_brain_message m
                 ON m.thread_id = t.id
                 AND m.conversation_id IN (SELECT conversation_id FROM valid_convos)
             LEFT JOIN LATERAL (
                 SELECT f.liked, f.comment
-                FROM quest_feedback f
+                FROM mti_brain_feedback f
                 WHERE f.message_id = m.id
                 ORDER BY f.created_at DESC
                 LIMIT 1
@@ -158,7 +158,7 @@ async def get_thread(
 
     # Build thread from first row
     r = rows[0]
-    thread = QuestThread(
+    thread = MTIBrainThread(
         id=r.id,
         project_id=r.project_id,
         title=r.title,
@@ -173,7 +173,7 @@ async def get_thread(
     for r in rows:
         if r.msg_id is not None and r.msg_id not in seen_msg_ids:
             seen_msg_ids.add(r.msg_id)
-            msg = QuestMessage(
+            msg = MTIBrainMessage(
                 id=r.msg_id,
                 thread_id=thread_id,
                 conversation_id=r.conversation_id,
@@ -207,9 +207,9 @@ async def delete_thread(
     Returns:
         True if the thread was deleted, False if it did not exist.
     """
-    stmt = delete(QuestThread).where(QuestThread.id == thread_id)
+    stmt = delete(MTIBrainThread).where(MTIBrainThread.id == thread_id)
     if user_id:
-        stmt = stmt.where(QuestThread.user_id == user_id)
+        stmt = stmt.where(MTIBrainThread.user_id == user_id)
     result = await db.execute(stmt)
     deleted = result.rowcount > 0
     if deleted:
@@ -232,9 +232,9 @@ async def bulk_delete_threads(
     Returns:
         The number of threads actually deleted.
     """
-    stmt = delete(QuestThread).where(QuestThread.id.in_(thread_ids))
+    stmt = delete(MTIBrainThread).where(MTIBrainThread.id.in_(thread_ids))
     if user_id:
-        stmt = stmt.where(QuestThread.user_id == user_id)
+        stmt = stmt.where(MTIBrainThread.user_id == user_id)
     result = await db.execute(stmt)
     return result.rowcount
 
@@ -255,13 +255,13 @@ async def star_thread(
         The new starred boolean value, or None if the thread was not found.
     """
     stmt = (
-        update(QuestThread)
-        .where(QuestThread.id == thread_id)
-        .values(starred=~QuestThread.starred)
-        .returning(QuestThread.starred)
+        update(MTIBrainThread)
+        .where(MTIBrainThread.id == thread_id)
+        .values(starred=~MTIBrainThread.starred)
+        .returning(MTIBrainThread.starred)
     )
     if user_id:
-        stmt = stmt.where(QuestThread.user_id == user_id)
+        stmt = stmt.where(MTIBrainThread.user_id == user_id)
     result = await db.execute(stmt)
     row = result.one_or_none()
     return row[0] if row else None
@@ -285,12 +285,12 @@ async def rename_thread(
         True if the thread was found and renamed, False otherwise.
     """
     stmt = (
-        update(QuestThread)
-        .where(QuestThread.id == thread_id)
+        update(MTIBrainThread)
+        .where(MTIBrainThread.id == thread_id)
         .values(title=title[:500], updated_at=datetime.now(timezone.utc))
     )
     if user_id:
-        stmt = stmt.where(QuestThread.user_id == user_id)
+        stmt = stmt.where(MTIBrainThread.user_id == user_id)
     result = await db.execute(stmt)
     return result.rowcount > 0
 
@@ -313,12 +313,12 @@ async def move_threads(
         The number of threads that were updated.
     """
     stmt = (
-        update(QuestThread)
-        .where(QuestThread.id.in_(thread_ids))
+        update(MTIBrainThread)
+        .where(MTIBrainThread.id.in_(thread_ids))
         .values(project_id=project_id)
     )
     if user_id:
-        stmt = stmt.where(QuestThread.user_id == user_id)
+        stmt = stmt.where(MTIBrainThread.user_id == user_id)
     result = await db.execute(stmt)
     return result.rowcount
 
@@ -330,8 +330,8 @@ async def update_thread_title(
 ) -> None:
     """Auto-set title from first question (only if currently NULL). 1 round-trip."""
     await db.execute(
-        update(QuestThread)
-        .where(QuestThread.id == thread_id, QuestThread.title.is_(None))
+        update(MTIBrainThread)
+        .where(MTIBrainThread.id == thread_id, MTIBrainThread.title.is_(None))
         .values(title=title[:500], updated_at=datetime.now(timezone.utc))
     )
 
@@ -347,8 +347,8 @@ async def touch_thread(db: AsyncSession, thread_id: uuid.UUID) -> None:
         None.
     """
     await db.execute(
-        update(QuestThread)
-        .where(QuestThread.id == thread_id)
+        update(MTIBrainThread)
+        .where(MTIBrainThread.id == thread_id)
         .values(updated_at=datetime.now(timezone.utc))
     )
 
@@ -364,7 +364,7 @@ async def save_message_and_touch(
     parent_conversation_id: uuid.UUID | None = None,
     auto_title: str | None = None,
     user_id: uuid.UUID | None = None,
-) -> tuple[QuestMessage, bool] | None:
+) -> tuple[MTIBrainMessage, bool] | None:
     """Save a message, touch thread, and optionally auto-set title in one flush.
 
     Combines message insert, timestamp bump, and title coalesce in a
@@ -388,7 +388,7 @@ async def save_message_and_touch(
             belong to this user (or doesn't exist).
 
     Returns:
-        A tuple of (QuestMessage, bool) where the bool is True when this is
+        A tuple of (MTIBrainMessage, bool) where the bool is True when this is
         the first user message in the thread (no prior user messages exist),
         or ``None`` when ``user_id`` was passed and no matching thread was
         found.
@@ -396,12 +396,12 @@ async def save_message_and_touch(
     # Touch + auto-title in single UPDATE. When user_id is supplied this
     # doubles as the ownership check — rowcount==0 means thread doesn't
     # exist OR doesn't belong to the user, which is the same 404 either way.
-    update_stmt = update(QuestThread).where(QuestThread.id == thread_id)
+    update_stmt = update(MTIBrainThread).where(MTIBrainThread.id == thread_id)
     if user_id is not None:
-        update_stmt = update_stmt.where(QuestThread.user_id == user_id)
+        update_stmt = update_stmt.where(MTIBrainThread.user_id == user_id)
     if auto_title:
         update_stmt = update_stmt.values(
-            title=func.coalesce(QuestThread.title, auto_title[:500]),
+            title=func.coalesce(MTIBrainThread.title, auto_title[:500]),
             updated_at=datetime.now(timezone.utc),
         )
     else:
@@ -415,14 +415,14 @@ async def save_message_and_touch(
     exists_result = await db.execute(
         select(
             exists().where(
-                QuestMessage.thread_id == thread_id,
-                QuestMessage.role == "user",
+                MTIBrainMessage.thread_id == thread_id,
+                MTIBrainMessage.role == "user",
             )
         )
     )
     is_first_message = not exists_result.scalar()
 
-    message = QuestMessage(
+    message = MTIBrainMessage(
         thread_id=thread_id,
         conversation_id=conversation_id,
         parent_conversation_id=parent_conversation_id,
@@ -449,7 +449,7 @@ async def list_threads(
 
     Uses LATERAL joins so the last-message and count subqueries only run
     for the threads returned after LIMIT/OFFSET, not across the entire
-    quest_message table.
+    mti_brain_message table.
 
     Args:
         db: Async database session.
@@ -484,10 +484,10 @@ async def list_threads(
                 t.id, t.project_id, t.title, t.starred,
                 t.created_at, t.updated_at,
                 lm.content AS last_message
-            FROM quest_thread t
+            FROM mti_brain_thread t
             LEFT JOIN LATERAL (
                 SELECT m.content
-                FROM quest_message m
+                FROM mti_brain_message m
                 WHERE m.thread_id = t.id
                 ORDER BY m.created_at DESC,
                          CASE m.role
@@ -617,7 +617,7 @@ thread_hits AS (
         COALESCE(ts_rank(t.search_vector, q), 0) * 1.5
             + COALESCE(word_similarity(raw_text, t.title), 0) * 0.8
             + CASE WHEN t.title ILIKE '%' || raw_text || '%' THEN 1.0 ELSE 0 END AS rank
-    FROM quest_thread t CROSS JOIN params p
+    FROM mti_brain_thread t CROSS JOIN params p
     WHERE (
         -- Layer 1: full-text search
         t.search_vector @@ q
@@ -677,12 +677,12 @@ message_hits AS (
         COALESCE(ts_rank(m.search_vector, q), 0) * 1.0
             + COALESCE(word_similarity(p.raw_text, m.content), 0) * 0.6
             + CASE WHEN m.content ILIKE '%' || p.raw_text || '%' THEN 0.8 ELSE 0 END AS rank
-    FROM quest_message m
-    JOIN quest_thread t ON t.id = m.thread_id
+    FROM mti_brain_message m
+    JOIN mti_brain_thread t ON t.id = m.thread_id
     CROSS JOIN params p
     WHERE m.role = 'user'
       AND EXISTS (
-          SELECT 1 FROM quest_message a
+          SELECT 1 FROM mti_brain_message a
           WHERE a.conversation_id = m.conversation_id
             AND a.role = 'assistant'
             AND a.content IS NOT NULL
@@ -821,9 +821,9 @@ async def search_threads(
 async def get_question_text(db: AsyncSession, conversation_id: uuid.UUID) -> str | None:
     """Get user question text for a conversation. 1 round-trip."""
     result = await db.execute(
-        select(QuestMessage.content)
+        select(MTIBrainMessage.content)
         .where(
-            QuestMessage.conversation_id == conversation_id, QuestMessage.role == "user"
+            MTIBrainMessage.conversation_id == conversation_id, MTIBrainMessage.role == "user"
         )
         .limit(1)
     )
@@ -847,9 +847,9 @@ async def get_question_and_parent(
         if the conversation was not found.
     """
     result = await db.execute(
-        select(QuestMessage.content, QuestMessage.parent_conversation_id)
+        select(MTIBrainMessage.content, MTIBrainMessage.parent_conversation_id)
         .where(
-            QuestMessage.conversation_id == conversation_id, QuestMessage.role == "user"
+            MTIBrainMessage.conversation_id == conversation_id, MTIBrainMessage.role == "user"
         )
         .limit(1)
     )
@@ -876,9 +876,9 @@ async def is_first_conversation(
         thread, False otherwise.
     """
     result = await db.execute(
-        select(QuestMessage.conversation_id)
-        .where(QuestMessage.thread_id == thread_id, QuestMessage.role == "user")
-        .order_by(QuestMessage.created_at.asc())
+        select(MTIBrainMessage.conversation_id)
+        .where(MTIBrainMessage.thread_id == thread_id, MTIBrainMessage.role == "user")
+        .order_by(MTIBrainMessage.created_at.asc())
         .limit(1)
     )
     first_conv = result.scalar_one_or_none()
@@ -900,20 +900,20 @@ async def delete_from_conversation(
     """
     # Find the earliest created_at of the target conversation
     ts_result = await db.execute(
-        select(func.min(QuestMessage.created_at)).where(
-            QuestMessage.thread_id == thread_id,
-            QuestMessage.conversation_id == conversation_id,
+        select(func.min(MTIBrainMessage.created_at)).where(
+            MTIBrainMessage.thread_id == thread_id,
+            MTIBrainMessage.conversation_id == conversation_id,
         )
     )
     cutoff = ts_result.scalar_one_or_none()
     if cutoff is None:
         return 0
 
-    op = QuestMessage.created_at >= cutoff if inclusive else QuestMessage.created_at > cutoff
+    op = MTIBrainMessage.created_at >= cutoff if inclusive else MTIBrainMessage.created_at > cutoff
 
     result = await db.execute(
-        delete(QuestMessage).where(
-            QuestMessage.thread_id == thread_id,
+        delete(MTIBrainMessage).where(
+            MTIBrainMessage.thread_id == thread_id,
             op,
         )
     )
@@ -934,7 +934,7 @@ async def save_message(
     reasoning: str | None = None,
     metadata: dict | None = None,
     parent_conversation_id: uuid.UUID | None = None,
-) -> QuestMessage:
+) -> MTIBrainMessage:
     """Save a single message to a thread. 1 round-trip (INSERT).
 
     Args:
@@ -948,9 +948,9 @@ async def save_message(
         parent_conversation_id: Optional parent conversation for retry/edit flows.
 
     Returns:
-        The newly created QuestMessage instance.
+        The newly created MTIBrainMessage instance.
     """
-    message = QuestMessage(
+    message = MTIBrainMessage(
         thread_id=thread_id,
         conversation_id=conversation_id,
         parent_conversation_id=parent_conversation_id,
@@ -972,7 +972,7 @@ async def create_project(
     name: str,
     description: str | None = None,
     user_id: uuid.UUID | None = None,
-) -> QuestProject:
+) -> MTIBrainProject:
     """Create a new project. 1 round-trip (INSERT).
 
     Args:
@@ -982,9 +982,9 @@ async def create_project(
         user_id: Owner user UUID.
 
     Returns:
-        The newly created QuestProject instance.
+        The newly created MTIBrainProject instance.
     """
-    project = QuestProject(name=name, description=description, user_id=user_id)
+    project = MTIBrainProject(name=name, description=description, user_id=user_id)
     db.add(project)
     await db.flush()
     logger.info(f"Project created: {project.id} ({name})")
@@ -1018,8 +1018,8 @@ async def get_project(
                 p.id, p.name, p.description, p.starred, p.created_at, p.updated_at,
                 t.id AS thread_id, t.title AS thread_title, t.starred AS thread_starred,
                 t.created_at AS thread_created_at, t.updated_at AS thread_updated_at
-            FROM quest_project p
-            LEFT JOIN quest_thread t ON t.project_id = p.id
+            FROM mti_brain_project p
+            LEFT JOIN mti_brain_thread t ON t.project_id = p.id
             WHERE p.id = :pid {user_filter}
             ORDER BY t.updated_at DESC
         """),
@@ -1076,7 +1076,7 @@ _PROJECT_SEARCH_SQL = text("""
                 COALESCE(word_similarity(params.raw_text, p.name), 0),
                 COALESCE(word_similarity(params.raw_text, COALESCE(p.description, '')), 0)
             ) AS sim_score
-        FROM quest_project p, params
+        FROM mti_brain_project p, params
         WHERE (
             -- Layer 1: full-text search on (name + description) tsvector
             p.search_vector @@ params.q
@@ -1121,7 +1121,7 @@ _PROJECT_SEARCH_SQL = text("""
     SELECT
         m.id, m.name, m.description, m.starred,
         m.created_at, m.updated_at,
-        (SELECT count(*) FROM quest_thread t WHERE t.project_id = m.id) AS thread_count,
+        (SELECT count(*) FROM mti_brain_thread t WHERE t.project_id = m.id) AS thread_count,
         m.sim_score
     FROM matched m
     ORDER BY m.sim_score DESC, m.updated_at DESC
@@ -1150,7 +1150,7 @@ _PROJECT_SEARCH_SQL_WITH_USER = text("""
                 COALESCE(word_similarity(params.raw_text, p.name), 0),
                 COALESCE(word_similarity(params.raw_text, COALESCE(p.description, '')), 0)
             ) AS sim_score
-        FROM quest_project p, params
+        FROM mti_brain_project p, params
         WHERE p.user_id = CAST(:user_id AS uuid)
           AND (
             -- Layer 1: full-text search
@@ -1195,7 +1195,7 @@ _PROJECT_SEARCH_SQL_WITH_USER = text("""
     SELECT
         m.id, m.name, m.description, m.starred,
         m.created_at, m.updated_at,
-        (SELECT count(*) FROM quest_thread t WHERE t.project_id = m.id) AS thread_count,
+        (SELECT count(*) FROM mti_brain_thread t WHERE t.project_id = m.id) AS thread_count,
         m.sim_score
     FROM matched m
     ORDER BY m.sim_score DESC, m.updated_at DESC
@@ -1243,16 +1243,16 @@ async def list_projects(
 
     query = (
         select(
-            QuestProject,
-            func.count(QuestThread.id).label("thread_count"),
+            MTIBrainProject,
+            func.count(MTIBrainThread.id).label("thread_count"),
         )
-        .outerjoin(QuestThread, QuestThread.project_id == QuestProject.id)
-        .group_by(QuestProject.id)
-        .order_by(QuestProject.updated_at.desc())
+        .outerjoin(MTIBrainThread, MTIBrainThread.project_id == MTIBrainProject.id)
+        .group_by(MTIBrainProject.id)
+        .order_by(MTIBrainProject.updated_at.desc())
     )
 
     if user_id:
-        query = query.where(QuestProject.user_id == user_id)
+        query = query.where(MTIBrainProject.user_id == user_id)
 
     result = await db.execute(query)
     return [
@@ -1285,13 +1285,13 @@ async def star_project(
         The new starred boolean value, or None if the project was not found.
     """
     stmt = (
-        update(QuestProject)
-        .where(QuestProject.id == project_id)
-        .values(starred=~QuestProject.starred)
-        .returning(QuestProject.starred)
+        update(MTIBrainProject)
+        .where(MTIBrainProject.id == project_id)
+        .values(starred=~MTIBrainProject.starred)
+        .returning(MTIBrainProject.starred)
     )
     if user_id:
-        stmt = stmt.where(QuestProject.user_id == user_id)
+        stmt = stmt.where(MTIBrainProject.user_id == user_id)
     result = await db.execute(stmt)
     row = result.one_or_none()
     return row[0] if row else None
@@ -1324,20 +1324,20 @@ async def update_project(
         values["description"] = description
 
     stmt = (
-        update(QuestProject)
-        .where(QuestProject.id == project_id)
+        update(MTIBrainProject)
+        .where(MTIBrainProject.id == project_id)
         .values(**values)
         .returning(
-            QuestProject.id,
-            QuestProject.name,
-            QuestProject.description,
-            QuestProject.starred,
-            QuestProject.created_at,
-            QuestProject.updated_at,
+            MTIBrainProject.id,
+            MTIBrainProject.name,
+            MTIBrainProject.description,
+            MTIBrainProject.starred,
+            MTIBrainProject.created_at,
+            MTIBrainProject.updated_at,
         )
     )
     if user_id:
-        stmt = stmt.where(QuestProject.user_id == user_id)
+        stmt = stmt.where(MTIBrainProject.user_id == user_id)
 
     result = await db.execute(stmt)
     row = result.one_or_none()
@@ -1368,9 +1368,9 @@ async def delete_project(
     Returns:
         True if the project was deleted, False if it did not exist.
     """
-    stmt = delete(QuestProject).where(QuestProject.id == project_id)
+    stmt = delete(MTIBrainProject).where(MTIBrainProject.id == project_id)
     if user_id:
-        stmt = stmt.where(QuestProject.user_id == user_id)
+        stmt = stmt.where(MTIBrainProject.user_id == user_id)
     result = await db.execute(stmt)
     deleted = result.rowcount > 0
     if deleted:
@@ -1378,16 +1378,27 @@ async def delete_project(
     return deleted
 
 
-# ─── Title Generation (mock) ───
+# ─── Title Generation ───
 
 
 def make_title(question: str) -> str | None:
+    """Interim title for a new thread, derived from the user's question.
+
+    Returns the question with internal whitespace collapsed, capped at
+    the 500-char column limit. The previous heuristic truncated to 7
+    words / 80 chars, which produced titles ending mid-sentence
+    ("...forecasted and", "...balance in our"). Showing the full
+    question is more useful in the sidebar/chats list and is still
+    visually constrained by the frontend (truncate in the sidebar,
+    line-clamp-2 on the wide list pages).
+
+    Replaced later by an LLM-generated title via :func:`save_smart_title`
+    once that path is wired up.
+    """
     text_in = (question or "").strip()
     if not text_in:
         return None
-    words = text_in.split()
-    title = " ".join(words[:7])
-    return title[:80]
+    return " ".join(text_in.split())[:500]
 
 
 async def save_smart_title(thread_id: uuid.UUID, title: str) -> None:
@@ -1408,8 +1419,8 @@ async def save_smart_title(thread_id: uuid.UUID, title: str) -> None:
     try:
         async with async_session_factory() as db:
             await db.execute(
-                update(QuestThread)
-                .where(QuestThread.id == thread_id)
+                update(MTIBrainThread)
+                .where(MTIBrainThread.id == thread_id)
                 .values(title=title[:500], updated_at=datetime.now(timezone.utc))
             )
             await db.commit()

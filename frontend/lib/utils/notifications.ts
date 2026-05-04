@@ -12,7 +12,7 @@
  * All entry points are SSR-safe.
  */
 
-const NOTIFICATION_TAG = 'quest-completion';
+const NOTIFICATION_TAG = 'mti-brain-completion';
 
 export type NotificationPermissionState =
   | 'default'
@@ -60,7 +60,7 @@ interface NotifyOptions {
  *  - permission is anything other than `granted`,
  *  - the page is in an SSR context.
  *
- * Click handler: focuses the window and dispatches a `quest:notification-click`
+ * Click handler: focuses the window and dispatches a `mti-brain:notification-click`
  * CustomEvent so a React-side listener can route via `router.push()`.
  */
 export function notify(title: string, opts: NotifyOptions = {}): void {
@@ -93,7 +93,7 @@ export function notify(title: string, opts: NotifyOptions = {}): void {
       }
       if (opts.threadId) {
         window.dispatchEvent(
-          new CustomEvent('quest:notification-click', {
+          new CustomEvent('mti-brain:notification-click', {
             detail: { threadId: opts.threadId },
           }),
         );

@@ -72,16 +72,16 @@ export default function RootLayout({
             a raw <script> rendered as a React element doesn't execute on
             the client (React 19 / Next 16 warning). */}
         <Script
-          id="quest-pwa-prompt-capture"
+          id="mti-brain-pwa-prompt-capture"
           strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html:
-              "window.__questPwaPrompt=null;" +
+              "window.__mtiBrainPwaPrompt=null;" +
               "window.addEventListener('beforeinstallprompt',function(e){" +
-              "e.preventDefault();window.__questPwaPrompt=e;" +
+              "e.preventDefault();window.__mtiBrainPwaPrompt=e;" +
               "});" +
               "window.addEventListener('appinstalled',function(){" +
-              "window.__questPwaPrompt=null;window.__questPwaInstalled=true;" +
+              "window.__mtiBrainPwaPrompt=null;window.__mtiBrainPwaInstalled=true;" +
               "});",
           }}
         />

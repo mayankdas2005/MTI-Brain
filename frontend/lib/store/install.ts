@@ -35,8 +35,8 @@ export const useInstallStore = create<InstallState>((set) => ({
 }));
 
 interface PwaWindow {
-  __questPwaPrompt?: BeforeInstallPromptEvent | null;
-  __questPwaInstalled?: boolean;
+  __mtiBrainPwaPrompt?: BeforeInstallPromptEvent | null;
+  __mtiBrainPwaInstalled?: boolean;
 }
 
 /** Wire up global listeners. Idempotent — safe to call from multiple places. */
@@ -50,13 +50,13 @@ export function ensureInstallListeners() {
 
   // Detect already-installed (display-mode standalone) on mount.
   const standalone = window.matchMedia?.('(display-mode: standalone)').matches;
-  if (standalone || w.__questPwaInstalled) {
+  if (standalone || w.__mtiBrainPwaInstalled) {
     useInstallStore.setState({ installed: true });
   }
 
   // Pick up an event the inline <head> script captured before React loaded.
-  if (w.__questPwaPrompt) {
-    cachedEvent = w.__questPwaPrompt;
+  if (w.__mtiBrainPwaPrompt) {
+    cachedEvent = w.__mtiBrainPwaPrompt;
     useInstallStore.setState({ canInstall: true });
   }
 

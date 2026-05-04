@@ -418,19 +418,19 @@ def _build_sse_generator(
             async def _patch_duration(conv_id: uuid.UUID, duration: int) -> None:
                 try:
                     from app.db import async_session_factory
-                    from app.models.conversation import QuestMessage
+                    from app.models.conversation import MTIBrainMessage
                     from sqlalchemy import cast, update
                     from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
 
                     async with async_session_factory() as patch_db:
                         stmt = (
-                            update(QuestMessage)
+                            update(MTIBrainMessage)
                             .where(
-                                QuestMessage.conversation_id == conv_id,
-                                QuestMessage.role == "assistant",
+                                MTIBrainMessage.conversation_id == conv_id,
+                                MTIBrainMessage.role == "assistant",
                             )
                             .values(
-                                metadata_=QuestMessage.metadata_.op("||")(
+                                metadata_=MTIBrainMessage.metadata_.op("||")(
                                     cast({"duration_ms": duration}, PG_JSONB)
                                 )
                             )

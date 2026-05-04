@@ -1,6 +1,6 @@
 """SQLAlchemy ORM models for conversations, threads, projects, and feedback.
 
-Defines the persistence layer for the Quest conversational interface,
+Defines the persistence layer for the MTI Brain conversational interface,
 including project grouping, threaded conversations, individual messages,
 and user feedback with optional vector embeddings.
 """
@@ -26,29 +26,29 @@ from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
 
 
-class QuestProject(Base):
+class MTIBrainProject(Base):
     """A top-level project that groups related conversation threads.
 
     Attributes:
         id: Primary key UUID, auto-generated.
-        user_id: Owner user UUID (FK to quest_user).
+        user_id: Owner user UUID (FK to mti_brain_user).
         name: Human-readable project name (max 255 chars).
         description: Optional long-form project description.
         starred: Whether the user has starred/favourited the project.
         created_at: Timestamp of project creation (UTC).
         updated_at: Timestamp of last modification (UTC, auto-updated).
-        user: The owning ``QuestUser`` relationship.
-        threads: Child ``QuestThread`` instances belonging to this project.
+        user: The owning ``MTIBrainUser`` relationship.
+        threads: Child ``MTIBrainThread`` instances belonging to this project.
     """
 
-    __tablename__ = "quest_project"
+    __tablename__ = "mti_brain_project"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("quest_user.id", ondelete="CASCADE"),
+        ForeignKey("mti_brain_user.id", ondelete="CASCADE"),
         nullable=True,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -65,22 +65,22 @@ class QuestProject(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
-    user: Mapped["QuestUser | None"] = relationship(back_populates="projects")  # noqa: F821
-    threads: Mapped[list["QuestThread"]] = relationship(
+    user: Mapped["MTIBrainUser | None"] = relationship(back_populates="projects")  # noqa: F821
+    threads: Mapped[list["MTIBrainThread"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
-        Index("ix_quest_project_user", "user_id"),
-        Index("ix_quest_project_search", "search_vector", postgresql_using="gin"),
+        Index("ix_mti_brain_project_user", "user_id"),
+        Index("ix_mti_brain_project_search", "search_vector", postgresql_using="gin"),
         Index(
-            "ix_quest_project_name_trgm",
+            "ix_mti_brain_project_name_trgm",
             "name",
             postgresql_using="gin",
             postgresql_ops={"name": "gin_trgm_ops"},
         ),
         Index(
-            "ix_quest_project_description_trgm",
+            "ix_mti_brain_project_description_trgm",
             "description",
             postgresql_using="gin",
             postgresql_ops={"description": "gin_trgm_ops"},
@@ -88,7 +88,7 @@ class QuestProject(Base):
     )
 
 
-class QuestThread(Base):
+class MTIBrainThread(Base):
     """A conversation thread within an optional project.
 
     Each thread corresponds to a single LangGraph checkpointer thread and
@@ -96,19 +96,19 @@ class QuestThread(Base):
 
     Attributes:
         id: Primary key UUID, also used as the LangGraph thread_id.
-        user_id: Owner user UUID (FK to quest_user).
-        project_id: Optional FK linking the thread to a ``QuestProject``.
+        user_id: Owner user UUID (FK to mti_brain_user).
+        project_id: Optional FK linking the thread to a ``MTIBrainProject``.
         title: Optional short title (max 500 chars).
         starred: Whether the user has starred/favourited the thread.
         search_vector: TSVECTOR column auto-populated by a DB trigger on title.
         created_at: Timestamp of thread creation (UTC).
         updated_at: Timestamp of last modification (UTC, auto-updated).
-        user: The owning ``QuestUser`` relationship.
-        project: Parent ``QuestProject`` relationship (nullable).
-        messages: Ordered child ``QuestMessage`` instances.
+        user: The owning ``MTIBrainUser`` relationship.
+        project: Parent ``MTIBrainProject`` relationship (nullable).
+        messages: Ordered child ``MTIBrainMessage`` instances.
     """
 
-    __tablename__ = "quest_thread"
+    __tablename__ = "mti_brain_thread"
 
     # This ID is also the thread_id used in LangGraph's checkpointer
     id: Mapped[uuid.UUID] = mapped_column(
@@ -116,12 +116,12 @@ class QuestThread(Base):
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("quest_user.id", ondelete="CASCADE"),
+        ForeignKey("mti_brain_user.id", ondelete="CASCADE"),
         nullable=True,
     )
     project_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("quest_project.id", ondelete="SET NULL"),
+        ForeignKey("mti_brain_project.id", ondelete="SET NULL"),
         nullable=True,
     )
     title: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -137,22 +137,22 @@ class QuestThread(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
-    user: Mapped["QuestUser | None"] = relationship(back_populates="threads")  # noqa: F821
-    project: Mapped[QuestProject | None] = relationship(back_populates="threads")
-    messages: Mapped[list["QuestMessage"]] = relationship(
+    user: Mapped["MTIBrainUser | None"] = relationship(back_populates="threads")  # noqa: F821
+    project: Mapped[MTIBrainProject | None] = relationship(back_populates="threads")
+    messages: Mapped[list["MTIBrainMessage"]] = relationship(
         back_populates="thread",
         cascade="all, delete-orphan",
-        order_by="QuestMessage.created_at",
+        order_by="MTIBrainMessage.created_at",
     )
 
     __table_args__ = (
-        Index("ix_quest_thread_updated", "updated_at"),
-        Index("ix_quest_thread_project", "project_id"),
-        Index("ix_quest_thread_user", "user_id"),
-        Index("ix_quest_thread_search", "search_vector", postgresql_using="gin"),
-        Index("ix_quest_thread_user_updated", "user_id", "updated_at"),
+        Index("ix_mti_brain_thread_updated", "updated_at"),
+        Index("ix_mti_brain_thread_project", "project_id"),
+        Index("ix_mti_brain_thread_user", "user_id"),
+        Index("ix_mti_brain_thread_search", "search_vector", postgresql_using="gin"),
+        Index("ix_mti_brain_thread_user_updated", "user_id", "updated_at"),
         Index(
-            "ix_quest_thread_title_trgm",
+            "ix_mti_brain_thread_title_trgm",
             "title",
             postgresql_using="gin",
             postgresql_ops={"title": "gin_trgm_ops"},
@@ -160,7 +160,7 @@ class QuestThread(Base):
     )
 
 
-class QuestMessage(Base):
+class MTIBrainMessage(Base):
     """A single user or assistant message within a thread.
 
     Messages are grouped into question/response pairs via
@@ -169,7 +169,7 @@ class QuestMessage(Base):
 
     Attributes:
         id: Primary key UUID, auto-generated.
-        thread_id: FK to the owning ``QuestThread``.
+        thread_id: FK to the owning ``MTIBrainThread``.
         conversation_id: Groups a question and its response together.
         parent_conversation_id: Links retries/edits to the original
             conversation; ``None`` for the first version.
@@ -181,18 +181,18 @@ class QuestMessage(Base):
         search_vector: TSVECTOR column auto-populated by a DB trigger on
             content.
         created_at: Timestamp of message creation (UTC).
-        thread: Parent ``QuestThread`` relationship.
-        feedback: Child ``QuestFeedback`` instances for this message.
+        thread: Parent ``MTIBrainThread`` relationship.
+        feedback: Child ``MTIBrainFeedback`` instances for this message.
     """
 
-    __tablename__ = "quest_message"
+    __tablename__ = "mti_brain_message"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     thread_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("quest_thread.id", ondelete="CASCADE"),
+        ForeignKey("mti_brain_thread.id", ondelete="CASCADE"),
         nullable=False,
     )
     # conversation_id groups a question + response pair together
@@ -216,21 +216,21 @@ class QuestMessage(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    thread: Mapped[QuestThread] = relationship(back_populates="messages")
-    feedback: Mapped[list["QuestFeedback"]] = relationship(
+    thread: Mapped[MTIBrainThread] = relationship(back_populates="messages")
+    feedback: Mapped[list["MTIBrainFeedback"]] = relationship(
         back_populates="message", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
-        Index("ix_quest_message_thread", "thread_id"),
-        Index("ix_quest_message_conversation", "conversation_id"),
-        Index("ix_quest_message_created", "created_at"),
-        Index("ix_quest_message_search", "search_vector", postgresql_using="gin"),
-        Index("ix_quest_message_thread_created", "thread_id", "created_at"),
+        Index("ix_mti_brain_message_thread", "thread_id"),
+        Index("ix_mti_brain_message_conversation", "conversation_id"),
+        Index("ix_mti_brain_message_created", "created_at"),
+        Index("ix_mti_brain_message_search", "search_vector", postgresql_using="gin"),
+        Index("ix_mti_brain_message_thread_created", "thread_id", "created_at"),
     )
 
 
-class QuestFeedback(Base):
+class MTIBrainFeedback(Base):
     """User feedback (like/dislike and optional comment) on a message.
 
     Stores an optional pgvector embedding of the question plus feedback
@@ -238,28 +238,28 @@ class QuestFeedback(Base):
 
     Attributes:
         id: Primary key UUID, auto-generated.
-        message_id: Optional FK to the ``QuestMessage`` being rated.
-        thread_id: FK to the owning ``QuestThread``.
+        message_id: Optional FK to the ``MTIBrainMessage`` being rated.
+        thread_id: FK to the owning ``MTIBrainThread``.
         liked: ``True`` for like, ``False`` for dislike, ``None`` if unset.
         comment: Optional free-text feedback comment.
         embedding: 1536-dimensional pgvector embedding for similarity search.
         created_at: Timestamp of feedback creation (UTC).
-        message: Parent ``QuestMessage`` relationship (nullable).
+        message: Parent ``MTIBrainMessage`` relationship (nullable).
     """
 
-    __tablename__ = "quest_feedback"
+    __tablename__ = "mti_brain_feedback"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     message_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("quest_message.id", ondelete="CASCADE"),
+        ForeignKey("mti_brain_message.id", ondelete="CASCADE"),
         nullable=True,
     )
     thread_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("quest_thread.id", ondelete="CASCADE"),
+        ForeignKey("mti_brain_thread.id", ondelete="CASCADE"),
         nullable=False,
     )
     liked: Mapped[bool | None] = mapped_column(
@@ -272,9 +272,9 @@ class QuestFeedback(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    message: Mapped[QuestMessage | None] = relationship(back_populates="feedback")
+    message: Mapped[MTIBrainMessage | None] = relationship(back_populates="feedback")
 
     __table_args__ = (
-        Index("ix_quest_feedback_thread", "thread_id"),
-        Index("ix_quest_feedback_message", "message_id"),
+        Index("ix_mti_brain_feedback_thread", "thread_id"),
+        Index("ix_mti_brain_feedback_message", "message_id"),
     )

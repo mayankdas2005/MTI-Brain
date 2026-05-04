@@ -87,7 +87,7 @@ export function CollapsedSidebar() {
     <div className="flex flex-col items-center h-full w-12 bg-sidebar border-sidebar-border">
       {/*
         Row heights mirror the expanded sidebar so icons stay aligned:
-        - Header  : h-12  (48px) - "Q Quest" + toggle
+        - Header  : h-12  (48px) - Milestone icon + toggle
         - New Chat: pt-3 (12) + h-9 button (36) + pb-2 (8) = 56px
         - Search  : h-8 input (32) + pb-2 (8) = 40px
       */}

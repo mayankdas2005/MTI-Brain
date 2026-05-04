@@ -45,7 +45,7 @@ export async function clearAllLocalData(): Promise<void> {
       // Fallback: delete known databases by name. Add new ones here as we
       // introduce them.
       await new Promise<void>((resolve) => {
-        const req = indexedDB.deleteDatabase('quest-drafts');
+        const req = indexedDB.deleteDatabase('mti-brain-drafts-v1');
         req.onsuccess = () => resolve();
         req.onerror = () => resolve();
         req.onblocked = () => resolve();

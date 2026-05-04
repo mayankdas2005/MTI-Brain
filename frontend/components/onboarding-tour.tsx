@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { modifierLabel } from '@/lib/utils/platform';
 
-const STORAGE_KEY = 'quest:onboarding-complete-v2';
+const STORAGE_KEY = 'mti-brain:onboarding-complete-v2';
 
 interface Step {
   id: string;

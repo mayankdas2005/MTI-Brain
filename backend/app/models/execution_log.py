@@ -23,7 +23,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 
-class QuestExecutionLog(Base):
+class MTIBrainExecutionLog(Base):
     """One row per pipeline run (data_query type only).
 
     Attributes:
@@ -48,7 +48,7 @@ class QuestExecutionLog(Base):
         created_at: When this log entry was created.
     """
 
-    __tablename__ = "quest_execution_log"
+    __tablename__ = "mti_brain_execution_log"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

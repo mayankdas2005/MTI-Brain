@@ -50,8 +50,8 @@ export default function AuthenticatedLayout({
   // (avoids the full-page reload that window.location.href would trigger).
   useEffect(() => {
     const onUnauth = () => router.replace('/');
-    window.addEventListener('quest:unauthenticated', onUnauth);
-    return () => window.removeEventListener('quest:unauthenticated', onUnauth);
+    window.addEventListener('mti-brain:unauthenticated', onUnauth);
+    return () => window.removeEventListener('mti-brain:unauthenticated', onUnauth);
   }, [router]);
 
   // Prefetch the routes that keyboard shortcuts can jump to so the first

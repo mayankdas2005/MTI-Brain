@@ -3,7 +3,7 @@
 import uuid
 
 from app.core.logger import logger
-from app.models.conversation import QuestFeedback
+from app.models.conversation import MTIBrainFeedback
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,17 +14,17 @@ async def save_feedback(
     thread_id: uuid.UUID,
     liked: bool,
     comment: str | None = None,
-) -> QuestFeedback:
+) -> MTIBrainFeedback:
     result = await db.execute(
         text(
-            "SELECT id FROM quest_message "
+            "SELECT id FROM mti_brain_message "
             "WHERE conversation_id = :cid AND role = 'assistant' LIMIT 1"
         ),
         {"cid": str(conversation_id)},
     )
     message_id = result.scalar_one_or_none()
 
-    feedback = QuestFeedback(
+    feedback = MTIBrainFeedback(
         message_id=message_id,
         thread_id=thread_id,
         liked=liked,
@@ -45,9 +45,9 @@ _FIND_THREAD_FEEDBACK_SQL = text("""
         f.thread_id,
         f.created_at,
         q.content AS question_text
-    FROM quest_feedback f
-    JOIN quest_message m ON m.id = f.message_id
-    JOIN quest_message q ON q.conversation_id = m.conversation_id AND q.role = 'user'
+    FROM mti_brain_feedback f
+    JOIN mti_brain_message m ON m.id = f.message_id
+    JOIN mti_brain_message q ON q.conversation_id = m.conversation_id AND q.role = 'user'
     WHERE f.thread_id = :thread_id
       AND f.comment IS NOT NULL
       AND f.comment != ''

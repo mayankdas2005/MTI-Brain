@@ -1,5 +1,5 @@
 /**
- * Quest chart theme.
+ * MTI Brain chart theme.
  *
  * 6-color brand-aligned categorical palette + shared axis/grid/font props.
  * Mirrors --chart-1..6 in app/globals.css; the JS HEX literals exist

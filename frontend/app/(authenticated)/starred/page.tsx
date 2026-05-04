@@ -277,7 +277,7 @@ export default function StarredPage() {
                       <TooltipContent side="right">Unstar</TooltipContent>
                     </Tooltip>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground truncate">
+                      <p className="text-sm font-medium text-foreground line-clamp-2 leading-snug">
                         {highlightQueryInText(row.title || 'Untitled', search, {
                           matchedTerms: row.matched_terms,
                         })}

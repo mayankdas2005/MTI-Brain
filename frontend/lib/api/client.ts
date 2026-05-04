@@ -43,11 +43,11 @@ export async function apiFetch<T>(
   if (res.status === 401) {
     // Token expired or invalid - clear and notify the layout via a custom event.
     // Using window.location.href triggers a full page reload (slow). The
-    // authenticated layout listens for 'quest:unauthenticated' and uses
+    // authenticated layout listens for 'mti-brain:unauthenticated' and uses
     // Next.js routing to redirect, which keeps the bundle warm.
     clearStoredToken();
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('quest:unauthenticated'));
+      window.dispatchEvent(new CustomEvent('mti-brain:unauthenticated'));
     }
     throw new ApiError(401, { detail: 'Session expired. Please log in again.' });
   }

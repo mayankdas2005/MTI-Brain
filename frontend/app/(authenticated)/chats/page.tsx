@@ -436,7 +436,7 @@ export default function ChatsPage() {
                   }`}
                   style={{ animationDelay: `${Math.min(index, 6) * 35}ms` }}
                 >
-                  <p className="text-sm font-medium text-foreground truncate">
+                  <p className="text-sm font-medium text-foreground line-clamp-2 leading-snug">
                     {highlightQueryInText(result.title || 'Untitled', search, {
                       matchedTerms: result.matched_terms,
                     })}
@@ -526,7 +526,7 @@ export default function ChatsPage() {
                     </div>
 
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground truncate">
+                      <p className="text-sm font-medium text-foreground line-clamp-2 leading-snug">
                         {thread.title || 'Untitled'}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1" suppressHydrationWarning>

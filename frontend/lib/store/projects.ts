@@ -354,7 +354,7 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
     set({ projectDetailMap: rest });
   },
 }), {
-  name: 'quest-projects-cache',
+  name: 'mti-brain-projects-cache',
   storage: createJSONStorage(() => localStorage),
   // Persist only the list snapshot; loading flags, currentProject, and the
   // per-id detail cache are session-scoped (parity with threadMessageMap).
