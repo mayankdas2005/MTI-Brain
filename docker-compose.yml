@@ -8,28 +8,8 @@ services:
     image: mti-brain-backend:latest
     container_name: mti-brain-backend
     restart: unless-stopped
-    env_file: .env
-    environment:
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DEBUG: ${DEBUG:-false}
-      CORS_ORIGINS: '["http://localhost:3000","http://${EC2_PUBLIC_IP:-localhost}:3000"]'
-      POSTGRES_HOST: pgbouncer
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-disable}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
-      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
-      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
-      JWT_SECRET: ${JWT_SECRET}
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
+    env_file: ./backend/.env
     networks:
-      - db_net
       - app_net
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
@@ -55,8 +35,7 @@ services:
     image: mti-brain-frontend:latest
     container_name: mti-brain-frontend
     restart: unless-stopped
-    environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    env_file: ./frontend/.env
     depends_on:
       backend:
         condition: service_healthy
@@ -101,9 +80,6 @@ services:
           cpus: "0.25"
 
 networks:
-  db_net:
-    name: mti-brain-db
-    driver: bridge
   app_net:
     name: mti-brain-app
     driver: bridge

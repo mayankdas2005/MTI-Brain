@@ -96,3 +96,6 @@ next.user-config.*
 
 # Claude
 .claude/worktrees/
+
+# SSL certificates
+nginx/ssl/*.pem

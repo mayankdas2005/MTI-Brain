@@ -1,7 +1,6 @@
 import type { Metadata } from 'next'
 import Script from 'next/script'
 import { Geist, Geist_Mono } from 'next/font/google'
-import { Analytics } from '@vercel/analytics/next'
 import { Providers } from '@/components/providers'
 import './globals.css'
 
@@ -90,8 +89,7 @@ export default function RootLayout({
         <Providers>
           {children}
         </Providers>
-        <Analytics />
-        <Script id="mti-easter-egg" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: `
+<Script id="mti-easter-egg" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: `
     console.log("%c" +
       "███╗   ███╗████████╗██╗    \\n" +
       "████╗ ████║╚══██╔══╝██║    \\n" +
