@@ -1,0 +1,42 @@
+version: 0.0
+os: linux
+
+files:
+  - source: /
+    destination: /opt/mti-brain
+    overwrite: true
+
+file_exists_behavior: OVERWRITE
+
+permissions:
+  - object: /opt/mti-brain/deploy
+    pattern: "**"
+    mode: 755
+    type:
+      - file
+
+hooks:
+  ApplicationStop:
+    - location: deploy/application_stop.sh
+      timeout: 300
+      runas: ubuntu
+
+  BeforeInstall:
+    - location: deploy/before_install.sh
+      timeout: 300
+      runas: ubuntu
+
+  AfterInstall:
+    - location: deploy/after_install.sh
+      timeout: 600
+      runas: ubuntu
+
+  ApplicationStart:
+    - location: deploy/application_start.sh
+      timeout: 900
+      runas: ubuntu
+
+  ValidateService:
+    - location: deploy/validate_service.sh
+      timeout: 300
+      runas: ubuntu
