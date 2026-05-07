@@ -1,6 +1,7 @@
 """Authentication endpoints."""
 
 from app.api.v1.deps import CurrentUser, get_current_user
+from app.core.config import settings
 from app.core.logger import logger
 from app.core.rate_limit import limiter
 from app.db import get_async_session
@@ -32,7 +33,7 @@ class MeResponse(BaseModel):
 
 
 @router.post("/login", response_model=AuthResponse)
-@limiter.limit("5/minute")
+@limiter.limit(f"{settings.RATE_LIMIT_LOGIN_PER_MINUTE}/minute")
 async def login(
     request: Request,
     body: LoginRequest,

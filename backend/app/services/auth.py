@@ -47,14 +47,14 @@ def create_jwt_token(
         "name": name,
         "groups": groups,
         "iat": now,
-        "exp": now + timedelta(hours=8),
+        "exp": now + timedelta(hours=settings.JWT_EXPIRY_HOURS),
     }
-    return jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_jwt_token(token: str) -> dict | None:
     try:
-        return jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
+        return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
         logger.debug("JWT expired")
         return None

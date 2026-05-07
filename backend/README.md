@@ -1,6 +1,6 @@
-﻿# MTI Brain Backend
+# MTI Brain Backend
 
-FastAPI backend for **MTI Brain** - an AI-powered conversational data analytics platform. Provides JWT-authenticated REST APIs for user login, conversation thread management, and project organization, with Server-Sent Events (SSE) streaming support for real-time responses.
+FastAPI backend for **MTI Brain** — an AI-powered conversational data analytics platform for enterprise treasury intelligence. Provides JWT-authenticated REST APIs for user login, conversation thread management, and project organization, with Server-Sent Events (SSE) streaming support for real-time responses.
 
 The backend uses an async SQLAlchemy stack against PostgreSQL (with pgvector for embeddings and full-text search).
 
@@ -37,7 +37,7 @@ backend/
 │   ├── core/
 │   │   ├── config.py            # Pydantic Settings (all env vars)
 │   │   ├── logger.py            # Loguru configuration
-│   │   ├── middleware.py        # RequestIDMiddleware + TimingMiddleware
+│   │   ├── middleware.py        # RequestIDMiddleware + TimingMiddleware + SecurityHeadersMiddleware
 │   │   ├── circuit_breaker.py   # pybreaker instances for external services
 │   │   └── rate_limit.py        # Shared rate limiter used by route handlers
 │   ├── db/
@@ -46,7 +46,7 @@ backend/
 │   ├── models/
 │   │   ├── conversation.py      # MTIBrainProject / MTIBrainThread / MTIBrainMessage / MTIBrainFeedback
 │   │   ├── user.py              # MTIBrainUser
-│   │   └── execution_log.py     # MTIBrainExecutionLog (per-run telemetry)
+│   │   └── execution_log.py     # MTIBrainExecutionLog (per-run telemetry, stores response_tone)
 │   ├── schemas/
 │   │   ├── chat.py              # Pydantic request/response schemas for chat
 │   │   └── project.py           # Pydantic schemas for projects
@@ -79,22 +79,9 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 |--------|------|-------------|
 | GET | `/health` | Returns `200 healthy` or `503 unhealthy` based on Postgres status |
 
-**Response:**
-```json
-{
-  "status": "healthy",
-  "services": {
-    "postgres": { "status": "ok" }
-  },
-  "timestamp": "2026-04-29T12:00:00Z"
-}
-```
-
-`status` is `"healthy"`, `"degraded"` (circuit open), or `"unhealthy"` (Postgres unreachable → HTTP 503).
-
 ### Auth (`/api/v1/auth`)
 
-> **Okta OIDC migration is planned.** The `MTIBrainUser` model already carries `okta_id` (unique, nullable), but the active flow is still credential-based via `app/services/auth.py`. Routes below describe what ships today.
+> **Okta OIDC migration is planned.** The `MTIBrainUser` model already carries `okta_id` (unique, nullable), but the active flow is still credential-based via `app/services/auth.py`.
 
 | Method | Path | Auth required | Description |
 |--------|------|---------------|-------------|
@@ -106,20 +93,7 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 { "username": "admin", "password": "admin123" }
 ```
 
-**Login response:**
-```json
-{
-  "token": "eyJ0eXAiOiJKV1Qi...",
-  "user": {
-    "user_id": "uuid",
-    "email": "admin@milestone.tech",
-    "name": "Admin User",
-    "groups": []
-  }
-}
-```
-
-> **Development note:** Credentials are currently hardcoded in `app/services/auth.py`. This is intentionally dev-only - do not deploy with the default credentials in production.
+> **Development note:** Credentials are currently hardcoded in `app/services/auth.py`. Do not deploy with default credentials in production.
 
 ### Chat (`/api/v1/chat`)
 
@@ -140,6 +114,28 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 | POST | `/{thread_id}/stop` | Stop active stream |
 | POST | `/{thread_id}/conversations/{conversation_id}/feedback` | Submit thumbs-up/down + comment |
 
+#### Ask Request Body (`POST /{thread_id}/ask`)
+
+```json
+{
+  "question": "What is our total cash balance as of yesterday?",
+  "response_tone": "analyst",
+  "max_rows": 100,
+  "deep_analysis": false,
+  "source_conversation_id": null,
+  "prior_sql": null
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `question` | string | required | User's natural-language question (1–2000 chars) |
+| `response_tone` | string | `"analyst"` | One of `analyst`, `manager`, `director`, `executive` |
+| `max_rows` | int | `100` | Result row limit (10–500) |
+| `deep_analysis` | bool | `false` | When `true`, the pipeline uses extended multi-step reasoning (slower, more thorough) |
+| `source_conversation_id` | UUID \| null | `null` | ID of the prior assistant turn this question follows from (for version branching) |
+| `prior_sql` | string \| null | `null` | SQL from a specific prior answer to refine ("Refine this query" flow) |
+
 ### Projects (`/api/v1/projects`)
 
 | Method | Path | Description |
@@ -153,63 +149,79 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 
 ### API Docs
 
-Available at runtime:
-
 | URL | Description |
 |-----|-------------|
 | `http://localhost:8000/docs` | Swagger UI |
 | `http://localhost:8000/redoc` | ReDoc |
 | `http://localhost:8000/openapi.json` | OpenAPI spec |
 
-## Database Models
+## Schema Reference
 
-All tables live in the app PostgreSQL database.
+### ResponseTone
+
+```python
+ResponseTone = Literal["analyst", "manager", "director", "executive"]
+```
+
+| Value | Meaning |
+|-------|---------|
+| `analyst` | Data-driven, detailed breakdowns (default) |
+| `manager` | Actionable insights with context |
+| `director` | Strategic summaries with key metrics |
+| `executive` | High-level, decision-ready answers |
+
+> **Note:** The tone is passed through to the pipeline and stored in `execution_log.response_tone`. The backend does not currently branch pipeline logic on this value — it is available for the LLM prompt to use.
+
+### Deep Analysis
+
+When `deep_analysis: true` is sent, `_build_sse_generator` receives the flag and can activate extended reasoning in the LLM call. The flag is stored in `execution_log` for telemetry. Currently the flag is wired end-to-end but pipeline branching on it is pending LLM integration work.
+
+## Database Models
 
 | Model | Table | Purpose |
 |-------|-------|---------|
 | **MTIBrainUser** | `mti_brain_user` | User record keyed by email. Fields: `id`, `okta_id`, `email`, `name`, `groups` (JSONB), `organization`, `last_login`, `created_at`. |
 | **MTIBrainProject** | `mti_brain_project` | Named collection of threads. Fields: `id`, `user_id`, `name`, `description`, `starred`, timestamps. |
-| **MTIBrainThread** | `mti_brain_thread` | Conversation thread (= LangGraph `thread_id`). Fields: `id`, `user_id`, `project_id`, `title`, `starred`, `search_vector` (tsvector GIN). |
+| **MTIBrainThread** | `mti_brain_thread` | Conversation thread. Fields: `id`, `user_id`, `project_id`, `title`, `starred`, `search_vector` (tsvector GIN). |
 | **MTIBrainMessage** | `mti_brain_message` | Individual user or assistant message. Fields: `id`, `thread_id`, `conversation_id`, `parent_conversation_id`, `role`, `content`, `reasoning`, `metadata` (JSONB: `sql`, `chart_spec`, `intent`, `columns`, `rows`, `follow_ups`, etc.), `search_vector`. |
-| **MTIBrainFeedback** | `mti_brain_feedback` | Thumbs-up/down + optional comment. Fields: `id`, `message_id`, `thread_id`, `liked`, `comment`, `embedding` (Vector 1536 - pgvector). |
-| **MTIBrainExecutionLog** | `mti_brain_execution_log` | Per-run telemetry. Fields: `question`, `question_type`, `schema_fqn`, `sql`, `row_count`, `retry_count`, `valid`, `exec_error`, `duration_ms`, `pattern_matched`, implicit/explicit feedback flags, user context. |
+| **MTIBrainFeedback** | `mti_brain_feedback` | Thumbs-up/down + optional comment. Fields: `id`, `message_id`, `thread_id`, `liked`, `comment`, `embedding` (Vector 1536). |
+| **MTIBrainExecutionLog** | `mti_brain_execution_log` | Per-run telemetry. Includes `response_tone` (string, max 30 chars) and `deep_analysis` fields for analytics. |
 
 ## Middleware
 
-Defined in `app/core/middleware.py`:
+`app/core/middleware.py` (pure ASGI — no `BaseHTTPMiddleware` to avoid Windows ProactorEventLoop deadlocks):
 
 | Middleware | Purpose |
 |-----------|---------|
 | **RequestIDMiddleware** | Generates and attaches `X-Request-ID` to every request/response |
-| **TimingMiddleware** | Logs request duration; attaches `X-Response-Time` header |
+| **TimingMiddleware** | Logs `METHOD /path → STATUS (Nms)` for every non-health request; attaches `X-Response-Time` |
+| **SecurityHeadersMiddleware** | Adds `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`; strict CSP on API responses (skipped for `/docs`, `/redoc`, `/openapi.json`) |
 
-Wired in `app/main.py` (Starlette built-ins, configured but not subclassed):
+Starlette built-ins wired in `app/main.py`:
 
 | Middleware | Purpose |
 |-----------|---------|
 | **CORSMiddleware** | Origins controlled by `CORS_ORIGINS`; credentials enabled |
-| **TrustedHostMiddleware** | Host header validation (wildcard in dev — intentional, since the team works across many laptops/VMs) |
+| **TrustedHostMiddleware** | Wildcard in dev (intentional — team works across many laptops/VMs) |
 
 ## Resilience
 
-- **Circuit breakers** (pybreaker) on Postgres health - prevents cascading failures when the DB is unavailable.
+- **Circuit breakers** (pybreaker) on Postgres health — prevents cascading failures when the DB is unavailable.
 - **Tenacity retries** available for transient external service errors.
-- **Graceful pool warmup** - 3 connections pre-opened at startup; engine disposed cleanly on shutdown.
-- **Pool pre-ping** disabled (aggressive recycle via `DB_POOL_RECYCLE` instead) to avoid checkout latency.
+- **Graceful pool warmup** — 3 connections pre-opened at startup; engine disposed cleanly on shutdown.
+- **Rate limiting** — `5/minute` on `POST /auth/login` via slowapi.
 
 ## Migrations
 
 Single baseline at [`alembic/versions/0001_baseline.py`](alembic/versions/0001_baseline.py):
 
-- Installs `pg_trgm`, `fuzzystrmatch`, and `vector` extensions (idempotent — `CREATE EXTENSION IF NOT EXISTS`).
-- Creates every table on `Base.metadata` (all `mti_brain_*` tables, FKs, GIN trigram indexes).
+- Installs `pg_trgm`, `fuzzystrmatch`, and `vector` extensions (idempotent).
+- Creates every `mti_brain_*` table with FKs and GIN trigram indexes.
 - Installs `search_vector` trigger functions and triggers on `mti_brain_thread`, `mti_brain_message`, and `mti_brain_project`.
 
-`alembic/env.py` imports all three model modules (`conversation`, `execution_log`, `user`) so future `--autogenerate` runs see the full schema.
+> **Trigger functions are not autogenerated.** If you change `search_vector` semantics, hand-edit the new revision to also `CREATE OR REPLACE FUNCTION` the trigger.
 
-> **Trigger functions are not autogenerated.** If you change `search_vector` semantics (e.g. add weighting on a column), the autogenerated revision will only catch column/index diffs — hand-edit the new revision to also `CREATE OR REPLACE FUNCTION` the trigger.
-
-The migrating Postgres role needs `CREATE EXTENSION` privilege. If it doesn't, install the three extensions once as a superuser before running `alembic upgrade head`; the migration's `IF NOT EXISTS` guards make repeat runs safe.
+The migrating role needs `CREATE EXTENSION` privilege. If it doesn't, install the three extensions once as a superuser first — the migration's `IF NOT EXISTS` guards make repeat runs safe.
 
 ## Getting Started
 
@@ -230,24 +242,21 @@ source .venv/bin/activate       # Linux / macOS
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Configure environment
+# 3. Configure secrets
 cp .env.example .env
-# Edit .env - at minimum set POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_DB, JWT_SECRET
+# Edit .env — fill in: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_DB, JWT_SECRET
+# Non-secret settings (CORS, pool sizes, log level, etc.) live in config.yml — edit there if needed
 
-# 4. Run database migrations (see Migrations section above for what this does + extension prereqs)
+# 4. Run database migrations
 alembic upgrade head
 
 # 5. Start the development server
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Docker
+> **Windows / VS Code note:** If `http://localhost:8000/docs` doesn't load and there are no backend logs, check VS Code's Ports panel (`View → Ports`). VS Code Insiders can auto-forward port 8000 and intercept all connections. Stop the forwarding or run on a different port (`--port 8001`) and update `NEXT_PUBLIC_API_URL` in the frontend accordingly.
 
-The Dockerfile is a two-stage build (builder + runtime). The runtime image includes:
-- **Microsoft ODBC Driver 17 and 18** for SQL Server (modern T-SQL datasources)
-- **FreeTDS + pymssql** for legacy SQL Server 2008 / 2008 R2
-- Custom OpenSSL config for TLS 1.0/1.1 support when required by older SQL Server instances
-- Non-root `appuser` for container security
+### Docker
 
 ```bash
 docker build -t mti-brain-backend .
@@ -273,35 +282,70 @@ gunicorn app.main:app \
   --log-level info
 ```
 
-## Environment Variables
+## Configuration
 
-Copy `.env.example` to `.env` and fill in the required values.
+Configuration is split across two files:
 
-### Required
+| File | Purpose | Committed? |
+|------|---------|------------|
+| `config.yml` | All non-secret settings (timeouts, pool sizes, log level, CORS, JWT expiry, etc.) | **Yes** |
+| `.env` | Secrets only (DB credentials, JWT secret, API keys) | **No** — git-ignored |
+
+**Adding a new config value:**
+1. Add it under the relevant section in `config.yml` with a sensible default.
+2. Add the matching `Field` to `Settings` in `app/core/config.py`, reading from `_yml`.
+3. If it needs to be a secret, add it to `.env.example` and `Settings` as a required field with no default.
+
+**Override at deploy-time:** any `config.yml` value can be overridden without editing the file by setting the matching environment variable (e.g. `CORS_ORIGINS=["https://app.yourdomain.com"]` in CodeDeploy or the shell). Priority: env var > `.env` file > `config.yml` default.
+
+### `.env` — Secrets (required)
+
+Copy `.env.example` to `.env` and fill in real values.
 
 | Variable | Description |
 |----------|-------------|
-| `POSTGRES_USER` | App database username |
-| `POSTGRES_PASSWORD` | App database password |
-| `POSTGRES_HOST` | App database host |
-| `POSTGRES_DB` | App database name |
-| `JWT_SECRET` | Secret key for signing JWT tokens - **change in production** |
+| `POSTGRES_USER` | Database username |
+| `POSTGRES_PASSWORD` | Database password |
+| `POSTGRES_HOST` | Database host |
+| `POSTGRES_DB` | Database name |
+| `JWT_SECRET` | Secret for signing JWTs — generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 
-### Optional / defaults
+Optional secret overrides (uncomment in `.env` when needed):
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ENVIRONMENT` | `development` | `development` or `production` |
-| `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `DEBUG` | `false` | FastAPI debug mode |
-| `CORS_ORIGINS` | `[]` | JSON array or comma-separated list of allowed frontend origins (e.g. `["http://localhost:3000"]`) |
-| `POSTGRES_PORT` | `5432` | App database port |
-| `DATABASE_SSL_MODE` | `disable` | `disable` / `require` / `verify-ca` / `verify-full` |
-| `DATABASE_SSL_ROOT_CERT` | `""` | Path to SSL root certificate |
-| `DB_POOL_SIZE` | `10` | SQLAlchemy connection pool size |
-| `DB_MAX_OVERFLOW` | `20` | Max overflow connections above pool size |
-| `DB_POOL_RECYCLE` | `1800` | Recycle connections after N seconds |
-| `DB_POOL_TIMEOUT` | `30` | Timeout to acquire a connection (seconds) |
-| `CB_FAIL_MAX` | `5` | Circuit breaker failures before opening |
-| `CB_RESET_TIMEOUT` | `30` | Seconds before circuit half-opens |
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_SSL_ROOT_CERT` | Path to CA cert when `ssl_mode` is `verify-ca` or `verify-full` |
+| `ENVIRONMENT` | Override `app.environment` from `config.yml` (`development` or `production`) |
+| `LOG_LEVEL` | Override `app.log_level` from `config.yml` |
+| `CORS_ORIGINS` | Override `server.cors_origins` from `config.yml` (JSON array or comma-separated) |
 
+### `config.yml` — Non-secret config
+
+| Section → key | Default | Description |
+|---------------|---------|-------------|
+| `app.environment` | `development` | `development` or `production` |
+| `app.debug` | `false` | FastAPI + SQLAlchemy echo mode |
+| `app.log_level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `server.cors_origins` | `[localhost:3000, 127.0.0.1:3000]` | Allowed browser origins |
+| `database.port` | `5432` | Postgres port |
+| `database.ssl_mode` | `disable` | `disable` / `require` / `verify-ca` / `verify-full` |
+| `database.pool.size` | `10` | Base connection pool size |
+| `database.pool.max_overflow` | `20` | Max extra connections above pool size |
+| `database.pool.recycle_seconds` | `1800` | Recycle connections older than N seconds |
+| `database.pool.timeout_seconds` | `30` | Seconds to wait for a connection |
+| `circuit_breaker.fail_max` | `5` | Consecutive failures before opening circuit |
+| `circuit_breaker.reset_timeout_seconds` | `30` | Seconds before circuit half-opens |
+| `jwt.algorithm` | `HS256` | JWT signing algorithm |
+| `jwt.expiry_hours` | `8` | JWT token lifetime |
+| `rate_limit.login_per_minute` | `5` | Max login attempts per IP per minute |
+
+---
+
+## Related Documentation
+
+| Component | README |
+|-----------|--------|
+| Root (architecture + quick start) | [../README.md](../README.md) |
+| Frontend (Next.js) | [../frontend/README.md](../frontend/README.md) |
+| Database (PostgreSQL + PgBouncer) | [../database/README.md](../database/README.md) |
+| Deployment (AWS CodeDeploy) | [../deploy/README.md](../deploy/README.md) |

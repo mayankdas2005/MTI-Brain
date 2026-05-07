@@ -1,0 +1,44 @@
+# ─── config.yml ────────────────────────────────────────────────────────────────
+# Non-secret application configuration. Commit this file to git.
+# Secrets (DB credentials, JWT secret, API keys) belong in .env — never here.
+#
+# Override any value at deploy-time by setting the matching environment variable.
+# Example: LOG_LEVEL=WARNING in the shell or CodeDeploy environment overrides
+# the app.log_level value below, with no file edit required.
+# ───────────────────────────────────────────────────────────────────────────────
+
+app:
+  name: "MTI Brain Backend"
+  environment: development         # development | production
+  debug: false                     # true enables SQLAlchemy query echo and FastAPI debug mode
+  log_level: INFO                  # DEBUG | INFO | WARNING | ERROR
+
+server:
+  # Browser origins that may call the API.
+  # Add prod origins here or override at deploy-time via CORS_ORIGINS env var.
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
+
+database:
+  port: 5432
+  ssl_mode: disable                # disable | require | verify-ca | verify-full
+  ssl_root_cert: ""                # Path to CA cert when ssl_mode is verify-ca or verify-full
+
+  pool:
+    size: 10                       # Base connections kept open at all times
+    max_overflow: 20               # Extra connections allowed above size (shed under peak load)
+    recycle_seconds: 1800          # Close and reopen connections older than N seconds
+    timeout_seconds: 30            # Seconds to wait for a free connection before raising an error
+
+circuit_breaker:
+  # Pybreaker settings for the Postgres health-check circuit.
+  fail_max: 5                      # Consecutive failures before opening the circuit
+  reset_timeout_seconds: 30        # Seconds before the circuit half-opens to probe recovery
+
+jwt:
+  algorithm: HS256
+  expiry_hours: 8
+
+rate_limit:
+  login_per_minute: 5              # Max login attempts per IP per minute

@@ -1,6 +1,6 @@
 # MTI Brain Frontend
 
-Production **AI-powered conversational data analytics** interface for MTI Brain. Users ask natural-language questions and receive streamed answers with data tables, charts, and follow-up suggestions in real time via Server-Sent Events.
+Production **AI-powered conversational data analytics** interface for MTI Brain. Users ask natural-language questions and receive streamed answers with data tables, charts, and follow-up suggestions in real time via Server-Sent Events.Fully responsive across desktop, tablet (iPad portrait/landscape), and mobile (iPhone SE through iPhone 16 Pro Max). Installable as a PWA.
 
 ## Tech Stack
 
@@ -9,13 +9,13 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 | Framework | Next.js 16 (App Router, standalone output) |
 | Language | TypeScript (strict mode) |
 | UI | React 19 with React Compiler (auto-memoization), shadcn/ui (Radix UI), Lucide icons |
-| Styling | Tailwind CSS 4 (PostCSS plugin — no `tailwind.config.*`; tokens live in `app/globals.css` with `@custom-variant dark`) |
-| State | Zustand (11 stores — see [State Management](#state-management)) |
+| Styling | Tailwind CSS 4 (PostCSS plugin — no `tailwind.config.*`; tokens live in `app/globals.css`) |
+| State | Zustand stores (see [State Management](#state-management)) |
 | Streaming | POST-based SSE via fetch + ReadableStream |
-| Auth | Username/password → JWT in localStorage. **Okta OIDC planned** (callback page stub at `app/auth/callback/page.tsx`) |
+| Auth | Username/password → JWT in localStorage. **Okta OIDC planned** |
 | Markdown | react-markdown + remark-gfm + rehype-highlight |
 | Charts | recharts |
-| Forms | react-hook-form + zod |
+| Mobile drawers | vaul (bottom-sheet animations) |
 | Notifications | Sonner |
 | Theme | next-themes |
 | Analytics | PostHog (gracefully no-ops when key is unset) + Vercel Analytics |
@@ -23,7 +23,7 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 | Animations | Framer Motion |
 | Virtualization | @tanstack/react-virtual |
 | Keyboard | react-hotkeys-hook (wrapped by `hooks/use-keyboard-shortcuts.ts`) |
-| PWA | Service worker (`public/sw.js`), install prompt with 3-day re-show logic |
+| PWA | Service worker (`public/sw.js`), install prompt, `display: standalone` manifest |
 | Containerization | Docker (multi-stage, non-root, standalone) |
 
 ## Project Structure
@@ -31,247 +31,244 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 ```
 frontend/
 ├── app/
-│   ├── page.tsx                         # Login page (username/password form)
-│   ├── layout.tsx                       # Root layout with providers + Vercel Analytics
-│   ├── globals.css                      # Global styles + Tailwind v4 theme tokens (@custom-variant dark)
+│   ├── page.tsx                         # Login page (username/password + no-flash auth check)
+│   ├── layout.tsx                       # Root layout — viewport meta, providers, PWA capture script
+│   ├── globals.css                      # Tailwind v4 theme tokens + mobile hardening
+│   │                                    #   (-webkit-tap-highlight-color, overscroll-behavior,
+│   │                                    #    .tap-44, .scroll-shadow-x, --vv-bottom-inset)
 │   ├── not-found.tsx                    # 404 page
-│   ├── auth/
-│   │   └── callback/
-│   │       └── page.tsx                 # Stub for upcoming Okta OIDC callback
-│   ├── (authenticated)/                 # Route group - all pages require JWT
-│   │   ├── layout.tsx                   # Auth guard + sidebar + topbar shell
-│   │   ├── new/                         # Welcome + new chat composer
-│   │   ├── chat/
-│   │   │   ├── page.tsx                 # Redirects to /new
-│   │   │   ├── [chatId]/page.tsx        # Chat detail with message stream
-│   │   │   └── layout.tsx
-│   │   ├── chats/page.tsx               # All chats list with search
-│   │   ├── starred/page.tsx             # Starred threads view
-│   │   ├── settings/page.tsx            # User preferences settings
-│   │   └── projects/
-│   │       ├── page.tsx                 # Projects grid
-│   │       └── [projectId]/page.tsx     # Project detail with threads
-│   └── api/                             # Legacy mock routes (unused, kept for reference; backend is FastAPI)
-│       ├── chat/route.ts
-│       ├── completions/route.ts
-│       └── thinking/route.ts
+│   ├── auth/callback/page.tsx           # Stub for upcoming Okta OIDC callback
+│   └── (authenticated)/                 # Route group — all pages require JWT
+│       ├── layout.tsx                   # Auth guard + responsive sidebar shell
+│       │                                #   Mobile: off-canvas Sheet via useIsMobile()
+│       │                                #   Tablet: CollapsedSidebar + overlay Sheet via useIsTablet()
+│       │                                #   Desktop: inline sidebar (280px or 48px collapsed)
+│       ├── new/                         # Welcome screen + NewChatComposer (centered)
+│       ├── chat/[chatId]/page.tsx       # Chat detail — messages, stream, visualViewport listener
+│       ├── chats/page.tsx               # All chats with search
+│       ├── starred/page.tsx             # Starred threads
+│       ├── settings/page.tsx            # User preferences (two-column desktop, stacked mobile)
+│       └── projects/
+│           ├── page.tsx                 # Projects grid
+│           └── [projectId]/page.tsx     # Project detail
 ├── components/
-│   ├── ui/                              # shadcn/ui primitives (button, dialog, tabs, …)
-│   ├── charts/                          # Chart helpers (theme module)
+│   ├── ui/                              # shadcn/ui primitives
+│   │   ├── responsive-dialog.tsx        # ResponsiveDialog — Dialog on desktop, vaul Drawer on mobile
+│   │   ├── sheet.tsx                    # Off-canvas panel (used for mobile/tablet sidebar)
+│   │   ├── drawer.tsx                   # vaul-based bottom drawer
+│   │   └── …                            # button, dialog, tabs, tooltip, etc.
 │   ├── messages/
-│   │   ├── about-panel.tsx              # Per-message metadata panel
-│   │   └── trust-strip.tsx              # Trust strip: source tables / freshness (backend-owned data)
-│   ├── sidebar.tsx                      # Thread list, project switcher, user menu
-│   ├── collapsed-sidebar.tsx            # Minimized sidebar (icons only)
-│   ├── topbar.tsx                       # Thread title, star, search trigger
-│   ├── chat-composer.tsx                # Message input with auto-grow textarea
-│   ├── new-chat-composer.tsx            # Centered composer for /new page
+│   │   ├── about-panel.tsx              # Per-message metadata side panel
+│   │   └── trust-strip.tsx              # Source tables / data freshness (backend-owned data)
+│   ├── sidebar.tsx                      # Thread list, project nav, user menu
+│   │                                    #   w-full md:w-[280px]; auto-closes on mobile nav
+│   ├── collapsed-sidebar.tsx            # Icon-only sidebar (48px); tablet expand → overlay sheet
+│   ├── topbar.tsx                       # Thread title, star, search trigger, hamburger (mobile/tablet)
+│   ├── chat-composer.tsx                # Message input — Deep Analysis toggle, safe-area pb,
+│   │                                    #   visualViewport keyboard avoidance, .tap-44 buttons
+│   ├── new-chat-composer.tsx            # Centered composer for /new — same Deep Analysis toggle,
+│   │                                    #   passes deepAnalysis to store via setPendingQuestion
 │   ├── message-list.tsx                 # Grouped messages with version branching
-│   ├── message-bubble.tsx               # Single message with actions (copy, edit, retry)
-│   ├── message-visualization.tsx        # Data viz container (chart + table + SQL)
-│   ├── message-skeleton.tsx             # Loading placeholder
-│   ├── markdown-renderer.tsx            # Markdown → JSX with code highlighting + copy
-│   ├── data-table.tsx                   # Query results table with pagination
+│   ├── message-bubble.tsx               # Single message — max-w-[92%] md:max-w-[80%] on mobile
+│   ├── message-visualization.tsx        # Chart + table + SQL — h-[260px] md:h-[340px] charts
+│   ├── data-table.tsx                   # Query results — max-h-[60vh], sticky first column,
+│   │                                    #   scroll-shadow-x, overscroll-x-contain, flex-wrap footer
 │   ├── follow-up-chips.tsx              # Suggested follow-up question buttons
 │   ├── thinking-words.tsx               # Reasoning / chain-of-thought display
-│   ├── feedback-widget.tsx              # Thumbs up/down + comment
+│   ├── feedback-widget.tsx              # Thumbs up/down + comment (DialogDescription for a11y)
 │   ├── welcome-state.tsx                # Welcome screen with suggestion chips
-│   ├── search-modal.tsx                 # Global search (Cmd+K, search-only — no Commands group)
-│   ├── slash-command-popover.tsx        # In-composer slash commands (/clear, /retry, …)
-│   ├── shortcuts-dialog.tsx             # Keyboard shortcuts help
-│   ├── create-project-dialog.tsx        # New project form
-│   ├── edit-project-dialog.tsx          # Edit project name/description
-│   ├── rename-dialog.tsx                # Rename thread dialog
-│   ├── move-to-project-dialog.tsx       # Move threads to project
-│   ├── bulk-action-bar.tsx              # Multi-select toolbar (delete, move)
-│   ├── project-context-menu.tsx         # Project right-click menu
-│   ├── thread-context-menu.tsx          # Thread right-click menu
-│   ├── agent-selector.tsx               # AI model selector
-│   ├── analytics-bridge.tsx             # PostHog identify + pageviews + service-worker registration
-│   ├── feature-pulse.tsx                # Dismissible "new feature" indicator
-│   ├── install-prompt.tsx               # PWA install prompt with 3-day re-show window
-│   ├── live-announcer.tsx               # ARIA live-region announcer (accessibility)
-│   ├── onboarding-tour.tsx              # First-run UI walkthrough
+│   ├── search-modal.tsx                 # Global search (Cmd+K) — ResponsiveDialog, max-h-[60vh] mobile
+│   ├── slash-command-popover.tsx        # In-composer slash commands — max-h-[40vh] mobile
+│   ├── shortcuts-dialog.tsx             # Keyboard shortcuts — ResponsiveDialog with sr-only description
+│   ├── create-project-dialog.tsx        # New project — ResponsiveDialog (Drawer on mobile)
+│   ├── edit-project-dialog.tsx          # Edit project — ResponsiveDialog
+│   ├── rename-dialog.tsx                # Rename thread — ResponsiveDialog
+│   ├── move-to-project-dialog.tsx       # Move threads — ResponsiveDialog, max-h-[40vh] list
+│   ├── bulk-action-bar.tsx              # Multi-select toolbar — flex-wrap for narrow screens
+│   ├── onboarding-tour.tsx              # First-run walkthrough — mobile-sized popover, skipIfMissing
+│   │                                    #   for sidebar steps (sidebar is in a closed Sheet on mobile)
+│   ├── install-prompt.tsx               # PWA install — full-width on phones, keyboard-aware bottom
+│   ├── credits-overlay.tsx              # Easter egg (Konami code) — max-h-[75vh] mobile
+│   ├── live-announcer.tsx               # ARIA live-region (sr-only, a11y)
 │   ├── error-boundary.tsx               # Error handling wrapper
-│   ├── providers.tsx                    # Theme + Tooltip + AnalyticsBridge providers
-│   ├── theme-provider.tsx               # next-themes wrapper
-│   └── credits-overlay.tsx              # Easter egg (Konami code)
+│   ├── providers.tsx                    # Theme + Tooltip + AnalyticsBridge + DensitySync
+│   └── analytics-bridge.tsx             # PostHog identify + pageviews + service-worker registration
 ├── hooks/
-│   ├── use-keyboard-shortcuts.ts        # Global keyboard shortcut handler (wraps react-hotkeys-hook)
-│   └── use-mobile.ts                    # Mobile viewport detection
+│   ├── use-keyboard-shortcuts.ts        # Global keyboard shortcut handler
+│   └── use-mobile.ts                    # useIsMobile() (<768px) + useIsTablet() (768–1023px)
 ├── lib/
 │   ├── auth.ts                          # Login (username/password → JWT), logout, token helpers
-│   ├── utils.ts                         # Utility functions (cn for classnames)
+│   ├── utils.ts                         # cn() for classnames
 │   ├── toast.ts                         # Toast wrapper (sonner)
-│   ├── analytics.ts                     # PostHog identify / pageview / event helpers
+│   ├── analytics.ts                     # PostHog helpers
 │   ├── api/
 │   │   ├── client.ts                    # Base fetch wrapper with auth headers + 401 redirect
+│   │   │                                #   API_BASE = NEXT_PUBLIC_API_URL/api/v1
 │   │   ├── sse.ts                       # POST-based SSE stream parser
 │   │   ├── threads.ts                   # Thread/chat API functions
-│   │   ├── projects.ts                  # Project API functions
-│   │   └── index.ts                     # API exports
-│   ├── store/                           # 11 Zustand stores (see State Management section)
-│   │   ├── threads.ts
-│   │   ├── projects.ts
-│   │   ├── auth.ts
-│   │   ├── ui.ts
-│   │   ├── preferences.ts
-│   │   ├── search.ts
-│   │   ├── agents.ts
-│   │   ├── thinking.ts
-│   │   ├── activity.ts                  # User activity tracking
-│   │   ├── drafts.ts                    # Composer drafts (Dexie / IndexedDB)
-│   │   └── install.ts                   # PWA install prompt state
-│   └── types/
-│       └── api.ts                       # TypeScript types for API responses
-├── public/
-│   ├── sw.js                            # Service worker for PWA install support
-│   └── …                                # Static assets (favicon, logos, icons)
-├── package.json
-├── tsconfig.json
-├── next.config.mjs                      # React Compiler + standalone output config
-├── postcss.config.mjs                   # @tailwindcss/postcss plugin
-├── components.json                      # shadcn/ui config (new-york style)
-├── Dockerfile
-├── .dockerignore
-├── .env.example
-└── .gitignore
+│   │   └── projects.ts                  # Project API functions
+│   └── store/                           # Zustand stores
+│       ├── threads.ts                   # Thread/message CRUD, streaming, pendingDeepAnalysis
+│       ├── ui.ts                        # mobileSidebarOpen, tabletSidebarOverlayOpen, sidebarOpen
+│       ├── preferences.ts               # responseTone, showSQL, autoShowCharts, etc.
+│       └── …                            # search, activity, drafts, install, projects, auth
+└── public/
+    ├── manifest.json                    # PWA manifest — display: standalone (no orientation lock)
+    ├── sw.js                            # Service worker
+    └── …                               # Logos, icons, MSFT sign-in button
 ```
 
-> **Note:** there is no `tailwind.config.*` file — Tailwind v4 with the PostCSS plugin reads tokens directly from `app/globals.css`. Likewise there's no `styles/` directory.
+## Responsive Layout
 
-## Routes
+Three breakpoints, each with a distinct sidebar behavior:
 
-### Public
+| Viewport | Width | Sidebar pattern |
+|----------|-------|-----------------|
+| **Mobile** | < 768px | Off-canvas Sheet (88% width). Hamburger in topbar opens it. Tap a row → navigates + sheet closes. |
+| **Tablet** | 768–1023px | `CollapsedSidebar` inline (48px icon bar). Tapping the expand button OR hamburger opens a 320px overlay Sheet — content never gets squeezed. |
+| **Desktop** | ≥ 1024px | Inline sidebar (280px expanded or 48px collapsed). Toggle with `Cmd+.`. |
 
-| Route | Purpose |
-|-------|---------|
-| `/` | Login page - username/password form, calls `POST /api/v1/auth/login` |
+### Key responsive utilities
 
-### Authenticated (require JWT)
+- **`.tap-44`** — Tailwind utility class (globals.css); sets `min-height: 44px; min-width: 44px` on phones only. Applied to topbar hamburger, composer send/stop buttons, and other interactive controls.
+- **`--vv-bottom-inset`** — CSS variable set by the chat page via the Visual Viewport API. Used by the composer to lift above the iOS soft keyboard.
+- **`scroll-shadow-x`** — Gradient utility for horizontally-scrolling containers (data tables, SQL code blocks) to signal more content off-screen.
+- **`ResponsiveDialog`** — `components/ui/responsive-dialog.tsx`. Renders as a Radix `Dialog` (centered modal) on desktop and as a `vaul` bottom-sheet `Drawer` on mobile. Used by all form dialogs.
 
-| Route | Purpose |
-|-------|---------|
-| `/new` | Welcome screen with suggestion chips and centered composer |
-| `/chat/[chatId]` | Chat detail - message stream, data tables, charts, follow-ups |
-| `/chats` | All chats list with search and pagination |
-| `/starred` | Starred threads view (filtered list) |
-| `/projects` | Projects grid with search |
-| `/projects/[projectId]` | Project detail with its threads |
-| `/settings` | User preferences (response tone, visibility toggles, max rows) |
+## Deep Analysis Toggle
 
-### Auth callback (placeholder)
+A per-question `BrainCircuit` toggle button sits in the bottom-left of both composers (`chat-composer.tsx` and `new-chat-composer.tsx`).
 
-| Route | Purpose |
-|-------|---------|
-| `/auth/callback` | Stub awaiting Okta OIDC wire-up — present so the redirect URL can be registered with the IdP early |
-
-## Authentication
-
-> **Okta OIDC migration is planned.** The `app/auth/callback/page.tsx` route is a stub today; the backend `MTIBrainUser` model already carries `okta_id`. Until that flow lands, the live path is the username/password flow described below.
-
-Direct username/password flow:
-
-1. User submits the login form on `/`
-2. Frontend calls `POST /api/v1/auth/login` with `{ username, password }`
-3. Backend validates credentials and returns a signed JWT + user object
-4. Frontend stores both in localStorage under `mti_brain_token` and `mti_brain_user`
-5. All subsequent API calls include `Authorization: Bearer <token>`
-6. On 401 response, token is cleared and user is redirected to `/`
-7. Logout clears localStorage and redirects to `/`
+- **On:** blue pill with border; sends `deep_analysis: true` with the request
+- **Off:** muted ghost button (default)
+- **Persistence:** stays on until the user manually clicks it off (does not reset between questions)
+- **Navigation:** when toggled on the `/new` page, the value is stored in `pendingDeepAnalysis` (thread store) and picked up by `ChatComposer` when it fires the first `askQuestion` — the toggle is also initialized to `pendingDeepAnalysis` on mount so it visually reflects the correct state
+- **Backend field:** `AskRequest.deep_analysis: bool` — default `false`
 
 ## State Management
 
-Eleven Zustand stores under `lib/store/`, each with a single responsibility:
+Zustand stores under `lib/store/`:
 
 | Store | Key State | Purpose |
 |-------|-----------|---------|
-| `useThreadStore` | threads, currentMessages, isStreaming, selectedThreadIds | Thread/message CRUD, SSE streaming, version branching, bulk operations |
-| `useProjectStore` | projects, currentProject | Project list + CRUD |
-| `useAuthStore` | user, token | Auth state, login/logout |
-| `useUIStore` | sidebarOpen | Sidebar open/close toggle |
-| `usePreferencesStore` | responseTone, showSQL, autoShowCharts, showFollowUps, showReasoning, maxResultRows | Per-user preferences, persisted to localStorage under `mti-brain-prefs:{userId}` |
-| `useSearchStore` | query, chatResults, projectResults | Global search with 200ms debounce |
-| `useAgentStore` | agents, currentAgentId | AI model selection |
-| `useThinkingStore` | enableDeepThinking, isThinking | Extended thinking toggle |
+| `useThreadStore` | `threads`, `currentMessages`, `isStreaming`, `pendingQuestion`, `pendingDeepAnalysis`, `selectedThreadIds` | Thread/message CRUD, SSE streaming, version branching, Deep Analysis flag, bulk operations |
+| `useProjectStore` | `projects`, `currentProject` | Project list + CRUD |
+| `useUIStore` | `sidebarOpen`, `mobileSidebarOpen`, `tabletSidebarOverlayOpen`, `shortcutsOpen`, `createProjectOpen` | Sidebar state for all three breakpoints, dialog visibility |
+| `usePreferencesStore` | `responseTone`, `showSQL`, `autoShowCharts`, `showFollowUps`, `showReasoning`, `maxResultRows`, `density` | Per-user preferences, persisted to localStorage under `mti-brain-prefs:{userId}` |
+| `useSearchStore` | `query`, `chatResults`, `projectResults` | Global search with 200 ms debounce |
 | `useActivityStore` | activity events | Per-user activity tracking (Activity framing — not gamification/streaks) |
 | `useDraftsStore` | composer drafts | Per-thread composer drafts persisted to IndexedDB via Dexie |
-| `useInstallStore` | install prompt visibility, last-shown timestamp | PWA install prompt state with 3-day re-show window |
-
-## SSE Streaming
-
-The frontend uses a custom POST-based SSE parser (since `EventSource` only supports GET). When a user asks a question, the thread store opens a streaming connection and dispatches events to update the UI in real time:
-
-| SSE Event | Handler | UI Update |
-|-----------|---------|-----------|
-| `timing.sync` | `onTimingSync` | Elapsed time sync during stream |
-| `title.generated` | `onTitleGenerated` | Set thread title in sidebar |
-| `node.start` | `onNodeStart` | Show pipeline step progress |
-| `reasoning.pending` | `onReasoningPending` | Render the "thinking" placeholder before tokens arrive |
-| `reasoning.delta` | `onReasoningDelta` | Append to reasoning accordion |
-| `answer.delta` | `onAnswerDelta` | Stream answer text into message bubble |
-| `validation` | `onValidation` | Show SQL validation status |
-| `execute.done` | `onExecuteDone` | Populate data table with query results |
-| `chart` | `onChart` | Render chart visualization |
-| `follow_ups` | `onFollowUps` | Show follow-up question chips |
-| `done` | `onDone` | Finalize message, stop loading indicators |
-| `stopped` | `onStopped` | Mark message as user-cancelled |
-| `error` | `onError` | Show error toast |
+| `useInstallStore` | install prompt visibility | PWA install prompt state with 3-day re-show window |
 
 ## User Preferences
 
-Persisted per-user in localStorage. Configurable via the settings modal:
+Configurable via `/settings`, persisted per-user in localStorage:
 
 | Preference | Default | Options |
 |-----------|---------|---------|
-| Response tone | `consultant` | `consultant`, `operator`, `brief` |
+| Response tone | `analyst` | `analyst`, `manager`, `director`, `executive` |
 | Show SQL | `true` | Toggle |
 | Auto-show charts | `true` | Toggle |
 | Show follow-ups | `true` | Toggle |
 | Show reasoning | `true` | Toggle |
 | Default data view | `table` | `sql`, `table` |
-| Max result rows | `100` | `10`-`500` |
+| Max result rows | `100` | `50`, `100`, `200`, `500` |
+| Density | `comfortable` | `comfortable`, `compact` |
+
+**Response tone definitions:**
+
+| Value | Label | Description |
+|-------|-------|-------------|
+| `analyst` | Analyst | Data-driven, detailed breakdowns |
+| `manager` | Manager | Actionable insights with context |
+| `director` | Director | Strategic summaries with key metrics |
+| `executive` | Executive | High-level, decision-ready answers |
+
+## SSE Streaming
+
+POST-based SSE (`lib/api/sse.ts`). `EventSource` only supports GET, so the app uses `fetch + ReadableStream`.
+
+| Event | UI update |
+|-------|-----------|
+| `timing.sync` | Elapsed time sync |
+| `title.generated` | Thread title in sidebar |
+| `node.start` | Pipeline step progress ring |
+| `reasoning.pending` | Thinking placeholder |
+| `reasoning.delta` | Append to reasoning accordion |
+| `answer.delta` | Stream answer text |
+| `validation` | SQL validation status |
+| `execute.done` | Populate data table |
+| `chart` | Render chart |
+| `follow_ups` | Follow-up chips |
+| `done` | Finalize message |
+| `stopped` | Mark as cancelled |
+| `error` | Error toast |
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| `Cmd/Ctrl+L` | New chat |
-| `Cmd/Ctrl+K` | Search conversations |
-| `Cmd/Ctrl+S` | Star / unstar thread |
-| `Cmd/Ctrl+Shift+C` | Copy last response |
+| `Cmd/Ctrl+K` or `/` | Search conversations |
+| `Cmd/Ctrl+Shift+O` | New chat |
 | `Cmd/Ctrl+Shift+P` | Open projects |
 | `Cmd/Ctrl+Shift+H` | Chat history |
-| `Cmd/Ctrl+/` | Show shortcuts menu |
+| `Cmd/Ctrl+.` | Toggle sidebar |
+| `Cmd/Ctrl+/` or `?` | Show shortcuts menu |
+| `Cmd/Ctrl+S` | Star / unstar thread |
+| `Cmd/Ctrl+Shift+C` | Copy last response |
 | `Enter` | Send message |
-| `Shift+Enter` | New line |
-| `Escape` | Close dialog |
+| `Shift+Enter` | New line in message |
+| `Esc` | Stop active stream |
+| `Cmd+1–9` | Jump to Nth recent thread |
+
+## Authentication
+
+1. User submits login form at `/`
+2. `POST /api/v1/auth/login` → JWT + user object
+3. Both stored in localStorage (`mti_brain_token`, `mti_brain_user`)
+4. All API calls include `Authorization: Bearer <token>`
+5. On 401, token is cleared and a `mti-brain:unauthenticated` custom event redirects to `/` via the router (no full-page reload)
+6. Login page returns `null` until client-side auth check completes — prevents one-frame flash of the form for already-authenticated users
+
+## Known Dev Issues
+
+**VS Code port forwarding (Windows):**
+VS Code and VS Code Insiders can auto-detect and forward port 8000 when uvicorn starts. This intercepts all `localhost:8000` connections before they reach the backend. Symptoms: `/docs` doesn't load, no uvicorn access logs.
+
+Fix options:
+1. `View → Ports` in VS Code → right-click port 8000 → **Stop Forwarding Port**
+2. Run uvicorn on a different port: `uvicorn app.main:app --port 8001 --reload` and set `NEXT_PUBLIC_API_URL=http://127.0.0.1:8001`
+
+**npm install after cloning:**
+The `package-lock.json` may have been generated with a wrong `next` version constraint. Delete it and run:
+```bash
+npm install --legacy-peer-deps
+```
+`--legacy-peer-deps` is needed because some Radix UI packages have peer dependency declarations for older React versions that don't match React 19 (they work fine at runtime).
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 20+ and npm (or pnpm)
+- Node.js 20+ and npm
 
 ### Setup
 
-1. **Install dependencies:**
-   ```bash
-   cd quest/frontend
-   npm install
-   ```
+```bash
+cd quest/frontend
 
-2. **Configure environment:**
-   ```bash
-   cp .env.example .env
-   # Edit .env - at minimum set NEXT_PUBLIC_API_URL to point at the backend
-   ```
+# Install dependencies
+npm install --legacy-peer-deps
 
-3. **Start development server:**
-   ```bash
-   npm run dev
-   # Open http://localhost:3000
-   ```
+# Configure environment
+cp .env.example .env
+# .env.example already sets NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+# If VS Code intercepts port 8000, run the backend on --port 8001 and change the value accordingly
+
+# Start development server
+npm run dev
+# Open http://localhost:3000
+```
 
 ### Docker
 
@@ -280,30 +277,25 @@ docker build -t mti-brain-frontend .
 docker run -p 3000:3000 mti-brain-frontend
 ```
 
-The container runs as a non-root user (`nextjs`), includes a health check (`wget` to port 3000 every 30s), uses the Next.js standalone output, and limits Node.js memory to 256 MB.
+The container: runs as non-root user (`nextjs`), health-checks port 3000 every 30 s, uses Next.js standalone output, limits Node.js to 256 MB.
 
 ## Environment Variables
 
-Variables prefixed `NEXT_PUBLIC_` are embedded at build time and exposed to the browser.
+`NEXT_PUBLIC_*` variables are embedded at **build time** and exposed to the browser.
 
 ### Required
 
 | Variable | Description |
 |----------|-------------|
-| `NEXT_PUBLIC_API_URL` | FastAPI backend base URL (e.g., `http://localhost:8000`) |
+| `NEXT_PUBLIC_API_URL` | FastAPI backend base URL. Default: `http://127.0.0.1:8000`. On Windows use `127.0.0.1` not `localhost` (see Known Dev Issues). |
 
 ### Optional
 
 | Variable | Description |
 |----------|-------------|
-| `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project key. When unset, `lib/analytics.ts` no-ops and `AnalyticsBridge` skips identify/pageview calls — analytics are entirely optional. |
-| `NEXT_PUBLIC_POSTHOG_HOST` | PostHog ingest host. Defaults to PostHog Cloud when unset. |
-
-### Dev-only
-
-| Variable | Description |
-|----------|-------------|
-| `NEXT_DEV_ORIGINS` | Comma-separated extra origins for cross-machine HMR. Only needed when running `next dev` inside Docker or behind an SSH tunnel. |
+| `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project key. When unset, analytics no-ops entirely. |
+| `NEXT_PUBLIC_POSTHOG_HOST` | PostHog ingest host. Defaults to PostHog Cloud. |
+| `NEXT_DEV_ORIGINS` | Comma-separated extra origins for cross-machine HMR (SSH tunnels, Docker). |
 
 ## Scripts
 
@@ -313,3 +305,16 @@ Variables prefixed `NEXT_PUBLIC_` are embedded at build time and exposed to the 
 | `npm run build` | Build for production (standalone output) |
 | `npm run start` | Start production server |
 | `npm run lint` | Run ESLint |
+
+---
+
+## Related Documentation
+
+| Component | README |
+|-----------|--------|
+| Root (architecture + quick start) | [../README.md](../README.md) |
+| Backend (FastAPI) | [../backend/README.md](../backend/README.md) |
+| Database (PostgreSQL + PgBouncer) | [../database/README.md](../database/README.md) |
+| Deployment (AWS CodeDeploy) | [../deploy/README.md](../deploy/README.md) |
+Docker or behind an SSH tunnel. |
+

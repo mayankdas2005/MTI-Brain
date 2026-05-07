@@ -175,3 +175,14 @@ To also remove volumes:
 ```bash
 docker compose down -v
 ```
+
+---
+
+## Related Documentation
+
+| Component | README |
+|-----------|--------|
+| Root (architecture + quick start) | [../README.md](../README.md) |
+| Backend (FastAPI) | [../backend/README.md](../backend/README.md) |
+| Frontend (Next.js) | [../frontend/README.md](../frontend/README.md) |
+| Deployment (AWS CodeDeploy) | [../deploy/README.md](../deploy/README.md) |

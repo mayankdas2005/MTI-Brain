@@ -1,8 +1,8 @@
-﻿# MTI Brain
+# MTI Brain
 
-**MTI Brain** is an AI-powered conversational data analytics platform. Users ask natural-language questions and receive structured answers with data tables, charts, and follow-up suggestions streamed in real time via Server-Sent Events.
+**MTI Brain** is an AI-powered conversational data analytics platform for enterprise treasury intelligence. Users ask natural-language questions and receive structured answers with data tables, charts, and follow-up suggestions streamed in real time via Server-Sent Events.
 
-Built on a FastAPI backend, Next.js frontend, and a PostgreSQL data layer with pgvector for semantic search.
+Built on a FastAPI backend, Next.js 16 frontend, and a PostgreSQL data layer with pgvector for semantic search. Fully responsive across desktop, tablet (iPad), and mobile (iPhone).
 
 ## Architecture
 
@@ -45,15 +45,18 @@ The frontend authenticates via username/password, receives a JWT from the backen
 
 ## Features
 
-- **Conversation Management** - threads, projects, starring, renaming, bulk operations
-- **Real-Time Streaming** - SSE-based streaming of answers and pipeline progress
-- **JWT Authentication** - username/password login with 8-hour JWT session tokens and per-user data isolation
-- **Smart Search** - full-text (tsvector), fuzzy (trigram), and phonetic (dmetaphone) search over threads and messages
-- **Feedback Loop** - thumbs-up/down feedback with pgvector embeddings for future retrieval-augmented generation
-- **Data Visualization** - auto-generated charts (recharts), paginated data tables, SQL display
-- **User Preferences** - per-user response tone, SQL/chart/reasoning visibility, persisted to localStorage
-- **Keyboard Shortcuts** - power-user shortcuts for navigation, starring, search, copy, and more
-- **Circuit Breakers** - resilient external service calls with graceful degradation
+- **Conversation Management** — threads, projects, starring, renaming, bulk operations
+- **Real-Time Streaming** — SSE-based streaming of answers and pipeline progress
+- **Deep Analysis** — per-question toggle for extended multi-step reasoning (slower but more thorough); persists until the user turns it off
+- **JWT Authentication** — username/password login with 8-hour JWT session tokens and per-user data isolation
+- **Smart Search** — full-text (tsvector), fuzzy (trigram), and phonetic (dmetaphone) search over threads and messages
+- **Feedback Loop** — thumbs-up/down feedback with pgvector embeddings for future retrieval-augmented generation
+- **Data Visualization** — auto-generated charts (recharts), paginated data tables with sticky first column, SQL display
+- **User Preferences** — per-user response tone (`analyst`, `manager`, `director`, `executive`), SQL/chart/reasoning visibility, persisted to localStorage
+- **Fully Responsive** — mobile off-canvas sidebar, tablet icon-rail + overlay panel, desktop inline sidebar; safe-area-inset support for iOS
+- **Keyboard Shortcuts** — power-user shortcuts for navigation, starring, search, copy, and more
+- **PWA** — installable as a standalone app (Add to Home Screen on iOS/Android)
+- **Circuit Breakers** — resilient external service calls with graceful degradation
 
 ## Project Structure
 
@@ -62,9 +65,9 @@ quest/
 ├── docker-compose.yml   # Root orchestration: backend + frontend + nginx (joins external db_net)
 ├── appspec.yml          # AWS CodeDeploy spec
 ├── nginx/               # Reverse-proxy config (TLS termination, /api routing)
-├── deploy/              # Deployment configs (see deploy/README.md)
+├── deploy/              # Deployment lifecycle hooks (see deploy/README.md)
 │
-├── backend/      # FastAPI backend (see backend/README.md)
+├── backend/             # FastAPI backend (see backend/README.md)
 │   ├── app/
 │   │   ├── main.py       # FastAPI entry point, lifespan, middleware wiring
 │   │   ├── api/          # Route handlers: health, auth, chat, projects
@@ -73,21 +76,20 @@ quest/
 │   │   ├── models/       # ORM: User, Project, Thread, Message, Feedback, ExecutionLog
 │   │   ├── schemas/      # Pydantic request/response schemas
 │   │   └── services/     # Auth, conversation CRUD, feedback, health, sql_analysis (trust strip)
-│   ├── alembic/          # Single baseline migration (creates extensions + mti_brain_* tables + triggers)
-│   ├── scripts/          # Utility scripts
-│   ├── Dockerfile        # Multi-stage Python 3.12 build (includes MSSQL ODBC drivers)
+│   ├── alembic/          # Single baseline migration (extensions + mti_brain_* tables + triggers)
+│   ├── Dockerfile        # Multi-stage Python 3.12 build
 │   └── .env.example
 │
-├── frontend/     # Next.js 16 application (see frontend/README.md)
+├── frontend/            # Next.js 16 application (see frontend/README.md)
 │   ├── app/              # App Router (login, /new, /chat, /chats, /projects, /starred, /settings)
-│   ├── components/       # 40+ React components (sidebar, composer, messages, dialogs, charts, trust strip, install prompt)
-│   ├── lib/              # API client, SSE parser, 11 Zustand stores, auth, analytics, types
-│   ├── hooks/            # Keyboard shortcuts, mobile detection
-│   ├── public/           # Static assets + service worker (sw.js) for PWA install
+│   ├── components/       # 40+ React components
+│   ├── lib/              # API client, SSE parser, Zustand stores, auth, analytics
+│   ├── hooks/            # Keyboard shortcuts, mobile/tablet viewport detection
+│   ├── public/           # Static assets + service worker for PWA
 │   ├── Dockerfile        # Multi-stage Node 20 build (standalone output)
 │   └── .env.example
 │
-└── database/     # Data layer Docker Compose (see database/README.md)
+└── database/            # Data layer Docker Compose (see database/README.md)
     ├── docker-compose.yml  # PostgreSQL 18 + PgBouncer (publishes db_net)
     ├── docker_volume/      # Persistent data (git-ignored)
     └── .env.example
@@ -98,7 +100,7 @@ quest/
 | Layer | Technology |
 |-------|-----------|
 | Frontend | Next.js 16, React 19 (with React Compiler), TypeScript, Tailwind CSS 4, shadcn/ui, Zustand |
-| Frontend extras | PostHog analytics, Dexie (IndexedDB) for composer drafts, Framer Motion, @tanstack/react-virtual, react-hotkeys-hook |
+| Frontend extras | PostHog analytics, Dexie (IndexedDB) for composer drafts, Framer Motion, @tanstack/react-virtual, vaul, react-hotkeys-hook |
 | Backend | FastAPI + Gunicorn + Uvicorn (Python 3.12) |
 | Auth | Username/password → JWT (PyJWT, HS256, 8-hour expiry). **Okta OIDC migration planned** |
 | App Database | PostgreSQL 18 + pgvector + SQLAlchemy (async) + Alembic |
@@ -111,7 +113,7 @@ quest/
 | Reverse proxy | nginx 1.27-alpine (TLS termination, port 80/443) |
 | Containerization | Docker + Docker Compose (root + database compose files) |
 
-## API
+## API Summary
 
 All endpoints except `/health` and `POST /api/v1/auth/login` require `Authorization: Bearer <token>`.
 
@@ -135,7 +137,7 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require `Authorizat
 | PATCH | `/{thread_id}/star` | Toggle star |
 | PATCH | `/{thread_id}/rename` | Rename thread |
 | PATCH | `/{thread_id}/move` | Move thread to a project |
-| POST | `/{thread_id}/ask` | Ask a question (SSE streaming) |
+| POST | `/{thread_id}/ask` | Ask a question — accepts `deep_analysis: bool` (SSE streaming) |
 | POST | `/{thread_id}/retry` | Retry last response (SSE streaming) |
 | POST | `/{thread_id}/edit` | Edit last question (SSE streaming) |
 | POST | `/{thread_id}/stop` | Stop active stream |
@@ -152,112 +154,63 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require `Authorizat
 | DELETE | `/{project_id}` | Delete project |
 | PATCH | `/{project_id}/star` | Toggle project star |
 
-### Health
-
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/health` | Postgres health check (200 healthy / 503 unhealthy) |
-
 ## Prerequisites
 
 - Docker and Docker Compose
-- (Path B only) Python 3.12+, Node.js 20+, and PostgreSQL 15+ already running with `pgvector`, `pg_trgm`, `fuzzystrmatch` available to the migrating role
+- (Manual mode only) Python 3.12+, Node.js 20+, PostgreSQL 15+ with `pgvector`, `pg_trgm`, `fuzzystrmatch`
 
 ## Getting Started
 
-There are two operating modes — pick one.
-
 ### Path A — Full Docker Compose (recommended)
-
-This brings up everything the app needs: nginx, frontend, backend, PgBouncer, and Postgres. The root [docker-compose.yml](docker-compose.yml) covers nginx + frontend + backend; [database/docker-compose.yml](database/docker-compose.yml) covers PgBouncer + Postgres.
 
 ```bash
 git clone <repo-url>
 cd quest
 
-# 1. Database layer (PgBouncer + Postgres on the shared db_net network)
+# 1. Database layer
 cd database
 cp .env.example .env
 # Edit .env: POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
 docker compose up -d
 cd ..
 
-# 2. Root .env for backend secrets and orchestration
+# 2. Root .env
 cp backend/.env.example .env
-# Edit .env: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, JWT_SECRET (mandatory)
-# (Note: POSTGRES_HOST is overridden to "pgbouncer" by docker-compose.yml)
+# Edit .env: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, JWT_SECRET
 
 # 3. Bring up nginx + frontend + backend
 docker compose up -d
 
-# 4. Run migrations once (Path A doesn't run them automatically on container start)
+# 4. Run migrations
 docker compose run --rm backend alembic upgrade head
 ```
 
-Open `http://localhost` (nginx, port 80) and log in with `admin` / `admin123`.
+Open `http://localhost` and log in with `admin` / `admin123`.
 
 > **Security:** Default credentials are hardcoded for development only. Change them before any shared or production deployment.
 
-### Path B — Manual / active development
-
-Use this when you want hot-reload on the backend or are iterating fast on the frontend.
-
-#### 1. Start the database layer
+### Path B — Manual development
 
 ```bash
+# 1. Database
 docker network create db_net
-cd database
-cp .env.example .env
-# Edit .env: set POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
-docker compose up -d
-cd ..
-```
+cd database && cp .env.example .env && docker compose up -d && cd ..
 
-Wait for both services to report `healthy` (`docker compose ps`).
-
-#### 2. Configure the backend
-
-```bash
+# 2. Backend
 cp backend/.env.example backend/.env
-# Edit backend/.env (required):
-#   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_DB, JWT_SECRET
-#   CORS_ORIGINS must include the frontend origin (e.g. ["http://localhost:3000"])
-```
-
-#### 3. Configure the frontend
-
-```bash
-cp frontend/.env.example frontend/.env
-# Edit frontend/.env: NEXT_PUBLIC_API_URL (e.g. http://localhost:8000)
-```
-
-#### 4. Run database migrations
-
-```bash
-cd backend
-pip install -r requirements.txt
-alembic upgrade head
-cd ..
-```
-
-The single baseline migration ([backend/alembic/versions/0001_baseline.py](backend/alembic/versions/0001_baseline.py)) installs `pg_trgm`, `fuzzystrmatch`, and `vector` extensions, creates all `mti_brain_*` tables, and installs the `search_vector` triggers. The migrating role needs `CREATE EXTENSION` privilege; if it doesn't, install the three extensions once as a superuser before running alembic — the migration's `IF NOT EXISTS` guards make this safe.
-
-#### 5. Start the services
-
-**Backend:**
-```bash
-cd backend
+# Set POSTGRES_*, JWT_SECRET, CORS_ORIGINS=["http://localhost:3000"]
+cd backend && pip install -r requirements.txt && alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 3. Frontend (separate terminal)
+cp frontend/.env.example frontend/.env
+# Set NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+cd frontend && npm install --legacy-peer-deps && npm run dev
 ```
 
-**Frontend (separate terminal):**
-```bash
-cd frontend
-npm install
-npm run dev
-```
+Open `http://localhost:3000` and log in with `admin` / `admin123`.
 
-Open `http://localhost:3000` and log in with username `admin` / password `admin123`.
+> **Windows dev note:** Use `127.0.0.1:8000` not `localhost:8000` in `NEXT_PUBLIC_API_URL`. VS Code / VS Code Insiders may intercept `localhost:8000` via its port-forwarding feature, silently blocking all backend traffic. Check VS Code's Ports panel (`View → Ports`) and stop any forwarding on port 8000 if it appears. Alternatively run the backend on `--port 8001` and update the env accordingly.
 
 ### Verify
 
@@ -270,8 +223,8 @@ curl http://localhost:8000/health
 
 | Service | Port | Stack | Description |
 |---------|------|-------|-------------|
-| **nginx** | 80 / 443 | root `nginx/` | Reverse proxy + TLS termination (Path A only) |
-| **Frontend** | 3000 | `frontend/` | Next.js UI - login, chat, projects, settings, starred |
+| **nginx** | 80 / 443 | `nginx/` | Reverse proxy + TLS termination (Path A only) |
+| **Frontend** | 3000 | `frontend/` | Next.js UI — login, chat, projects, settings, starred |
 | **Backend** | 8000 | `backend/` | FastAPI REST + SSE streaming |
 | **PgBouncer** | 5432 | `database/` | Connection pooler (transaction mode, SCRAM-SHA-256) |
 | **PostgreSQL** | internal | `database/` | App database (pgvector, conversations, users) |
@@ -280,15 +233,17 @@ curl http://localhost:8000/health
 
 See each component for the full variable reference:
 
-- [backend/.env.example](backend/.env.example) - App DB connection, JWT secret, CORS, connection pool, circuit breaker, SSL
-- [database/.env.example](database/.env.example) - PostgreSQL credentials, PgBouncer tuning
-- [frontend/.env.example](frontend/.env.example) - Backend API URL, dev HMR origins, optional PostHog keys
+- [backend/.env.example](backend/.env.example) — App DB connection, JWT secret, CORS, pool, circuit breaker, SSL
+- [database/.env.example](database/.env.example) — PostgreSQL credentials, PgBouncer tuning
+- [frontend/.env.example](frontend/.env.example) — Backend API URL, dev HMR origins, optional PostHog keys
 
-For Path A, the root [docker-compose.yml](docker-compose.yml) also reads `.env` at the repo root for orchestration overrides (`EC2_PUBLIC_IP`, `ENVIRONMENT`, `LOG_LEVEL`, etc.).
+---
 
-## Component READMEs
+## Related Documentation
 
-- [backend/README.md](backend/README.md) - API endpoints, database models, middleware, migrations, Dockerfile, env vars
-- [frontend/README.md](frontend/README.md) - Routes, components, state management, auth flow, SSE streaming, preferences, keyboard shortcuts
-- [database/README.md](database/README.md) - PostgreSQL tuning, PgBouncer config, volumes, health checks, resource limits
-- [deploy/README.md](deploy/README.md) - Deployment configs (CodeDeploy / EC2)
+| Component | README |
+|-----------|--------|
+| Backend (FastAPI) | [backend/README.md](backend/README.md) |
+| Frontend (Next.js) | [frontend/README.md](frontend/README.md) |
+| Database (PostgreSQL + PgBouncer) | [database/README.md](database/README.md) |
+| Deployment (AWS CodeDeploy) | [deploy/README.md](deploy/README.md) |

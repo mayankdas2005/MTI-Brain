@@ -103,6 +103,13 @@ Because images are built on the host (no immutable image tags), rollback re-runs
 
 For a single-host environment this folder is sufficient. For multi-instance or fast rollback, add a CodeBuild stage that pushes to ECR and replace `docker compose build` here with `docker compose pull`.
 
+## Environment Notes
+
+The production `.env` must match the updated values from recent development:
+
+- `CORS_ORIGINS` — include both the nginx-proxied origin and any direct frontend origin
+- `NEXT_PUBLIC_API_URL` — in the Docker Compose / nginx setup this is typically empty (requests go through nginx on the same origin); see `frontend/.env.example`
+
 ## Files
 
 ```
@@ -114,3 +121,14 @@ deploy/
 ├── validate_service.sh    # Poll backend /health + frontend root for readiness
 └── README.md              # This file
 ```
+
+---
+
+## Related Documentation
+
+| Component | README |
+|-----------|--------|
+| Root (architecture + quick start) | [../README.md](../README.md) |
+| Backend (FastAPI) | [../backend/README.md](../backend/README.md) |
+| Frontend (Next.js) | [../frontend/README.md](../frontend/README.md) |
+| Database (PostgreSQL + PgBouncer) | [../database/README.md](../database/README.md) |
