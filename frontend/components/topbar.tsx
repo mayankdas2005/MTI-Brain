@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { usePathname } from 'next/navigation';
-import { Star, Search, FileDown } from 'lucide-react';
+import { Star, Search, FileDown, Menu } from 'lucide-react';
 import { exportThread } from '@/lib/utils/export';
 import { exportChartAsCanvas } from '@/components/message-visualization';
 import { Button } from '@/components/ui/button';
@@ -16,9 +16,19 @@ import {
 import { useThreadStore } from '@/lib/store/threads';
 import { useSearchStore } from '@/lib/store/search';
 import { useActivityStore } from '@/lib/store/activity';
+import { useUIStore } from '@/lib/store/ui';
+import { useIsMobile, useIsTablet } from '@/hooks/use-mobile';
 
 export function Topbar() {
   const openSearch = useSearchStore((s) => s.openModal);
+  const isMobile = useIsMobile();
+  const isTablet = useIsTablet();
+  const setMobileSidebarOpen = useUIStore((s) => s.setMobileSidebarOpen);
+  const setTabletOverlayOpen = useUIStore((s) => s.setTabletSidebarOverlayOpen);
+  const handleNavToggle = () => {
+    if (isMobile) setMobileSidebarOpen(true);
+    else if (isTablet) setTabletOverlayOpen(true);
+  };
   // The thread chrome (title + star + export) only belongs in the topbar
   // while the user is actually viewing a chat. Without this gate the
   // last-viewed thread's title leaks onto /chats, /starred, /settings, etc.
@@ -91,14 +101,30 @@ export function Topbar() {
         backgroundColor: 'var(--header)',
         borderBottom: '1px solid var(--header-control-border)',
         boxShadow: '0 1px 0 0 var(--header-control-border), 0 2px 12px -2px rgba(0,0,0,0.18)',
+        paddingTop: 'env(safe-area-inset-top)',
       }}
     >
-      {/* Left spacer */}
-      <div className="flex items-center gap-1" />
+      {/* Left: hamburger on phone/tablet, spacer on desktop */}
+      <div className="flex items-center gap-1">
+        {(isMobile || isTablet) && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleNavToggle}
+                aria-label="Open navigation"
+                className="tap-44 flex items-center justify-center h-10 w-10 rounded-lg text-[var(--header-foreground)] hover:bg-[var(--header-control-bg-hover)] active:scale-[0.92] transition-spring"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Open navigation</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
 
       {/* Center: Thread title */}
       {showThreadChrome && currentThreadTitle ? (
-        <div className="flex items-center gap-2 min-w-0 max-w-md">
+        <div className="flex items-center gap-2 min-w-0 max-w-[160px] sm:max-w-xs md:max-w-md">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -132,7 +158,7 @@ export function Topbar() {
       )}
 
       {/* Right: Export + Search */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1 sm:gap-2">
         {showThreadChrome && currentMessages.length > 0 && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -154,7 +180,7 @@ export function Topbar() {
               onClick={openSearch}
               aria-label="Search"
               data-onboarding="cmd-k"
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
+              className="tap-44 flex items-center gap-2 min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
             >
               <Search className="w-3.5 h-3.5" aria-hidden />
               <span className="hidden sm:inline">Search</span>

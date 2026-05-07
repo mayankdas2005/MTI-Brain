@@ -4,7 +4,16 @@ interface UIStore {
   sidebarOpen: boolean;
   toggleSidebar: () => void;
   setSidebarOpen: (open: boolean) => void;
-  // Shortcuts dialog visibility — lifted into the store so the cmd+K
+  // Mobile off-canvas sheet (independent of desktop `sidebarOpen` so the
+  // two viewports don't clobber each other's state).
+  mobileSidebarOpen: boolean;
+  setMobileSidebarOpen: (open: boolean) => void;
+  toggleMobileSidebar: () => void;
+  // Tablet overlay sheet - when the user expands the icon rail at md→lg,
+  // the full sidebar slides over the content instead of squeezing it.
+  tabletSidebarOverlayOpen: boolean;
+  setTabletSidebarOverlayOpen: (open: boolean) => void;
+  // Shortcuts dialog visibility - lifted into the store so the cmd+K
   // palette and keyboard shortcuts can both open it without prop-drilling.
   shortcutsOpen: boolean;
   setShortcutsOpen: (open: boolean) => void;
@@ -12,7 +21,7 @@ interface UIStore {
   // Create-project dialog visibility.
   createProjectOpen: boolean;
   setCreateProjectOpen: (open: boolean) => void;
-  // Onboarding tour replay flag — set true from the user menu to re-open
+  // Onboarding tour replay flag - set true from the user menu to re-open
   // the guided tour after the user has dismissed it once.
   tourReplay: boolean;
   startTourReplay: () => void;
@@ -23,6 +32,11 @@ export const useUIStore = create<UIStore>((set) => ({
   sidebarOpen: true,
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  mobileSidebarOpen: false,
+  setMobileSidebarOpen: (open) => set({ mobileSidebarOpen: open }),
+  toggleMobileSidebar: () => set((state) => ({ mobileSidebarOpen: !state.mobileSidebarOpen })),
+  tabletSidebarOverlayOpen: false,
+  setTabletSidebarOverlayOpen: (open) => set({ tabletSidebarOverlayOpen: open }),
   shortcutsOpen: false,
   setShortcutsOpen: (open) => set({ shortcutsOpen: open }),
   toggleShortcuts: () => set((state) => ({ shortcutsOpen: !state.shortcutsOpen })),

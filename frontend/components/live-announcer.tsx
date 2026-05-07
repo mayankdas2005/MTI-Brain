@@ -8,7 +8,7 @@ import { useThreadStore } from '@/lib/store/threads';
  *
  * Why a global announcer rather than per-step aria-live: per-step narration
  * would overwhelm SR users (every reasoning chunk would interrupt). Instead
- * we announce only the high-signal transition — "Answer ready" when a
+ * we announce only the high-signal transition - "Answer ready" when a
  * stream finishes. The visible UI keeps its own micro-states; this is
  * purely the audible companion.
  *

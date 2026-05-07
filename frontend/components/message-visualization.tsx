@@ -71,7 +71,7 @@ interface MessageVisualizationProps {
   columns?: string[];
   rows?: unknown[][];
   chartSpec?: Record<string, unknown>;
-  /** Conversation id of the assistant message — used by the PDF export to
+  /** Conversation id of the assistant message - used by the PDF export to
    *  locate this rendered chart in the DOM and capture it as an image. */
   conversationId?: string;
 }
@@ -189,7 +189,7 @@ function BarLineAreaChart({ spec }: { spec: BarLineAreaSpec }) {
             Reset
           </button>
         )}
-        <ChartContainer config={config} className="h-[340px] w-full">
+        <ChartContainer config={config} className="h-[260px] md:h-[340px] w-full">
           <ChartComponent
             data={dataSlice}
             margin={{ top: 10, right: 24, bottom: 14, left: spec.y_label ? 20 : 4 }}
@@ -267,7 +267,7 @@ function BarLineAreaChart({ spec }: { spec: BarLineAreaSpec }) {
       {spec.x_label && (
         <p data-x-label className="text-center text-[11px] text-muted-foreground mt-1">{spec.x_label}</p>
       )}
-      <div className="flex items-center justify-center gap-4 mt-1">
+      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 mt-1">
         {spec.y_keys.map((field, i) => (
           <div key={field} data-legend-item className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <div className="w-2 h-2 rounded-[2px]" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} />

@@ -7,7 +7,7 @@ const STORAGE_KEY = 'mti-brain:feature-seen';
 /**
  * Wraps a child with a small breathing dot that signals "new feature here".
  * The dot retires permanently the first time the child is interacted with
- * (click or focus inside) — interaction is the signal that the user has
+ * (click or focus inside) - interaction is the signal that the user has
  * discovered the feature, no need to keep nagging.
  *
  * State is per-feature-id, persisted to localStorage. Shared across tabs
@@ -38,7 +38,7 @@ function writeSeen(seen: Record<string, true>): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(seen));
   } catch {
-    // Quota / private mode — nothing to do; the pulse will reappear next mount.
+    // Quota / private mode - nothing to do; the pulse will reappear next mount.
   }
 }
 

@@ -23,7 +23,7 @@ export async function clearAllLocalData(): Promise<void> {
     // ignore
   }
 
-  // IndexedDB — list every DB this origin has and delete each one.
+  // IndexedDB - list every DB this origin has and delete each one.
   // `databases()` is supported by Chrome/Edge/Firefox; Safari (older) may
   // omit it, in which case we delete the known ones explicitly.
   try {
@@ -55,7 +55,7 @@ export async function clearAllLocalData(): Promise<void> {
     // ignore
   }
 
-  // Cache Storage — service-worker caches (mti-brain-vN, etc).
+  // Cache Storage - service-worker caches (mti-brain-vN, etc).
   try {
     if ('caches' in window) {
       const keys = await caches.keys();

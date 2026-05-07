@@ -63,7 +63,7 @@ export function CreditsOverlay({ open, onClose }: CreditsOverlayProps) {
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
 
       {/* Credits card */}
-      <div className="relative w-full max-w-lg mx-4 bg-[#0d0d0d] rounded-xl overflow-hidden border border-white/10 shadow-2xl">
+      <div className="relative w-full max-w-lg mx-3 sm:mx-4 bg-[#0d0d0d] rounded-xl overflow-hidden border border-white/10 shadow-2xl">
         {/* Scanline effect */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           <div className="absolute w-full h-0.5 bg-amber-400/5 animate-[scan_4s_linear_infinite]" />
@@ -89,7 +89,7 @@ export function CreditsOverlay({ open, onClose }: CreditsOverlayProps) {
         </div>
 
         {/* Body */}
-        <div className="relative px-5 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+        <div className="relative px-5 py-5 space-y-5 max-h-[75vh] md:max-h-[60vh] overflow-y-auto">
           {/* Hero card */}
           <div className="flex items-center gap-4 bg-amber-400/5 border border-amber-400/20 rounded-lg p-4 animate-fade-up">
             <div className="w-12 h-12 rounded-full bg-amber-400 flex items-center justify-center shrink-0">

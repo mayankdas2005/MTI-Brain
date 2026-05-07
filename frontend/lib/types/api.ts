@@ -31,7 +31,7 @@ export interface MessageMetadata {
   interrupted?: boolean;
   pipeline_steps?: PipelineStep[];
   /** Trust-strip fields. Populated by the backend after executing the
-   *  Snowflake query — frontend never parses SQL. Order matters: the
+   *  Snowflake query - frontend never parses SQL. Order matters: the
    *  primary fact table should come first; the TrustStrip shows the
    *  first table inline and rolls up the remainder behind "+N more".
    *

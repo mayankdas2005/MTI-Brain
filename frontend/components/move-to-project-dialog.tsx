@@ -2,12 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTitle,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+} from '@/components/ui/responsive-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -87,13 +88,14 @@ export function MoveToProjectDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
-        <DialogHeader>
-          <DialogTitle>
+    <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
+      <ResponsiveDialogContent className="sm:max-w-md p-4 md:p-6 space-y-3">
+        <ResponsiveDialogHeader>
+          <ResponsiveDialogTitle>
             Move {isBulk ? `${threadIds.length} conversations` : 'conversation'} to project
-          </DialogTitle>
-        </DialogHeader>
+          </ResponsiveDialogTitle>
+          <ResponsiveDialogDescription className="sr-only">Select a project to move the conversation into</ResponsiveDialogDescription>
+        </ResponsiveDialogHeader>
 
         <Input
           value={search}
@@ -102,7 +104,7 @@ export function MoveToProjectDialog({
           className="mb-2"
         />
 
-        <ScrollArea className="max-h-60">
+        <ScrollArea className="max-h-[40vh] md:max-h-60">
           <div className="space-y-1">
             {filtered.map((p) => (
               <button
@@ -123,7 +125,7 @@ export function MoveToProjectDialog({
         </ScrollArea>
 
         {creating ? (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
@@ -146,15 +148,15 @@ export function MoveToProjectDialog({
           </Button>
         )}
 
-        <DialogFooter>
+        <ResponsiveDialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleMove} disabled={saving || !hasSelection}>
             {saving ? 'Moving...' : 'Move'}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveDialogFooter>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

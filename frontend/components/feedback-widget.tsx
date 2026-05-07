@@ -7,6 +7,7 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
 import { useThreadStore } from '@/lib/store/threads';
@@ -110,10 +111,13 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md p-6 gap-0" aria-describedby={undefined}>
+        <DialogContent className="sm:max-w-md p-6 gap-0">
           <DialogTitle className="text-lg font-semibold text-foreground mb-1">
             {isPositive ? 'Give positive feedback' : 'Give negative feedback'}
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            {isPositive ? 'Share what was satisfying about this response' : 'Tell us what went wrong with this response'}
+          </DialogDescription>
           <p className="text-sm text-muted-foreground mb-4">
             {isPositive
               ? 'Please provide details: (optional)'

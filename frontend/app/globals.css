@@ -21,7 +21,7 @@
   --accent-foreground: #0f1b2d;
   --destructive: #EE2650;
   --destructive-foreground: #ffffff;
-  /* Semantic signals — for badges, freshness, anomaly callouts, status chips */
+  /* Semantic signals - for badges, freshness, anomaly callouts, status chips */
   --success: #15803d;
   --success-foreground: #ffffff;
   --success-soft: #dcfce7;
@@ -37,7 +37,7 @@
   --border: #bdd0e6;
   --input: #e0eaf7;
   --ring: #1B76B8;
-  /* Chart palette — 6 colors, brand-aligned, paired with components/charts/theme.ts */
+  /* Chart palette - 6 colors, brand-aligned, paired with components/charts/theme.ts */
   --chart-1: #1B76B8;
   --chart-2: #F9A619;
   --chart-3: #4f739f;
@@ -69,7 +69,7 @@
   --scrollbar-thumb-hover: #7597bc;
   --scrollbar-track: transparent;
   --star: #f59e0b;
-  /* Easing — `--spring` overshoots (rewarding actions like star/send);
+  /* Easing - `--spring` overshoots (rewarding actions like star/send);
      the others are the everyday motion vocabulary. Pick by intent:
      - standard: most UI transitions (hover, focus, expand)
      - emphasized: when motion should feel more deliberate (modals, panels)
@@ -80,40 +80,40 @@
   --ease-emphasized: cubic-bezier(0.3, 0, 0, 1);
   --ease-decelerated: cubic-bezier(0, 0, 0, 1);
   --ease-accelerated: cubic-bezier(0.3, 0, 1, 1);
-  /* Motion duration tokens — reference instead of hardcoding values. */
+  /* Motion duration tokens - reference instead of hardcoding values. */
   --duration-fast: 150ms;
   --duration-base: 250ms;
   --duration-slow: 400ms;
   /* Focus ring tokens for consistent interactive affordances. */
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
-  /* Density tokens — comfortable matches the current visual baseline so
+  /* Density tokens - comfortable matches the current visual baseline so
      existing surfaces don't shift on default. Compact tightens by ~40%.
      Two padding-y tokens because the existing UI uses both py-1.5 (sidebar
      items, avatar rows, secondary actions) and py-2 (message bubbles,
      table cells, primary list rows). Map each to its own var so the sweep
      is a 1:1 swap in comfortable mode (no regression). */
-  --density-pad-y: 0.5rem;          /* matches py-2 — primary rows */
-  --density-pad-y-tight: 0.375rem;   /* matches py-1.5 — secondary rows */
-  --density-pad-y-loose: 0.75rem;    /* matches py-3 — full-page list rows */
-  --density-card-pad: 1rem;         /* matches p-4 — card grids */
+  --density-pad-y: 0.5rem;          /* matches py-2 - primary rows */
+  --density-pad-y-tight: 0.375rem;   /* matches py-1.5 - secondary rows */
+  --density-pad-y-loose: 0.75rem;    /* matches py-3 - full-page list rows */
+  --density-card-pad: 1rem;         /* matches p-4 - card grids */
   --density-pad-x: 0.875rem;        /* matches px-3.5 */
-  --density-row-gap: 0.25rem;       /* matches gap-1 — within-row gaps */
-  --density-list-gap: 0.25rem;      /* matches space-y-1 — between list rows */
+  --density-row-gap: 0.25rem;       /* matches gap-1 - within-row gaps */
+  --density-list-gap: 0.25rem;      /* matches space-y-1 - between list rows */
   --density-list-row-h: 2.25rem;    /* h-9 */
 }
 
-/* Compact — ~50% tighter across the board so the mode feels distinct,
+/* Compact - ~50% tighter across the board so the mode feels distinct,
    not just "slightly less padding." All values still land on whole or
    half pixels at the default 16px root. */
 html[data-density="compact"] {
-  --density-pad-y: 0.25rem;          /* py-1 — 50% tighter than py-2 */
-  --density-pad-y-tight: 0.125rem;   /* py-0.5 — sidebar/avatar rows */
-  --density-pad-y-loose: 0.375rem;   /* py-1.5 — chat-list rows */
-  --density-card-pad: 0.625rem;      /* p-2.5 — card grids */
+  --density-pad-y: 0.25rem;          /* py-1 - 50% tighter than py-2 */
+  --density-pad-y-tight: 0.125rem;   /* py-0.5 - sidebar/avatar rows */
+  --density-pad-y-loose: 0.375rem;   /* py-1.5 - chat-list rows */
+  --density-card-pad: 0.625rem;      /* p-2.5 - card grids */
   --density-pad-x: 0.5rem;           /* matches px-2 */
   --density-row-gap: 0.125rem;       /* matches gap-0.5 */
-  --density-list-gap: 0.0625rem;     /* 1px — list rows nearly flush */
+  --density-list-gap: 0.0625rem;     /* 1px - list rows nearly flush */
   --density-list-row-h: 1.75rem;     /* h-7 */
 }
 
@@ -135,7 +135,7 @@ html[data-density="compact"] {
   --accent-foreground: #e4e8ee;
   --destructive: #EE2650;
   --destructive-foreground: #ffffff;
-  /* Semantic signals — dark mode (lighter, less saturated for legibility on dark surfaces) */
+  /* Semantic signals - dark mode (lighter, less saturated for legibility on dark surfaces) */
   --success: #4ade80;
   --success-foreground: #052e16;
   --success-soft: #14532d33;
@@ -151,7 +151,7 @@ html[data-density="compact"] {
   --border: #333c47;
   --input: #272c33;
   --ring: #1B76B8;
-  /* Chart palette — dark mode tuned for cool-slate background */
+  /* Chart palette - dark mode tuned for cool-slate background */
   --chart-1: #4ea6e0;
   --chart-2: #f9a619;
   --chart-3: #6a7f95;
@@ -240,6 +240,12 @@ html[data-density="compact"] {
 }
 
 @layer base {
+  :root {
+    --vv-bottom-inset: 0px;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
   * {
     @apply border-border outline-ring/50;
   }
@@ -250,6 +256,12 @@ html[data-density="compact"] {
   *::-webkit-scrollbar {
     width: 10px;
     height: 10px;
+  }
+  @media (max-width: 767px) {
+    *::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
   }
   *::-webkit-scrollbar-track {
     background: var(--scrollbar-track);
@@ -272,6 +284,27 @@ html[data-density="compact"] {
     background-image:
       radial-gradient(1200px 560px at 8% -26%, #87a9d318, transparent 58%),
       radial-gradient(900px 520px at 108% 8%, #6e95c512, transparent 52%);
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Touch-friendly minimum tap target on phones only. Apply via `.tap-44`
+     to keep desktop spacing tight while ensuring 44x44 touch zones on
+     phones (Apple HIG / WCAG 2.5.5 AAA). */
+  @media (max-width: 767px) {
+    .tap-44 { min-height: 44px; min-width: 44px; }
+    /* Native range input thumb is hard to grab on touch; expand the
+       hit zone via vertical padding without changing visual size. */
+    input[type="range"] { padding: 12px 0; }
+  }
+  /* Scroll-shadow utility for horizontally-scrollable regions
+     (data tables, sql blocks). Edge gradient signals more content. */
+  .scroll-shadow-x {
+    background:
+      linear-gradient(to right, var(--background), transparent) left center / 24px 100% no-repeat,
+      linear-gradient(to left, var(--background), transparent) right center / 24px 100% no-repeat,
+      radial-gradient(farthest-side at 0 50%, rgba(0,0,0,0.10), transparent) left center / 12px 100% no-repeat,
+      radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,0.10), transparent) right center / 12px 100% no-repeat;
+    background-attachment: local, local, scroll, scroll;
   }
   button,
   a,

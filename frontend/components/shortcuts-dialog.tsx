@@ -1,10 +1,11 @@
 'use client';
 
 import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-} from '@/components/ui/dialog';
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogTitle,
+  ResponsiveDialogDescription,
+} from '@/components/ui/responsive-dialog';
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 const mod = isMac ? '⌘' : 'Ctrl';
@@ -12,7 +13,7 @@ const mod = isMac ? '⌘' : 'Ctrl';
 /**
  * Each shortcut row is one action with one or more keybindings. When an
  * action has multiple bindings (e.g. Cmd+K AND `/` both open search),
- * the variants are rendered side-by-side separated by "or" — one row,
+ * the variants are rendered side-by-side separated by "or" - one row,
  * not duplicate rows.
  */
 type Shortcut = {
@@ -49,17 +50,20 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
   const chat = SHORTCUTS.filter((s) => s.section === 'chat');
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md p-0 gap-0 overflow-hidden" aria-describedby={undefined}>
-        <DialogTitle className="px-5 pt-5 pb-3 text-base font-semibold text-foreground">
+    <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
+      <ResponsiveDialogContent className="sm:max-w-md p-0 gap-0 overflow-hidden">
+        <ResponsiveDialogTitle className="px-5 pt-5 pb-3 text-base font-semibold text-foreground">
           Keyboard shortcuts
-        </DialogTitle>
+        </ResponsiveDialogTitle>
+        <ResponsiveDialogDescription className="sr-only">
+          All available keyboard shortcuts for MTI Brain
+        </ResponsiveDialogDescription>
         <div className="px-5 pb-5 space-y-5">
           <ShortcutSection title="General" shortcuts={general} />
           <ShortcutSection title="In chats" shortcuts={chat} />
         </div>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }
 

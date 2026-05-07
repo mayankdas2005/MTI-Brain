@@ -1,6 +1,6 @@
 /**
  * Paints a small colored dot on the favicon to signal unread state.
- * Pairs with the tab-title badge — visible across browser tab strips
+ * Pairs with the tab-title badge - visible across browser tab strips
  * and most OS taskbars even when the tab is muted/scrolled.
  */
 
@@ -51,7 +51,7 @@ function paintBadge(baseHref: string, color: string, onReady: (dataUrl: string) 
     ctx.stroke();
     onReady(canvas.toDataURL('image/png'));
   };
-  // Cross-origin or missing favicons fail silently — we just keep the
+  // Cross-origin or missing favicons fail silently - we just keep the
   // original icon. No alarm.
   img.onerror = () => {};
   img.src = baseHref;

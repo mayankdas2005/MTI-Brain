@@ -82,7 +82,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
 
   // Resolve the user's question for the About panel at click time. We
   // read from the store imperatively so the bubble doesn't re-render on
-  // every store update — currentMessages thrashes during streaming.
+  // every store update - currentMessages thrashes during streaming.
   const handleOpenAbout = () => {
     const all = useThreadStore.getState().currentMessages;
     const userMsg = all.find(
@@ -128,7 +128,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     editSubmittingRef.current = true;
     editQuestion(threadId, message.conversation_id, trimmed);
     setEditing(false);
-    // Release the lock on the next tick — by then the store has flipped
+    // Release the lock on the next tick - by then the store has flipped
     // isStreaming, which prevents subsequent submits via the existing guard.
     queueMicrotask(() => {
       editSubmittingRef.current = false;
@@ -141,7 +141,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     if (editing) {
       return (
         <div className="flex justify-end px-4 py-1">
-          <div className="max-w-[75%] w-full">
+          <div className="max-w-[92%] md:max-w-[75%] w-full">
             <textarea
               value={editText}
               onChange={(e) => setEditText(e.target.value)}
@@ -197,7 +197,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           </div>
         )}
 
-        {/* Actions row — visible at low opacity by default (mobile-friendly),
+        {/* Actions row - visible at low opacity by default (mobile-friendly),
             full opacity on hover. Mirrors the assistant-message action pills. */}
         <div className="flex items-center gap-1.5 mb-1 mr-1 opacity-60 hover:opacity-100 transition-opacity duration-150">
           <Tooltip>
@@ -210,7 +210,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                   if (ok) toast.success('Copied to clipboard');
                   else toast.error('Copy failed');
                 }}
-                className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
+                className="tap-44 h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
               >
                 <Copy className="w-3 h-3" />
               </Button>
@@ -227,7 +227,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                     retryResponse(threadId, message.conversation_id);
                   }
                 }}
-                className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
+                className="tap-44 h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
                 disabled={isStreaming || !message.conversation_id}
               >
                 <RotateCcw className="w-3 h-3" />
@@ -241,7 +241,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 variant="ghost"
                 size="sm"
                 onClick={handleEdit}
-                className="h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
+                className="tap-44 h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
                 disabled={isStreaming}
               >
                 <Pencil className="w-3 h-3" />
@@ -253,7 +253,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
 
         {/* Message bubble */}
         <div
-          className="max-w-[80%] rounded-2xl px-5 py-3 text-sm leading-relaxed"
+          className="max-w-[92%] md:max-w-[80%] rounded-2xl px-5 py-3 text-sm leading-relaxed"
           style={{
             backgroundColor: 'var(--user-bubble)',
             color: 'var(--user-bubble-foreground)',
@@ -401,7 +401,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         <RefineInput threadId={threadId} conversationId={message.conversation_id} />
       )}
 
-      {/* Trust strip — provenance for the answer. The strip renders only
+      {/* Trust strip - provenance for the answer. The strip renders only
           the fields the backend has populated; missing fields just hide
           their cells (we never invent trust data on the client). All
           source tables come from backend SQL analysis, not the UI. */}
@@ -513,7 +513,7 @@ import React from 'react';
 // easily inject siblings into ReactMarkdown's output. CSS `::after` ends
 // up on a new line below the prose container because Tailwind's prose
 // styles force it to break. The fix: keep ONE persistent <span> element
-// and `appendChild` it to the new last-leaf on each render — appendChild
+// and `appendChild` it to the new last-leaf on each render - appendChild
 // moves an existing node, so the breathe animation never restarts.
 function useStreamingCursor(
   containerRef: React.RefObject<HTMLDivElement | null>,
@@ -535,7 +535,7 @@ function useStreamingCursor(
     }
     const cursor = cursorRef.current;
     // Walk to the deepest last-leaf descendant, IGNORING the cursor node
-    // itself — otherwise on the next render we'd descend into the cursor
+    // itself - otherwise on the next render we'd descend into the cursor
     // and try to append it to itself (HierarchyRequestError).
     let target: Element = containerRef.current;
     while (true) {
@@ -547,7 +547,7 @@ function useStreamingCursor(
     if (target === cursor) return;
     // Already at end of the right parent? No-op (keeps animation continuous).
     if (cursor.parentElement === target && cursor === target.lastElementChild) return;
-    // appendChild MOVES an existing node — animation stays alive.
+    // appendChild MOVES an existing node - animation stays alive.
     target.appendChild(cursor);
   });
 

@@ -130,6 +130,7 @@ def _build_sse_generator(
     generate_title: bool = False,
     user_id: str | None = None,
     request_time: float | None = None,
+    deep_analysis: bool = False,
 ):
     async def _save_assistant_message(save_data: dict) -> None:
         from app.db import async_session_factory
@@ -720,6 +721,7 @@ async def ask_question(
         generate_title=is_first_message,
         user_id=str(current_user.id),
         request_time=request_time,
+        deep_analysis=body.deep_analysis,
     )
     return EventSourceResponse(generator(), ping=15)
 

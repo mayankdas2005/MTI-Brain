@@ -16,7 +16,7 @@ function DensitySync() {
   useEffect(() => {
     document.documentElement.setAttribute('data-density', density);
     return () => {
-      // Don't remove on unmount — Providers is mounted for the app's lifetime,
+      // Don't remove on unmount - Providers is mounted for the app's lifetime,
       // and clearing the attribute on HMR causes a one-frame flicker.
     };
   }, [density]);

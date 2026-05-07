@@ -3,11 +3,16 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useThreadStore } from '@/lib/store/threads';
-import { ArrowUp, Loader2 } from 'lucide-react';
+import { ArrowUp, Loader2, BrainCircuit } from 'lucide-react';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
 import { useActivityStore } from '@/lib/store/activity';
 import { track, Events } from '@/lib/analytics';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 const NEW_DRAFT_KEY = '__new__';
 
@@ -25,10 +30,11 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   const [input, setInput] = useState(initialValue);
   const [submitting, setSubmitting] = useState(false);
   // Start at index 0 so SSR and the first client render agree (no Math.random()
-  // in the initializer — that would hydrate-mismatch since the server and the
+  // in the initializer - that would hydrate-mismatch since the server and the
   // browser pick different indices). Randomize once on mount, then rotate.
   const [ghostIdx, setGhostIdx] = useState(0);
   const [ghostVisible, setGhostVisible] = useState(true);
+  const [deepAnalysis, setDeepAnalysis] = useState(false);
 
   const createThread = useThreadStore((s) => s.createThread);
   const setPendingQuestion = useThreadStore((s) => s.setPendingQuestion);
@@ -97,7 +103,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
     setSubmitting(true);
     try {
       const threadId = await createThread(undefined, projectId);
-      setPendingQuestion(message);
+      setPendingQuestion(message, deepAnalysis);
       void clearDraft(NEW_DRAFT_KEY);
       track(Events.ChatCreated, { thread_id: threadId, project_id: projectId ?? null });
       track(Events.QuestionAsked, {
@@ -106,7 +112,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
         length: message.length,
         from: 'new',
       });
-      // Silently track active days — gates the install-prompt eligibility.
+      // Silently track active days - gates the install-prompt eligibility.
       useActivityStore.getState().recordQuestion();
       router.push(`/chat/${threadId}`);
     } catch {
@@ -152,7 +158,30 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
           )}
 
           <div className="flex items-center justify-between px-3 pb-3">
-            <div className="flex items-center gap-1" />
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-pressed={deepAnalysis}
+                    onClick={() => setDeepAnalysis((v) => !v)}
+                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                      deepAnalysis
+                        ? 'bg-primary/10 text-primary border border-primary/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
+                    }`}
+                  >
+                    <BrainCircuit className="w-3.5 h-3.5 shrink-0" />
+                    <span className="hidden sm:inline">Deep Analysis</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {deepAnalysis
+                    ? 'Deep Analysis on - extended reasoning, slower response'
+                    : 'Deep Analysis - thorough multi-step reasoning for complex questions'}
+                </TooltipContent>
+              </Tooltip>
+            </div>
 
             <button
               type="button"

@@ -2,11 +2,12 @@
 
 import { useState } from 'react';
 import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogTitle,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+} from '@/components/ui/responsive-dialog';
 import { Button } from '@/components/ui/button';
 import { useProjectStore } from '@/lib/store/projects';
 import { useRouter } from 'next/navigation';
@@ -55,9 +56,10 @@ export function CreateProjectDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg p-6 gap-0" aria-describedby={undefined}>
-        <DialogTitle className="text-xl font-semibold text-foreground mb-5">Create a project</DialogTitle>
+    <ResponsiveDialog open={open} onOpenChange={handleClose}>
+      <ResponsiveDialogContent className="sm:max-w-lg p-6 gap-0">
+        <ResponsiveDialogTitle className="text-xl font-semibold text-foreground mb-5">Create a project</ResponsiveDialogTitle>
+        <ResponsiveDialogDescription className="sr-only">Name your project and describe what you are working on</ResponsiveDialogDescription>
 
         <div className="space-y-4">
           <div>
@@ -72,7 +74,7 @@ export function CreateProjectDialog({
               maxLength={255}
               onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
               autoFocus
-              className="mt-2 w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              className="mt-2 w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-base md:text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
 
@@ -87,20 +89,21 @@ export function CreateProjectDialog({
               placeholder="Describe your project, goals, subject, etc..."
               maxLength={2000}
               rows={3}
-              className="mt-2 w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm resize-none placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              style={{ maxHeight: '40vh' }}
+              className="mt-2 w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-base md:text-sm resize-none placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
         </div>
 
-        <DialogFooter className="mt-5">
+        <ResponsiveDialogFooter className="mt-5">
           <Button variant="ghost" onClick={() => handleClose(false)}>
             Cancel
           </Button>
           <Button onClick={handleCreate} disabled={saving || !name.trim()}>
             {saving ? 'Creating...' : 'Create project'}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveDialogFooter>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

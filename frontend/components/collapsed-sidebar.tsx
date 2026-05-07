@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useUIStore } from '@/lib/store/ui';
 import { useSearchStore } from '@/lib/store/search';
+import { useIsTablet } from '@/hooks/use-mobile';
 import { getStoredUser, getStoredToken, userFromToken, logout } from '@/lib/auth';
 import {
   Tooltip,
@@ -45,8 +46,8 @@ function IconButton({
 }) {
   const classes =
     variant === 'onNavy'
-      ? 'h-9 w-9 border border-[var(--header-control-border)] bg-[var(--header-control-bg)] text-[var(--header-foreground)] hover:bg-[var(--header-control-bg-hover)]'
-      : 'h-9 w-9 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent';
+      ? 'tap-44 h-9 w-9 border border-[var(--header-control-border)] bg-[var(--header-control-bg)] text-[var(--header-foreground)] hover:bg-[var(--header-control-bg-hover)]'
+      : 'tap-44 h-9 w-9 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent';
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -68,6 +69,12 @@ export function CollapsedSidebar() {
   const router = useRouter();
   const { theme, setTheme } = useTheme();
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const setTabletOverlayOpen = useUIStore((s) => s.setTabletSidebarOverlayOpen);
+  const isTablet = useIsTablet();
+  const handleToggle = () => {
+    if (isTablet) setTabletOverlayOpen(true);
+    else toggleSidebar();
+  };
   const openSearch = useSearchStore((s) => s.openModal);
   const [initials, setInitials] = useState('');
   useEffect(() => {
@@ -98,9 +105,9 @@ export function CollapsedSidebar() {
         style={{ backgroundColor: 'var(--header)' }}
       >
         <button
-          onClick={toggleSidebar}
+          onClick={handleToggle}
           aria-label="Open sidebar"
-          className="flex items-center justify-center h-9 w-9 text-[var(--header-foreground)]"
+          className="tap-44 flex items-center justify-center h-9 w-9 text-[var(--header-foreground)]"
         >
           <Image
             src="/milestone-icon.png"

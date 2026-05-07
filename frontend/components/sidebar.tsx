@@ -11,6 +11,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { useThreadStore } from '@/lib/store/threads';
 import { useProjectStore } from '@/lib/store/projects';
 import { useUIStore } from '@/lib/store/ui';
+import { useSearchStore } from '@/lib/store/search';
 import {
   Plus,
   Star,
@@ -86,7 +87,7 @@ const SIDEBAR_WIDTHS = ['w-3/4', 'w-1/2', 'w-4/5', 'w-2/3', 'w-3/5', 'w-3/4'] as
 
 // Sidebar Recents empty-state phrases. The visible string is picked by
 // `Math.floor(Date.now() / 60000) % length`, so it rotates roughly every
-// minute on render. Keep the tone professional and action-inviting —
+// minute on render. Keep the tone professional and action-inviting -
 // these are the first words a fresh user reads on the home surface, so
 // no jokes and no nags. Matching the "premium analyst tool" voice.
 const RECENTS_EMPTY_PHRASES = [
@@ -139,6 +140,12 @@ function ThreadItem({
   const starThread = useThreadStore((s) => s.starThread);
   const deleteThread = useThreadStore((s) => s.deleteThread);
   const renameThread = useThreadStore((s) => s.renameThread);
+  const closeMobileSidebar = useUIStore((s) => s.setMobileSidebarOpen);
+  const closeTabletOverlay = useUIStore((s) => s.setTabletSidebarOverlayOpen);
+  const closeOnNav = () => {
+    closeMobileSidebar(false);
+    closeTabletOverlay(false);
+  };
   const now = useNow();
 
   useEffect(() => {
@@ -215,7 +222,10 @@ function ThreadItem({
             <button
               data-thread-row
               data-thread-id={thread.id}
-              onClick={() => router.push(`/chat/${thread.id}`)}
+              onClick={() => {
+                closeOnNav();
+                router.push(`/chat/${thread.id}`);
+              }}
               onDoubleClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -347,7 +357,7 @@ export function Sidebar() {
   const pathname = usePathname() ?? '';
   // Highlight the "Chats" nav only on the chats LIST page. On a specific
   // /chat/[id] the active thread row in Recents/Starred already shows the
-  // current location — adding a second highlight on the nav button reads
+  // current location - adding a second highlight on the nav button reads
   // as a double-selection bug. Same is intentionally NOT done for
   // Projects: project rows in the sidebar don't have their own active
   // state, so the Projects nav is the only visual cue on /projects/[id].
@@ -355,6 +365,12 @@ export function Sidebar() {
   const onProjects = pathname.startsWith('/projects');
   const { theme, setTheme } = useTheme();
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const closeMobileSidebar = useUIStore((s) => s.setMobileSidebarOpen);
+  const closeTabletOverlay = useUIStore((s) => s.setTabletSidebarOverlayOpen);
+  const closeOnNav = () => {
+    closeMobileSidebar(false);
+    closeTabletOverlay(false);
+  };
   const [user, setUser] = useState<ReturnType<typeof getStoredUser>>(null);
 
   // Defer localStorage read to client-side only to avoid hydration mismatch.
@@ -413,6 +429,7 @@ export function Sidebar() {
 
   const handleNewChat = () => {
     setCurrentThread(null);
+    closeOnNav();
     router.push('/new');
   };
 
@@ -460,7 +477,7 @@ export function Sidebar() {
     const isSelected = selectedThreadIds.has(thread.id);
     // Drive the highlighted-row state from the URL, not the store. The
     // store's currentThreadId stays set to the last-loaded thread (useful
-    // for caching) even after navigating to /chats or /settings — without
+    // for caching) even after navigating to /chats or /settings - without
     // this gate the sidebar would keep showing a thread as "current"
     // long after the user left it.
     const isCurrent = pathname === `/chat/${thread.id}`;
@@ -481,7 +498,7 @@ export function Sidebar() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-sidebar border-sidebar-border w-[280px]" data-onboarding="sidebar">
+    <div className="flex flex-col h-full bg-sidebar border-sidebar-border w-full md:w-[280px]" data-onboarding="sidebar">
       {/* Header */}
       <div
         className="px-3 h-12 flex items-center justify-between border-b border-sidebar-border"
@@ -500,7 +517,7 @@ export function Sidebar() {
         />
         <button
           type="button"
-          className="flex h-8 w-8 items-center justify-center text-[var(--header-foreground)]"
+          className="tap-44 flex h-8 w-8 items-center justify-center text-[var(--header-foreground)]"
           onClick={toggleSidebar}
           aria-label="Close sidebar"
         >
@@ -524,10 +541,7 @@ export function Sidebar() {
       {/* Search - opens global search modal */}
       <div className="px-3 pb-2">
         <button
-          onClick={() => {
-            const { useSearchStore } = require('@/lib/store/search');
-            useSearchStore.getState().openModal();
-          }}
+          onClick={() => useSearchStore.getState().openModal()}
           aria-label="Open search"
           className="w-full flex items-center gap-2 px-2.5 h-9 rounded-xl border border-sidebar-border bg-sidebar text-sm text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
         >
@@ -541,7 +555,7 @@ export function Sidebar() {
         <div className="px-3 pt-1 pb-0.5">
           <div className="flex items-center">
             <button
-              onClick={() => router.push('/projects')}
+              onClick={() => { closeOnNav(); router.push('/projects'); }}
               onMouseEnter={() => router.prefetch('/projects')}
               aria-current={onProjects ? 'page' : undefined}
               className={`flex-1 flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar ${onProjects ? 'bg-sidebar-accent' : ''}`}
@@ -568,7 +582,7 @@ export function Sidebar() {
         {/* Chats navigation */}
         <div className="px-3 pb-1">
           <button
-            onClick={() => router.push('/chats')}
+            onClick={() => { closeOnNav(); router.push('/chats'); }}
             onMouseEnter={() => router.prefetch('/chats')}
             aria-current={onChats ? 'page' : undefined}
             className={`w-full flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar ${onChats ? 'bg-sidebar-accent' : ''}`}
@@ -612,7 +626,7 @@ export function Sidebar() {
                     starred={project.starred}
                   >
                     <button
-                      onClick={() => router.push(`/projects/${project.id}`)}
+                      onClick={() => { closeOnNav(); router.push(`/projects/${project.id}`); }}
                       onMouseEnter={() => router.prefetch(`/projects/${project.id}`)}
                       className="w-full flex items-center gap-2 px-2.5 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent"
                     >
@@ -628,7 +642,7 @@ export function Sidebar() {
                     to the full /starred page, not only when the sidebar
                     truncates. Matches the Recents footer pattern below. */}
                 <button
-                  onClick={() => router.push('/starred')}
+                  onClick={() => { closeOnNav(); router.push('/starred'); }}
                   onMouseEnter={() => router.prefetch('/starred')}
                   className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
                 >
@@ -678,7 +692,7 @@ export function Sidebar() {
               })()}
               {(threads.filter((t) => !t.starred).length > 8 || hasMore) && (
                 <button
-                  onClick={() => router.push('/chats')}
+                  onClick={() => { closeOnNav(); router.push('/chats'); }}
                   onMouseEnter={() => router.prefetch('/chats')}
                   className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
                 >
@@ -707,7 +721,7 @@ export function Sidebar() {
         ) : (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button data-onboarding="user-menu" className="w-full flex items-center gap-2.5 rounded-lg px-2 py-[var(--density-pad-y-tight)] hover:bg-sidebar-accent transition-colors">
+            <button data-onboarding="user-menu" className="w-full flex items-center gap-2.5 rounded-lg px-2 py-[var(--density-pad-y-tight)] min-h-[48px] md:min-h-0 hover:bg-sidebar-accent transition-colors">
               <Avatar className="h-8 w-8">
                 <AvatarFallback className="bg-primary/15 text-primary text-sm font-semibold">
                   {(user.name || user.email)?.charAt(0).toUpperCase()}
@@ -760,7 +774,7 @@ export function Sidebar() {
             </div>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={() => startTransition(() => router.push('/settings'))}
+              onClick={() => { closeOnNav(); startTransition(() => router.push('/settings')); }}
               className="gap-2"
             >
               <Settings className="w-4 h-4" />
@@ -781,7 +795,7 @@ export function Sidebar() {
                     });
                   } else if (next === 'denied') {
                     toast.info(
-                      'Notifications blocked — you can re-enable from your browser\'s site settings.',
+                      'Notifications blocked - you can re-enable from your browser\'s site settings.',
                       { id: 'notifications-denied' },
                     );
                   }

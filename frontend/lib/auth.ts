@@ -40,7 +40,7 @@ export function setStoredToken(token: string): void {
   try {
     localStorage.setItem(TOKEN_KEY, token);
   } catch {
-    // Safari private mode / quota exceeded — token only lives in-memory for
+    // Safari private mode / quota exceeded - token only lives in-memory for
     // this tab. Subsequent reads will return null and the user will be sent
     // back to /login. Nothing more we can do safely here.
   }

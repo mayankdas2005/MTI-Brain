@@ -285,7 +285,7 @@ export default function ChatsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
@@ -325,7 +325,7 @@ export default function ChatsPage() {
           )}
         </div>
 
-        {/* Selection bar — hidden when there are no threads, since the bar
+        {/* Selection bar - hidden when there are no threads, since the bar
             has no useful state to show (and the Select/Cancel button in
             this row only renders when threads exist, which would otherwise
             strand the user in select mode after deleting the last thread). */}

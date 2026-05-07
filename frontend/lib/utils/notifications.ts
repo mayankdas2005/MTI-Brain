@@ -3,10 +3,10 @@
 /**
  * Web Notifications API wrapper.
  *
- * Different from the Web Push API — this fires OS-native notifications from
+ * Different from the Web Push API - this fires OS-native notifications from
  * the page, no service worker / VAPID / backend required. Works as long as
  * the browser process is alive (covers "user is in another tab" and "user
- * switched to VS Code"). Stops working when the browser is fully closed —
+ * switched to VS Code"). Stops working when the browser is fully closed -
  * that's the long-tail Web Push case, deferred.
  *
  * All entry points are SSR-safe.
@@ -66,14 +66,14 @@ interface NotifyOptions {
 export function notify(title: string, opts: NotifyOptions = {}): void {
   if (getPermission() !== 'granted') return;
   try {
-    // `silent` — when false (the default), Windows / macOS plays its built-in
+    // `silent` - when false (the default), Windows / macOS plays its built-in
     //   notification chime. This is the ONLY reliable way to get audio when
-    //   the browser is minimized or in a background tab — `Audio.play()` is
+    //   the browser is minimized or in a background tab - `Audio.play()` is
     //   throttled in hidden tabs, so a page-level <audio> ping won't fire.
-    // `requireInteraction: true` — Windows would otherwise auto-dismiss the
+    // `requireInteraction: true` - Windows would otherwise auto-dismiss the
     //   toast in ~5s; this keeps it visible until clicked or expired by the
     //   OS notification center.
-    // `renotify: true` — forces re-display when a previous notification
+    // `renotify: true` - forces re-display when a previous notification
     //   with the same `tag` is still on screen (OS would silently coalesce
     //   otherwise, hiding follow-up completions).
     const n = new Notification(title, {
@@ -89,7 +89,7 @@ export function notify(title: string, opts: NotifyOptions = {}): void {
       try {
         window.focus();
       } catch {
-        // some platforms refuse — best effort
+        // some platforms refuse - best effort
       }
       if (opts.threadId) {
         window.dispatchEvent(
@@ -102,6 +102,6 @@ export function notify(title: string, opts: NotifyOptions = {}): void {
     };
   } catch {
     // Construction can throw on Safari iOS when the page isn't a PWA.
-    // Silent fail is correct — caller already has fallback channels.
+    // Silent fail is correct - caller already has fallback channels.
   }
 }

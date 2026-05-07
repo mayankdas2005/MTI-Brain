@@ -39,7 +39,7 @@ interface PwaWindow {
   __mtiBrainPwaInstalled?: boolean;
 }
 
-/** Wire up global listeners. Idempotent — safe to call from multiple places. */
+/** Wire up global listeners. Idempotent - safe to call from multiple places. */
 let wired = false;
 export function ensureInstallListeners() {
   if (typeof window === 'undefined') return;
@@ -73,7 +73,7 @@ export function ensureInstallListeners() {
 }
 
 // Attach listeners as soon as this module is imported. The
-// `beforeinstallprompt` event fires VERY early — sometimes before React even
+// `beforeinstallprompt` event fires VERY early - sometimes before React even
 // mounts. If we wait for a useEffect to run, the event has already been
 // dispatched and we miss it forever (it doesn't replay). Module-load wiring
 // guarantees we catch the first emission. Safe in SSR because of the

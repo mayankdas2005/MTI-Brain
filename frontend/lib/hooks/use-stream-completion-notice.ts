@@ -17,7 +17,7 @@ const PING_SRC = '/notify.mp3';
 
 // Audio priming is the key to playing custom sounds when the tab is hidden.
 // Browsers throttle `Audio.play()` in background tabs UNLESS the audio element
-// has been "user-activated" — meaning it played at least once in response to
+// has been "user-activated" - meaning it played at least once in response to
 // a user gesture (click, keydown, touchstart). Once primed, subsequent
 // `play()` calls work even when the tab is hidden or the browser is
 // minimized. We prime on the very first gesture after page load.
@@ -82,7 +82,7 @@ function playPing() {
       // missing. Visual notification still fires; silent fail is fine.
     });
   } catch {
-    // Older browsers / file missing — silent fail.
+    // Older browsers / file missing - silent fail.
   }
 }
 
@@ -131,7 +131,7 @@ export function useStreamCompletionNotice() {
       useThreadStore.getState();
     const threadTitle =
       threads.find((t) => t.id === completedId)?.title || 'New chat';
-    // Notification body uses the user's question, not the thread title —
+    // Notification body uses the user's question, not the thread title -
     // people remember what they asked, not which thread carried it.
     // Fall back to the title only if we somehow lost the messages.
     const messages =
@@ -197,7 +197,7 @@ export function useStreamCompletionNotice() {
       // never auto-ask again.
       prefs.setSoftPromptShown(true);
       toast.info('Get a notification next time?', {
-        description: 'Stay heads-down — we\'ll ping you when answers finish.',
+        description: 'Stay heads-down - we\'ll ping you when answers finish.',
         id: 'notify-soft-prompt',
         duration: 12_000,
         action: {

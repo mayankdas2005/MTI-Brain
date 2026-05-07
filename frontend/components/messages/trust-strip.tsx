@@ -9,9 +9,9 @@ import {
 import { formatRelativeTime } from '@/lib/utils/relative-time';
 
 /**
- * Trust strip — the row of metadata under every assistant answer that says
+ * Trust strip - the row of metadata under every assistant answer that says
  * "this number is provably correct." Renders only fields that the backend
- * has populated; absent fields just hide their cell — we never invent or
+ * has populated; absent fields just hide their cell - we never invent or
  * regex-infer trust data on the client.
  *
  * Source tables come from the backend's SQL analysis (sqlglot or

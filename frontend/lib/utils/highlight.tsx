@@ -21,7 +21,7 @@ function escapeRegex(s: string): string {
  *    typos like "stressss" → "stress" and stem matches like "ran" →
  *    "running" that pure substring matching would miss.
  *
- * If both `query` and `matchedTerms` are passed, `matchedTerms` wins —
+ * If both `query` and `matchedTerms` are passed, `matchedTerms` wins -
  * server truth beats client guessing.
  */
 export function highlightQueryInText(
@@ -68,14 +68,14 @@ export function highlightQueryInText(
 /**
  * Render a search result snippet, combining BOTH highlight sources:
  *
- * 1. **Server `<b>`-tags** — anything Postgres `ts_headline` wrapped is
+ * 1. **Server `<b>`-tags** - anything Postgres `ts_headline` wrapped is
  *    rendered as a hit. Catches FTS stem matches the client can't see
  *    (e.g. "running" when the user typed "ran").
- * 2. **Client-side fallback on gap text** — between/around the server
+ * 2. **Client-side fallback on gap text** - between/around the server
  *    bold spans, also bolds any `matchedTerms` (backend's fuzzy/typo
  *    matches) and falls back to the user's query tokens. This catches
  *    stopwords like "how" (which Postgres filters out of FTS, leaving
- *    no `<b>` tags AND empty matchedTerms — but the result still
+ *    no `<b>` tags AND empty matchedTerms - but the result still
  *    matched via ILIKE substring, so the user expects to see it bolded).
  *
  * This is the unified renderer for any search-result content blob
@@ -139,7 +139,7 @@ export function renderSearchSnippet(
   return parts;
 }
 
-/** Default highlight styling — a soft brand-tinted pill behind matched
+/** Default highlight styling - a soft brand-tinted pill behind matched
  *  text so the hit is unmistakable but not garish. Used by both the
  *  server-side <b>-tag renderer and the client-side query highlighter. */
 export const DEFAULT_HIGHLIGHT_CLASS =

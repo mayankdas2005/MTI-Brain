@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 /**
  * Returns `true` while the tab is visible, `false` while it's hidden.
  * Use to pause animations, polling, and clock ticks when the user isn't
- * watching — saves CPU and battery on backgrounded tabs.
+ * watching - saves CPU and battery on backgrounded tabs.
  */
 export function usePageVisibility(): boolean {
   const [visible, setVisible] = useState(() => {

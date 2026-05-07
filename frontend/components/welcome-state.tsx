@@ -303,7 +303,7 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
           </div>
         )}
 
-        {/* Suggestion chips — row 1: first 3, row 2: last 1 centered */}
+        {/* Suggestion chips - row 1: first 3, row 2: last 1 centered */}
         <div className="flex flex-col items-center gap-2">
           {!mounted ? (
             <>

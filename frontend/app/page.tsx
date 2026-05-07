@@ -17,12 +17,21 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  // Stays false until we've confirmed the user is NOT authenticated.
+  // Prevents a one-frame flash of the login form for users who are already
+  // signed in — they'll see nothing, then be redirected to /new.
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated()) {
       router.replace('/new');
+      // Don't setReady — the page is about to unmount.
+    } else {
+      setReady(true);
     }
   }, [router]);
+
+  if (!ready) return null;
 
   const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();

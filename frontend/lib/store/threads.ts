@@ -262,6 +262,7 @@ interface ThreadStore {
 
   // Pending question (from /new page)
   pendingQuestion: string | null;
+  pendingDeepAnalysis: boolean;
 
   // Selection (bulk ops)
   selectedThreadIds: Set<string>;
@@ -293,7 +294,7 @@ interface ThreadStore {
   bulkMoveThreads: (projectId: string | null, threadIds?: string[]) => Promise<void>;
 
   // Streaming
-  askQuestion: (threadId: string, question: string, sourceConversationId?: string, priorSql?: string) => Promise<void>;
+  askQuestion: (threadId: string, question: string, sourceConversationId?: string, priorSql?: string, deepAnalysis?: boolean) => Promise<void>;
   retryResponse: (threadId: string, conversationId: string) => Promise<void>;
   editQuestion: (threadId: string, conversationId: string, question: string) => Promise<void>;
   stopGeneration: (threadId: string) => Promise<void>;
@@ -304,7 +305,7 @@ interface ThreadStore {
   // Local UI
   setCurrentThread: (id: string | null) => void;
   setSearchQuery: (query: string) => void;
-  setPendingQuestion: (question: string | null) => void;
+  setPendingQuestion: (question: string | null, deepAnalysis?: boolean) => void;
   toggleThreadSelection: (id: string) => void;
   selectAllThreads: () => void;
   clearSelection: () => void;
@@ -327,7 +328,7 @@ function pruneThreadCache<T>(map: Record<string, T>): Record<string, T> {
   if (keys.length <= THREAD_CACHE_MAX) return map;
   // Evict the least-recently-accessed entries until we're under the cap.
   // Threads with no recorded access (just inserted) score Infinity so they
-  // survive — newer entries are kept over older idle ones.
+  // survive - newer entries are kept over older idle ones.
   const sorted = keys
     .map((id) => [id, threadCacheAccess.get(id) ?? Infinity] as const)
     .sort((a, b) => a[1] - b[1]);
@@ -392,6 +393,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
   abortController: null,
   streamingOrigin: null,
   pendingQuestion: null,
+  pendingDeepAnalysis: false,
   selectedThreadIds: new Set(),
   threadMessageMap: {},
   activeVersions: {},
@@ -531,7 +533,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     // thread (with the real thread_id from the API response) into the
     // project detail. This way the user sees it instantly if they're on
     // the project page, and if they navigate away and back, the cached
-    // entry already has it — no skeleton flash. We don't invalidate here
+    // entry already has it - no skeleton flash. We don't invalidate here
     // because that would clobber the optimistic insert; the next natural
     // fetch (e.g. revisiting the page later) will reconcile against the
     // server, and fetchProjects below refreshes counts.
@@ -600,7 +602,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     } catch {
       set({ threads: prev, searchResults: prevSearchResults });
       // Roll back the project detail mutation by refetching the server
-      // truth — the optimistic removal would otherwise leave a hole.
+      // truth - the optimistic removal would otherwise leave a hole.
       if (affectedProjectId) {
         const { useProjectStore } = await import('./projects');
         useProjectStore.getState().invalidateProjectDetail(affectedProjectId);
@@ -861,7 +863,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
   // ─── Streaming ───
 
-  askQuestion: async (threadId, question, sourceConversationId?, priorSql?) => {
+  askQuestion: async (threadId, question, sourceConversationId?, priorSql?, deepAnalysis?) => {
     const { currentMessages } = get();
     const userMsgId = randomId();
     const assistantMsgId = randomId();
@@ -1126,6 +1128,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         question,
         response_tone: prefs.responseTone,
         max_rows: prefs.maxResultRows,
+        deep_analysis: deepAnalysis ?? false,
       };
       if (sourceConversationId) askBody.source_conversation_id = sourceConversationId;
       if (priorSql) askBody.prior_sql = priorSql;
@@ -1870,8 +1873,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     );
   },
 
-  setPendingQuestion: (question) => {
-    set({ pendingQuestion: question });
+  setPendingQuestion: (question, deepAnalysis = false) => {
+    set({ pendingQuestion: question, pendingDeepAnalysis: deepAnalysis });
   },
 
   toggleThreadSelection: (id) => {

@@ -52,7 +52,7 @@ export async function saveDraft(threadId: string, text: string): Promise<void> {
     }
     await d.drafts.put({ threadId, text, updatedAt: Date.now() });
   } catch {
-    // Quota exceeded / Safari private mode — drafts are best-effort.
+    // Quota exceeded / Safari private mode - drafts are best-effort.
   }
 }
 

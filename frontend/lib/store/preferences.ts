@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 
-export type ResponseTone = 'consultant' | 'operator' | 'brief';
+export type ResponseTone = 'analyst' | 'manager' | 'director' | 'executive';
 export type DefaultDataView = 'sql' | 'table';
 export type Density = 'comfortable' | 'compact';
 
@@ -21,7 +21,7 @@ interface PreferencesState {
   notifySound: boolean;
   /** Set true once we've shown the soft permission prompt; prevents re-asks. */
   softPromptShown: boolean;
-  /** Display density — applied to <html data-density> via a Providers-level
+  /** Display density - applied to <html data-density> via a Providers-level
    *  effect. Drives the --density-* CSS variables in globals.css. */
   density: Density;
 }
@@ -39,7 +39,7 @@ interface PreferencesActions {
   setSoftPromptShown: (val: boolean) => void;
   setDensity: (density: Density) => void;
   /** Reset every persisted preference back to its DEFAULT value. The
-   *  `softPromptShown` flag is preserved — it tracks whether we've ever
+   *  `softPromptShown` flag is preserved - it tracks whether we've ever
    *  shown the notification permission soft-prompt and resetting it
    *  would re-trigger that prompt for no reason. */
   resetToDefaults: () => void;
@@ -52,7 +52,7 @@ interface PreferencesActions {
 type PreferencesStore = PreferencesState & PreferencesActions;
 
 export const PREFERENCES_DEFAULTS: PreferencesState = {
-  responseTone: 'consultant',
+  responseTone: 'executive',
   showSQL: true,
   autoShowCharts: true,
   showFollowUps: true,

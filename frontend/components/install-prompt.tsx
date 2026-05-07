@@ -14,7 +14,7 @@ const MIN_DAYS_BEFORE_PROMPT = 3;
  *
  * Habit-loop logic: never bug a user on day 1. Only surface after they've
  * been active for ≥ 3 distinct days. Users who dismiss are not asked again
- * until they explicitly clear the localStorage flag — but they can still
+ * until they explicitly clear the localStorage flag - but they can still
  * trigger an install manually from the user menu (see sidebar.tsx).
  */
 export function InstallPrompt() {
@@ -29,7 +29,7 @@ export function InstallPrompt() {
     try {
       if (localStorage.getItem(DISMISS_KEY)) return;
     } catch {
-      // localStorage unavailable — better to show than silently skip.
+      // localStorage unavailable - better to show than silently skip.
     }
     setVisible(true);
   }, [canInstall, daysActive]);
@@ -57,7 +57,10 @@ export function InstallPrompt() {
     <div
       role="dialog"
       aria-label="Install MTI Brain"
-      className="fixed bottom-6 right-6 z-40 w-[20rem] rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl shadow-black/15 p-4"
+      className="fixed left-3 right-3 sm:left-auto sm:right-6 z-40 w-auto sm:w-[20rem] rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl shadow-black/15 p-4"
+      style={{
+        bottom: 'max(1.5rem, calc(env(safe-area-inset-bottom) + 1rem) + var(--vv-bottom-inset, 0px))',
+      }}
     >
       <div className="flex items-start gap-3">
         <div className="rounded-lg bg-primary/10 p-2 text-primary">
@@ -66,7 +69,7 @@ export function InstallPrompt() {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium">Install MTI Brain</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Open it in its own window — feels native, launches faster.
+            Open it in its own window - feels native, launches faster.
           </p>
           <div className="flex items-center gap-2 mt-3">
             <button

@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from 'react';
 import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogTitle,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+} from '@/components/ui/responsive-dialog';
 import { Button } from '@/components/ui/button';
 import { useThreadStore } from '@/lib/store/threads';
 
@@ -44,9 +45,10 @@ export function RenameDialog({ open, onOpenChange, threadId, currentTitle }: Ren
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md p-6 gap-0" aria-describedby={undefined}>
-        <DialogTitle className="text-lg font-semibold text-foreground mb-4">Rename chat</DialogTitle>
+    <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
+      <ResponsiveDialogContent className="sm:max-w-md p-6 gap-0">
+        <ResponsiveDialogTitle className="text-lg font-semibold text-foreground mb-4">Rename chat</ResponsiveDialogTitle>
+        <ResponsiveDialogDescription className="sr-only">Enter a new title for this conversation</ResponsiveDialogDescription>
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value.slice(0, 500))}
@@ -55,17 +57,17 @@ export function RenameDialog({ open, onOpenChange, threadId, currentTitle }: Ren
           maxLength={500}
           onKeyDown={(e) => e.key === 'Enter' && handleSave()}
           autoFocus
-          className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-base md:text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         />
-        <DialogFooter className="mt-4">
+        <ResponsiveDialogFooter className="mt-4">
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleSave} disabled={saving || !title.trim()}>
             {saving ? 'Saving...' : 'Save'}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveDialogFooter>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

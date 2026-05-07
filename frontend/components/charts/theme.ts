@@ -7,7 +7,7 @@
  * canvas APIs cannot resolve CSS variables.
  *
  * Order is chosen so 1–3 series stay on-brand; 4–6 add warmth/contrast.
- * If a chart has more than 6 series, the palette wraps — but charts with
+ * If a chart has more than 6 series, the palette wraps - but charts with
  * 7+ series are usually a data-viz problem, not a palette problem.
  */
 

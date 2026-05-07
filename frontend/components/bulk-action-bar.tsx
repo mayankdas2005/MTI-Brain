@@ -33,8 +33,8 @@ export function BulkActionBar() {
 
   return (
     <>
-      <div className="px-3 py-2 border-t border-sidebar-border bg-sidebar flex items-center gap-2">
-        <span className="text-xs text-sidebar-foreground/70 flex-1">
+      <div className="px-3 py-2 border-t border-sidebar-border bg-sidebar flex flex-wrap items-center gap-2">
+        <span className="text-xs text-sidebar-foreground/70 flex-1 min-w-0 truncate">
           {count} selected
         </span>
         <Tooltip>

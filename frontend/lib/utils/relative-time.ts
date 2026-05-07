@@ -25,7 +25,7 @@ export function formatRelativeTime(dateStr: string, now: Date = new Date()): str
 }
 
 // ─── Bucket grouping ───
-// Recency buckets used by the sidebar / chats list. Order is intentional —
+// Recency buckets used by the sidebar / chats list. Order is intentional -
 // rendering iterates buckets in this sequence and shows headings only for
 // buckets that have items.
 

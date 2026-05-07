@@ -94,10 +94,10 @@ function computeStreak(days: string[]): number {
 }
 
 /**
- * Derived selectors — call from React components.
+ * Derived selectors - call from React components.
  *
  * Returns a snapshot rather than reactive state so changing today doesn't
- * cause every consumer to re-render — components opt in by reading
+ * cause every consumer to re-render - components opt in by reading
  * `activeDays` themselves.
  */
 export function getStreakSnapshot() {
@@ -111,7 +111,7 @@ export function getStreakSnapshot() {
   };
 }
 
-/** Hook helpers — re-read derived values when activeDays changes. */
+/** Hook helpers - re-read derived values when activeDays changes. */
 export function useStreak() {
   const activeDays = useActivityStore((s) => s.activeDays);
   const questionsByDay = useActivityStore((s) => s.questionsByDay);

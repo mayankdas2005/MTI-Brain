@@ -60,9 +60,10 @@ function makeSteps(): Step[] {
       selector: '[data-onboarding="sidebar"]',
       title: 'Your sidebar',
       body:
-        'Projects and Chats sit at the top — jump to either with one click. Starred items pin below for quick access, then Recents groups threads by Today / Yesterday / This week. Hover any thread for a rename pencil; ↑/↓ walks the list.',
+        'Projects and Chats sit at the top - jump to either with one click. Starred items pin below for quick access, then Recents groups threads by Today / Yesterday / This week. Hover any thread for a rename pencil; ↑/↓ walks the list.',
       icon: FolderOpen,
       placement: 'right',
+      skipIfMissing: true,
     },
     {
       id: 'new-chat',
@@ -71,6 +72,7 @@ function makeSteps(): Step[] {
       body: `Click "New Chat" or press ${mod}+Shift+O. Each thread is private to you and shows up in the sidebar above.`,
       icon: Plus,
       placement: 'right',
+      skipIfMissing: true,
     },
     {
       id: 'cmd-k',
@@ -95,7 +97,7 @@ function makeSteps(): Step[] {
       selector: '[data-onboarding="export-pdf"]',
       title: 'Export as PDF',
       body:
-        'Save any conversation as a polished PDF — full responses, SQL, data tables, and rendered charts included.',
+        'Save any conversation as a polished PDF - full responses, SQL, data tables, and rendered charts included.',
       icon: FileDown,
       placement: 'bottom',
       skipIfMissing: true,
@@ -108,6 +110,7 @@ function makeSteps(): Step[] {
         'Open the user menu to switch themes (light/dark/system), install the app, view shortcuts, or sign out.',
       icon: UserIcon,
       placement: 'top',
+      skipIfMissing: true,
     },
     {
       id: 'shortcuts',
@@ -119,7 +122,7 @@ function makeSteps(): Step[] {
       id: 'done',
       title: "You're set",
       body:
-        'Tip: every panel has hover affordances — copy/retry on responses, rename pencil on threads, refine-query under each answer. Happy querying.',
+        'Tip: every panel has hover affordances - copy/retry on responses, rename pencil on threads, refine-query under each answer. Happy querying.',
       icon: Sparkles,
     },
   ];
@@ -183,7 +186,7 @@ export function OnboardingTour({ forceOpen, onClose }: OnboardingTourProps = {})
     try {
       done = !!localStorage.getItem(STORAGE_KEY);
     } catch {
-      // private mode — re-show every load is acceptable
+      // private mode - re-show every load is acceptable
     }
     if (!done) {
       const t = setTimeout(() => setActive(true), 400);
@@ -235,17 +238,25 @@ export function OnboardingTour({ forceOpen, onClose }: OnboardingTourProps = {})
 
   // Popover positioning around the target rect. Computes a top-left for the
   // raw popover (no transforms) so vertical AND horizontal clamping is
-  // straightforward — we work with the visible bounding box, not a translated
+  // straightforward - we work with the visible bounding box, not a translated
   // anchor. Falls back to centered if there's no selector or target is missing.
-  const popoverWidth = popoverSize.w || 380;
-  const popoverHeight = popoverSize.h || 200;
-  const edge = 8;
+  const isPhone = typeof window !== 'undefined' && window.innerWidth < 768;
+  const popoverTargetWidth = isPhone
+    ? Math.min(typeof window !== 'undefined' ? window.innerWidth - 32 : 320, 320)
+    : 380;
+  const popoverWidth = popoverSize.w || popoverTargetWidth;
+  const popoverHeight = popoverSize.h || (isPhone ? 220 : 200);
+  const edge = isPhone ? 16 : 8;
   const margin = 12;
   let popStyle: React.CSSProperties;
   if (step.selector && rect && typeof window !== 'undefined') {
+    // On phones, side-anchored popovers never have room - flip to top/bottom.
+    const placement = isPhone && (step.placement === 'left' || step.placement === 'right')
+      ? (rect.top > window.innerHeight / 2 ? 'top' : 'bottom')
+      : step.placement;
     let top = 0;
     let left = 0;
-    switch (step.placement) {
+    switch (placement) {
       case 'top':
         top = rect.top - margin - popoverHeight;
         left = rect.left + rect.width / 2 - popoverWidth / 2;
@@ -282,7 +293,7 @@ export function OnboardingTour({ forceOpen, onClose }: OnboardingTourProps = {})
 
   return (
     <div className="fixed inset-0 z-[60] pointer-events-none" role="dialog" aria-label="Onboarding tour" aria-modal="false">
-      {/* Soft dim — pointer-events-none so the user can still interact
+      {/* Soft dim - pointer-events-none so the user can still interact
           with the highlighted element if they want. */}
       <div className="absolute inset-0 bg-black/30 backdrop-blur-[1px]" />
 
@@ -304,7 +315,7 @@ export function OnboardingTour({ forceOpen, onClose }: OnboardingTourProps = {})
       <div
         ref={popoverRef}
         className="absolute pointer-events-auto rounded-2xl border border-border bg-popover text-popover-foreground shadow-xl p-4"
-        style={{ ...popStyle, width: 380 }}
+        style={{ ...popStyle, width: popoverTargetWidth }}
       >
         <div className="flex items-start gap-3">
           <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary/10 text-primary shrink-0">

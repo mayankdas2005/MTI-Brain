@@ -32,7 +32,7 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 
 /** Item shape used across both the unfiltered list and the search list.
  *  Backend search returns `SearchResult` (with matched_terms), the
- *  unfiltered listing returns `ThreadSummary` — we render the same row
+ *  unfiltered listing returns `ThreadSummary` - we render the same row
  *  shape for both, and pass matched_terms through when present. */
 type StarredRow = {
   id: string;
@@ -72,7 +72,7 @@ function fromSearchResult(r: SearchResult): StarredRow {
 }
 
 /**
- * Starred — full-page surface for the user's saved/important threads.
+ * Starred - full-page surface for the user's saved/important threads.
  *
  * Search uses the backend `/chat/recents?starred=true&search=...` so it
  * matches the typo-tolerant FTS + Levenshtein + trigram pipeline that
@@ -172,7 +172,7 @@ export default function StarredPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -185,7 +185,7 @@ export default function StarredPage() {
           </div>
         </div>
 
-        {/* Filter + sort — only when there's something to filter */}
+        {/* Filter + sort - only when there's something to filter */}
         {(starred.length > 0 || isSearching) && (
           <div className="flex flex-col sm:flex-row gap-3 mb-4">
             <div className="relative flex-1">
@@ -293,7 +293,7 @@ export default function StarredPage() {
                           })}
                         </p>
                       )}
-                      <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                      <p className="text-xs text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5">
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <span className="cursor-default">

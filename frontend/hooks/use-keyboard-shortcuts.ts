@@ -13,7 +13,7 @@ interface KeyboardShortcuts {
   'cmd-enter'?: () => void;
   'escape'?: () => void;
   /** Plain `?` opens the keyboard cheat sheet. Does NOT fire from form
-   *  tags — the user typing "?" in the composer should not pop a dialog. */
+   *  tags - the user typing "?" in the composer should not pop a dialog. */
   'question-mark'?: () => void;
   /** Plain `/` focuses search/palette. Same form-tag rule as `?`. */
   'slash'?: () => void;
@@ -33,7 +33,7 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
   const ref = useRef(shortcuts);
   ref.current = shortcuts;
 
-  // All modified shortcuts opt into firing from form fields — these are
+  // All modified shortcuts opt into firing from form fields - these are
   // global navigation/action bindings the user expects to work regardless
   // of focus context.
   const opts = { enableOnFormTags: true, preventDefault: true } as const;
@@ -52,7 +52,7 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
   useHotkeys('mod+enter', () => ref.current['cmd-enter']?.(), opts);
   useHotkeys('shift+/', () => ref.current['question-mark']?.(), singleKeyOpts);
   useHotkeys('/', () => ref.current['slash']?.(), singleKeyOpts);
-  // Escape intentionally does NOT preventDefault — Radix dialogs rely on
+  // Escape intentionally does NOT preventDefault - Radix dialogs rely on
   // Esc to close themselves, and we want that to keep working.
   useHotkeys(
     'escape',

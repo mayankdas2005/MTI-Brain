@@ -5,10 +5,12 @@ import { CollapsedSidebar } from '@/components/collapsed-sidebar';
 import { Topbar } from '@/components/topbar';
 import { SearchModal } from '@/components/search-modal';
 import { ShortcutsDialog } from '@/components/shortcuts-dialog';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useEffect, useState, startTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { isAuthenticated, getStoredUser } from '@/lib/auth';
 import { useUIStore } from '@/lib/store/ui';
+import { useIsMobile, useIsTablet } from '@/hooks/use-mobile';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { useSearchStore } from '@/lib/store/search';
 import { useThreadStore } from '@/lib/store/threads';
@@ -40,6 +42,29 @@ export default function AuthenticatedLayout({
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen);
   const toggleShortcuts = useUIStore((s) => s.toggleShortcuts);
   const [creditsOpen, setCreditsOpen] = useState(false);
+
+  const isMobile = useIsMobile();
+  const isTablet = useIsTablet();
+  const mobileSidebarOpen = useUIStore((s) => s.mobileSidebarOpen);
+  const setMobileSidebarOpen = useUIStore((s) => s.setMobileSidebarOpen);
+  const tabletOverlayOpen = useUIStore((s) => s.tabletSidebarOverlayOpen);
+  const setTabletOverlayOpen = useUIStore((s) => s.setTabletSidebarOverlayOpen);
+
+  // First-paint guard: useIsMobile/useIsTablet return false during SSR and on
+  // the very first client render, which would briefly flash the desktop
+  // sidebar on phones. Render a neutral placeholder for one frame instead.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // Close any open mobile/tablet sheets if the user resizes back into desktop
+  // range - otherwise the sheet stays open invisibly and reappears next time
+  // the viewport drops below md.
+  useEffect(() => {
+    if (!isMobile && !isTablet) {
+      if (mobileSidebarOpen) setMobileSidebarOpen(false);
+      if (tabletOverlayOpen) setTabletOverlayOpen(false);
+    }
+  }, [isMobile, isTablet, mobileSidebarOpen, tabletOverlayOpen, setMobileSidebarOpen, setTabletOverlayOpen]);
 
   // Cross-context stream-completion notifications. Routes each completion
   // to the right channel based on tab visibility and current route:
@@ -164,7 +189,7 @@ export default function AuthenticatedLayout({
       }
 
       // Skip if user is typing in an input (only matters for the easter
-      // eggs / nav shortcuts below — Cmd+/ is handled above unconditionally).
+      // eggs / nav shortcuts below - Cmd+/ is handled above unconditionally).
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
@@ -230,7 +255,7 @@ export default function AuthenticatedLayout({
 
   return (
     <div className="flex h-screen bg-background overflow-hidden" suppressHydrationWarning>
-      {/* Skip link — visually hidden until keyboard-focused. Lets SR /
+      {/* Skip link - visually hidden until keyboard-focused. Lets SR /
           keyboard users jump straight to the page content without
           tabbing through every sidebar item first. */}
       <a
@@ -240,7 +265,26 @@ export default function AuthenticatedLayout({
         Skip to main content
       </a>
 
-      {sidebarOpen ? (
+      {!mounted ? (
+        <div aria-hidden className="hidden md:block w-12 lg:w-[280px] shrink-0" />
+      ) : isMobile ? (
+        <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
+          <SheetContent side="left" className="p-0 w-[88%] sm:max-w-sm border-r-0 bg-sidebar">
+            <SheetTitle className="sr-only">Navigation</SheetTitle>
+            <Sidebar />
+          </SheetContent>
+        </Sheet>
+      ) : isTablet ? (
+        <>
+          <CollapsedSidebar />
+          <Sheet open={tabletOverlayOpen} onOpenChange={setTabletOverlayOpen}>
+            <SheetContent side="left" className="p-0 w-[320px] border-r-0 bg-sidebar">
+              <SheetTitle className="sr-only">Navigation</SheetTitle>
+              <Sidebar />
+            </SheetContent>
+          </Sheet>
+        </>
+      ) : sidebarOpen ? (
         <div className="w-[280px] shrink-0 transition-all duration-200 ease-in-out overflow-hidden">
           <Sidebar />
         </div>

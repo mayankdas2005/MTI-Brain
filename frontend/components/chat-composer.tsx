@@ -4,7 +4,12 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useThreadStore } from '@/lib/store/threads';
 import { useUIStore } from '@/lib/store/ui';
-import { ArrowUp, Square } from 'lucide-react';
+import { ArrowUp, Square, BrainCircuit } from 'lucide-react';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { getLastVisibleAssistantConvId } from '@/lib/utils/conversation-tree';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
@@ -22,14 +27,20 @@ export function ChatComposer() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [input, setInput] = useState('');
   // Start at index 0 so SSR and the first client render agree (Math.random()
-  // in the initializer hydrate-mismatches — server and browser pick different
+  // in the initializer hydrate-mismatches - server and browser pick different
   // indices). Randomize once after mount in the effect below.
   const [ghostIdx, setGhostIdx] = useState(0);
   const [ghostVisible, setGhostVisible] = useState(true);
+  // Seed from pendingDeepAnalysis so the toggle stays ON when the user
+  // enabled Deep Analysis on /new and the first message was auto-fired.
+  const [deepAnalysis, setDeepAnalysis] = useState(
+    () => useThreadStore.getState().pendingDeepAnalysis,
+  );
 
   const currentThreadId = useThreadStore((s) => s.currentThreadId);
   const isStreaming = useThreadStore((s) => s.isStreaming);
   const pendingQuestion = useThreadStore((s) => s.pendingQuestion);
+  const pendingDeepAnalysis = useThreadStore((s) => s.pendingDeepAnalysis);
   const askQuestion = useThreadStore((s) => s.askQuestion);
   const stopGeneration = useThreadStore((s) => s.stopGeneration);
   const setPendingQuestion = useThreadStore((s) => s.setPendingQuestion);
@@ -124,8 +135,8 @@ export function ChatComposer() {
     const key = `${currentThreadId}:${pendingQuestion}`;
     if (pendingHandled.current === key) return;
     pendingHandled.current = key;
-    askQuestion(currentThreadId, pendingQuestion);
-  }, [currentThreadId, pendingQuestion, askQuestion]);
+    askQuestion(currentThreadId, pendingQuestion, undefined, undefined, pendingDeepAnalysis);
+  }, [currentThreadId, pendingQuestion, pendingDeepAnalysis, askQuestion]);
 
   const handleStop = () => {
     if (currentThreadId) {
@@ -213,16 +224,18 @@ export function ChatComposer() {
       if (!input.trim() || !currentThreadId || isStreaming) return;
 
       const question = input.trim();
+      const wasDeepAnalysis = deepAnalysis;
       setInput('');
       void clearDraft(currentThreadId);
-      // Silently track active days — gates the install-prompt eligibility.
+      // Silently track active days - gates the install-prompt eligibility.
       useActivityStore.getState().recordQuestion();
       track(Events.QuestionAsked, {
         thread_id: currentThreadId,
         is_followup: !!lastAssistantConvId,
         length: question.length,
+        deep_analysis: wasDeepAnalysis,
       });
-      await askQuestion(currentThreadId, question, lastAssistantConvId);
+      await askQuestion(currentThreadId, question, lastAssistantConvId, undefined, wasDeepAnalysis);
     },
     [
       input,
@@ -230,6 +243,7 @@ export function ChatComposer() {
       isStreaming,
       askQuestion,
       lastAssistantConvId,
+      deepAnalysis,
       slashOpen,
       slashMatches,
       slashIndex,
@@ -245,7 +259,7 @@ export function ChatComposer() {
     const items = Array.from(e.clipboardData?.items ?? []);
     if (items.some((it) => it.kind === 'file' && it.type.startsWith('image/'))) {
       e.preventDefault();
-      toast.info('File attachments are coming soon — paste text only for now.', {
+      toast.info('File attachments are coming soon - paste text only for now.', {
         id: 'paste-attachment',
       });
     }
@@ -294,7 +308,12 @@ export function ChatComposer() {
   const canSend = input.trim().length > 0 && !!currentThreadId && !isStreaming;
 
   return (
-    <div className="px-4 pb-4 pt-2">
+    <div
+      className="px-4 pt-2"
+      style={{
+        paddingBottom: 'max(1rem, env(safe-area-inset-bottom), var(--vv-bottom-inset, 0px))',
+      }}
+    >
       <div className="max-w-3xl mx-auto relative">
         {slashOpen && (
           <SlashCommandPopover
@@ -321,7 +340,7 @@ export function ChatComposer() {
             aria-label="Message"
             aria-expanded={slashOpen}
             aria-haspopup="listbox"
-            className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm leading-relaxed focus:outline-none disabled:opacity-50 min-h-[52px]"
+            className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-base md:text-sm leading-relaxed focus:outline-none disabled:opacity-50 min-h-[52px]"
           />
           {input.length === 0 && (
             <span
@@ -334,7 +353,31 @@ export function ChatComposer() {
           )}
 
           <div className="flex items-center justify-between px-3 pb-3">
-            <div className="flex items-center gap-1" />
+            {/* Deep Analysis toggle */}
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-pressed={deepAnalysis}
+                    onClick={() => setDeepAnalysis((v) => !v)}
+                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                      deepAnalysis
+                        ? 'bg-primary/10 text-primary border border-primary/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
+                    }`}
+                  >
+                    <BrainCircuit className="w-3.5 h-3.5 shrink-0" />
+                    <span className="hidden sm:inline">Deep Analysis</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {deepAnalysis
+                    ? 'Deep Analysis on - extended reasoning, slower response'
+                    : 'Deep Analysis - thorough multi-step reasoning for complex questions'}
+                </TooltipContent>
+              </Tooltip>
+            </div>
 
             <div className="relative h-9 w-9 flex items-center justify-center">
               {isStreaming && (
@@ -368,7 +411,7 @@ export function ChatComposer() {
                 <button
                   type="button"
                   onClick={handleStop}
-                  className="relative flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85]"
+                  className="tap-44 relative flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85]"
                 >
                   <Square className="w-3.5 h-3.5 fill-current" />
                 </button>
@@ -377,7 +420,7 @@ export function ChatComposer() {
                   type="button"
                   onClick={() => handleSubmit()}
                   disabled={!canSend}
-                  className="group/btn relative flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring disabled:opacity-25 hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85]"
+                  className="tap-44 group/btn relative flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring disabled:opacity-25 hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85]"
                 >
                   <ArrowUp className="w-4 h-4 transition-transform duration-150 group-hover/btn:-translate-y-0.5" />
                 </button>

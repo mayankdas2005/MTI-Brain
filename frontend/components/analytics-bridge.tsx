@@ -11,7 +11,7 @@ import { ensureInstallListeners } from '@/lib/store/install';
  * registers the service worker.
  *
  * Mounted under `<Providers>` so it runs on every authenticated route.
- * Both jobs no-op cleanly when their dependencies are missing — analytics
+ * Both jobs no-op cleanly when their dependencies are missing - analytics
  * skips when `NEXT_PUBLIC_POSTHOG_KEY` is unset; SW registration skips
  * outside production.
  */

@@ -106,7 +106,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   if (!currentProject) {
     return (
       <div className="h-full overflow-y-auto">
-        <div className="max-w-4xl mx-auto px-6 py-8">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
           <Skeleton className="h-4 w-24 mb-4" />
           <div className="flex items-center gap-3 mb-6">
             <Skeleton className="h-8 w-48" />
@@ -260,14 +260,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                   onClick={() => router.push(`/chat/${thread.id}`)}
                   className="flex-1 text-left p-[var(--density-card-pad)] min-w-0"
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
                     <div className="flex items-center gap-2 min-w-0">
                       <MessageSquare className="w-4 h-4 text-muted-foreground shrink-0" />
                       <span className="text-sm font-medium text-foreground truncate">
                         {thread.title || 'Untitled'}
                       </span>
                     </div>
-                    <span className="text-xs text-muted-foreground/60 shrink-0 ml-4">
+                    <span className="text-xs text-muted-foreground/60 shrink-0 sm:ml-4">
                       {formatDate(thread.created_at)}
                     </span>
                   </div>

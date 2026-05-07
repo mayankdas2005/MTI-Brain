@@ -2,12 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTitle,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+} from '@/components/ui/responsive-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useProjectStore } from '@/lib/store/projects';
@@ -66,11 +67,12 @@ export function EditProjectDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
-        <DialogHeader>
-          <DialogTitle>Edit project</DialogTitle>
-        </DialogHeader>
+    <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
+      <ResponsiveDialogContent className="sm:max-w-md">
+        <ResponsiveDialogHeader>
+          <ResponsiveDialogTitle>Edit project</ResponsiveDialogTitle>
+          <ResponsiveDialogDescription className="sr-only">Update the project name and description</ResponsiveDialogDescription>
+        </ResponsiveDialogHeader>
         <div className="space-y-3">
           <div>
             <label htmlFor="edit-project-name" className="text-sm font-medium text-foreground">Name</label>
@@ -96,20 +98,21 @@ export function EditProjectDialog({
               placeholder="Describe the project..."
               maxLength={2000}
               rows={3}
-              className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+              style={{ maxHeight: '40vh' }}
+              className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-base md:text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
             />
             <p className="text-xs text-muted-foreground mt-1">{description.length}/2000</p>
           </div>
         </div>
-        <DialogFooter>
+        <ResponsiveDialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleSave} disabled={saving || !name.trim()}>
             {saving ? 'Saving...' : 'Save'}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveDialogFooter>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

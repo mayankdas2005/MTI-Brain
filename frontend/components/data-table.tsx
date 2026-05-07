@@ -153,17 +153,18 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
   };
 
   return (
-    <div className="rounded-xl border border-border overflow-hidden max-h-96 flex flex-col">
-      <div className="flex-1 overflow-auto [&_[data-slot=table-container]]:overflow-visible">
+    <div className="rounded-xl border border-border overflow-hidden max-h-[60vh] md:max-h-96 flex flex-col">
+      <div className="flex-1 overflow-auto overscroll-x-contain [&_[data-slot=table-container]]:overflow-visible">
         <Table>
           <TableHeader className="sticky top-0 z-10">
             <TableRow className="border-b border-border">
               {columns.map((col, ci) => {
                 const isNumeric = colTypes[ci] === 'int' || colTypes[ci] === 'float';
+                const isFirst = ci === 0;
                 return (
                   <TableHead
                     key={col}
-                    className={`whitespace-nowrap py-[var(--density-pad-y)] cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background ${isNumeric ? 'text-right' : ''}`}
+                    className={`whitespace-nowrap py-[var(--density-pad-y)] cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background ${isNumeric ? 'text-right' : ''} ${isFirst ? 'sticky left-0 z-20 md:static' : ''}`}
                     onClick={() => handleSort(ci)}
                   >
                     <div className={`flex items-center gap-1 ${isNumeric ? 'justify-end' : ''}`}>
@@ -189,10 +190,12 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
                 {row.map((cell, ci) => {
                   const cellStr = cell === null || cell === undefined ? '' : String(cell);
                   const isNumeric = colTypes[ci] === 'int' || colTypes[ci] === 'float';
+                  const isFirst = ci === 0;
+                  const rowBg = ri % 2 === 1 ? 'bg-[color-mix(in_srgb,var(--muted)_15%,var(--background))]' : 'bg-background';
                   return (
                     <ContextMenu key={ci}>
                       <ContextMenuTrigger asChild>
-                        <TableCell className={`text-xs whitespace-nowrap py-[var(--density-pad-y)] tabular-nums ${isNumeric ? 'text-right font-medium' : ''}`}>
+                        <TableCell className={`text-xs whitespace-nowrap py-[var(--density-pad-y)] tabular-nums ${isNumeric ? 'text-right font-medium' : ''} ${isFirst ? `sticky left-0 z-10 ${rowBg} md:static md:bg-transparent` : ''}`}>
                           {cell === null || cell === undefined ? (
                             <span className="text-muted-foreground/70 italic font-normal" aria-label="empty cell">-</span>
                           ) : isNumeric && typeof cell === 'number' ? (
@@ -219,15 +222,15 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
       </div>
 
       {/* Footer: row count + pagination + download */}
-      <div className="flex items-center justify-between px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
-        <span>
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
+        <span className="min-w-0 truncate">
           {totalRows > rows.length
             ? `Showing ${rows.length} of ${totalRows.toLocaleString('en-US')} rows`
             : rows.length > ROWS_PER_PAGE
               ? `${start + 1}\u2013${Math.min(start + ROWS_PER_PAGE, sortedRows.length)} of ${sortedRows.length.toLocaleString('en-US')} rows`
               : `${totalRows.toLocaleString('en-US')} row${totalRows === 1 ? '' : 's'}`}
         </span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 ml-auto">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

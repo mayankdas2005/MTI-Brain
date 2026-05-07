@@ -95,7 +95,7 @@ export function SlashCommandPopover({
       <p className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-muted-foreground/60 font-medium">
         Slash commands
       </p>
-      <ul className="py-1 max-h-64 overflow-y-auto">
+      <ul className="py-1 max-h-[40vh] md:max-h-64 overflow-y-auto">
         {commands.map((cmd, i) => {
           const Icon = cmd.icon;
           const active = i === activeIndex;
@@ -113,7 +113,7 @@ export function SlashCommandPopover({
               >
                 <Icon className="w-4 h-4 shrink-0 text-muted-foreground" aria-hidden />
                 <span className="font-medium">{cmd.label}</span>
-                <span className="ml-auto text-xs text-muted-foreground/70 truncate">
+                <span className="ml-auto text-xs text-muted-foreground/70 truncate hidden sm:inline">
                   {cmd.description}
                 </span>
               </button>

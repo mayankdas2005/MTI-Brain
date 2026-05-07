@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ResponseTone = Literal["consultant", "operator", "brief"]
+ResponseTone = Literal["analyst", "manager", "director", "executive"]
 
 
 # ─── Requests ───
@@ -40,16 +40,22 @@ class AskRequest(_StrictRequest):
         conversation_id: Optional conversation ID for follow-up questions.
         source_conversation_id: Optional conversation ID of the version
             that spawned this follow-up (for version-branch visibility).
-        response_tone: Response style - 'consultant' (default), 'operator',
-            or 'brief'.
+        response_tone: Response style - 'analyst' (default), 'manager',
+            'director', or 'executive'.
         max_rows: Maximum result rows to return (default 100).
     """
 
     question: str = Field(..., min_length=1, max_length=2000)
     conversation_id: uuid.UUID | None = Field(default=None)
     source_conversation_id: uuid.UUID | None = Field(default=None)
-    response_tone: ResponseTone = Field(default="consultant")
+    response_tone: ResponseTone = Field(default="analyst")
     max_rows: int = Field(default=100, ge=10, le=500)
+    deep_analysis: bool = Field(
+        default=False,
+        description="When true, the pipeline uses extended reasoning to produce "
+        "a more thorough, multi-step answer. Useful for complex cross-account "
+        "or trend questions. Trades speed for depth.",
+    )
     prior_sql: str | None = Field(
         default=None,
         max_length=10000,
@@ -70,7 +76,7 @@ class RetryRequest(_StrictRequest):
 
     conversation_id: uuid.UUID = Field(..., description="The conversation to retry")
     source_conversation_id: uuid.UUID | None = Field(default=None)
-    response_tone: ResponseTone = Field(default="consultant")
+    response_tone: ResponseTone = Field(default="analyst")
     max_rows: int = Field(default=100, ge=10, le=500)
 
 
@@ -89,7 +95,7 @@ class EditRequest(_StrictRequest):
         ..., min_length=1, max_length=2000, description="The edited question"
     )
     source_conversation_id: uuid.UUID | None = Field(default=None)
-    response_tone: ResponseTone = Field(default="consultant")
+    response_tone: ResponseTone = Field(default="analyst")
     max_rows: int = Field(default=100, ge=10, le=500)
 
 

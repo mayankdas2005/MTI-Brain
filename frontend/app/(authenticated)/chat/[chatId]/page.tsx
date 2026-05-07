@@ -174,6 +174,28 @@ export default function ChatPage({ params }: ChatPageProps) {
     prevStreamingRef.current = isStreaming;
   }, [isStreaming, autoScroll]);
 
+  // Visual-viewport keyboard avoidance: when the iOS soft keyboard slides up,
+  // window.visualViewport.height shrinks. We expose the difference as a CSS
+  // variable so the composer can lift above the keyboard. The fallback (0)
+  // means desktop / Android-without-vv-resize is unaffected.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty('--vv-bottom-inset', `${inset}px`);
+    };
+    onResize();
+    vv.addEventListener('resize', onResize);
+    vv.addEventListener('scroll', onResize);
+    return () => {
+      vv.removeEventListener('resize', onResize);
+      vv.removeEventListener('scroll', onResize);
+      document.documentElement.style.removeProperty('--vv-bottom-inset');
+    };
+  }, []);
+
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
@@ -239,7 +261,7 @@ export default function ChatPage({ params }: ChatPageProps) {
             <div className="flex-1" />
           ) : (
             <div className="flex-1 py-6">
-              <div className="max-w-3xl mx-auto">
+              <div className="max-w-3xl mx-auto px-4 md:px-0">
                 <MessageList messages={displayedMessages} threadId={chatId} />
               </div>
             </div>

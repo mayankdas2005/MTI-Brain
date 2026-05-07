@@ -47,14 +47,14 @@ interface AboutPanelProps {
 }
 
 /**
- * About-this-answer panel — slides in from the right, shows the receipts
+ * About-this-answer panel - slides in from the right, shows the receipts
  * for an assistant response: timing, sources, SQL, pipeline trace,
  * resolved filters, and the run identifiers an analyst would need to
  * reproduce or cite the answer.
  *
  * Design intent: every section hides cleanly when its data is missing.
- * The backend is still evolving — fields like metric_owner and
- * source_tables may arrive only once the warehouse integration ships —
+ * The backend is still evolving - fields like metric_owner and
+ * source_tables may arrive only once the warehouse integration ships -
  * so we render forward-compatibly and never invent receipts on the
  * client.
  */
@@ -85,7 +85,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto">
-          {/* Run — always shown; created_at is guaranteed. */}
+          {/* Run - always shown; created_at is guaranteed. */}
           <Section title="Run" icon={Clock}>
             <KV
               label="Answered"
@@ -136,7 +136,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             )}
           </Section>
 
-          {/* Interpretation — only when we have something interpretive to show. */}
+          {/* Interpretation - only when we have something interpretive to show. */}
           {(question || m?.intent || m?.resolved_filters) && (
             <Section title="Interpretation" icon={Target}>
               {question && (
@@ -211,7 +211,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Section>
           )}
 
-          {/* Pipeline trace — collapsible because it can be long. */}
+          {/* Pipeline trace - collapsible because it can be long. */}
           {(m?.pipeline_steps?.length ?? 0) > 0 && (
             <Collapsible title="Pipeline" icon={ListOrdered}>
               <div className="space-y-0.5">
@@ -234,7 +234,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                       <span className="font-mono text-[10px] tabular-nums text-muted-foreground/70 shrink-0">
                         {step.duration_ms != null
                           ? `${(step.duration_ms / 1000).toFixed(2)}s`
-                          : '—'}
+                          : '-'}
                       </span>
                     </div>
                   );
@@ -243,7 +243,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Collapsible>
           )}
 
-          {/* SQL — collapsible, copyable, syntax-highlighted. */}
+          {/* SQL - collapsible, copyable, syntax-highlighted. */}
           {m?.sql && (
             <Collapsible
               title="SQL"
@@ -275,7 +275,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Collapsible>
           )}
 
-          {/* Reasoning trace — full text the LLM produced, for debugging. */}
+          {/* Reasoning trace - full text the LLM produced, for debugging. */}
           {message.reasoning && (
             <Collapsible title="Reasoning trace" icon={ScrollText}>
               <div className="text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto">

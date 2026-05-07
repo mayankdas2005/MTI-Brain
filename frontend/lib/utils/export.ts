@@ -95,7 +95,7 @@ const SQL_LINE_LIMIT = 60;
 
 // ─── Source line ──────────────────────────────────────────────────────────────
 // Citation rendered under every chart, table, or wide-card. Source table
-// names are intentionally omitted — exposing schema in a c-suite deliverable
+// names are intentionally omitted - exposing schema in a c-suite deliverable
 // is undesirable, especially in production where many real tables exist.
 // Each segment drops gracefully when its underlying value is missing.
 function renderSourceLine(
@@ -325,7 +325,7 @@ function renderExchange(
 }
 
 // ─── Metrics ──────────────────────────────────────────────────────────────────
-// Pure derivation from chat data — no IO, no LLM, no hardcoded values.
+// Pure derivation from chat data - no IO, no LLM, no hardcoded values.
 // Anything the cover, exec summary, or methodology page displays comes
 // out of this object.
 interface Metrics {
@@ -388,7 +388,7 @@ function renderCover(
   timestamp: string,
   metrics: Metrics,
 ): string {
-  const stat = (n: number) => (n > 0 ? n.toLocaleString('en-US') : '—');
+  const stat = (n: number) => (n > 0 ? n.toLocaleString('en-US') : '-');
   return `
     <section class="cover">
       <div class="cover-masthead">
@@ -436,7 +436,7 @@ function renderCover(
 
 // ─── Executive Summary ────────────────────────────────────────────────────────
 // Structurally rich, but every value comes from the metrics block.
-// No findings prose — that would require LLM synthesis, which we don't have.
+// No findings prose - that would require LLM synthesis, which we don't have.
 function renderExecSummary(title: string, metrics: Metrics): string {
   const rows: Array<{ label: string; value: string }> = [];
 
@@ -485,7 +485,7 @@ function renderExecSummary(title: string, metrics: Metrics): string {
 }
 
 // ─── Methodology ──────────────────────────────────────────────────────────────
-// Structural boilerplate (acceptable — not data). The two timestamps in
+// Structural boilerplate (acceptable - not data). The two timestamps in
 // "Point in time" are derived from the chat.
 function renderMethodology(metrics: Metrics): string {
   const rows: Array<{ label: string; value: string }> = [];

@@ -79,7 +79,7 @@ export function trackPageview(path: string) {
   });
 }
 
-/** Standardized event names — keep in sync with the funnel builder. */
+/** Standardized event names - keep in sync with the funnel builder. */
 export const Events = {
   ChatCreated: 'chat_created',
   QuestionAsked: 'question_asked',

@@ -17,6 +17,8 @@ import {
   Eye,
   Bell,
   Info,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -69,15 +71,16 @@ const SECTIONS: SectionDef[] = [
 ];
 
 const TONE_OPTIONS: { value: ResponseTone; label: string; description: string }[] = [
-  { value: 'consultant', label: 'Executive', description: 'Analytical, insight-driven summaries' },
-  { value: 'operator', label: 'Operator', description: 'Direct, actionable instructions' },
-  { value: 'brief', label: 'Brief', description: 'Key facts only, minimal narrative' },
+  { value: 'analyst', label: 'Analyst', description: 'Data-driven, detailed breakdowns' },
+  { value: 'manager', label: 'Manager', description: 'Actionable insights with context' },
+  { value: 'director', label: 'Director', description: 'Strategic summaries with key metrics' },
+  { value: 'executive', label: 'Executive', description: 'High-level, decision-ready answers' },
 ];
 
 const ROW_OPTIONS = [50, 100, 200, 500];
 
 /**
- * /settings — full-page surface for all user preferences.
+ * /settings - full-page surface for all user preferences.
  *
  * Two-column layout on desktop (sticky left rail with section nav, right
  * pane with content). Sections deep-link via URL hash and are tracked
@@ -114,7 +117,7 @@ export default function SettingsPage() {
 
   const [query, setQuery] = useState('');
   // Always start at the first section to keep server-rendered HTML stable.
-  // The initial hash (if any) is applied in a post-mount useEffect — reading
+  // The initial hash (if any) is applied in a post-mount useEffect - reading
   // window.location.hash in the initializer would diverge from SSR and
   // cause an aria-current hydration mismatch on the rail.
   const [activeSection, setActiveSection] = useState<SectionId>('response-style');
@@ -128,7 +131,7 @@ export default function SettingsPage() {
   // Response style is topmost.
   const userJumpRef = useRef<number>(0);
 
-  // Whether any preference differs from its default — drives the "Reset"
+  // Whether any preference differs from its default - drives the "Reset"
   // button's enabled state. softPromptShown is a system flag, not a user
   // setting, so it's excluded from the diff.
   const anyNonDefault = useMemo(() => {
@@ -172,7 +175,7 @@ export default function SettingsPage() {
     const visible = new Map<string, number>();
     const observer = new IntersectionObserver(
       (entries) => {
-        // Suppress while a click-driven jump is mid-flight — the smooth
+        // Suppress while a click-driven jump is mid-flight - the smooth
         // scroll tail otherwise overrides what the user just selected.
         if (Date.now() < userJumpRef.current + 800) return;
         // When the page fits in the viewport (no overflow) every section
@@ -230,7 +233,7 @@ export default function SettingsPage() {
 
   // Visibility helper for each row. The `keywords` string is the
   // matchable haystack (label + description + any aliases the search
-  // user might type — e.g. "dark" matches the theme row even though
+  // user might type - e.g. "dark" matches the theme row even though
   // theme isn't in the label).
   const v = (keywords: string) => matches(keywords);
 
@@ -360,36 +363,15 @@ export default function SettingsPage() {
                 <p className="text-xs text-muted-foreground -mt-1 mb-4">
                   How MTI Brain frames its answers.
                 </p>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  {TONE_OPTIONS.filter((o) =>
+                <ToneCarousel
+                  options={TONE_OPTIONS.filter((o) =>
                     matches(`response style tone ${o.label} ${o.description}`),
-                  ).map((opt) => {
-                    const isSelected = responseTone === opt.value;
-                    const isDefault =
-                      opt.value === PREFERENCES_DEFAULTS.responseTone;
-                    return (
-                      <div key={opt.value} className="flex flex-col">
-                        <button
-                          onClick={() => setResponseTone(opt.value)}
-                          aria-pressed={isSelected}
-                          className={`flex-1 rounded-lg px-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background transition-colors ${
-                            isSelected && hydrated
-                              ? 'ring-2 ring-primary bg-primary/10 text-foreground'
-                              : 'bg-muted/50 hover:bg-accent text-muted-foreground'
-                          }`}
-                        >
-                          <span className="text-sm font-medium block">
-                            {opt.label}
-                          </span>
-                          <span className="text-[11px] text-muted-foreground leading-tight block mt-0.5">
-                            {opt.description}
-                          </span>
-                        </button>
-                        <DefaultTag visible={isDefault} />
-                      </div>
-                    );
-                  })}
-                </div>
+                  )}
+                  value={responseTone}
+                  onChange={setResponseTone}
+                  hydrated={hydrated}
+                  defaultValue={PREFERENCES_DEFAULTS.responseTone}
+                />
               </Section>
             )}
 
@@ -597,7 +579,7 @@ export default function SettingsPage() {
             <AlertDialogTitle>Reset all preferences?</AlertDialogTitle>
             <AlertDialogDescription>
               Every setting on this page will return to its default value.
-              This can&apos;t be undone — you&apos;ll need to re-apply any
+              This can&apos;t be undone - you&apos;ll need to re-apply any
               changes manually.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -641,7 +623,252 @@ function DefaultTag({ visible }: { visible: boolean }) {
     </span>
   );
 }
+function ToneCarousel({
+  options,
+  value,
+  onChange,
+  hydrated,
+  defaultValue,
+}: {
+  options: { value: ResponseTone; label: string; description: string }[];
+  value: ResponseTone;
+  onChange: (tone: ResponseTone) => void;
+  hydrated: boolean;
+  defaultValue: ResponseTone;
+}) {
+  // ── Mobile: browse index (separate from selection) ───────────────────────
+  // Arrows/dots update browseIndex only. Clicking the card commits via onChange.
+  // This way only the card matching `value` ever gets the ring.
+  const [browseIndex, setBrowseIndex] = useState(() => {
+    const idx = options.findIndex((o) => o.value === value);
+    return idx === -1 ? 0 : idx;
+  });
 
+  // Keep in sync when the selection changes externally (e.g. Reset to defaults).
+  useEffect(() => {
+    const idx = options.findIndex((o) => o.value === value);
+    if (idx !== -1) setBrowseIndex(idx);
+  }, [value, options]);
+
+  const [animState, setAnimState] = useState<{ key: number; dir: 'left' | 'right' | null }>({
+    key: 0,
+    dir: null,
+  });
+
+  // ── Desktop: paginated 4-up ───────────────────────────────────────────────
+  // 4 per page so the current 4 tones all fit in one row. If more tones are
+  // added later they spill cleanly onto page 2 with the same arrow/dot UI.
+  const PER_PAGE = 4;
+
+  const [desktopPage, setDesktopPage] = useState(() => {
+    const idx = options.findIndex((o) => o.value === value);
+    return idx === -1 ? 0 : Math.floor(idx / PER_PAGE);
+  });
+
+  // If the value changes externally (e.g. "Reset to defaults"), jump pages.
+  useEffect(() => {
+    const idx = options.findIndex((o) => o.value === value);
+    if (idx !== -1) setDesktopPage(Math.floor(idx / PER_PAGE));
+  }, [value, options]);
+
+  if (options.length === 0) return null;
+
+  // Desktop page math
+  const totalPages  = Math.ceil(options.length / PER_PAGE);
+  const hasPrevPage = desktopPage > 0;
+  const hasNextPage = desktopPage < totalPages - 1;
+  const pageOptions = options.slice(desktopPage * PER_PAGE, (desktopPage + 1) * PER_PAGE);
+  const emptySlots  = PER_PAGE - pageOptions.length;
+
+  // Mobile single-card math (uses browseIndex, not value)
+  const opt              = options[browseIndex] ?? options[0];
+  const isBrowsedActive  = hydrated && opt.value === value;
+  const canPrev          = browseIndex > 0;
+  const canNext          = browseIndex < options.length - 1;
+
+  const navigate = (dir: 'prev' | 'next') => {
+    const newIndex = dir === 'prev' ? browseIndex - 1 : browseIndex + 1;
+    if (newIndex < 0 || newIndex >= options.length) return;
+    setAnimState((s) => ({ key: s.key + 1, dir: dir === 'next' ? 'left' : 'right' }));
+    setBrowseIndex(newIndex);
+    // Arrows browse only - clicking the card commits the selection.
+  };
+
+  const animName =
+    animState.dir === 'left'  ? 'toneSlideInRight' :
+    animState.dir === 'right' ? 'toneSlideInLeft'  : undefined;
+
+  const arrowCls =
+    'self-center shrink-0 w-7 h-7 rounded-full flex items-center justify-center ' +
+    'border border-border bg-background hover:bg-accent disabled:invisible ' +
+    'transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+    'focus-visible:ring-offset-2 focus-visible:ring-offset-background';
+
+  const cardCls = (isSelected: boolean) =>
+    isSelected && hydrated
+      ? 'ring-2 ring-primary bg-primary/10 text-foreground border border-primary/40'
+      : 'bg-muted/50 hover:bg-accent text-muted-foreground border border-transparent';
+
+  return (
+    <>
+      <style>{`
+        @keyframes toneSlideInRight {
+          from { transform: translateX(18px); opacity: 0; }
+          to   { transform: translateX(0);    opacity: 1; }
+        }
+        @keyframes toneSlideInLeft {
+          from { transform: translateX(-18px); opacity: 0; }
+          to   { transform: translateX(0);     opacity: 1; }
+        }
+      `}</style>
+
+      {/* ── Desktop / tablet: 4-per-page paginated grid ── */}
+      <div className="hidden md:block">
+        <div className="flex items-end gap-2">
+          {/* Prev arrow - invisible keeps layout stable */}
+          <button
+            onClick={() => setDesktopPage((p) => p - 1)}
+            disabled={!hasPrevPage}
+            aria-label="Previous page"
+            className={arrowCls}
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </button>
+
+          {/* 4-column grid - ghost slots keep card widths even on partial last page */}
+          <div className="flex-1 grid grid-cols-4 gap-2">
+            {pageOptions.map((o) => {
+              const isSelected = value === o.value;
+              const isDefault  = o.value === defaultValue;
+              return (
+                <div key={o.value} className="flex flex-col">
+                  <button
+                    onClick={() => onChange(o.value)}
+                    aria-pressed={isSelected}
+                    className={`flex-1 rounded-xl px-4 py-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background transition-colors ${cardCls(isSelected)}`}
+                  >
+                    <span className="text-sm font-semibold block">{o.label}</span>
+                    <span className="text-[11px] text-muted-foreground leading-tight block mt-0.5">
+                      {o.description}
+                    </span>
+                  </button>
+                  <DefaultTag visible={isDefault} />
+                </div>
+              );
+            })}
+            {Array.from({ length: emptySlots }).map((_, i) => (
+              <div key={`ghost-${i}`} aria-hidden className="flex flex-col">
+                <div className="flex-1" />
+                <DefaultTag visible={false} />
+              </div>
+            ))}
+          </div>
+
+          {/* Next arrow */}
+          <button
+            onClick={() => setDesktopPage((p) => p + 1)}
+            disabled={!hasNextPage}
+            aria-label="Next page"
+            className={arrowCls}
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Page dots - only when multiple pages exist */}
+        {totalPages > 1 && (
+          <div className="flex justify-center gap-1.5 mt-2.5">
+            {Array.from({ length: totalPages }).map((_, i) => (
+              <button
+                key={i}
+                onClick={() => setDesktopPage(i)}
+                aria-label={`Page ${i + 1}`}
+                aria-pressed={i === desktopPage}
+                className={`rounded-full transition-all duration-200 outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  i === desktopPage
+                    ? 'w-4 h-1.5 bg-primary'
+                    : 'w-1.5 h-1.5 bg-muted-foreground/30 hover:bg-muted-foreground/60'
+                }`}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Mobile: one-at-a-time carousel ── */}
+      <div className="md:hidden flex flex-col gap-3 max-w-xs">
+        {/* overflow-hidden on the flex row clips the slide animation;
+            the card wrapper has no overflow-hidden so ring-2 renders on all 4 edges */}
+        <div className="flex items-center gap-2 overflow-hidden">
+          <button
+            onClick={() => navigate('prev')}
+            disabled={!canPrev}
+            aria-label="Previous tone"
+            className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center border border-border bg-background hover:bg-accent disabled:opacity-25 disabled:cursor-not-allowed transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </button>
+
+          {/* p-[2px] gives the ring-2 box-shadow exactly 2px clearance on all sides */}
+          <div className="flex-1 p-[2px]">
+            <div
+              key={animState.key}
+              style={animName ? { animation: `${animName} 0.22s ease-out` } : undefined}
+            >
+              <button
+                onClick={() => onChange(opt.value)}
+                aria-pressed={isBrowsedActive}
+                className={`w-full rounded-xl px-4 py-3.5 text-left outline-none transition-colors ${
+                  isBrowsedActive
+                    ? 'ring-2 ring-primary bg-primary/10 text-foreground'
+                    : 'bg-muted/50 text-muted-foreground'
+                }`}
+              >
+                <span className="text-sm font-semibold block">{opt.label}</span>
+                <span className="text-[11px] text-muted-foreground leading-tight block mt-0.5">
+                  {opt.description}
+                </span>
+              </button>
+              <DefaultTag visible={opt.value === defaultValue} />
+            </div>
+          </div>
+
+          <button
+            onClick={() => navigate('next')}
+            disabled={!canNext}
+            aria-label="Next tone"
+            className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center border border-border bg-background hover:bg-accent disabled:opacity-25 disabled:cursor-not-allowed transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        <div className="flex justify-center gap-1.5">
+          {options.map((o, i) => (
+            <button
+              key={o.value}
+              onClick={() => {
+                if (i === browseIndex) return;
+                setAnimState((s) => ({
+                  key: s.key + 1,
+                  dir: i > browseIndex ? 'left' : 'right',
+                }));
+                setBrowseIndex(i);
+              }}
+              aria-label={`Browse ${o.label}`}
+              aria-pressed={i === browseIndex}
+              className={`rounded-full transition-all duration-200 outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                i === browseIndex
+                  ? 'w-4 h-1.5 bg-primary'
+                  : 'w-1.5 h-1.5 bg-muted-foreground/30 hover:bg-muted-foreground/60'
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
 function Section({
   id,
   title,
@@ -803,11 +1030,11 @@ function NotificationsPanel({
             <p className="text-sm text-foreground">Browser permission</p>
             <p className="text-[11px] text-muted-foreground">
               {permission === 'granted' &&
-                'Allowed — to revoke, click the lock/site-info icon in the address bar.'}
+                'Allowed - to revoke, click the lock/site-info icon in the address bar.'}
               {permission === 'default' &&
-                'Not yet granted — click Enable to allow.'}
+                'Not yet granted - click Enable to allow.'}
               {permission === 'denied' &&
-                "Blocked — change in your browser's site settings to re-enable."}
+                "Blocked - change in your browser's site settings to re-enable."}
               {permission === 'unsupported' &&
                 "Your browser doesn't support desktop notifications."}
             </p>
@@ -838,18 +1065,18 @@ function NotificationsPanel({
 }
 
 const VERSION_QUOTES = [
-  '"We are the architects of the future." — CEO',
-  '"The numbers don\'t lie. But they do tell stories." — CFO',
-  '"Revenue is a team sport." — CRO',
-  '"People first, always." — CPO',
-  '"Operational excellence is not optional." — COO',
-  '"Strategy is nothing without execution." — Chief of Staff',
-  '"The cloud is just someone else\'s computer. Ours runs better." — President, DW/Cloud',
-  '"Ship it. Then make it beautiful." — President, Apps & DE',
-  '"Process is poetry in disguise." — EVP, BPS',
-  '"Solutions aren\'t found — they\'re engineered." — EVP, Industry Solutions',
-  '"Growth is a mindset." — VP, Corp Dev',
-  '"We skipped v1. Too many features, not enough bugs." — QA Team',
+  '"We are the architects of the future." - CEO',
+  '"The numbers don\'t lie. But they do tell stories." - CFO',
+  '"Revenue is a team sport." - CRO',
+  '"People first, always." - CPO',
+  '"Operational excellence is not optional." - COO',
+  '"Strategy is nothing without execution." - Chief of Staff',
+  '"The cloud is just someone else\'s computer. Ours runs better." - President, DW/Cloud',
+  '"Ship it. Then make it beautiful." - President, Apps & DE',
+  '"Process is poetry in disguise." - EVP, BPS',
+  '"Solutions aren\'t found - they\'re engineered." - EVP, Industry Solutions',
+  '"Growth is a mindset." - VP, Corp Dev',
+  '"We skipped v1. Too many features, not enough bugs." - QA Team',
 ];
 
 function AboutBlock() {
@@ -859,7 +1086,7 @@ function AboutBlock() {
   );
   return (
     <div className="text-xs text-muted-foreground space-y-1">
-      <p>MTI Brain — AI-powered decision intelligence</p>
+      <p>MTI Brain - AI-powered decision intelligence</p>
       <p
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}

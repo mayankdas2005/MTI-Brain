@@ -1,4 +1,4 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import Script from 'next/script'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Providers } from '@/components/providers'
@@ -42,8 +42,13 @@ export const metadata: Metadata = {
   appleWebApp: { capable: true, title: 'MTI Brain', statusBarStyle: 'default' },
 };
 
-export const viewport = {
+export const viewport: Viewport = {
   themeColor: '#0a3a73',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  viewportFit: 'cover',
+  userScalable: true,
 };
 
 export default function RootLayout({
@@ -67,7 +72,7 @@ export default function RootLayout({
             lib/store/install.ts on init.
 
             Using `next/script` with `strategy="beforeInteractive"` so the
-            tag is hoisted into the real document <head> before hydration —
+            tag is hoisted into the real document <head> before hydration -
             a raw <script> rendered as a React element doesn't execute on
             the client (React 19 / Next 16 warning). */}
         <Script

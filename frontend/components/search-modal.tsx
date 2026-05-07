@@ -21,11 +21,11 @@ import {
   CommandSeparator,
 } from '@/components/ui/command';
 import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog';
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogTitle,
+  ResponsiveDialogDescription,
+} from '@/components/ui/responsive-dialog';
 import { highlightQueryInText, renderSearchSnippet } from '@/lib/utils/highlight';
 
 export function SearchModal() {
@@ -49,10 +49,10 @@ export function SearchModal() {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && closeModal()}>
-      <DialogTitle className="sr-only">Search</DialogTitle>
-      <DialogDescription className="sr-only">Search chats and projects</DialogDescription>
-      <DialogContent className="overflow-hidden p-0 sm:max-w-xl rounded-2xl border-border/80" showCloseButton={false}>
+    <ResponsiveDialog open={open} onOpenChange={(v) => !v && closeModal()}>
+      <ResponsiveDialogContent className="overflow-hidden p-0 sm:max-w-xl rounded-2xl border-border/80" showCloseButton={false}>
+        <ResponsiveDialogTitle className="sr-only">Search</ResponsiveDialogTitle>
+        <ResponsiveDialogDescription className="sr-only">Search chats and projects</ResponsiveDialogDescription>
         <Command shouldFilter={false} className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[13px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-tight">
           <div className="relative">
             <CommandInput
@@ -66,7 +66,7 @@ export function SearchModal() {
               </div>
             )}
           </div>
-          <CommandList className="max-h-[400px]">
+          <CommandList className="max-h-[60vh] sm:max-h-[400px]">
             {/* Empty state - no results for query */}
             {!loading && hasQuery && !hasResults && (
               <CommandEmpty>No results found for &quot;{query}&quot;</CommandEmpty>
@@ -197,9 +197,9 @@ export function SearchModal() {
             )}
           </CommandList>
 
-          {/* Footer */}
-          <div className="flex items-center justify-between border-t border-border px-3 py-2 text-xs text-muted-foreground/60">
-            <div className="flex items-center gap-3">
+          {/* Footer - kbd hints are pointer-only, hidden on phones */}
+          <div className="hidden sm:flex items-center justify-between border-t border-border px-3 py-2 text-xs text-muted-foreground/60">
+            <div className="flex flex-wrap items-center gap-3">
               <span className="flex items-center gap-1">
                 <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-mono">↑↓</kbd>
                 navigate
@@ -215,7 +215,7 @@ export function SearchModal() {
             </div>
           </div>
         </Command>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 
 /**
  * Returns `true` when the user has set their OS to "reduce motion."
- * Use to gate JS-driven animations (e.g. framer-motion variants) — the CSS
+ * Use to gate JS-driven animations (e.g. framer-motion variants) - the CSS
  * media query in globals.css handles CSS-driven animations automatically.
  */
 export function usePrefersReducedMotion(): boolean {
