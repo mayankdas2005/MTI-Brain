@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNow } from '@/lib/hooks/use-now';
 import { formatRelativeTime } from '@/lib/utils/relative-time';
 import { useRouter } from 'next/navigation';
@@ -17,6 +17,7 @@ import {
   FileText,
   X,
 } from 'lucide-react';
+import { useLabelsStore, LABEL_COLORS } from '@/lib/store/labels';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -71,7 +72,25 @@ export default function ChatsPage() {
 
   const isSearching = search.trim().length > 0;
   const hasSelection = selectedIds.size > 0;
-  const displayedThreads = isSearching ? [] : threads;
+
+  const labelsByThread = useLabelsStore((s) => s.byThread);
+  const fetchAllLabels = useLabelsStore((s) => s.fetchAllLabels);
+  useEffect(() => { fetchAllLabels(); }, [fetchAllLabels]);
+  const [activeLabel, setActiveLabel] = useState<string | null>(null);
+
+  const availableLabels = useMemo(() => {
+    const seen = new Map<string, { label: string; color: string }>();
+    Object.values(labelsByThread).flat().forEach((l) => {
+      if (!seen.has(l.label)) seen.set(l.label, { label: l.label, color: l.color });
+    });
+    return Array.from(seen.values());
+  }, [labelsByThread]);
+
+  const displayedThreads = useMemo(() => {
+    const base = isSearching ? [] : threads;
+    if (!activeLabel) return base;
+    return base.filter((t) => (labelsByThread[t.id] ?? []).some((l) => l.label === activeLabel));
+  }, [isSearching, threads, activeLabel, labelsByThread]);
 
   const fetchThreads = useCallback(async (append = false) => {
     const hasCached = threads.length > 0;
@@ -325,6 +344,33 @@ export default function ChatsPage() {
           )}
         </div>
 
+        {/* Label filter chips */}
+        {availableLabels.length > 0 && !isSearching && (
+          <div className="flex flex-wrap gap-1.5 mb-4 max-h-20 overflow-y-auto">
+            {availableLabels.map(({ label, color }) => {
+              const c = LABEL_COLORS.find((x) => x.name === color) ?? LABEL_COLORS[0];
+              const isActive = activeLabel === label;
+              return (
+                <button
+                  key={label}
+                  onClick={() => setActiveLabel(isActive ? null : label)}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    isActive ? `${c.bg} ${c.text} ring-1 ring-current` : 'bg-muted text-muted-foreground hover:bg-accent hover:text-foreground'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${c.dot}`} />
+                  {label}
+                </button>
+              );
+            })}
+            {activeLabel && (
+              <button onClick={() => setActiveLabel(null)} className="text-xs text-muted-foreground hover:text-foreground px-2">
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Selection bar - hidden when there are no threads, since the bar
             has no useful state to show (and the Select/Cancel button in
             this row only renders when threads exist, which would otherwise
@@ -488,11 +534,16 @@ export default function ChatsPage() {
                 New chat
               </Button>
             </div>
+          ) : displayedThreads.length === 0 && activeLabel ? (
+            <div className="text-center py-10">
+              <p className="text-sm text-muted-foreground">No chats with label &ldquo;{activeLabel}&rdquo;</p>
+              <button onClick={() => setActiveLabel(null)} className="mt-2 text-xs text-primary hover:underline">Clear filter</button>
+            </div>
           ) : (
             <>
-              {threads.map((thread, index) => (
+              {displayedThreads.map((thread, index) => (
                 <div key={thread.id}>
-                  {index > 0 && !selectedIds.has(thread.id) && !selectedIds.has(threads[index - 1]?.id) && (
+                  {index > 0 && !selectedIds.has(thread.id) && !selectedIds.has(displayedThreads[index - 1]?.id) && (
                     <div className="border-t border-border mx-4" />
                   )}
                   <div

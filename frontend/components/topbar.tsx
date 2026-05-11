@@ -2,10 +2,17 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { usePathname } from 'next/navigation';
-import { Star, Search, FileDown, Menu, Link2 } from 'lucide-react';
+import { Star, Search, FileDown, Menu, Link2, Presentation } from 'lucide-react';
 import { exportThread } from '@/lib/utils/export';
 import { exportChartAsCanvas } from '@/components/message-visualization';
+import { exportAsSlide } from '@/lib/utils/export-slide';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { toast } from '@/lib/toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -55,11 +62,7 @@ export function Topbar() {
     useActivityStore.getState().seedFromUpdatedAts(stamps);
   }, [threads.length]);
 
-  const handleExport = async () => {
-    if (!currentThreadId || !currentThreadTitle || !currentMessages.length) return;
-    // Capture every on-screen chart as a PNG data URL keyed by the assistant
-    // message's conversation_id, so renderExchange can embed the rendered
-    // visual in the PDF (vector → PNG via canvas, no extra dep).
+  const captureCharts = async () => {
     const chartImages = new Map<string, string>();
     const chartEls = document.querySelectorAll<HTMLElement>('[data-chart-conv-id]');
     for (const el of Array.from(chartEls)) {
@@ -69,11 +72,29 @@ export function Topbar() {
         const titleEl = el.querySelector('p.text-sm') as HTMLElement | null;
         const canvas = await exportChartAsCanvas(el, titleEl?.textContent ?? undefined);
         chartImages.set(convId, canvas.toDataURL('image/png'));
-      } catch {
-        // Skip charts that fail to capture; export.ts will fall back to the data table.
-      }
+      } catch { /* skip */ }
     }
+    return chartImages;
+  };
+
+  const handleExport = async () => {
+    if (!currentThreadId || !currentThreadTitle || !currentMessages.length) return;
+    const chartImages = await captureCharts();
     exportThread(currentThreadId, currentThreadTitle, currentMessages, chartImages);
+  };
+
+  const handleSlideExport = async () => {
+    if (!currentThreadId || !currentThreadTitle || !currentMessages.length) return;
+    try {
+      const chartImages = await captureCharts();
+      await exportAsSlide({
+        threadTitle: currentThreadTitle,
+        messages: currentMessages,
+        chartImages,
+      });
+    } catch {
+      toast.error('Failed to export slide. Please try again.');
+    }
   };
 
   // Detect platform for shortcut label
@@ -190,19 +211,32 @@ export function Topbar() {
           </Tooltip>
         )}
         {showThreadChrome && currentMessages.length > 0 && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={handleExport}
-                aria-label="Export conversation as PDF"
-                data-onboarding="export-pdf"
-                className="flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] transition-spring active:scale-[0.88]"
-              >
-                <FileDown className="w-3.5 h-3.5" aria-hidden />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Export as PDF</TooltipContent>
-          </Tooltip>
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    aria-label="Export conversation"
+                    data-onboarding="export-pdf"
+                    className="flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] transition-spring active:scale-[0.88]"
+                  >
+                    <FileDown className="w-3.5 h-3.5" aria-hidden />
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Export ({isMac ? '⌘⇧E' : 'Ctrl+Shift+E'})</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" className="min-w-[160px]">
+              <DropdownMenuItem onClick={() => void handleExport()} className="gap-2">
+                <FileDown className="w-4 h-4" />
+                Export as PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void handleSlideExport()} className="gap-2">
+                <Presentation className="w-4 h-4" />
+                Export as Slide
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
         <Tooltip>
           <TooltipTrigger asChild>

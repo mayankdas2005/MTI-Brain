@@ -26,14 +26,36 @@ function isSecureContext(): boolean {
   return window.isSecureContext;
 }
 
+interface SpeechRecognitionResultItem {
+  transcript: string;
+  confidence: number;
+}
+interface SpeechRecognitionResult {
+  readonly length: number;
+  readonly isFinal: boolean;
+  item(index: number): SpeechRecognitionResultItem;
+  [index: number]: SpeechRecognitionResultItem;
+}
+interface SpeechRecognitionResultList {
+  readonly length: number;
+  item(index: number): SpeechRecognitionResult;
+  [index: number]: SpeechRecognitionResult;
+}
+interface SpeechRecognitionEventLocal extends Event {
+  readonly results: SpeechRecognitionResultList;
+}
+interface SpeechRecognitionErrorEventLocal extends Event {
+  readonly error: string;
+}
+
 type SpeechRecognitionInstance = {
   lang: string;
   continuous: boolean;
   interimResults: boolean;
   maxAlternatives: number;
   onstart: (() => void) | null;
-  onresult: ((e: SpeechRecognitionEvent) => void) | null;
-  onerror: ((e: SpeechRecognitionErrorEvent) => void) | null;
+  onresult: ((e: SpeechRecognitionEventLocal) => void) | null;
+  onerror: ((e: SpeechRecognitionErrorEventLocal) => void) | null;
   onend: (() => void) | null;
   start(): void;
   stop(): void;
@@ -102,7 +124,7 @@ export function VoiceInputButton({ onTranscript, disabled, className = '' }: Voi
 
     rec.onstart = () => setListening(true);
 
-    rec.onresult = (e: SpeechRecognitionEvent) => {
+    rec.onresult = (e: SpeechRecognitionEventLocal) => {
       const transcript = Array.from(e.results)
         .map((r) => r[0].transcript)
         .join('');
@@ -110,7 +132,7 @@ export function VoiceInputButton({ onTranscript, disabled, className = '' }: Voi
       onTranscript(transcript, isFinal);
     };
 
-    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+    rec.onerror = (e: SpeechRecognitionErrorEventLocal) => {
       setListening(false);
       showSpeechError(e.error);
     };
@@ -172,7 +194,7 @@ export function VoiceInputButton({ onTranscript, disabled, className = '' }: Voi
       {!listening && (
         <TooltipContent side="top" align="start">
           {httpsRequired
-            ? 'Voice input requires a secure connection — will work when deployed'
+            ? 'Voice input requires a secure connection - will work when deployed'
             : 'Voice input'}
         </TooltipContent>
       )}

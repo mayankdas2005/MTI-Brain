@@ -77,12 +77,54 @@ export function pickRandom<T>(arr: T[], n: number): T[] {
   return shuffled.slice(0, n);
 }
 
-export function pickSuggestions(): Suggestion[] {
-  return [
-    ...pickRandom(SIMPLE, 1),
-    ...pickRandom(COMPLEX, 2),
-    ...pickRandom(ADVANCED, 1),
-  ].sort(() => Math.random() - 0.5);
+/** Score a suggestion against recent thread titles using word-frequency overlap.
+ *  Newer titles are weighted more heavily (recency decay: 1 / (idx + 1)).
+ *  No hardcoded patterns - purely statistical. */
+function scoreByHistory(suggestion: Suggestion, recentTitles: string[]): number {
+  if (recentTitles.length === 0) return 0;
+  const words = new Set(
+    suggestion.prompt.toLowerCase().split(/\W+/).filter((w) => w.length > 3),
+  );
+  let score = 0;
+  recentTitles.forEach((title, idx) => {
+    const weight = 1 / (idx + 1);
+    title.toLowerCase().split(/\W+/).forEach((word) => {
+      if (word.length > 3 && words.has(word)) score += weight;
+    });
+  });
+  return score;
+}
+
+/** Pick the best-matching suggestion from a tier, or fall back to random. */
+function pickBest<T extends Suggestion>(arr: T[], recentTitles: string[]): T {
+  if (recentTitles.length === 0) return arr[Math.floor(Math.random() * arr.length)];
+  return arr.reduce((best, s) =>
+    scoreByHistory(s, recentTitles) > scoreByHistory(best, recentTitles) ? s : best,
+  );
+}
+
+/** Pick 4 suggestions: 1 simple + 2 complex + 1 advanced.
+ *  When recentTitles is provided (from thread history), picks the most
+ *  contextually relevant option from each tier. Falls back to random. */
+export function pickSuggestions(recentTitles: string[] = []): Suggestion[] {
+  // Deduplicate: avoid repeating a suggestion that exactly matches a recent title
+  const recentSet = new Set(recentTitles.map((t) => t.toLowerCase()));
+  const filter = <T extends Suggestion>(arr: T[]) =>
+    arr.filter((s) => !recentSet.has(s.prompt.toLowerCase())).length > 0
+      ? arr.filter((s) => !recentSet.has(s.prompt.toLowerCase()))
+      : arr;
+
+  const simple = recentTitles.length ? pickBest(filter(SIMPLE), recentTitles) : pickRandom(SIMPLE, 1)[0];
+  const complex = recentTitles.length
+    ? filter(COMPLEX)
+        .map((s) => ({ s, score: scoreByHistory(s, recentTitles) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 2)
+        .map(({ s }) => s)
+    : pickRandom(COMPLEX, 2);
+  const advanced = recentTitles.length ? pickBest(filter(ADVANCED), recentTitles) : pickRandom(ADVANCED, 1)[0];
+
+  return [simple, ...complex, advanced].sort(() => Math.random() - 0.5);
 }
 
 export const GHOST_PROMPTS: string[] = [

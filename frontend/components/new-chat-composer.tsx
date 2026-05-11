@@ -4,7 +4,9 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useThreadStore, setThreadCreationGate } from '@/lib/store/threads';
 import { toast } from '@/lib/toast';
-import { ArrowUp, Loader2, BrainCircuit } from 'lucide-react';
+import { ArrowUp, Loader2, BrainCircuit, AudioLines } from 'lucide-react';
+import { usePreferencesStore } from '@/lib/store/preferences';
+import { VoiceInputButton } from './voice-input-button';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
 import { useActivityStore } from '@/lib/store/activity';
@@ -35,7 +37,10 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   // browser pick different indices). Randomize once on mount, then rotate.
   const [ghostIdx, setGhostIdx] = useState(0);
   const [ghostVisible, setGhostVisible] = useState(true);
-  const [deepAnalysis, setDeepAnalysis] = useState(false);
+  const deepAnalysis = usePreferencesStore((s) => s.deepAnalysis ?? false);
+  const setDeepAnalysis = usePreferencesStore((s) => s.setDeepAnalysis);
+  const conversationMode = usePreferencesStore((s) => s.conversationMode ?? false);
+  const setConversationMode = usePreferencesStore((s) => s.setConversationMode);
 
   const createThread = useThreadStore((s) => s.createThread);
   const setPendingQuestion = useThreadStore((s) => s.setPendingQuestion);
@@ -174,7 +179,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
                   <button
                     type="button"
                     aria-pressed={deepAnalysis}
-                    onClick={() => setDeepAnalysis((v) => !v)}
+                    onClick={() => setDeepAnalysis(!deepAnalysis)}
                     className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                       deepAnalysis
                         ? 'bg-primary/10 text-primary border border-primary/30'
@@ -188,6 +193,42 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
                 {!deepAnalysis && (
                   <TooltipContent side="top" align="start">
                     Deep Analysis - thorough multi-step reasoning for complex questions
+                  </TooltipContent>
+                )}
+              </Tooltip>
+              {/* Hidden VoiceInputButton - handles mic events for conversation mode */}
+              <span className="hidden" aria-hidden>
+                <VoiceInputButton
+                  onTranscript={(text, isFinal) => {
+                    setInput(text);
+                    if (isFinal && text.trim()) handleSubmit(text.trim());
+                  }}
+                />
+              </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-pressed={conversationMode}
+                    onClick={() => {
+                      const next = !conversationMode;
+                      setConversationMode(next);
+                      if (next) window.dispatchEvent(new CustomEvent('mti-brain:start-voice'));
+                      else window.dispatchEvent(new CustomEvent('mti-brain:stop-voice'));
+                    }}
+                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                      conversationMode
+                        ? 'bg-primary/10 text-primary border border-primary/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
+                    }`}
+                  >
+                    <AudioLines className={`w-3.5 h-3.5 shrink-0 ${conversationMode ? 'animate-pulse' : ''}`} />
+                    <span className="hidden sm:inline">Conversation</span>
+                  </button>
+                </TooltipTrigger>
+                {!conversationMode && (
+                  <TooltipContent side="top" align="start">
+                    Conversation mode - hands-free
                   </TooltipContent>
                 )}
               </Tooltip>

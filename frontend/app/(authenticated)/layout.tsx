@@ -1,7 +1,6 @@
 'use client';
 
 import { Sidebar } from '@/components/sidebar';
-import { CollapsedSidebar } from '@/components/collapsed-sidebar';
 import { Topbar } from '@/components/topbar';
 import { SearchModal } from '@/components/search-modal';
 import { ShortcutsDialog } from '@/components/shortcuts-dialog';
@@ -22,6 +21,7 @@ import { CreditsOverlay } from '@/components/credits-overlay';
 import { OnboardingTour } from '@/components/onboarding-tour';
 import { InstallPrompt } from '@/components/install-prompt';
 import { LiveAnnouncer } from '@/components/live-announcer';
+import { NavigationProgress } from '@/components/navigation-progress';
 
 function OnboardingTourGate() {
   const replay = useUIStore((s) => s.tourReplay);
@@ -36,7 +36,6 @@ export default function AuthenticatedLayout({
   children: React.ReactNode;
 }) {
   const router = useRouter();
-  const sidebarOpen = useUIStore((state) => state.sidebarOpen);
   const openSearch = useSearchStore((s) => s.openModal);
   const shortcutsOpen = useUIStore((s) => s.shortcutsOpen);
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen);
@@ -298,8 +297,44 @@ export default function AuthenticatedLayout({
 
   if (!authChecked) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <div className="w-5 h-5 rounded-full border-2 border-border border-t-foreground animate-spin" />
+      <div className="relative flex h-screen flex-col items-center justify-center gap-10 bg-background select-none overflow-hidden">
+        {/* Soft ambient glow behind the logo */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 flex items-center justify-center"
+        >
+          <div className="h-80 w-80 rounded-full bg-primary/8 blur-[80px]" />
+        </div>
+
+        {/* Brand logo - gentle breathe */}
+        <div className="relative z-10 animate-brand-pulse">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/milestone-logo-black.png"
+            alt="Milestone"
+            width={180}
+            height={100}
+            className="dark:hidden drop-shadow-sm"
+            draggable={false}
+          />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/milestone-logo-white.png"
+            alt="Milestone"
+            width={180}
+            height={100}
+            className="hidden dark:block drop-shadow-sm"
+            draggable={false}
+          />
+        </div>
+
+        {/* Gradient shimmer track */}
+        <div className="relative z-10 w-44 h-[2px] rounded-full bg-border/60 overflow-hidden">
+          <div className="absolute inset-y-0 animate-shimmer-bar rounded-full" style={{
+            width: '50%',
+            background: 'linear-gradient(90deg, transparent 0%, var(--primary) 50%, transparent 100%)',
+          }} />
+        </div>
       </div>
     );
   }
@@ -322,25 +357,21 @@ export default function AuthenticatedLayout({
         <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
           <SheetContent side="left" className="p-0 w-[88%] sm:max-w-sm border-r-0 bg-sidebar">
             <SheetTitle className="sr-only">Navigation</SheetTitle>
-            <Sidebar />
+            <Sidebar forceExpanded />
           </SheetContent>
         </Sheet>
       ) : isTablet ? (
         <>
-          <CollapsedSidebar />
+          <Sidebar forceCollapsed />
           <Sheet open={tabletOverlayOpen} onOpenChange={setTabletOverlayOpen}>
             <SheetContent side="left" className="p-0 w-[320px] border-r-0 bg-sidebar">
               <SheetTitle className="sr-only">Navigation</SheetTitle>
-              <Sidebar />
+              <Sidebar forceExpanded />
             </SheetContent>
           </Sheet>
         </>
-      ) : sidebarOpen ? (
-        <div className="w-[280px] shrink-0 transition-all duration-200 ease-in-out overflow-hidden">
-          <Sidebar />
-        </div>
       ) : (
-        <CollapsedSidebar />
+        <Sidebar />
       )}
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -356,6 +387,7 @@ export default function AuthenticatedLayout({
       <OnboardingTourGate />
       <InstallPrompt />
       <LiveAnnouncer />
+      <NavigationProgress />
     </div>
   );
 }

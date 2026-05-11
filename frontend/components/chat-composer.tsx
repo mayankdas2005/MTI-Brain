@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useThreadStore, getThreadCreationGate, setThreadCreationGate } from '@/lib/store/threads';
 import { useUIStore } from '@/lib/store/ui';
 import { usePreferencesStore } from '@/lib/store/preferences';
-import { ArrowUp, Square, BrainCircuit, AudioLines } from 'lucide-react';
+import { ArrowUp, Square, BrainCircuit, AudioLines, Bookmark } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -19,6 +19,38 @@ import { track, Events } from '@/lib/analytics';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
 import { VoiceInputButton } from './voice-input-button';
+import { usePlaybookStore } from '@/lib/store/playbook';
+import { PlaybookPopover } from './playbook-popover';
+
+function buildEmailHTML(markdown: string): string {
+  const lines = markdown.split('\n');
+  const htmlLines = lines.map((line) => {
+    if (line.startsWith('### ')) return `<h3 style="margin:12px 0 4px;font-size:14px;">${line.slice(4)}</h3>`;
+    if (line.startsWith('## ')) return `<h2 style="margin:16px 0 6px;font-size:16px;">${line.slice(3)}</h2>`;
+    if (line.startsWith('# ')) return `<h1 style="margin:0 0 12px;font-size:20px;">${line.slice(2)}</h1>`;
+    if (line.startsWith('- ') || line.startsWith('* ')) return `<li style="margin:2px 0;">${line.slice(2)}</li>`;
+    if (line.match(/^\d+\. /)) return `<li style="margin:2px 0;">${line.replace(/^\d+\. /, '')}</li>`;
+    if (line.trim() === '') return '<br/>';
+    return `<p style="margin:4px 0;">${line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>')}</p>`;
+  });
+  return `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.6;color:#1a1a1a;">${htmlLines.join('')}<hr style="margin:16px 0;border:none;border-top:1px solid #e5e5e5;"/><p style="font-size:11px;color:#888;">Shared from MTI Brain</p></div>`;
+}
+
+export function copyAsEmail(markdown: string): void {
+  const html = buildEmailHTML(markdown);
+  const el = document.createElement('div');
+  el.innerHTML = html;
+  el.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none;';
+  document.body.appendChild(el);
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+  document.execCommand('copy');
+  sel?.removeAllRanges();
+  document.body.removeChild(el);
+}
 import { useTTS } from '@/lib/hooks/use-tts';
 import {
   SlashCommandPopover,
@@ -34,19 +66,18 @@ export function ChatComposer() {
   // indices). Randomize once after mount in the effect below.
   const [ghostIdx, setGhostIdx] = useState(0);
   const [ghostVisible, setGhostVisible] = useState(true);
-  // Seed from pendingDeepAnalysis so the toggle stays ON when the user
-  // enabled Deep Analysis on /new and the first message was auto-fired.
-  const [deepAnalysis, setDeepAnalysis] = useState(
-    () => useThreadStore.getState().pendingDeepAnalysis,
-  );
+  // Deep Analysis persists in preferences across conversations.
+  const deepAnalysis = usePreferencesStore((s) => s.deepAnalysis ?? false);
+  const setDeepAnalysis = usePreferencesStore((s) => s.setDeepAnalysis);
 
   const ttsRate = usePreferencesStore((s) => s.ttsRate ?? 1);
   const ttsVoiceURI = usePreferencesStore((s) => s.ttsVoiceURI ?? '');
   const setResponseTone = usePreferencesStore((s) => s.setResponseTone);
   const setMaxResultRows = usePreferencesStore((s) => s.setMaxResultRows);
+  const conversationMode = usePreferencesStore((s) => s.conversationMode ?? false);
+  const setConversationMode = usePreferencesStore((s) => s.setConversationMode);
   const { speak: ttsSpeakFn, stop: ttsStop } = useTTS(ttsRate, ttsVoiceURI);
 
-  const [conversationMode, setConversationMode] = useState(false);
   const prevStreamingRef = useRef(false);
 
   const currentThreadId = useThreadStore((s) => s.currentThreadId);
@@ -188,6 +219,39 @@ export function ChatComposer() {
   const slashOpen = slashMatches.length > 0 && input.startsWith('/');
   const [slashIndex, setSlashIndex] = useState(0);
 
+  // Playbook @ trigger
+  const playbookQueries = usePlaybookStore((s) => s.queries);
+  const fetchPlaybookQueries = usePlaybookStore((s) => s.fetchQueries);
+  const atMatches = useMemo(() => {
+    if (!input.startsWith('@')) return [];
+    const q = input.slice(1).toLowerCase();
+    return q
+      ? playbookQueries.filter((pq) => pq.name.toLowerCase().includes(q))
+      : playbookQueries;
+  }, [input, playbookQueries]);
+  const atOpen = atMatches.length > 0 && input.startsWith('@');
+  const [atIndex, setAtIndex] = useState(0);
+  useEffect(() => { setAtIndex(0); }, [atMatches.length]);
+  useEffect(() => { if (currentThreadId) fetchPlaybookQueries(); }, [currentThreadId, fetchPlaybookQueries]);
+
+  // Save-to-playbook dialog
+  const createPlaybookQuery = usePlaybookStore((s) => s.createQuery);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveQueryName, setSaveQueryName] = useState('');
+  const saveSubmittingRef = useRef(false);
+
+  const handleSavePlaybook = () => {
+    if (!saveQueryName.trim() || saveSubmittingRef.current) return;
+    saveSubmittingRef.current = true;
+    void createPlaybookQuery(saveQueryName.trim(), input.trim())
+      .then(() => {
+        toast.success(`"${saveQueryName.trim()}" saved to Playbook`);
+        setSaveDialogOpen(false);
+      })
+      .catch(() => toast.error('Failed to save.'))
+      .finally(() => { saveSubmittingRef.current = false; });
+  };
+
   // Reset highlight when the candidate set changes.
   useEffect(() => {
     setSlashIndex(0);
@@ -242,6 +306,12 @@ export function ChatComposer() {
         case 'speak':
           if (lastAssistant) {
             ttsSpeakFn(lastAssistant.content);
+          }
+          break;
+        case 'share':
+          if (lastAssistant) {
+            copyAsEmail(lastAssistant.content);
+            toast.success('Email content copied - paste into Outlook, Gmail, or Teams.');
           }
           break;
         case 'export':
@@ -345,6 +415,18 @@ export function ChatComposer() {
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // @ menu (Playbook) navigation
+    if (atOpen) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setAtIndex((i) => (i + 1) % atMatches.length); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setAtIndex((i) => (i - 1 + atMatches.length) % atMatches.length); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const q = atMatches[atIndex];
+        if (q) { setInput(q.query_text); textareaRef.current?.focus(); }
+        return;
+      }
+      if (e.key === 'Escape') { e.preventDefault(); setInput(''); return; }
+    }
     // Slash menu navigation takes priority while it's open.
     if (slashOpen) {
       if (e.key === 'ArrowDown') {
@@ -385,6 +467,14 @@ export function ChatComposer() {
       }}
     >
       <div className="max-w-3xl mx-auto relative">
+        {atOpen && (
+          <PlaybookPopover
+            queries={atMatches}
+            activeIndex={Math.min(atIndex, atMatches.length - 1)}
+            onSelect={(q) => { setInput(q.query_text); textareaRef.current?.focus(); }}
+            onHover={setAtIndex}
+          />
+        )}
         {slashOpen && (
           <SlashCommandPopover
             commands={slashMatches}
@@ -430,7 +520,7 @@ export function ChatComposer() {
                   <button
                     type="button"
                     aria-pressed={deepAnalysis}
-                    onClick={() => setDeepAnalysis((v) => !v)}
+                    onClick={() => setDeepAnalysis(!deepAnalysis)}
                     className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                       deepAnalysis
                         ? 'bg-primary/10 text-primary border border-primary/30'
@@ -447,7 +537,7 @@ export function ChatComposer() {
                   </TooltipContent>
                 )}
               </Tooltip>
-              {/* VoiceInputButton is hidden — conversation mode drives it via window events */}
+              {/* VoiceInputButton is hidden - conversation mode drives it via window events */}
               <span className="hidden" aria-hidden>
                 <VoiceInputButton
                   onTranscript={(text, isFinal) => {
@@ -490,7 +580,53 @@ export function ChatComposer() {
                   </TooltipContent>
                 )}
               </Tooltip>
+
+              {/* Save to Playbook */}
+              {input.trim() && !slashOpen && !atOpen && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => { setSaveQueryName(''); setSaveDialogOpen(true); }}
+                      className="flex items-center justify-center h-8 w-8 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label="Save to Playbook"
+                    >
+                      <Bookmark className="w-3.5 h-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" align="start">Save to Playbook</TooltipContent>
+                </Tooltip>
+              )}
             </div>
+
+            {/* Save-to-Playbook dialog */}
+            {saveDialogOpen && (
+              <div className="absolute inset-x-0 bottom-full mb-2 z-50">
+                <div className="mx-auto max-w-sm rounded-xl border border-border bg-popover shadow-lg p-4 space-y-3">
+                  <p className="text-sm font-medium">Save to Playbook</p>
+                  <input
+                    autoFocus
+                    value={saveQueryName}
+                    onChange={(e) => setSaveQueryName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); handleSavePlaybook(); }
+                      if (e.key === 'Escape') setSaveDialogOpen(false);
+                    }}
+                    placeholder="Name this query..."
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => setSaveDialogOpen(false)} className="text-xs text-muted-foreground hover:text-foreground px-2 py-1">Cancel</button>
+                    <button
+                      onClick={handleSavePlaybook}
+                      className="rounded-lg bg-primary text-primary-foreground text-xs px-3 py-1.5 hover:bg-primary/90"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="relative h-9 w-9 flex items-center justify-center">
               {isStreaming && (

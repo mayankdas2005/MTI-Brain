@@ -117,21 +117,23 @@ export function MessageList({ messages, threadId }: MessageListProps) {
   );
 
   const reduced = usePrefersReducedMotion();
-  // Subtle entrance: new turns fade and slide up. Skipped entirely for users
-  // who opted into reduced motion.
-  const enterProps = reduced
-    ? {}
-    : {
-        initial: { opacity: 0, y: 6 },
-        animate: { opacity: 1, y: 0 },
-        transition: { duration: 0.18, ease: 'easeOut' as const },
-      };
 
   return (
     <div className="space-y-4">
       {turns.map((turn, i) =>
         visibleTurns[i] ? (
-          <motion.div key={turn.versions.join(',')} {...enterProps}>
+          <motion.div
+            key={turn.versions.join(',')}
+            {...(reduced ? {} : {
+              initial: { opacity: 0, y: 6 },
+              animate: { opacity: 1, y: 0 },
+              transition: {
+                duration: 0.18,
+                ease: 'easeOut' as const,
+                delay: Math.min(i * 0.04, 0.32),
+              },
+            })}
+          >
             <ConversationTurn
               turn={turn}
               threadId={threadId}

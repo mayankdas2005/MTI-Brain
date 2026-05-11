@@ -1,3 +1,4 @@
+import { startTransition } from 'react';
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import * as api from '../api';
@@ -932,11 +933,16 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     // (happy path render) AND streamingMessages (survives any clear of
     // currentMessages that happens while navigating away, so returning
     // to the streaming thread shows it live).
+    // Streaming chunk updates are low-priority - wrapping in startTransition
+    // lets React interrupt them when the user navigates, so tab switches feel
+    // instant even during active generation.
     const mapMsgs = (mapper: (m: Message) => Message) => {
-      set((state) => ({
-        currentMessages: state.currentMessages.map(mapper),
-        streamingMessages: state.streamingMessages.map(mapper),
-      }));
+      startTransition(() => {
+        set((state) => ({
+          currentMessages: state.currentMessages.map(mapper),
+          streamingMessages: state.streamingMessages.map(mapper),
+        }));
+      });
     };
 
     const handlers: SSEHandlers = {
@@ -1264,11 +1270,16 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       abortController: controller,
     });
 
+    // Streaming chunk updates are low-priority - wrapping in startTransition
+    // lets React interrupt them when the user navigates, so tab switches feel
+    // instant even during active generation.
     const mapMsgs = (mapper: (m: Message) => Message) => {
-      set((state) => ({
-        currentMessages: state.currentMessages.map(mapper),
-        streamingMessages: state.streamingMessages.map(mapper),
-      }));
+      startTransition(() => {
+        set((state) => ({
+          currentMessages: state.currentMessages.map(mapper),
+          streamingMessages: state.streamingMessages.map(mapper),
+        }));
+      });
     };
 
     const handlers: SSEHandlers = {
@@ -1508,11 +1519,16 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       abortController: controller,
     });
 
+    // Streaming chunk updates are low-priority - wrapping in startTransition
+    // lets React interrupt them when the user navigates, so tab switches feel
+    // instant even during active generation.
     const mapMsgs = (mapper: (m: Message) => Message) => {
-      set((state) => ({
-        currentMessages: state.currentMessages.map(mapper),
-        streamingMessages: state.streamingMessages.map(mapper),
-      }));
+      startTransition(() => {
+        set((state) => ({
+          currentMessages: state.currentMessages.map(mapper),
+          streamingMessages: state.streamingMessages.map(mapper),
+        }));
+      });
     };
 
     const handlers: SSEHandlers = {

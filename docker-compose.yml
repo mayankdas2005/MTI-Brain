@@ -11,12 +11,13 @@ services:
     env_file: ./backend/.env
     networks:
       - app_net
+      - db_net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request, sys; r=urllib.request.urlopen('http://localhost:8000/health', timeout=25); sys.exit(0 if r.status < 500 else 1)\" 2>/dev/null || exit 1"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      timeout: 30s
+      retries: 5
+      start_period: 90s
     deploy:
       resources:
         limits:
@@ -42,7 +43,7 @@ services:
     networks:
       - app_net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000 || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -83,3 +84,5 @@ networks:
   app_net:
     name: mti-brain-app
     driver: bridge
+  db_net:
+    external: true

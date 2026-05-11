@@ -35,10 +35,21 @@ import {
   Sparkles,
   Bell,
   Newspaper,
+  Tag,
 } from 'lucide-react';
 import { WhatsNewDialog, useChangelogUnread } from './whats-new-dialog';
+import { useLabelsStore, LABEL_COLORS } from '@/lib/store/labels';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import { logout, getStoredUser, getStoredToken, userFromToken, setStoredUser } from '@/lib/auth';
 import { renderHighlightedSnippet } from '@/lib/utils/highlight';
+import { cn } from '@/lib/utils';
+import { useIsTablet } from '@/hooks/use-mobile';
 import { track, Events } from '@/lib/analytics';
 import { useInstallStore } from '@/lib/store/install';
 import {
@@ -139,6 +150,21 @@ function ThreadItem({
   const [inlineRenaming, setInlineRenaming] = useState(false);
   const [inlineDraft, setInlineDraft] = useState(title);
   const inlineInputRef = useRef<HTMLInputElement>(null);
+  const [labelPickerOpen, setLabelPickerOpen] = useState(false);
+  const [newLabelName, setNewLabelName] = useState('');
+  const [newLabelColor, setNewLabelColor] = useState('blue');
+  const threadLabels = useLabelsStore((s) => s.byThread[thread.id] ?? []);
+  const addLabel = useLabelsStore((s) => s.addLabel);
+  const removeLabel = useLabelsStore((s) => s.removeLabel);
+  const labelSubmittingRef = useRef(false);
+
+  const handleAddLabel = () => {
+    if (!newLabelName.trim() || labelSubmittingRef.current) return;
+    labelSubmittingRef.current = true;
+    void addLabel(thread.id, newLabelName.trim(), newLabelColor)
+      .then(() => setLabelPickerOpen(false))
+      .finally(() => { labelSubmittingRef.current = false; });
+  };
   const starThread = useThreadStore((s) => s.starThread);
   const deleteThread = useThreadStore((s) => s.deleteThread);
   const renameThread = useThreadStore((s) => s.renameThread);
@@ -254,7 +280,20 @@ function ThreadItem({
               onMouseEnter={() => router.prefetch(`/chat/${thread.id}`)}
               className="flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
             >
-              <p className="text-sm font-medium truncate">{title}</p>
+              <div className="flex items-center gap-1.5 min-w-0">
+                <p className="text-sm font-medium truncate">{title}</p>
+                {threadLabels.slice(0, 3).map((lbl) => {
+                  const color = LABEL_COLORS.find((c) => c.name === lbl.color) ?? LABEL_COLORS[0];
+                  return (
+                    <Tooltip key={lbl.id}>
+                      <TooltipTrigger asChild>
+                        <span className={`shrink-0 w-2 h-2 rounded-full ${color.dot}`} />
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{lbl.label}</TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+              </div>
               <p className="text-xs opacity-55 mt-0.5" suppressHydrationWarning>
                 {formatRelativeTime(thread.updated_at, now)}
               </p>
@@ -302,6 +341,10 @@ function ThreadItem({
                 <FolderInput className="w-3.5 h-3.5" />
                 Add to project
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => { setNewLabelName(''); setNewLabelColor('blue'); setLabelPickerOpen(true); }} className="gap-2">
+                <Tag className="w-3.5 h-3.5" />
+                Add label
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => setDeleteOpen(true)}
@@ -312,6 +355,53 @@ function ThreadItem({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          <Dialog open={labelPickerOpen} onOpenChange={(o) => { if (!o) setLabelPickerOpen(false); }}>
+            <DialogContent className="sm:max-w-sm p-6 gap-0">
+              <DialogTitle className="text-base font-semibold mb-1">Add label</DialogTitle>
+              <DialogDescription className="sr-only">Add a colored label to this conversation</DialogDescription>
+              <div className="flex gap-2 flex-wrap mb-4">
+                {LABEL_COLORS.map((c) => (
+                  <button
+                    key={c.name}
+                    onClick={() => setNewLabelColor(c.name)}
+                    className={`w-6 h-6 rounded-full ${c.dot} ring-2 transition-all ${newLabelColor === c.name ? 'ring-foreground ring-offset-2' : 'ring-transparent'}`}
+                    aria-label={c.name}
+                  />
+                ))}
+              </div>
+              <input
+                autoFocus
+                value={newLabelName}
+                onChange={(e) => setNewLabelName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddLabel(); } }}
+                placeholder="Label name..."
+                className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              {threadLabels.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-3 max-h-24 overflow-y-auto">
+                  {threadLabels.map((lbl) => {
+                    const color = LABEL_COLORS.find((c) => c.name === lbl.color) ?? LABEL_COLORS[0];
+                    return (
+                      <span key={lbl.id} className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs ${color.bg} ${color.text}`}>
+                        {lbl.label}
+                        <button onClick={() => void removeLabel(lbl.id, thread.id)} className="hover:opacity-70 ml-0.5">×</button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <DialogFooter className="mt-4">
+                <button onClick={() => setLabelPickerOpen(false)} className="text-sm text-muted-foreground hover:text-foreground px-3 py-2">Cancel</button>
+                <button
+                  onClick={handleAddLabel}
+                  className="rounded-xl bg-primary text-primary-foreground text-sm px-4 py-2 hover:bg-primary/90"
+                >
+                  Add
+                </button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
@@ -354,27 +444,44 @@ function ThreadItem({
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { forceExpanded?: boolean; forceCollapsed?: boolean } = {}) {
   const router = useRouter();
   const pathname = usePathname() ?? '';
-  // Highlight the "Chats" nav only on the chats LIST page. On a specific
-  // /chat/[id] the active thread row in Recents/Starred already shows the
-  // current location - adding a second highlight on the nav button reads
-  // as a double-selection bug. Same is intentionally NOT done for
-  // Projects: project rows in the sidebar don't have their own active
-  // state, so the Projects nav is the only visual cue on /projects/[id].
   const onChats = pathname === '/chats';
   const onProjects = pathname.startsWith('/projects');
   const { theme, setTheme } = useTheme();
+  const isTablet = useIsTablet();
+  const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const closeMobileSidebar = useUIStore((s) => s.setMobileSidebarOpen);
-  const closeTabletOverlay = useUIStore((s) => s.setTabletSidebarOverlayOpen);
+  const setTabletOverlayOpen = useUIStore((s) => s.setTabletSidebarOverlayOpen);
+  const closeTabletOverlay = setTabletOverlayOpen;
+
+  // isOpen: forceExpanded wins over store, forceCollapsed wins over store
+  const isOpen = forceExpanded ? true : forceCollapsed ? false : sidebarOpen;
+
   const closeOnNav = () => {
     closeMobileSidebar(false);
     closeTabletOverlay(false);
   };
+
+  const handleToggle = () => {
+    if (!isOpen) {
+      if (isTablet) setTabletOverlayOpen(true);
+      else toggleSidebar();
+    } else {
+      if (forceExpanded) {
+        if (isTablet) setTabletOverlayOpen(false);
+        else closeMobileSidebar(false);
+      } else {
+        toggleSidebar();
+      }
+    }
+  };
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const changelogUnread = useChangelogUnread();
+  const fetchAllLabels = useLabelsStore((s) => s.fetchAllLabels);
+  useEffect(() => { fetchAllLabels(); }, [fetchAllLabels]);
 
   const [user, setUser] = useState<ReturnType<typeof getStoredUser>>(null);
 
@@ -503,98 +610,161 @@ export function Sidebar() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-sidebar border-sidebar-border w-full md:w-[280px]" data-onboarding="sidebar">
+    <div className={cn("flex flex-col h-full bg-sidebar border-r border-sidebar-border overflow-hidden shrink-0 transition-[width] duration-200", isOpen ? "w-[280px]" : "w-12")} data-onboarding="sidebar">
       {/* Header */}
       <div
-        className="px-3 h-12 flex items-center justify-between border-b border-sidebar-border"
+        className="px-3 h-12 flex items-center justify-between border-b border-sidebar-border shrink-0"
         style={{ backgroundColor: 'var(--header)' }}
       >
-        <Image
-          src="/milestone-logo-white.png"
-          alt="Milestone"
-          width={0}
-          height={0}
-          sizes="168px"
-          style={{ width: '168px', height: '55px', objectFit: 'contain', objectPosition: 'left' }}
-          loading="eager"
-          priority
-          className="select-none"
-        />
+        {isOpen ? (
+          <Image
+            src="/milestone-logo-white.png"
+            alt="Milestone"
+            width={0}
+            height={0}
+            sizes="168px"
+            style={{ width: '168px', height: '55px', objectFit: 'contain', objectPosition: 'left' }}
+            loading="eager"
+            priority
+            className="select-none"
+          />
+        ) : (
+          <Image
+            src="/milestone-icon.png"
+            alt="Milestone"
+            width={0}
+            height={0}
+            sizes="26px"
+            style={{ width: '26px', height: 'auto', objectFit: 'contain' }}
+            className="select-none"
+          />
+        )}
         <button
           type="button"
-          className="tap-44 flex h-8 w-8 items-center justify-center text-[var(--header-foreground)]"
-          onClick={toggleSidebar}
-          aria-label="Close sidebar"
+          className="tap-44 flex h-8 w-8 items-center justify-center text-[var(--header-foreground)] shrink-0"
+          onClick={handleToggle}
+          aria-label={isOpen ? 'Close sidebar' : 'Open sidebar'}
         >
-          <PanelLeft className="w-[18px] h-[18px]" />
+          <PanelLeft className={cn("w-[18px] h-[18px] transition-transform duration-200", !isOpen && "rotate-180")} />
         </button>
       </div>
 
       {/* New Chat */}
-      <div className="px-3 pt-3 pb-2">
-        <Button
-          onClick={handleNewChat}
-          data-onboarding="new-chat"
-          className="w-full h-10 rounded-xl justify-center gap-2 font-semibold active:scale-[0.98] transition-transform"
-          variant="outline"
-        >
-          <Plus className="w-[18px] h-[18px]" />
-          New Chat
-        </Button>
+      <div className="px-3 pt-3 pb-2 shrink-0">
+        {isOpen ? (
+          <Button
+            onClick={handleNewChat}
+            data-onboarding="new-chat"
+            className="w-full h-10 rounded-xl justify-center gap-2 font-semibold active:scale-[0.98] transition-transform"
+            variant="outline"
+          >
+            <Plus className="w-[18px] h-[18px]" />
+            New Chat
+          </Button>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                onClick={handleNewChat}
+                data-onboarding="new-chat"
+                variant="ghost"
+                size="icon"
+                className="h-10 w-10 tap-44 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent mx-auto flex"
+              >
+                <Plus className="w-[18px] h-[18px]" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={6}>New chat</TooltipContent>
+          </Tooltip>
+        )}
       </div>
 
       {/* Search - opens global search modal */}
-      <div className="px-3 pb-2">
-        <button
-          onClick={() => useSearchStore.getState().openModal()}
-          aria-label="Open search"
-          className="w-full flex items-center gap-2 px-2.5 h-9 rounded-xl border border-sidebar-border bg-sidebar text-sm text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-        >
-          <Search className="w-4 h-4 shrink-0" />
-          <span>Search...</span>
-        </button>
+      <div className="px-3 pb-2 shrink-0">
+        {isOpen ? (
+          <button
+            onClick={() => useSearchStore.getState().openModal()}
+            aria-label="Open search"
+            className="w-full flex items-center gap-2 px-2.5 h-9 rounded-xl border border-sidebar-border bg-sidebar text-sm text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+          >
+            <Search className="w-4 h-4 shrink-0" />
+            <span>Search...</span>
+          </button>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                onClick={() => useSearchStore.getState().openModal()}
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 tap-44 text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent mx-auto flex"
+                aria-label="Search"
+              >
+                <Search className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={6}>Search</TooltipContent>
+          </Tooltip>
+        )}
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
+        {isOpen && (<>
         {/* Projects navigation */}
-        <div className="px-3 pt-1 pb-0.5">
+        <div className="px-3 pt-1 pb-0.5 shrink-0">
           <div className="flex items-center">
-            <button
-              onClick={() => { closeOnNav(); router.push('/projects'); }}
-              onMouseEnter={() => router.prefetch('/projects')}
-              aria-current={onProjects ? 'page' : undefined}
-              className={`flex-1 flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar ${onProjects ? 'bg-sidebar-accent' : ''}`}
-            >
-              <FolderOpen className="w-[18px] h-[18px] text-sidebar-foreground/50 shrink-0" />
-              <span className="text-sm font-medium">Projects</span>
-            </button>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 w-6 p-0 text-sidebar-foreground/60 hover:text-sidebar-foreground shrink-0"
-                  onClick={() => setCreateProjectOpen(true)}
+                <button
+                  onClick={() => { closeOnNav(); router.push('/projects'); }}
+                  onMouseEnter={() => router.prefetch('/projects')}
+                  aria-current={onProjects ? 'page' : undefined}
+                  className={cn("flex-1 flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar", onProjects && "bg-sidebar-accent")}
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                </Button>
+                  <span className="flex items-center h-5 shrink-0">
+                    <FolderOpen className="w-[18px] h-[18px] text-sidebar-foreground/50" />
+                  </span>
+                  {isOpen && <span className="text-sm font-medium">Projects</span>}
+                </button>
               </TooltipTrigger>
-              <TooltipContent side="right">New project</TooltipContent>
+              {!isOpen && <TooltipContent side="right" sideOffset={6}>Projects</TooltipContent>}
             </Tooltip>
+            {isOpen && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0 text-sidebar-foreground/60 hover:text-sidebar-foreground shrink-0"
+                    onClick={() => setCreateProjectOpen(true)}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right">New project</TooltipContent>
+              </Tooltip>
+            )}
           </div>
         </div>
 
         {/* Chats navigation */}
-        <div className="px-3 pb-1">
-          <button
-            onClick={() => { closeOnNav(); router.push('/chats'); }}
-            onMouseEnter={() => router.prefetch('/chats')}
-            aria-current={onChats ? 'page' : undefined}
-            className={`w-full flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar ${onChats ? 'bg-sidebar-accent' : ''}`}
-          >
-            <MessageSquare className="w-[18px] h-[18px] text-sidebar-foreground/50 shrink-0" />
-            <span className="text-sm font-medium">Chats</span>
-          </button>
+        <div className="px-3 pb-1 shrink-0">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => { closeOnNav(); router.push('/chats'); }}
+                onMouseEnter={() => router.prefetch('/chats')}
+                aria-current={onChats ? 'page' : undefined}
+                className={cn("w-full flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar", onChats && "bg-sidebar-accent")}
+              >
+                <span className="flex items-center h-5 shrink-0">
+                  <MessageSquare className="w-[18px] h-[18px] text-sidebar-foreground/50" />
+                </span>
+                {isOpen && <span className="text-sm font-medium">Chats</span>}
+              </button>
+            </TooltipTrigger>
+            {!isOpen && <TooltipContent side="right" sideOffset={6}>Chats</TooltipContent>}
+          </Tooltip>
         </div>
 
         {/* Starred Section - starred projects + starred threads, capped at 5 */}
@@ -708,42 +878,66 @@ export function Sidebar() {
             </>
           )}
         </div>
+        </>)}
       </ScrollArea>
 
       {/* Bulk action bar */}
-      <BulkActionBar />
+      {isOpen && <BulkActionBar />}
 
       {/* Footer - User menu */}
-      <div className="px-3 py-2 border-t border-sidebar-border">
+      <div className="px-3 py-2 border-t border-sidebar-border shrink-0">
         {!user ? (
-          <div className="flex items-center gap-2.5 px-2 py-[var(--density-pad-y-tight)]">
-            <Skeleton className="h-8 w-8 rounded-full shrink-0" />
-            <div className="flex-1 min-w-0">
-              <Skeleton className="h-4 w-24 mb-1.5" />
-              <Skeleton className="h-3 w-36" />
+          isOpen ? (
+            <div className="flex items-center gap-2.5 px-2 py-[var(--density-pad-y-tight)]">
+              <Skeleton className="h-8 w-8 rounded-full shrink-0" />
+              <div className="flex-1 min-w-0">
+                <Skeleton className="h-4 w-24 mb-1.5" />
+                <Skeleton className="h-3 w-36" />
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="flex justify-center py-[var(--density-pad-y-tight)]">
+              <Skeleton className="h-8 w-8 rounded-full shrink-0" />
+            </div>
+          )
         ) : (
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button data-onboarding="user-menu" className="w-full flex items-center gap-2.5 rounded-lg px-2 py-[var(--density-pad-y-tight)] min-h-[48px] md:min-h-0 hover:bg-sidebar-accent transition-colors">
-              <Avatar className="h-8 w-8">
-                <AvatarFallback className="bg-primary/15 text-primary text-sm font-semibold">
-                  {(user.name || user.email)?.charAt(0).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex-1 text-left min-w-0">
-                <p className="text-sm font-medium text-sidebar-foreground truncate">
-                  {user.name || user.email}
-                </p>
-                {user.email && (
-                  <p className="text-[11px] text-sidebar-foreground/50 truncate">
-                    {user.email}
+          {isOpen ? (
+            <DropdownMenuTrigger asChild>
+              <button data-onboarding="user-menu" className="w-full flex items-center gap-2.5 rounded-lg px-2 py-[var(--density-pad-y-tight)] min-h-[48px] md:min-h-0 hover:bg-sidebar-accent transition-colors">
+                <Avatar className="h-8 w-8 shrink-0">
+                  <AvatarFallback className="bg-primary/15 text-primary text-sm font-semibold">
+                    {(user.name || user.email)?.charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 text-left min-w-0">
+                  <p className="text-sm font-medium text-sidebar-foreground truncate">
+                    {user.name || user.email}
                   </p>
-                )}
-              </div>
-            </button>
-          </DropdownMenuTrigger>
+                  {user.email && (
+                    <p className="text-[11px] text-sidebar-foreground/50 truncate">
+                      {user.email}
+                    </p>
+                  )}
+                </div>
+              </button>
+            </DropdownMenuTrigger>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button data-onboarding="user-menu" className="flex items-center justify-center w-full py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors">
+                    <Avatar className="h-8 w-8 shrink-0">
+                      <AvatarFallback className="bg-primary/15 text-primary text-xs font-semibold">
+                        {(user.name || user.email)?.charAt(0).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={6}>Account</TooltipContent>
+            </Tooltip>
+          )}
           <DropdownMenuContent side="top" align="start" className="w-56 mb-1">
             {/* Theme options */}
             <div className="px-2 py-[var(--density-pad-y-tight)]">

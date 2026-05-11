@@ -6,6 +6,8 @@ import { useThreadStore } from '@/lib/store/threads';
 import { getStoredUser } from '@/lib/auth';
 import { MessageSquare, ArrowRight } from 'lucide-react';
 import { type Suggestion, pickSuggestions } from '@/lib/suggestions';
+import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
+import { MetricPinCard } from './metric-pin-card';
 
 // ─── Taglines: time-of-day pools ───
 // Each time slot has its own pool so the vibe matches the moment.
@@ -231,6 +233,12 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
   const askQuestion = useThreadStore((s) => s.askQuestion);
   const isStreaming = useThreadStore((s) => s.isStreaming);
   const recentThreads = useThreadStore((s) => s.threads.filter((t) => !t.starred).slice(0, 3));
+  const recentTitles = useThreadStore((s) =>
+    s.threads.slice(0, 10).map((t) => t.title).filter(Boolean) as string[]
+  );
+  const pinnedMetrics = usePinnedMetricsStore((s) => s.metrics);
+  const fetchMetrics = usePinnedMetricsStore((s) => s.fetchMetrics);
+  useEffect(() => { fetchMetrics(); }, [fetchMetrics]);
 
   const [firstName, setFirstName] = useState<string | undefined>(undefined);
   const [greeting, setGreeting] = useState('');
@@ -243,8 +251,10 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
     setFirstName(user?.name?.split(' ')[0]);
     setGreeting(getGreeting());
     setTagline(pickTagline());
-    setSuggestions(pickSuggestions());
+    setSuggestions(pickSuggestions(recentTitles));
     setMounted(true);
+  // recentTitles intentionally excluded: suggestions are picked once on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSuggestion = (prompt: string) => {
@@ -279,6 +289,23 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
             </>
           )}
         </div>
+
+        {/* Pinned metrics - max 6, capped so they never push the composer off screen */}
+        {pinnedMetrics.length > 0 && (
+          <div className="w-full animate-fade-up" style={{ animationDelay: '20ms' }}>
+            <p className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-medium text-center mb-2">Pinned metrics</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {pinnedMetrics.slice(0, 6).map((m) => (
+                <MetricPinCard key={m.id} metric={m} />
+              ))}
+            </div>
+            {pinnedMetrics.length > 6 && (
+              <p className="text-[11px] text-muted-foreground/60 text-center mt-2">
+                +{pinnedMetrics.length - 6} more - unpin some to see them here
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Continue where you left off */}
         {recentThreads.length > 0 && (

@@ -3,9 +3,24 @@
 import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, Volume2, Square } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, Volume2, Square, MoreHorizontal, Pin } from 'lucide-react';
 import { useTTS, isTTSSupported } from '@/lib/hooks/use-tts';
 import { usePreferencesStore as usePrefStore } from '@/lib/store/preferences';
+import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import hljs from 'highlight.js/lib/core';
 import sql from 'highlight.js/lib/languages/sql';
 hljs.registerLanguage('sql', sql);
@@ -108,6 +123,35 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const ttsVoiceURI = usePrefStore((s) => s.ttsVoiceURI ?? '');
   const { speak: ttsSpeak, stop: ttsStop, isSpeaking } = useTTS(ttsRate, ttsVoiceURI);
   const ttsAvailable = isTTSSupported();
+
+  const pinMetric = usePinnedMetricsStore((s) => s.pinMetric);
+  const [pinDialogOpen, setPinDialogOpen] = useState(false);
+  const [pinLabel, setPinLabel] = useState('');
+  const pinSubmittingRef = useRef(false);
+
+  // Find the user's question that prompted this assistant response -
+  // that's what we save as source_query so "Re-run" repeats the right query.
+  const allMessages = useThreadStore((s) => s.currentMessages);
+  const sourceQuestion = (() => {
+    const idx = allMessages.findIndex((m) => m.id === message.id);
+    if (idx <= 0) return message.content;
+    return (
+      allMessages.slice(0, idx).reverse().find((m) => m.role === 'user')?.content ??
+      message.content
+    );
+  })();
+
+  const handlePin = () => {
+    if (!pinLabel.trim() || pinSubmittingRef.current) return;
+    pinSubmittingRef.current = true;
+    void pinMetric(pinLabel.trim(), sourceQuestion)
+      .then(() => {
+        toast.success(`"${pinLabel.trim()}" pinned to home`);
+        setPinDialogOpen(false);
+      })
+      .catch(() => toast.error('Failed to pin metric.'))
+      .finally(() => { pinSubmittingRef.current = false; });
+  };
 
   const copyToClipboard = async () => {
     const ok = await copyText(message.content);
@@ -448,75 +492,87 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               Visible at low opacity by default (mobile-friendly), full opacity
               on hover. */}
           <div className="flex items-center gap-0.5 opacity-60 hover:opacity-100 transition-opacity duration-150">
+            {/* Primary: Copy */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={copyToClipboard}
-                  aria-label="Copy response"
-                  className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent"
-                >
+                <Button variant="ghost" size="sm" onClick={copyToClipboard} aria-label="Copy response" className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent">
                   <Copy className="w-3.5 h-3.5" aria-hidden />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Copy</TooltipContent>
             </Tooltip>
-            {ttsAvailable && !message.isStreaming && message.content && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => isSpeaking ? ttsStop() : ttsSpeak(message.content)}
-                    aria-label={isSpeaking ? 'Stop reading' : 'Read aloud'}
-                    aria-pressed={isSpeaking}
-                    className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent"
-                  >
-                    {isSpeaking
-                      ? <Square className="w-3.5 h-3.5 fill-current" aria-hidden />
-                      : <Volume2 className="w-3.5 h-3.5" aria-hidden />}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">{isSpeaking ? 'Stop' : 'Read aloud'}</TooltipContent>
-              </Tooltip>
-            )}
+
+            {/* Primary: Retry */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleRetry}
-                  aria-label="Regenerate response"
-                  className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent"
-                  disabled={isStreaming || !message.conversation_id}
-                >
+                <Button variant="ghost" size="sm" onClick={handleRetry} aria-label="Regenerate response" className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent" disabled={isStreaming || !message.conversation_id}>
                   <RotateCcw className="w-3.5 h-3.5" aria-hidden />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Retry</TooltipContent>
             </Tooltip>
+
+            {/* Primary: Feedback (thumbs) */}
             {message.conversation_id && (
-              <FeedbackWidget
-                threadId={threadId}
-                conversationId={message.conversation_id}
-                feedback={message.feedback}
-              />
+              <FeedbackWidget threadId={threadId} conversationId={message.conversation_id} feedback={message.feedback} />
             )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleOpenAbout}
-                  aria-label="About this answer"
-                  className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent"
-                >
-                  <Info className="w-3.5 h-3.5" aria-hidden />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">About this answer</TooltipContent>
-            </Tooltip>
+
+            {/* Overflow: TTS, Share, Pin, About */}
+            {!message.isStreaming && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" aria-label="More actions" className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent">
+                    <MoreHorizontal className="w-3.5 h-3.5" aria-hidden />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-[180px]">
+                  {ttsAvailable && message.content && (
+                    <DropdownMenuItem onClick={() => isSpeaking ? ttsStop() : ttsSpeak(message.content)} className="gap-2">
+                      {isSpeaking ? <Square className="w-4 h-4 fill-current" /> : <Volume2 className="w-4 h-4" />}
+                      {isSpeaking ? 'Stop reading' : 'Read aloud'}
+                    </DropdownMenuItem>
+                  )}
+                  {message.content && (
+                    <DropdownMenuItem onClick={() => { setPinLabel(''); setPinDialogOpen(true); }} className="gap-2">
+                      <Pin className="w-4 h-4" />
+                      Pin to home
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={handleOpenAbout} className="gap-2">
+                    <Info className="w-4 h-4" />
+                    About this answer
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            <Dialog open={pinDialogOpen} onOpenChange={(o) => { if (!o) setPinDialogOpen(false); }}>
+              <DialogContent className="sm:max-w-sm p-6 gap-0">
+                <DialogTitle className="text-base font-semibold mb-1">Pin to home</DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground mb-4">
+                  Give this metric a name. It will appear on your home page.
+                </DialogDescription>
+                <input
+                  autoFocus
+                  value={pinLabel}
+                  onChange={(e) => setPinLabel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault(); // stop Enter from clicking the button
+                      handlePin();
+                    }
+                  }}
+                  placeholder="e.g. Daily cash position"
+                  className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <DialogFooter className="mt-4">
+                  <button onClick={() => setPinDialogOpen(false)} className="text-sm text-muted-foreground hover:text-foreground px-3 py-2">Cancel</button>
+                  <button onClick={handlePin} className="rounded-xl bg-primary text-primary-foreground text-sm px-4 py-2 hover:bg-primary/90">
+                    Pin
+                  </button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </div>
         </div>
       )}

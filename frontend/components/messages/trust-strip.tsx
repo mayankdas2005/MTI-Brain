@@ -136,12 +136,18 @@ function SourceCell({ sources }: { sources: string[] }) {
   );
 }
 
+const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+
 export function TrustStrip({
   sources,
   freshnessAt,
   metric,
   rowCount,
 }: TrustStripProps) {
+  const isStale =
+    freshnessAt != null &&
+    Date.now() - new Date(freshnessAt).getTime() > STALE_THRESHOLD_MS;
+
   const cells: React.ReactNode[] = [];
 
   if (sources && sources.length > 0) {
@@ -152,16 +158,20 @@ export function TrustStrip({
     cells.push(
       <MetadataCell
         key="freshness"
-        icon={<Clock className="w-3 h-3" />}
+        icon={<Clock className={`w-3 h-3 ${isStale ? 'text-amber-500' : ''}`} />}
         ariaLabel="Data freshness"
         tooltip={
           <span>
             Underlying data was last refreshed at{' '}
             {new Date(freshnessAt).toLocaleString()}.
+            {isStale && ' This data may not reflect today\'s activity.'}
           </span>
         }
       >
-        <span>as of {formatRelativeTime(freshnessAt)}</span>
+        <span className={isStale ? 'text-amber-600 dark:text-amber-400 font-medium' : ''}>
+          as of {formatRelativeTime(freshnessAt)}
+          {isStale && ' ⚠'}
+        </span>
       </MetadataCell>,
     );
   }
@@ -214,9 +224,7 @@ export function TrustStrip({
       {cells.map((cell, i) => (
         <span key={i} className="inline-flex items-center gap-3">
           {i > 0 && (
-            <span aria-hidden className="text-muted-foreground/40 select-none">
-              ·
-            </span>
+            <span aria-hidden className="text-muted-foreground/40 select-none">·</span>
           )}
           {cell}
         </span>

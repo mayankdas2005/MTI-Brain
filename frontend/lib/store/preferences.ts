@@ -31,6 +31,10 @@ interface PreferencesState {
   ttsVoiceURI: string;
   /** High contrast mode for accessibility (WCAG AAA). */
   highContrast: boolean;
+  /** Deep Analysis mode - persists across conversations until manually turned off. */
+  deepAnalysis: boolean;
+  /** Conversation mode (hands-free loop) - persists across conversations. */
+  conversationMode: boolean;
 }
 
 interface PreferencesActions {
@@ -48,6 +52,8 @@ interface PreferencesActions {
   setTTSRate: (rate: TTSRate) => void;
   setTTSVoiceURI: (uri: string) => void;
   setHighContrast: (val: boolean) => void;
+  setDeepAnalysis: (val: boolean) => void;
+  setConversationMode: (val: boolean) => void;
   /** Reset every persisted preference back to its DEFAULT value. The
    *  `softPromptShown` flag is preserved - it tracks whether we've ever
    *  shown the notification permission soft-prompt and resetting it
@@ -76,6 +82,8 @@ export const PREFERENCES_DEFAULTS: PreferencesState = {
   ttsRate: 1,
   ttsVoiceURI: '',
   highContrast: false,
+  deepAnalysis: false,
+  conversationMode: false,
 };
 
 const STORAGE_PREFIX = 'mti-brain-prefs';
@@ -100,6 +108,8 @@ export const usePreferencesStore = create<PreferencesStore>()(
       setTTSRate: (rate) => set({ ttsRate: rate }),
       setTTSVoiceURI: (uri) => set({ ttsVoiceURI: uri }),
       setHighContrast: (val) => set({ highContrast: val }),
+      setDeepAnalysis: (val) => set({ deepAnalysis: val }),
+      setConversationMode: (val) => set({ conversationMode: val }),
 
       resetToDefaults: () =>
         set((state) => ({
