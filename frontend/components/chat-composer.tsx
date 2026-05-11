@@ -4,7 +4,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useThreadStore, getThreadCreationGate, setThreadCreationGate } from '@/lib/store/threads';
 import { useUIStore } from '@/lib/store/ui';
-import { ArrowUp, Square, BrainCircuit } from 'lucide-react';
+import { usePreferencesStore } from '@/lib/store/preferences';
+import { ArrowUp, Square, BrainCircuit, AudioLines } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -17,6 +18,8 @@ import { useActivityStore } from '@/lib/store/activity';
 import { track, Events } from '@/lib/analytics';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
+import { VoiceInputButton } from './voice-input-button';
+import { useTTS } from '@/lib/hooks/use-tts';
 import {
   SlashCommandPopover,
   matchSlashCommands,
@@ -36,6 +39,15 @@ export function ChatComposer() {
   const [deepAnalysis, setDeepAnalysis] = useState(
     () => useThreadStore.getState().pendingDeepAnalysis,
   );
+
+  const ttsRate = usePreferencesStore((s) => s.ttsRate ?? 1);
+  const ttsVoiceURI = usePreferencesStore((s) => s.ttsVoiceURI ?? '');
+  const setResponseTone = usePreferencesStore((s) => s.setResponseTone);
+  const setMaxResultRows = usePreferencesStore((s) => s.setMaxResultRows);
+  const { speak: ttsSpeakFn, stop: ttsStop } = useTTS(ttsRate, ttsVoiceURI);
+
+  const [conversationMode, setConversationMode] = useState(false);
+  const prevStreamingRef = useRef(false);
 
   const currentThreadId = useThreadStore((s) => s.currentThreadId);
   const isStreaming = useThreadStore((s) => s.isStreaming);
@@ -69,6 +81,21 @@ export function ChatComposer() {
     () => getLastVisibleAssistantConvId(currentMessages, activeVersionsForThread),
     [currentMessages, activeVersionsForThread],
   );
+
+  // Conversation mode: when streaming ends, auto-read the response aloud,
+  // then restart the mic so the user can speak again hands-free.
+  useEffect(() => {
+    const justFinished = prevStreamingRef.current && !isStreaming;
+    prevStreamingRef.current = isStreaming;
+    if (!justFinished || !conversationMode) return;
+    const last = [...currentMessages].reverse().find((m) => m.role === 'assistant' && m.content);
+    if (!last) return;
+    ttsSpeakFn(last.content, () => {
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('mti-brain:start-voice'));
+      }, 600);
+    });
+  }, [isStreaming, conversationMode, currentMessages, ttsSpeakFn]);
 
   // Auto-grow textarea
   useEffect(() => {
@@ -212,30 +239,65 @@ export function ChatComposer() {
         case 'help':
           setShortcutsOpen(true);
           break;
+        case 'speak':
+          if (lastAssistant) {
+            ttsSpeakFn(lastAssistant.content);
+          }
+          break;
+        case 'export':
+          window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
+          break;
+        case 'tone-analyst':
+          setResponseTone('analyst');
+          toast.success('Tone set to Analyst');
+          break;
+        case 'tone-manager':
+          setResponseTone('manager');
+          toast.success('Tone set to Manager');
+          break;
+        case 'tone-director':
+          setResponseTone('director');
+          toast.success('Tone set to Director');
+          break;
+        case 'tone-executive':
+          setResponseTone('executive');
+          toast.success('Tone set to Executive');
+          break;
+        case 'rows-50':
+          setMaxResultRows(50);
+          toast.success('Max rows set to 50');
+          break;
+        case 'rows-100':
+          setMaxResultRows(100);
+          toast.success('Max rows set to 100');
+          break;
+        case 'rows-200':
+          setMaxResultRows(200);
+          toast.success('Max rows set to 200');
+          break;
+        case 'rows-500':
+          setMaxResultRows(500);
+          toast.success('Max rows set to 500');
+          break;
       }
     },
-    [currentMessages, currentThreadId, retryResponse, router, setShortcutsOpen],
+    [currentMessages, currentThreadId, retryResponse, router, setShortcutsOpen, ttsSpeakFn, setResponseTone, setMaxResultRows],
   );
 
   const handleSubmit = useCallback(
-    async (e?: React.FormEvent) => {
+    async (e?: React.FormEvent, overrideText?: string) => {
       e?.preventDefault();
-      // If a slash command is open, Enter selects the highlighted command
-      // instead of sending the literal "/foo" as a chat message.
-      if (slashOpen) {
+      // Slash command menu only applies when typing manually, not voice auto-send.
+      if (!overrideText && slashOpen) {
         const cmd = slashMatches[slashIndex];
-        if (cmd) {
-          runSlashCommand(cmd);
-          return;
-        }
+        if (cmd) { runSlashCommand(cmd); return; }
       }
-      if (!input.trim() || !currentThreadId || isStreaming) return;
+      const question = (overrideText ?? input).trim();
+      if (!question || !currentThreadId || isStreaming) return;
 
-      const question = input.trim();
-      const wasDeepAnalysis = deepAnalysis;
       setInput('');
-      void clearDraft(currentThreadId);
-      // Silently track active days - gates the install-prompt eligibility.
+      if (currentThreadId) void clearDraft(currentThreadId);
+      const wasDeepAnalysis = deepAnalysis;
       useActivityStore.getState().recordQuestion();
       track(Events.QuestionAsked, {
         thread_id: currentThreadId,
@@ -361,7 +423,7 @@ export function ChatComposer() {
           )}
 
           <div className="flex items-center justify-between px-3 pb-3">
-            {/* Deep Analysis toggle */}
+            {/* Left toolbar: Deep Analysis + Voice */}
             <div className="flex items-center gap-1">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -379,11 +441,54 @@ export function ChatComposer() {
                     <span className="hidden sm:inline">Deep Analysis</span>
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="top">
-                  {deepAnalysis
-                    ? 'Deep Analysis on - extended reasoning, slower response'
-                    : 'Deep Analysis - thorough multi-step reasoning for complex questions'}
-                </TooltipContent>
+                {!deepAnalysis && (
+                  <TooltipContent side="top" align="start">
+                    Deep Analysis - thorough multi-step reasoning for complex questions
+                  </TooltipContent>
+                )}
+              </Tooltip>
+              {/* VoiceInputButton is hidden — conversation mode drives it via window events */}
+              <span className="hidden" aria-hidden>
+                <VoiceInputButton
+                  onTranscript={(text, isFinal) => {
+                    setInput(text);
+                    if (isFinal && text.trim()) {
+                      void handleSubmit(undefined, text.trim());
+                    }
+                  }}
+                  disabled={isStreaming}
+                />
+              </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-pressed={conversationMode}
+                    onClick={() => {
+                      const next = !conversationMode;
+                      setConversationMode(next);
+                      if (next) {
+                        window.dispatchEvent(new CustomEvent('mti-brain:start-voice'));
+                      } else {
+                        ttsStop();
+                        window.dispatchEvent(new CustomEvent('mti-brain:stop-voice'));
+                      }
+                    }}
+                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                      conversationMode
+                        ? 'bg-primary/10 text-primary border border-primary/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
+                    }`}
+                  >
+                    <AudioLines className={`w-3.5 h-3.5 shrink-0 ${conversationMode ? 'animate-pulse' : ''}`} />
+                    <span className="hidden sm:inline">Conversation</span>
+                  </button>
+                </TooltipTrigger>
+                {!conversationMode && (
+                  <TooltipContent side="top" align="start">
+                    Conversation mode - hands-free
+                  </TooltipContent>
+                )}
               </Tooltip>
             </div>
 

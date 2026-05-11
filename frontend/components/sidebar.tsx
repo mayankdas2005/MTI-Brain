@@ -34,7 +34,9 @@ import {
   Download,
   Sparkles,
   Bell,
+  Newspaper,
 } from 'lucide-react';
+import { WhatsNewDialog, useChangelogUnread } from './whats-new-dialog';
 import { logout, getStoredUser, getStoredToken, userFromToken, setStoredUser } from '@/lib/auth';
 import { renderHighlightedSnippet } from '@/lib/utils/highlight';
 import { track, Events } from '@/lib/analytics';
@@ -371,6 +373,9 @@ export function Sidebar() {
     closeMobileSidebar(false);
     closeTabletOverlay(false);
   };
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const changelogUnread = useChangelogUnread();
+
   const [user, setUser] = useState<ReturnType<typeof getStoredUser>>(null);
 
   // Defer localStorage read to client-side only to avoid hydration mismatch.
@@ -780,6 +785,15 @@ export function Sidebar() {
               <Settings className="w-4 h-4" />
               Settings
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { setWhatsNewOpen(true); }} className="gap-2">
+              <span className="relative flex items-center gap-2">
+                <Newspaper className="w-4 h-4" />
+                What&apos;s New
+                {changelogUnread && (
+                  <span className="absolute -top-1 -right-2 w-2 h-2 rounded-full bg-primary" />
+                )}
+              </span>
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => startTourReplay()} className="gap-2">
               <Sparkles className="w-4 h-4" />
               Replay product tour
@@ -829,6 +843,8 @@ export function Sidebar() {
         </DropdownMenu>
         )}
       </div>
+
+      <WhatsNewDialog open={whatsNewOpen} onOpenChange={setWhatsNewOpen} />
 
       {/* Create Project Dialog */}
       <CreateProjectDialog

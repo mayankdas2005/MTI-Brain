@@ -2,7 +2,7 @@
 //
 // Lightweight by design: just enough to (1) make the PWA installable with
 // a working offline shell and (2) stand ready for push notifications when
-// backend wiring lands. No precaching of API responses — Turbopack rebuilds
+// backend wiring lands. No precaching of API responses - Turbopack rebuilds
 // chunk hashes on every deploy, so aggressive precaching would just stale.
 //
 // Edit me freely; this file is shipped as-is (not bundled).
@@ -30,7 +30,7 @@ self.addEventListener('activate', (event) => {
 
 // Network-first for top-level navigations only. Static assets, dev-server
 // Turbopack chunks, HMR websocket upgrades, API calls, and SSE streams all
-// pass through untouched — we never want a SW caching layer between the
+// pass through untouched - we never want a SW caching layer between the
 // browser and a streaming endpoint.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
@@ -38,7 +38,7 @@ self.addEventListener('fetch', (event) => {
   if (req.mode !== 'navigate') return;
 
   const url = new URL(req.url);
-  // Defense in depth — even if a navigation lands on these paths, never
+  // Defense in depth - even if a navigation lands on these paths, never
   // intercept. Covers Next.js dev (Turbopack `_next/`), API routes, and
   // SSE streams that Next 16 occasionally classifies as navigations.
   if (url.pathname.startsWith('/_next/')) return;

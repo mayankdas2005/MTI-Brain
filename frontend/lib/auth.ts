@@ -131,6 +131,23 @@ export function getAuthHeaders(): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
 }
 
+// ─── Login gate (optimistic navigation) ───
+// Set before navigating to /new so the authenticated layout can await the
+// in-flight token fetch instead of immediately redirecting to /.
+
+let _loginGate: Promise<void> | null = null;
+let _loginError: string | null = null;
+
+export function setLoginGate(p: Promise<void> | null) { _loginGate = p; }
+export function getLoginGate() { return _loginGate; }
+
+export function setLoginError(msg: string) { _loginError = msg; }
+export function consumeLoginError(): string | null {
+  const err = _loginError;
+  _loginError = null;
+  return err;
+}
+
 // ─── Login ───
 
 export async function login(username: string, password: string): Promise<void> {

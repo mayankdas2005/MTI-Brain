@@ -10,6 +10,10 @@ interface KeyboardShortcuts {
   'cmd-period'?: () => void;
   'cmd-s'?: () => void;
   'cmd-shift-c'?: () => void;
+  'cmd-shift-v'?: () => void;
+  'cmd-shift-e'?: () => void;
+  'cmd-shift-l'?: () => void;
+  'cmd-r'?: () => void;
   'cmd-enter'?: () => void;
   'escape'?: () => void;
   /** Plain `?` opens the keyboard cheat sheet. Does NOT fire from form
@@ -49,6 +53,10 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
   useHotkeys('mod+period', () => ref.current['cmd-period']?.(), opts);
   useHotkeys('mod+s', () => ref.current['cmd-s']?.(), opts);
   useHotkeys('mod+shift+c', () => ref.current['cmd-shift-c']?.(), opts);
+  useHotkeys('mod+shift+v', () => ref.current['cmd-shift-v']?.(), opts);
+  useHotkeys('mod+shift+e', () => ref.current['cmd-shift-e']?.(), opts);
+  useHotkeys('mod+shift+l', () => ref.current['cmd-shift-l']?.(), opts);
+  useHotkeys('mod+r', () => ref.current['cmd-r']?.(), opts);
   useHotkeys('mod+enter', () => ref.current['cmd-enter']?.(), opts);
   useHotkeys('shift+/', () => ref.current['question-mark']?.(), singleKeyOpts);
   useHotkeys('/', () => ref.current['slash']?.(), singleKeyOpts);

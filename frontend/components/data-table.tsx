@@ -13,10 +13,11 @@ import {
 import {
   ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger,
 } from '@/components/ui/context-menu';
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, ArrowUp, ArrowDown, ArrowUpDown, Copy } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, FileText, FileSpreadsheet, ArrowUp, ArrowDown, ArrowUpDown, Copy } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
 import { formatNumber, formatNumberWithDecimals } from '@/lib/utils/number';
+import { downloadCSV, downloadXLSX, safeFilename } from '@/lib/utils/export-table';
 
 const ROWS_PER_PAGE = 10;
 
@@ -98,9 +99,10 @@ interface DataTableProps {
   columns: string[];
   rows: unknown[][];
   rowCount?: number;
+  filename?: string;
 }
 
-export function DataTable({ columns, rows, rowCount }: DataTableProps) {
+export function DataTable({ columns, rows, rowCount, filename }: DataTableProps) {
   const [page, setPage] = useState(0);
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -134,22 +136,18 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
     setPage(0);
   }, [sortCol, sortDir]);
 
+  const resolvedFilename = filename ?? safeFilename(null);
+
   const handleDownloadCSV = () => {
-    const header = columns.join(',');
-    const body = sortedRows.map((row) =>
-      row.map((cell) => {
-        const s = String(cell ?? '');
-        return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
-      }).join(',')
-    ).join('\n');
-    const csv = `${header}\n${body}`;
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `query-results-${Date.now()}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadCSV(columns, sortedRows, resolvedFilename);
+  };
+
+  const handleDownloadXLSX = async () => {
+    try {
+      await downloadXLSX(columns, sortedRows, resolvedFilename);
+    } catch {
+      toast.error('Failed to export Excel file.');
+    }
   };
 
   return (
@@ -236,13 +234,28 @@ export function DataTable({ columns, rows, rowCount }: DataTableProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 w-6 p-0"
+                className="h-6 gap-1 px-2 text-[10px] font-medium"
                 onClick={handleDownloadCSV}
               >
-                <Download className="w-3.5 h-3.5" />
+                <FileText className="w-3 h-3" />
+                CSV
               </Button>
             </TooltipTrigger>
             <TooltipContent side="left">Download CSV</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 gap-1 px-2 text-[10px] font-medium"
+                onClick={handleDownloadXLSX}
+              >
+                <FileSpreadsheet className="w-3 h-3" />
+                Excel
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="left">Download Excel</TooltipContent>
           </Tooltip>
           {totalPages > 1 && (
             <>

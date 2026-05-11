@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { type LucideIcon, Eraser, RotateCcw, Copy, Keyboard, Plus } from 'lucide-react';
+import { type LucideIcon, Eraser, RotateCcw, Copy, Keyboard, Plus, FileDown, Volume2, BarChart3, Table2 } from 'lucide-react';
 import { usePrefersReducedMotion } from '@/lib/hooks/use-prefers-reduced-motion';
 
 export interface SlashCommand {
@@ -54,6 +54,78 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     label: '/help',
     description: 'Show keyboard shortcuts',
     icon: Keyboard,
+  },
+  {
+    id: 'speak',
+    trigger: 'speak',
+    label: '/speak',
+    description: 'Read last response aloud',
+    icon: Volume2,
+    requires: 'last-assistant',
+  },
+  {
+    id: 'export',
+    trigger: 'export',
+    label: '/export',
+    description: 'Export conversation to PDF',
+    icon: FileDown,
+    requires: 'thread',
+  },
+  {
+    id: 'tone-analyst',
+    trigger: 'tone analyst',
+    label: '/tone analyst',
+    description: 'Technical, data-first tone',
+    icon: BarChart3,
+  },
+  {
+    id: 'tone-manager',
+    trigger: 'tone manager',
+    label: '/tone manager',
+    description: 'Clear, operational tone',
+    icon: BarChart3,
+  },
+  {
+    id: 'tone-director',
+    trigger: 'tone director',
+    label: '/tone director',
+    description: 'Strategic, concise tone',
+    icon: BarChart3,
+  },
+  {
+    id: 'tone-executive',
+    trigger: 'tone executive',
+    label: '/tone executive',
+    description: 'High-level, board-ready tone',
+    icon: BarChart3,
+  },
+  {
+    id: 'rows-50',
+    trigger: 'rows 50',
+    label: '/rows 50',
+    description: 'Return max 50 rows',
+    icon: Table2,
+  },
+  {
+    id: 'rows-100',
+    trigger: 'rows 100',
+    label: '/rows 100',
+    description: 'Return max 100 rows',
+    icon: Table2,
+  },
+  {
+    id: 'rows-200',
+    trigger: 'rows 200',
+    label: '/rows 200',
+    description: 'Return max 200 rows',
+    icon: Table2,
+  },
+  {
+    id: 'rows-500',
+    trigger: 'rows 500',
+    label: '/rows 500',
+    description: 'Return max 500 rows',
+    icon: Table2,
   },
 ];
 

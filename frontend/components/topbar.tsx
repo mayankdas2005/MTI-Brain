@@ -2,10 +2,11 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { usePathname } from 'next/navigation';
-import { Star, Search, FileDown, Menu } from 'lucide-react';
+import { Star, Search, FileDown, Menu, Link2 } from 'lucide-react';
 import { exportThread } from '@/lib/utils/export';
 import { exportChartAsCanvas } from '@/components/message-visualization';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/lib/toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Tooltip,
@@ -80,6 +81,21 @@ export function Topbar() {
   useEffect(() => {
     setIsMac(navigator.platform.toUpperCase().indexOf('MAC') >= 0);
   }, []);
+
+  const handleShare = () => {
+    void navigator.clipboard.writeText(window.location.href).then(() => {
+      toast.success('Link copied to clipboard');
+    }).catch(() => {
+      toast.error('Failed to copy link');
+    });
+  };
+
+  // Listen for /export slash command
+  useEffect(() => {
+    const handler = () => { void handleExport(); };
+    window.addEventListener('mti-brain:export-pdf', handler);
+    return () => window.removeEventListener('mti-brain:export-pdf', handler);
+  });
 
   // Star reward burst animation
   const [starBurst, setStarBurst] = useState(false);
@@ -159,6 +175,20 @@ export function Topbar() {
 
       {/* Right: Export + Search */}
       <div className="flex items-center gap-1 sm:gap-2">
+        {showThreadChrome && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleShare}
+                aria-label="Copy link to this conversation"
+                className="flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] transition-spring active:scale-[0.88]"
+              >
+                <Link2 className="w-3.5 h-3.5" aria-hidden />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Copy link</TooltipContent>
+          </Tooltip>
+        )}
         {showThreadChrome && currentMessages.length > 0 && (
           <Tooltip>
             <TooltipTrigger asChild>

@@ -8,7 +8,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Eye, EyeOff } from 'lucide-react';
-import { isAuthenticated, login } from '@/lib/auth';
+import { isAuthenticated, login, setLoginGate, setLoginError, consumeLoginError } from '@/lib/auth';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -19,13 +19,17 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   // Stays false until we've confirmed the user is NOT authenticated.
   // Prevents a one-frame flash of the login form for users who are already
-  // signed in — they'll see nothing, then be redirected to /new.
+  // signed in - they'll see nothing, then be redirected to /new.
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    // Show any error surfaced from a failed optimistic login attempt.
+    const pendingError = consumeLoginError();
+    if (pendingError) setError(pendingError);
+
     if (isAuthenticated()) {
       router.replace('/new');
-      // Don't setReady — the page is about to unmount.
+      // Don't setReady - the page is about to unmount.
     } else {
       setReady(true);
     }
@@ -33,18 +37,21 @@ export default function LoginPage() {
 
   if (!ready) return null;
 
-  const handlePasswordLogin = async (e: React.FormEvent) => {
+  const handlePasswordLogin = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!username.trim() || loading) return;
     setLoading(true);
     setError('');
-    try {
-      await login(username.trim(), password);
-      router.replace('/new');
-    } catch {
-      setError('Invalid username or password.');
-    } finally {
-      setLoading(false);
-    }
+
+    // Fire the API call in the background and navigate immediately.
+    // The authenticated layout's spinner covers the in-flight token fetch.
+    // On failure, the gate's catch stores the error; the login page reads
+    // it back via consumeLoginError() when it remounts.
+    const gate = login(username.trim(), password)
+      .then(() => {})
+      .catch(() => { setLoginError('Invalid username or password.'); });
+    setLoginGate(gate);
+    router.replace('/new');
   };
 
   return (

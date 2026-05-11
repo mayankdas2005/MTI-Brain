@@ -9,7 +9,7 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 | Framework | Next.js 16 (App Router, standalone output) |
 | Language | TypeScript (strict mode) |
 | UI | React 19 with React Compiler (auto-memoization), shadcn/ui (Radix UI), Lucide icons |
-| Styling | Tailwind CSS 4 (PostCSS plugin — no `tailwind.config.*`; tokens live in `app/globals.css`) |
+| Styling | Tailwind CSS 4 (PostCSS plugin - no `tailwind.config.*`; tokens live in `app/globals.css`) |
 | State | Zustand stores (see [State Management](#state-management)) |
 | Streaming | POST-based SSE via fetch + ReadableStream |
 | Auth | Username/password → JWT in localStorage. **Okta OIDC planned** |
@@ -32,19 +32,19 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 frontend/
 ├── app/
 │   ├── page.tsx                         # Login page (username/password + no-flash auth check)
-│   ├── layout.tsx                       # Root layout — viewport meta, providers, PWA capture script
+│   ├── layout.tsx                       # Root layout - viewport meta, providers, PWA capture script
 │   ├── globals.css                      # Tailwind v4 theme tokens + mobile hardening
 │   │                                    #   (-webkit-tap-highlight-color, overscroll-behavior,
 │   │                                    #    .tap-44, .scroll-shadow-x, --vv-bottom-inset)
 │   ├── not-found.tsx                    # 404 page
 │   ├── auth/callback/page.tsx           # Stub for upcoming Okta OIDC callback
-│   └── (authenticated)/                 # Route group — all pages require JWT
+│   └── (authenticated)/                 # Route group - all pages require JWT
 │       ├── layout.tsx                   # Auth guard + responsive sidebar shell
 │       │                                #   Mobile: off-canvas Sheet via useIsMobile()
 │       │                                #   Tablet: CollapsedSidebar + overlay Sheet via useIsTablet()
 │       │                                #   Desktop: inline sidebar (280px or 48px collapsed)
 │       ├── new/                         # Welcome screen + NewChatComposer (centered)
-│       ├── chat/[chatId]/page.tsx       # Chat detail — messages, stream, visualViewport listener
+│       ├── chat/[chatId]/page.tsx       # Chat detail - messages, stream, visualViewport listener
 │       ├── chats/page.tsx               # All chats with search
 │       ├── starred/page.tsx             # Starred threads
 │       ├── settings/page.tsx            # User preferences (two-column desktop, stacked mobile)
@@ -53,7 +53,7 @@ frontend/
 │           └── [projectId]/page.tsx     # Project detail
 ├── components/
 │   ├── ui/                              # shadcn/ui primitives
-│   │   ├── responsive-dialog.tsx        # ResponsiveDialog — Dialog on desktop, vaul Drawer on mobile
+│   │   ├── responsive-dialog.tsx        # ResponsiveDialog - Dialog on desktop, vaul Drawer on mobile
 │   │   ├── sheet.tsx                    # Off-canvas panel (used for mobile/tablet sidebar)
 │   │   ├── drawer.tsx                   # vaul-based bottom drawer
 │   │   └── …                            # button, dialog, tabs, tooltip, etc.
@@ -64,31 +64,31 @@ frontend/
 │   │                                    #   w-full md:w-[280px]; auto-closes on mobile nav
 │   ├── collapsed-sidebar.tsx            # Icon-only sidebar (48px); tablet expand → overlay sheet
 │   ├── topbar.tsx                       # Thread title, star, search trigger, hamburger (mobile/tablet)
-│   ├── chat-composer.tsx                # Message input — Deep Analysis toggle, safe-area pb,
+│   ├── chat-composer.tsx                # Message input - Deep Analysis toggle, safe-area pb,
 │   │                                    #   visualViewport keyboard avoidance, .tap-44 buttons
-│   ├── new-chat-composer.tsx            # Centered composer for /new — same Deep Analysis toggle,
+│   ├── new-chat-composer.tsx            # Centered composer for /new - same Deep Analysis toggle,
 │   │                                    #   passes deepAnalysis to store via setPendingQuestion
 │   ├── message-list.tsx                 # Grouped messages with version branching
-│   ├── message-bubble.tsx               # Single message — max-w-[92%] md:max-w-[80%] on mobile
-│   ├── message-visualization.tsx        # Chart + table + SQL — h-[260px] md:h-[340px] charts
-│   ├── data-table.tsx                   # Query results — max-h-[60vh], sticky first column,
+│   ├── message-bubble.tsx               # Single message - max-w-[92%] md:max-w-[80%] on mobile
+│   ├── message-visualization.tsx        # Chart + table + SQL - h-[260px] md:h-[340px] charts
+│   ├── data-table.tsx                   # Query results - max-h-[60vh], sticky first column,
 │   │                                    #   scroll-shadow-x, overscroll-x-contain, flex-wrap footer
 │   ├── follow-up-chips.tsx              # Suggested follow-up question buttons
 │   ├── thinking-words.tsx               # Reasoning / chain-of-thought display
 │   ├── feedback-widget.tsx              # Thumbs up/down + comment (DialogDescription for a11y)
 │   ├── welcome-state.tsx                # Welcome screen with suggestion chips
-│   ├── search-modal.tsx                 # Global search (Cmd+K) — ResponsiveDialog, max-h-[60vh] mobile
-│   ├── slash-command-popover.tsx        # In-composer slash commands — max-h-[40vh] mobile
-│   ├── shortcuts-dialog.tsx             # Keyboard shortcuts — ResponsiveDialog with sr-only description
-│   ├── create-project-dialog.tsx        # New project — ResponsiveDialog (Drawer on mobile)
-│   ├── edit-project-dialog.tsx          # Edit project — ResponsiveDialog
-│   ├── rename-dialog.tsx                # Rename thread — ResponsiveDialog
-│   ├── move-to-project-dialog.tsx       # Move threads — ResponsiveDialog, max-h-[40vh] list
-│   ├── bulk-action-bar.tsx              # Multi-select toolbar — flex-wrap for narrow screens
-│   ├── onboarding-tour.tsx              # First-run walkthrough — mobile-sized popover, skipIfMissing
+│   ├── search-modal.tsx                 # Global search (Cmd+K) - ResponsiveDialog, max-h-[60vh] mobile
+│   ├── slash-command-popover.tsx        # In-composer slash commands - max-h-[40vh] mobile
+│   ├── shortcuts-dialog.tsx             # Keyboard shortcuts - ResponsiveDialog with sr-only description
+│   ├── create-project-dialog.tsx        # New project - ResponsiveDialog (Drawer on mobile)
+│   ├── edit-project-dialog.tsx          # Edit project - ResponsiveDialog
+│   ├── rename-dialog.tsx                # Rename thread - ResponsiveDialog
+│   ├── move-to-project-dialog.tsx       # Move threads - ResponsiveDialog, max-h-[40vh] list
+│   ├── bulk-action-bar.tsx              # Multi-select toolbar - flex-wrap for narrow screens
+│   ├── onboarding-tour.tsx              # First-run walkthrough - mobile-sized popover, skipIfMissing
 │   │                                    #   for sidebar steps (sidebar is in a closed Sheet on mobile)
-│   ├── install-prompt.tsx               # PWA install — full-width on phones, keyboard-aware bottom
-│   ├── credits-overlay.tsx              # Easter egg (Konami code) — max-h-[75vh] mobile
+│   ├── install-prompt.tsx               # PWA install - full-width on phones, keyboard-aware bottom
+│   ├── credits-overlay.tsx              # Easter egg (Konami code) - max-h-[75vh] mobile
 │   ├── live-announcer.tsx               # ARIA live-region (sr-only, a11y)
 │   ├── error-boundary.tsx               # Error handling wrapper
 │   ├── providers.tsx                    # Theme + Tooltip + AnalyticsBridge + DensitySync
@@ -113,7 +113,7 @@ frontend/
 │       ├── preferences.ts               # responseTone, showSQL, autoShowCharts, etc.
 │       └── …                            # search, activity, drafts, install, projects, auth
 └── public/
-    ├── manifest.json                    # PWA manifest — display: standalone (no orientation lock)
+    ├── manifest.json                    # PWA manifest - display: standalone (no orientation lock)
     ├── sw.js                            # Service worker
     └── …                               # Logos, icons, MSFT sign-in button
 ```
@@ -125,15 +125,15 @@ Three breakpoints, each with a distinct sidebar behavior:
 | Viewport | Width | Sidebar pattern |
 |----------|-------|-----------------|
 | **Mobile** | < 768px | Off-canvas Sheet (88% width). Hamburger in topbar opens it. Tap a row → navigates + sheet closes. |
-| **Tablet** | 768–1023px | `CollapsedSidebar` inline (48px icon bar). Tapping the expand button OR hamburger opens a 320px overlay Sheet — content never gets squeezed. |
+| **Tablet** | 768–1023px | `CollapsedSidebar` inline (48px icon bar). Tapping the expand button OR hamburger opens a 320px overlay Sheet - content never gets squeezed. |
 | **Desktop** | ≥ 1024px | Inline sidebar (280px expanded or 48px collapsed). Toggle with `Cmd+.`. |
 
 ### Key responsive utilities
 
-- **`.tap-44`** — Tailwind utility class (globals.css); sets `min-height: 44px; min-width: 44px` on phones only. Applied to topbar hamburger, composer send/stop buttons, and other interactive controls.
-- **`--vv-bottom-inset`** — CSS variable set by the chat page via the Visual Viewport API. Used by the composer to lift above the iOS soft keyboard.
-- **`scroll-shadow-x`** — Gradient utility for horizontally-scrolling containers (data tables, SQL code blocks) to signal more content off-screen.
-- **`ResponsiveDialog`** — `components/ui/responsive-dialog.tsx`. Renders as a Radix `Dialog` (centered modal) on desktop and as a `vaul` bottom-sheet `Drawer` on mobile. Used by all form dialogs.
+- **`.tap-44`** - Tailwind utility class (globals.css); sets `min-height: 44px; min-width: 44px` on phones only. Applied to topbar hamburger, composer send/stop buttons, and other interactive controls.
+- **`--vv-bottom-inset`** - CSS variable set by the chat page via the Visual Viewport API. Used by the composer to lift above the iOS soft keyboard.
+- **`scroll-shadow-x`** - Gradient utility for horizontally-scrolling containers (data tables, SQL code blocks) to signal more content off-screen.
+- **`ResponsiveDialog`** - `components/ui/responsive-dialog.tsx`. Renders as a Radix `Dialog` (centered modal) on desktop and as a `vaul` bottom-sheet `Drawer` on mobile. Used by all form dialogs.
 
 ## Deep Analysis Toggle
 
@@ -142,8 +142,8 @@ A per-question `BrainCircuit` toggle button sits in the bottom-left of both comp
 - **On:** blue pill with border; sends `deep_analysis: true` with the request
 - **Off:** muted ghost button (default)
 - **Persistence:** stays on until the user manually clicks it off (does not reset between questions)
-- **Navigation:** when toggled on the `/new` page, the value is stored in `pendingDeepAnalysis` (thread store) and picked up by `ChatComposer` when it fires the first `askQuestion` — the toggle is also initialized to `pendingDeepAnalysis` on mount so it visually reflects the correct state
-- **Backend field:** `AskRequest.deep_analysis: bool` — default `false`
+- **Navigation:** when toggled on the `/new` page, the value is stored in `pendingDeepAnalysis` (thread store) and picked up by `ChatComposer` when it fires the first `askQuestion` - the toggle is also initialized to `pendingDeepAnalysis` on mount so it visually reflects the correct state
+- **Backend field:** `AskRequest.deep_analysis: bool` - default `false`
 
 ## State Management
 
@@ -156,7 +156,7 @@ Zustand stores under `lib/store/`:
 | `useUIStore` | `sidebarOpen`, `mobileSidebarOpen`, `tabletSidebarOverlayOpen`, `shortcutsOpen`, `createProjectOpen` | Sidebar state for all three breakpoints, dialog visibility |
 | `usePreferencesStore` | `responseTone`, `showSQL`, `autoShowCharts`, `showFollowUps`, `showReasoning`, `maxResultRows`, `density` | Per-user preferences, persisted to localStorage under `mti-brain-prefs:{userId}` |
 | `useSearchStore` | `query`, `chatResults`, `projectResults` | Global search with 200 ms debounce |
-| `useActivityStore` | activity events | Per-user activity tracking (Activity framing — not gamification/streaks) |
+| `useActivityStore` | activity events | Per-user activity tracking (Activity framing - not gamification/streaks) |
 | `useDraftsStore` | composer drafts | Per-thread composer drafts persisted to IndexedDB via Dexie |
 | `useInstallStore` | install prompt visibility | PWA install prompt state with 3-day re-show window |
 
@@ -228,7 +228,7 @@ POST-based SSE (`lib/api/sse.ts`). `EventSource` only supports GET, so the app u
 3. Both stored in localStorage (`mti_brain_token`, `mti_brain_user`)
 4. All API calls include `Authorization: Bearer <token>`
 5. On 401, token is cleared and a `mti-brain:unauthenticated` custom event redirects to `/` via the router (no full-page reload)
-6. Login page returns `null` until client-side auth check completes — prevents one-frame flash of the form for already-authenticated users
+6. Login page returns `null` until client-side auth check completes - prevents one-frame flash of the form for already-authenticated users
 
 ## Known Dev Issues
 

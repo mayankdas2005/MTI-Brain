@@ -13,13 +13,13 @@ import { usePreferencesStore } from '@/lib/store/preferences';
  *  using --density-* gets recomputed when the user toggles. */
 function DensitySync() {
   const density = usePreferencesStore((s) => s.density);
+  const highContrast = usePreferencesStore((s) => s.highContrast);
   useEffect(() => {
     document.documentElement.setAttribute('data-density', density);
-    return () => {
-      // Don't remove on unmount - Providers is mounted for the app's lifetime,
-      // and clearing the attribute on HMR causes a one-frame flicker.
-    };
   }, [density]);
+  useEffect(() => {
+    document.documentElement.classList.toggle('high-contrast', !!highContrast);
+  }, [highContrast]);
   return null;
 }
 

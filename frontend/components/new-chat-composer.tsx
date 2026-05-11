@@ -185,11 +185,11 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
                     <span className="hidden sm:inline">Deep Analysis</span>
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="top">
-                  {deepAnalysis
-                    ? 'Deep Analysis on - extended reasoning, slower response'
-                    : 'Deep Analysis - thorough multi-step reasoning for complex questions'}
-                </TooltipContent>
+                {!deepAnalysis && (
+                  <TooltipContent side="top" align="start">
+                    Deep Analysis - thorough multi-step reasoning for complex questions
+                  </TooltipContent>
+                )}
               </Tooltip>
             </div>
 

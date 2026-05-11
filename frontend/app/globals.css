@@ -551,3 +551,64 @@ html[data-density="compact"] {
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }
 }
+
+/* ── Page transitions ── */
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+main#main-content {
+  animation: page-enter 140ms ease-out both;
+}
+
+/* ── Reduced motion: disable all animations ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  main#main-content { animation: none; }
+}
+
+/* ── High contrast mode (WCAG AAA) ── */
+html.high-contrast {
+  --foreground: #000000;
+  --background: #ffffff;
+  --muted-foreground: #1a1a1a;
+  --border: #000000;
+  --primary: #0050aa;
+  --primary-foreground: #ffffff;
+  --ring: #0050aa;
+  --card: #ffffff;
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+  --accent: #e0e0e0;
+  --accent-foreground: #000000;
+  --muted: #f0f0f0;
+  --input: #f0f0f0;
+  --destructive: #cc0000;
+}
+
+html.dark.high-contrast {
+  --foreground: #ffffff;
+  --background: #000000;
+  --muted-foreground: #e0e0e0;
+  --border: #ffffff;
+  --primary: #66aaff;
+  --primary-foreground: #000000;
+  --ring: #66aaff;
+  --card: #111111;
+  --card-foreground: #ffffff;
+  --popover: #111111;
+  --popover-foreground: #ffffff;
+  --accent: #333333;
+  --accent-foreground: #ffffff;
+  --muted: #222222;
+  --input: #222222;
+  --destructive: #ff6666;
+}

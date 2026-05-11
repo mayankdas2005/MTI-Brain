@@ -20,7 +20,7 @@ type Shortcut = {
   /** One or more keybinding variants, each as a space-delimited string. */
   variants: string[];
   label: string;
-  section: 'general' | 'chat';
+  section: 'general' | 'chat' | 'voice';
 };
 
 const SHORTCUTS: Shortcut[] = [
@@ -36,8 +36,14 @@ const SHORTCUTS: Shortcut[] = [
   { variants: ['Enter'], label: 'Send message', section: 'chat' },
   { variants: ['⇧ Enter'], label: 'New line in message', section: 'chat' },
   { variants: ['Esc'], label: 'Stop response', section: 'chat' },
+  { variants: [`${mod} R`], label: 'Retry last response', section: 'chat' },
   { variants: [`${mod} S`], label: 'Star / unstar thread', section: 'chat' },
   { variants: [`${mod} ⇧ C`], label: 'Copy last response', section: 'chat' },
+  { variants: [`${mod} ⇧ E`], label: 'Export conversation to PDF', section: 'chat' },
+  { variants: [`${mod} ⇧ L`], label: 'Copy share link', section: 'chat' },
+
+  // ─── Voice ───
+  { variants: [`${mod} ⇧ V`], label: 'Toggle voice input', section: 'voice' },
 ];
 
 interface ShortcutsDialogProps {
@@ -48,6 +54,7 @@ interface ShortcutsDialogProps {
 export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
   const general = SHORTCUTS.filter((s) => s.section === 'general');
   const chat = SHORTCUTS.filter((s) => s.section === 'chat');
+  const voice = SHORTCUTS.filter((s) => s.section === 'voice');
 
   return (
     <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
@@ -58,9 +65,10 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
         <ResponsiveDialogDescription className="sr-only">
           All available keyboard shortcuts for MTI Brain
         </ResponsiveDialogDescription>
-        <div className="px-5 pb-5 space-y-5">
+        <div className="px-5 pb-5 space-y-5 max-h-[70vh] overflow-y-auto">
           <ShortcutSection title="General" shortcuts={general} />
           <ShortcutSection title="In chats" shortcuts={chat} />
+          <ShortcutSection title="Voice" shortcuts={voice} />
         </div>
       </ResponsiveDialogContent>
     </ResponsiveDialog>

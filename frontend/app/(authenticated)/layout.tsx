@@ -8,7 +8,7 @@ import { ShortcutsDialog } from '@/components/shortcuts-dialog';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useEffect, useState, startTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { isAuthenticated, getStoredUser } from '@/lib/auth';
+import { isAuthenticated, getStoredUser, getLoginGate, setLoginGate } from '@/lib/auth';
 import { useUIStore } from '@/lib/store/ui';
 import { useIsMobile, useIsTablet } from '@/hooks/use-mobile';
 import { usePreferencesStore } from '@/lib/store/preferences';
@@ -96,30 +96,47 @@ export default function AuthenticatedLayout({
 
   // Redirect unauthenticated users - runs client-side only
   useEffect(() => {
-    if (!isAuthenticated()) {
-      router.replace('/');
-      return;
+    // React StrictMode double-invokes effects. The `cancelled` flag ensures
+    // only the final (active) invocation acts - the first run's callback is
+    // a no-op once cleanup fires, so the gate and prime() fire exactly once.
+    let cancelled = false;
+
+    const prime = () => {
+      if (cancelled) return;
+      setAuthChecked(true);
+      const user = getStoredUser();
+      if (user?.user_id) {
+        usePreferencesStore.getState().rehydrateForUser(user.user_id);
+      }
+      const FRESH_MS = 30_000;
+      const now = Date.now();
+      const tStore = useThreadStore.getState();
+      if (now - (tStore.threadsLastFetched || 0) > FRESH_MS) {
+        tStore.fetchRecents();
+      }
+      const pStore = useProjectStore.getState();
+      if (now - (pStore.lastFetched || 0) > FRESH_MS) {
+        pStore.fetchProjects();
+      }
+    };
+
+    // If a login is in-flight (optimistic navigation from the login page),
+    // wait for it to complete before checking auth. Clear the gate only
+    // inside the callback so the second StrictMode run still finds it.
+    const gate = getLoginGate();
+    if (gate) {
+      gate.then(() => {
+        if (cancelled) return;
+        setLoginGate(null);
+        if (!isAuthenticated()) { router.replace('/'); return; }
+        prime();
+      });
+      return () => { cancelled = true; };
     }
-    setAuthChecked(true);
-    // Load user-scoped preferences
-    const user = getStoredUser();
-    if (user?.user_id) {
-      usePreferencesStore.getState().rehydrateForUser(user.user_id);
-    }
-    // TTL-gated priming: this useEffect re-runs on every navigation between
-    // authenticated pages, so we MUST skip the network calls when the cache
-    // is still fresh. Without this, every page transition fired two HTTP
-    // requests even when the data was 1 second old.
-    const FRESH_MS = 30_000;
-    const now = Date.now();
-    const tStore = useThreadStore.getState();
-    if (now - (tStore.threadsLastFetched || 0) > FRESH_MS) {
-      tStore.fetchRecents();
-    }
-    const pStore = useProjectStore.getState();
-    if (now - (pStore.lastFetched || 0) > FRESH_MS) {
-      pStore.fetchProjects();
-    }
+
+    if (!isAuthenticated()) { router.replace('/'); return; }
+    prime();
+    return () => { cancelled = true; };
   }, [router]);
 
   // Global keyboard shortcuts. Priority: Claude.ai-aligned bindings first
@@ -135,6 +152,26 @@ export default function AuthenticatedLayout({
     'cmd-s': () => {
       const { currentThreadId, starThread } = useThreadStore.getState();
       if (currentThreadId) starThread(currentThreadId);
+    },
+    'cmd-shift-v': () => {
+      window.dispatchEvent(new CustomEvent('mti-brain:toggle-voice'));
+    },
+    'cmd-shift-e': () => {
+      window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
+    },
+    'cmd-shift-l': () => {
+      void navigator.clipboard.writeText(window.location.href).then(() => {
+        // toast is imported at the top of this file
+        toast.success('Link copied to clipboard');
+      });
+    },
+    'cmd-r': () => {
+      const { currentThreadId, currentMessages, retryResponse } = useThreadStore.getState();
+      if (!currentThreadId) return;
+      const lastAssistant = [...currentMessages].reverse().find((m) => m.role === 'assistant' && m.content);
+      if (lastAssistant?.conversation_id) {
+        void retryResponse(currentThreadId, lastAssistant.conversation_id);
+      }
     },
     'cmd-shift-c': () => {
       const msgs = useThreadStore.getState().currentMessages;

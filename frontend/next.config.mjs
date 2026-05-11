@@ -43,7 +43,7 @@ const nextConfig = {
   },
   allowedDevOrigins,
   // Defense-in-depth security headers. CSP is permissive (matches the
-  // permissive local-dev posture) — but X-Content-Type-Options, Referrer-Policy,
+  // permissive local-dev posture) - but X-Content-Type-Options, Referrer-Policy,
   // and X-Frame-Options survive the Okta migration and cost nothing.
   async headers() {
     return [

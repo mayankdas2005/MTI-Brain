@@ -40,7 +40,9 @@ import {
   type ResponseTone,
   type DefaultDataView,
   type Density,
+  type TTSRate,
 } from '@/lib/store/preferences';
+import { useAvailableVoices } from '@/lib/hooks/use-tts';
 import {
   getPermission,
   notificationsSupported,
@@ -112,6 +114,12 @@ export default function SettingsPage() {
   const setNotifySound = usePreferencesStore((s) => s.setNotifySound);
   const density = usePreferencesStore((s) => s.density);
   const setDensity = usePreferencesStore((s) => s.setDensity);
+  const ttsRate = usePreferencesStore((s) => s.ttsRate ?? 1);
+  const setTTSRate = usePreferencesStore((s) => s.setTTSRate);
+  const ttsVoiceURI = usePreferencesStore((s) => s.ttsVoiceURI ?? '');
+  const setTTSVoiceURI = usePreferencesStore((s) => s.setTTSVoiceURI);
+  const highContrast = usePreferencesStore((s) => s.highContrast ?? false);
+  const setHighContrast = usePreferencesStore((s) => s.setHighContrast);
   const resetToDefaults = usePreferencesStore((s) => s.resetToDefaults);
   const hydrated = usePreferencesStore((s) => s.hydrated);
 
@@ -519,6 +527,57 @@ export default function SettingsPage() {
                         );
                       })}
                     </div>
+                  </SettingBlock>
+                )}
+                {v('voice speed tts read aloud playback rate') && (
+                  <SettingBlock
+                    label="Voice speed"
+                    description="Playback speed for the Read Aloud feature."
+                  >
+                    <div className="grid grid-cols-4 gap-2 max-w-sm">
+                      {([0.75, 1, 1.25, 1.5] as TTSRate[]).map((rate) => {
+                        const isSelected = ttsRate === rate;
+                        const isDefault = rate === PREFERENCES_DEFAULTS.ttsRate;
+                        return (
+                          <div key={rate} className="flex flex-col">
+                            <button
+                              onClick={() => setTTSRate(rate)}
+                              aria-pressed={isSelected}
+                              className={`rounded-lg px-3 py-2 text-sm outline-none transition-colors ${
+                                isSelected
+                                  ? 'ring-2 ring-primary bg-primary/10 font-medium text-foreground'
+                                  : 'bg-muted/50 hover:bg-accent text-muted-foreground'
+                              }`}
+                            >
+                              {rate}×
+                            </button>
+                            <DefaultTag visible={isDefault} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </SettingBlock>
+                )}
+                {v('voice voice type gender female male voice speaker') && (
+                  <VoiceSelector
+                    voiceURI={ttsVoiceURI}
+                    onChange={setTTSVoiceURI}
+                    v={v}
+                  />
+                )}
+                {v('microphone voice permission browser mic') && (
+                  <MicrophonePermissionRow />
+                )}
+                {v('high contrast accessibility bold text sharp') && (
+                  <SettingBlock
+                    label="High contrast"
+                    description="Makes text darker and borders sharper - easier to read in bright environments or for users with low vision."
+                  >
+                    <Switch
+                      checked={highContrast}
+                      onCheckedChange={setHighContrast}
+                      aria-label="Toggle high contrast mode"
+                    />
                   </SettingBlock>
                 )}
               </Section>
@@ -951,6 +1010,124 @@ function ToggleRow({
         disabled={disabled}
         aria-label={label}
       />
+    </div>
+  );
+}
+
+function VoiceSelector({
+  voiceURI,
+  onChange,
+  v,
+}: {
+  voiceURI: string;
+  onChange: (uri: string) => void;
+  v: (keywords: string) => boolean;
+}) {
+  const voices = useAvailableVoices();
+
+  if (!v('voice type gender female male speaker') || voices.length === 0) return null;
+
+  const females = voices.filter((vx) => vx.gender === 'female');
+  const males = voices.filter((vx) => vx.gender === 'male');
+
+  return (
+    <SettingBlock
+      label="Voice"
+      description="Choose the voice for reading responses aloud."
+    >
+      <select
+        value={voiceURI}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full max-w-sm rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+      >
+        <option value="">Auto (recommended)</option>
+        {females.length > 0 && (
+          <optgroup label="Female">
+            {females.map((vx) => (
+              <option key={vx.voice.voiceURI} value={vx.voice.voiceURI}>
+                {vx.label}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {males.length > 0 && (
+          <optgroup label="Male">
+            {males.map((vx) => (
+              <option key={vx.voice.voiceURI} value={vx.voice.voiceURI}>
+                {vx.label}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+    </SettingBlock>
+  );
+}
+
+function MicrophonePermissionRow() {
+  type MicState = 'unknown' | 'prompt' | 'granted' | 'denied' | 'unsupported';
+  const [state, setState] = useState<MicState>('unknown');
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.permissions) {
+      setState('unsupported');
+      return;
+    }
+    const check = () => {
+      navigator.permissions
+        .query({ name: 'microphone' as PermissionName })
+        .then((result) => {
+          setState(result.state as MicState);
+          result.onchange = () => setState(result.state as MicState);
+        })
+        .catch(() => setState('unsupported'));
+    };
+    check();
+    const onFocus = () => check();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
+
+  const handleEnable = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      setState('granted');
+    } catch {
+      setState('denied');
+    }
+  };
+
+  const httpsRequired = typeof window !== 'undefined' && !window.isSecureContext;
+
+  if (state === 'unsupported') return null;
+
+  return (
+    <div className="flex items-center justify-between gap-4 py-[var(--density-pad-y)]">
+      <div className="min-w-0">
+        <p className="text-sm text-foreground">Microphone permission</p>
+        <p className="text-[11px] text-muted-foreground">
+          {httpsRequired && 'Voice input requires a secure connection (HTTPS). It will work automatically once the app is deployed.'}
+          {!httpsRequired && state === 'granted' && 'Allowed - voice input is ready to use.'}
+          {!httpsRequired && state === 'prompt' && 'Not yet granted - click Enable to allow microphone access.'}
+          {!httpsRequired && state === 'denied' && 'Blocked - open your browser permissions for this site and set Microphone to Allow.'}
+          {!httpsRequired && state === 'unknown' && 'Checking…'}
+        </p>
+      </div>
+      {state === 'prompt' && (
+        <Button size="sm" onClick={handleEnable} className="shrink-0">
+          Enable
+        </Button>
+      )}
+      {state === 'granted' && (
+        <span className="shrink-0 inline-flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden />
+          Allowed
+        </span>
+      )}
+      {state === 'denied' && (
+        <span className="shrink-0 text-[11px] text-muted-foreground">Blocked</span>
+      )}
     </div>
   );
 }

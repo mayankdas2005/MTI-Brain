@@ -3,7 +3,9 @@
 import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, Volume2, Square } from 'lucide-react';
+import { useTTS, isTTSSupported } from '@/lib/hooks/use-tts';
+import { usePreferencesStore as usePrefStore } from '@/lib/store/preferences';
 import hljs from 'highlight.js/lib/core';
 import sql from 'highlight.js/lib/languages/sql';
 hljs.registerLanguage('sql', sql);
@@ -102,6 +104,10 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const retryResponse = useThreadStore((s) => s.retryResponse);
   const editQuestion = useThreadStore((s) => s.editQuestion);
   const isStreaming = useThreadStore((s) => s.isStreaming);
+  const ttsRate = usePrefStore((s) => s.ttsRate ?? 1);
+  const ttsVoiceURI = usePrefStore((s) => s.ttsVoiceURI ?? '');
+  const { speak: ttsSpeak, stop: ttsStop, isSpeaking } = useTTS(ttsRate, ttsVoiceURI);
+  const ttsAvailable = isTTSSupported();
 
   const copyToClipboard = async () => {
     const ok = await copyText(message.content);
@@ -456,6 +462,25 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               </TooltipTrigger>
               <TooltipContent side="bottom">Copy</TooltipContent>
             </Tooltip>
+            {ttsAvailable && !message.isStreaming && message.content && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => isSpeaking ? ttsStop() : ttsSpeak(message.content)}
+                    aria-label={isSpeaking ? 'Stop reading' : 'Read aloud'}
+                    aria-pressed={isSpeaking}
+                    className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent"
+                  >
+                    {isSpeaking
+                      ? <Square className="w-3.5 h-3.5 fill-current" aria-hidden />
+                      : <Volume2 className="w-3.5 h-3.5" aria-hidden />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">{isSpeaking ? 'Stop' : 'Read aloud'}</TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
