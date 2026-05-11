@@ -136,9 +136,28 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
   },
 
   createProject: async (name, description) => {
-    const project = await api.createProject(name, description);
-    set((state) => ({ projects: [project, ...state.projects] }));
-    return project;
+    const tempId = `temp_${Date.now()}`;
+    const now = new Date().toISOString();
+    const optimistic: ProjectOut = {
+      id: tempId,
+      name,
+      description: description ?? null,
+      starred: false,
+      thread_count: 0,
+      created_at: now,
+      updated_at: now,
+    };
+    set((state) => ({ projects: [optimistic, ...state.projects] }));
+    try {
+      const project = await api.createProject(name, description);
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === tempId ? project : p)),
+      }));
+      return project;
+    } catch (err) {
+      set((state) => ({ projects: state.projects.filter((p) => p.id !== tempId) }));
+      throw err;
+    }
   },
 
   fetchProject: async (id) => {
@@ -248,9 +267,9 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
       if (name !== undefined) body.name = name;
       if (description !== undefined) body.description = description;
       await api.updateProject(id, body);
-    } catch {
-      // Rollback all three.
+    } catch (err) {
       set({ projects: prev, currentProject: prevCurrent, projectDetailMap: prevMap });
+      throw err;
     }
   },
 
@@ -271,8 +290,9 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
 
     try {
       await api.deleteProject(id);
-    } catch {
+    } catch (err) {
       set({ projects: prev, currentProject: prevCurrent, projectDetailMap: prevMap });
+      throw err;
     }
   },
 
@@ -319,8 +339,9 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
           ? { ...state.projectDetailMap, [id]: { ...state.projectDetailMap[id], starred } }
           : state.projectDetailMap,
       }));
-    } catch {
+    } catch (err) {
       set({ projects: prev, currentProject: prevCurrent, projectDetailMap: prevMap });
+      throw err;
     }
   },
 

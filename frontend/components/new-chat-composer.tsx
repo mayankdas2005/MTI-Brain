@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useThreadStore } from '@/lib/store/threads';
+import { useThreadStore, setThreadCreationGate } from '@/lib/store/threads';
+import { toast } from '@/lib/toast';
 import { ArrowUp, Loader2, BrainCircuit } from 'lucide-react';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
@@ -96,28 +97,37 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
     }
   }, [input]);
 
-  const handleSubmit = async (text?: string) => {
+  const handleSubmit = (text?: string) => {
     const message = (text ?? input).trim();
     if (!message || submitting) return;
 
     setSubmitting(true);
-    try {
-      const threadId = await createThread(undefined, projectId);
-      setPendingQuestion(message, deepAnalysis);
-      void clearDraft(NEW_DRAFT_KEY);
-      track(Events.ChatCreated, { thread_id: threadId, project_id: projectId ?? null });
-      track(Events.QuestionAsked, {
-        thread_id: threadId,
-        is_followup: false,
-        length: message.length,
-        from: 'new',
+    const threadId = crypto.randomUUID();
+
+    // Gate blocks chat-composer from firing askQuestion until the thread
+    // exists on the server. Resolves when creation succeeds; on failure,
+    // navigate back to /new and clear the pending state.
+    const gate = createThread(undefined, projectId, threadId)
+      .then(() => {})
+      .catch(() => {
+        toast.error('Failed to create chat. Please try again.');
+        setPendingQuestion(null);
+        setThreadCreationGate(null);
+        router.replace('/new');
       });
-      // Silently track active days - gates the install-prompt eligibility.
-      useActivityStore.getState().recordQuestion();
-      router.push(`/chat/${threadId}`);
-    } catch {
-      setSubmitting(false);
-    }
+    setThreadCreationGate(gate);
+
+    setPendingQuestion(message, deepAnalysis);
+    void clearDraft(NEW_DRAFT_KEY);
+    track(Events.ChatCreated, { thread_id: threadId, project_id: projectId ?? null });
+    track(Events.QuestionAsked, {
+      thread_id: threadId,
+      is_followup: false,
+      length: message.length,
+      from: 'new',
+    });
+    useActivityStore.getState().recordQuestion();
+    router.push(`/chat/${threadId}`);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

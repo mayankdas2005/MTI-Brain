@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { useThreadStore } from '@/lib/store/threads';
+import { useThreadStore, getThreadCreationGate, setThreadCreationGate } from '@/lib/store/threads';
 import { useUIStore } from '@/lib/store/ui';
 import { ArrowUp, Square, BrainCircuit } from 'lucide-react';
 import {
@@ -135,7 +135,15 @@ export function ChatComposer() {
     const key = `${currentThreadId}:${pendingQuestion}`;
     if (pendingHandled.current === key) return;
     pendingHandled.current = key;
-    askQuestion(currentThreadId, pendingQuestion, undefined, undefined, pendingDeepAnalysis);
+    const gate = getThreadCreationGate();
+    if (gate) {
+      setThreadCreationGate(null);
+      gate.then(() => {
+        askQuestion(currentThreadId, pendingQuestion, undefined, undefined, pendingDeepAnalysis);
+      });
+    } else {
+      askQuestion(currentThreadId, pendingQuestion, undefined, undefined, pendingDeepAnalysis);
+    }
   }, [currentThreadId, pendingQuestion, pendingDeepAnalysis, askQuestion]);
 
   const handleStop = () => {

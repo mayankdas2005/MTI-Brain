@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import * as api from '../api';
+
+// Gate that chat-composer awaits before firing askQuestion on a new thread.
+// Set by new-chat-composer when it pre-generates a thread ID and navigates
+// before the creation API has responded. Cleared after consumption.
+let _threadCreationGate: Promise<void> | null = null;
+export function setThreadCreationGate(p: Promise<void> | null) { _threadCreationGate = p; }
+export function getThreadCreationGate() { return _threadCreationGate; }
+export function isThreadCreationPending() { return _threadCreationGate !== null; }
 import { streamSSE, SSEHandlers } from '../api/sse';
 import type {
   ThreadSummary,
@@ -283,7 +291,7 @@ interface ThreadStore {
   fetchThread: (threadId: string) => Promise<void>;
 
   // Thread CRUD
-  createThread: (title?: string, projectId?: string) => Promise<string>;
+  createThread: (title?: string, projectId?: string, pregenId?: string) => Promise<string>;
   deleteThread: (threadId: string) => Promise<boolean>;
   starThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
@@ -522,8 +530,9 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
   // ─── Thread CRUD ───
 
-  createThread: async (title, projectId) => {
+  createThread: async (title, projectId, pregenId) => {
     const res = await api.createThread({
+      thread_id: pregenId,
       title,
       project_id: projectId,
     });
@@ -599,15 +608,14 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         useProjectStore.getState().invalidateProjectDetail(affectedProjectId);
         useProjectStore.getState().refreshCurrentProjectIfMatches(affectedProjectId);
       }
-    } catch {
+    } catch (err) {
       set({ threads: prev, searchResults: prevSearchResults });
-      // Roll back the project detail mutation by refetching the server
-      // truth - the optimistic removal would otherwise leave a hole.
       if (affectedProjectId) {
         const { useProjectStore } = await import('./projects');
         useProjectStore.getState().invalidateProjectDetail(affectedProjectId);
         useProjectStore.getState().refreshCurrentProjectIfMatches(affectedProjectId);
       }
+      throw err;
     }
     return wasCurrent;
   },
@@ -641,8 +649,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     }
     try {
       await api.starThread(threadId);
-    } catch {
-      // Rollback sidebar list, current thread metadata, and project cache
+    } catch (err) {
       set({ threads: prev });
       if (get().currentThreadId === threadId) {
         set({ currentThreadStarred: prevStarred });
@@ -656,6 +663,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           ),
         }));
       }
+      throw err;
     }
   },
 
@@ -687,8 +695,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     }
     try {
       await api.renameThread(threadId, title);
-    } catch {
-      // Rollback sidebar list, current thread title, and project cache
+    } catch (err) {
       set({ threads: prev });
       if (get().currentThreadId === threadId) {
         set({ currentThreadTitle: prevTitle });
@@ -703,6 +710,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           ),
         }));
       }
+      throw err;
     }
   },
 
@@ -736,8 +744,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       // Counts shifted; refresh project list (sidebar/projects page).
       get().fetchRecents();
       useProjectStore.getState().fetchProjects();
-    } catch {
-      // Roll back sidebar list, current thread meta, and both project caches.
+    } catch (err) {
       set({ threads: prev });
       if (get().currentThreadId === threadId) set({ currentThreadProjectId: fromProjectId });
       if (fromProjectId) {
@@ -748,6 +755,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         useProjectStore.getState().invalidateProjectDetail(projectId);
         useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
       }
+      throw err;
     }
   },
 
@@ -798,9 +806,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         useProjectStore.getState().invalidateProjectDetail(pid);
         useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
       }
-    } catch {
+    } catch (err) {
       set({ threads: prev, searchResults: prevSearchResults });
-      // Roll back project detail by refetching server truth.
       if (affectedProjectIds.size > 0) {
         const { useProjectStore } = await import('./projects');
         for (const pid of affectedProjectIds) {
@@ -808,6 +815,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
         }
       }
+      throw err;
     }
   },
 
@@ -847,9 +855,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       await api.bulkMoveThreads(ids, projectId);
       get().fetchRecents();
       useProjectStore.getState().fetchProjects();
-    } catch {
+    } catch (err) {
       set({ threads: prev });
-      // Roll back project caches by refetching server truth.
       for (const pid of affectedProjectIds) {
         useProjectStore.getState().invalidateProjectDetail(pid);
         useProjectStore.getState().refreshCurrentProjectIfMatches(pid);
@@ -858,6 +865,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         useProjectStore.getState().invalidateProjectDetail(projectId);
         useProjectStore.getState().refreshCurrentProjectIfMatches(projectId);
       }
+      throw err;
     }
   },
 

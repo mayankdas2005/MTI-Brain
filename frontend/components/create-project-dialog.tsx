@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useTransition } from 'react';
 import {
   ResponsiveDialog,
   ResponsiveDialogContent,
@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { useProjectStore } from '@/lib/store/projects';
 import { useRouter } from 'next/navigation';
+import { toast } from '@/lib/toast';
 
 interface CreateProjectDialogProps {
   open: boolean;
@@ -27,7 +28,7 @@ export function CreateProjectDialog({
   const createProject = useProjectStore((s) => s.createProject);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [isPending, startTransition] = useTransition();
 
   const handleClose = (isOpen: boolean) => {
     if (!isOpen) {
@@ -37,22 +38,22 @@ export function CreateProjectDialog({
     onOpenChange(isOpen);
   };
 
-  const handleCreate = async () => {
+  const handleCreate = () => {
     const trimmedName = name.trim();
     if (!trimmedName) return;
 
-    setSaving(true);
-    try {
-      const project = await createProject(trimmedName, description.trim() || undefined);
-      handleClose(false);
-      if (navigateOnCreate) {
-        router.push(`/projects/${project.id}`);
+    const descValue = description.trim() || undefined;
+    handleClose(false);
+    startTransition(async () => {
+      try {
+        const project = await createProject(trimmedName, descValue);
+        if (navigateOnCreate) {
+          router.push(`/projects/${project.id}`);
+        }
+      } catch {
+        toast.error('Failed to create project. Please try again.');
       }
-    } catch {
-      // Error handled by store
-    } finally {
-      setSaving(false);
-    }
+    });
   };
 
   return (
@@ -99,8 +100,8 @@ export function CreateProjectDialog({
           <Button variant="ghost" onClick={() => handleClose(false)}>
             Cancel
           </Button>
-          <Button onClick={handleCreate} disabled={saving || !name.trim()}>
-            {saving ? 'Creating...' : 'Create project'}
+          <Button onClick={handleCreate} disabled={isPending || !name.trim()}>
+            {isPending ? 'Creating...' : 'Create project'}
           </Button>
         </ResponsiveDialogFooter>
       </ResponsiveDialogContent>

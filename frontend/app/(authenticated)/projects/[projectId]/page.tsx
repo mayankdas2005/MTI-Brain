@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState, use } from 'react';
+import { useEffect, useState, use, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { useProjectStore } from '@/lib/store/projects';
+import { toast } from '@/lib/toast';
 import { useThreadStore } from '@/lib/store/threads';
 import { Button } from '@/components/ui/button';
 import {
@@ -71,6 +72,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   // fetchProject in the store - no inline pre-seed needed here.
   useEffect(() => {
     fetchProject(projectId).catch(() => {
+      toast.error('Project not found.');
       router.replace('/projects');
     });
 
@@ -82,10 +84,27 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     };
   }, [projectId, fetchProject, router]);
 
+  const [starPending, startStarTransition] = useTransition();
+
+  const handleStar = () => {
+    startStarTransition(async () => {
+      try {
+        await starProject(projectId);
+      } catch {
+        toast.error('Failed to update star. Please try again.');
+      }
+    });
+  };
+
   const handleDelete = async () => {
-    await deleteProject(projectId);
-    setDeleteOpen(false);
-    router.push('/projects');
+    try {
+      await deleteProject(projectId);
+      setDeleteOpen(false);
+      router.push('/projects');
+    } catch {
+      setDeleteOpen(false);
+      toast.error('Failed to delete project. Please try again.');
+    }
   };
 
   const handleNewThread = () => {
@@ -149,8 +168,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
-                  onClick={() => starProject(projectId)}
-                  className="shrink-0 p-1 rounded hover:bg-muted transition-colors"
+                  onClick={handleStar}
+                  disabled={starPending}
+                  className="shrink-0 p-1 rounded hover:bg-muted transition-colors disabled:opacity-50"
                 >
                   <Star
                     className={`w-5 h-5 ${

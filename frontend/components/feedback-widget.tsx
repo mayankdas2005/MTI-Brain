@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useOptimistic, useTransition } from 'react';
 import { ThumbsUp, ThumbsDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -17,6 +17,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { toast } from '@/lib/toast';
 
 interface FeedbackWidgetProps {
   threadId: string;
@@ -29,37 +30,36 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
   const [dialogOpen, setDialogOpen] = useState(false);
   const [comment, setComment] = useState('');
   const [pendingLiked, setPendingLiked] = useState<boolean | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  // Ref-based guard so a fast double-click can't get past the check before
-  // the setSubmitting state flush. setState is async; the ref is synchronous.
-  const submittingRef = useRef(false);
+  const [isPending, startTransition] = useTransition();
+  const [optimisticLiked, setOptimisticLiked] = useOptimistic(feedback?.liked);
 
   const openFeedback = (liked: boolean) => {
-    if (submittingRef.current) return;
-    if (feedback?.liked === liked) return; // already submitted same
+    if (isPending) return;
+    if (optimisticLiked === liked) return;
     setPendingLiked(liked);
     setComment('');
     setDialogOpen(true);
   };
 
-  const handleSubmit = async () => {
-    if (pendingLiked === null || submittingRef.current) return;
-    submittingRef.current = true;
-    setSubmitting(true);
-    try {
-      await submitFeedback(threadId, conversationId, pendingLiked, comment || undefined);
-      track(Events.FeedbackGiven, {
-        liked: pendingLiked,
-        has_comment: comment.trim().length > 0,
-      });
-    } catch {
-      // handled by store
-    }
-    submittingRef.current = false;
-    setSubmitting(false);
+  const handleSubmit = () => {
+    if (pendingLiked === null) return;
+    const likedValue = pendingLiked;
+    const commentValue = comment;
     setDialogOpen(false);
     setComment('');
     setPendingLiked(null);
+    startTransition(async () => {
+      setOptimisticLiked(likedValue);
+      try {
+        await submitFeedback(threadId, conversationId, likedValue, commentValue || undefined);
+        track(Events.FeedbackGiven, {
+          liked: likedValue,
+          has_comment: commentValue.trim().length > 0,
+        });
+      } catch {
+        toast.error('Failed to submit feedback.');
+      }
+    });
   };
 
   const isPositive = pendingLiked === true;
@@ -73,16 +73,16 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
               variant="ghost"
               size="sm"
               className={`h-7 w-7 p-0 rounded-lg transition-colors ${
-                feedback?.liked === true
+                optimisticLiked === true
                   ? 'text-green-700 dark:text-green-500 bg-green-500/20 ring-1 ring-green-500/30'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent'
               }`}
               onClick={() => openFeedback(true)}
-              disabled={submitting || feedback?.liked === true}
-              aria-label={feedback?.liked === true ? 'Positive feedback submitted' : 'Give positive feedback'}
-              aria-pressed={feedback?.liked === true}
+              disabled={isPending || optimisticLiked === true}
+              aria-label={optimisticLiked === true ? 'Positive feedback submitted' : 'Give positive feedback'}
+              aria-pressed={optimisticLiked === true}
             >
-              <ThumbsUp className={`w-3.5 h-3.5 ${feedback?.liked === true ? 'fill-green-700 dark:fill-green-500' : ''}`} />
+              <ThumbsUp className={`w-3.5 h-3.5 ${optimisticLiked === true ? 'fill-green-700 dark:fill-green-500' : ''}`} />
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">Give positive feedback</TooltipContent>
@@ -94,16 +94,16 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
               variant="ghost"
               size="sm"
               className={`h-7 w-7 p-0 rounded-lg transition-colors ${
-                feedback?.liked === false
+                optimisticLiked === false
                   ? 'text-red-700 dark:text-red-500 bg-red-500/20 ring-1 ring-red-500/30'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent'
               }`}
               onClick={() => openFeedback(false)}
-              disabled={submitting || feedback?.liked === false}
-              aria-label={feedback?.liked === false ? 'Negative feedback submitted' : 'Give negative feedback'}
-              aria-pressed={feedback?.liked === false}
+              disabled={isPending || optimisticLiked === false}
+              aria-label={optimisticLiked === false ? 'Negative feedback submitted' : 'Give negative feedback'}
+              aria-pressed={optimisticLiked === false}
             >
-              <ThumbsDown className={`w-3.5 h-3.5 ${feedback?.liked === false ? 'fill-red-700 dark:fill-red-500' : ''}`} />
+              <ThumbsDown className={`w-3.5 h-3.5 ${optimisticLiked === false ? 'fill-red-700 dark:fill-red-500' : ''}`} />
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">Give negative feedback</TooltipContent>
@@ -140,8 +140,8 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
             <Button variant="ghost" onClick={() => setDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleSubmit} disabled={submitting}>
-              {submitting ? 'Submitting...' : 'Submit'}
+            <Button onClick={handleSubmit} disabled={isPending}>
+              Submit
             </Button>
           </DialogFooter>
         </DialogContent>

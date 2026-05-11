@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
-import { useThreadStore } from '@/lib/store/threads';
+import { useThreadStore, isThreadCreationPending } from '@/lib/store/threads';
+import { toast } from '@/lib/toast';
 import { MessageList } from '@/components/message-list';
 import { ChatComposer } from '@/components/chat-composer';
 import { ArrowDown } from 'lucide-react';
@@ -66,6 +67,7 @@ export default function ChatPage({ params }: ChatPageProps) {
     }
     const decide = () => {
       if (pendingQuestion) return 'skip-pending';
+      if (isThreadCreationPending()) return 'skip-pending';
       if (streamingHere && (streamSlotHas || currentHas)) return 'skip-streaming';
       if (currentHas) return 'background-refresh';
       return 'fetch';
@@ -90,6 +92,7 @@ export default function ChatPage({ params }: ChatPageProps) {
       return;
     }
     fetchThread(chatId).catch(() => {
+      toast.error('Chat not found.');
       router.replace('/new');
     });
   }, [chatId, fetchThread, setCurrentThread, router, pendingQuestion, isStreaming, streamingThreadId]);

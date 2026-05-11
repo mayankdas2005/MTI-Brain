@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useTransition } from 'react';
 import {
   ResponsiveDialog,
   ResponsiveDialogContent,
@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/responsive-dialog';
 import { Button } from '@/components/ui/button';
 import { useThreadStore } from '@/lib/store/threads';
+import { toast } from '@/lib/toast';
 
 interface RenameDialogProps {
   open: boolean;
@@ -21,27 +22,26 @@ interface RenameDialogProps {
 export function RenameDialog({ open, onOpenChange, threadId, currentTitle }: RenameDialogProps) {
   const renameThread = useThreadStore((s) => s.renameThread);
   const [title, setTitle] = useState(currentTitle);
-  const [saving, setSaving] = useState(false);
+  const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     if (open) setTitle(currentTitle);
   }, [open, currentTitle]);
 
-  const handleSave = async () => {
+  const handleSave = () => {
     const trimmed = title.trim();
     if (!trimmed || trimmed === currentTitle) {
       onOpenChange(false);
       return;
     }
-    setSaving(true);
-    try {
-      await renameThread(threadId, trimmed);
-      onOpenChange(false);
-    } catch {
-      // Error handled by store
-    } finally {
-      setSaving(false);
-    }
+    onOpenChange(false);
+    startTransition(async () => {
+      try {
+        await renameThread(threadId, trimmed);
+      } catch {
+        toast.error('Failed to rename chat. Please try again.');
+      }
+    });
   };
 
   return (
@@ -63,8 +63,8 @@ export function RenameDialog({ open, onOpenChange, threadId, currentTitle }: Ren
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving || !title.trim()}>
-            {saving ? 'Saving...' : 'Save'}
+          <Button onClick={handleSave} disabled={isPending || !title.trim()}>
+            {isPending ? 'Saving...' : 'Save'}
           </Button>
         </ResponsiveDialogFooter>
       </ResponsiveDialogContent>

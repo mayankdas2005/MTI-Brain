@@ -50,6 +50,11 @@ export default function AuthenticatedLayout({
   const tabletOverlayOpen = useUIStore((s) => s.tabletSidebarOverlayOpen);
   const setTabletOverlayOpen = useUIStore((s) => s.setTabletSidebarOverlayOpen);
 
+  // Auth guard: nothing renders (no child effects fire) until isAuthenticated()
+  // confirms a valid non-expired token. This prevents pages like /chat/[id]
+  // from firing API calls against an expired session before the redirect fires.
+  const [authChecked, setAuthChecked] = useState(false);
+
   // First-paint guard: useIsMobile/useIsTablet return false during SSR and on
   // the very first client render, which would briefly flash the desktop
   // sidebar on phones. Render a neutral placeholder for one frame instead.
@@ -95,6 +100,7 @@ export default function AuthenticatedLayout({
       router.replace('/');
       return;
     }
+    setAuthChecked(true);
     // Load user-scoped preferences
     const user = getStoredUser();
     if (user?.user_id) {
@@ -252,6 +258,14 @@ export default function AuthenticatedLayout({
       if (konamiTimer) clearTimeout(konamiTimer);
     };
   }, []);
+
+  if (!authChecked) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="w-5 h-5 rounded-full border-2 border-border border-t-foreground animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-background overflow-hidden" suppressHydrationWarning>

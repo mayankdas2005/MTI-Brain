@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useTransition } from 'react';
 import {
   ResponsiveDialog,
   ResponsiveDialogContent,
@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useProjectStore } from '@/lib/store/projects';
+import { toast } from '@/lib/toast';
 
 interface EditProjectDialogProps {
   open: boolean;
@@ -31,7 +32,7 @@ export function EditProjectDialog({
   const updateProject = useProjectStore((s) => s.updateProject);
   const [name, setName] = useState(currentName);
   const [description, setDescription] = useState(currentDescription);
-  const [saving, setSaving] = useState(false);
+  const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     if (open) {
@@ -40,7 +41,7 @@ export function EditProjectDialog({
     }
   }, [open, currentName, currentDescription]);
 
-  const handleSave = async () => {
+  const handleSave = () => {
     const trimmedName = name.trim();
     if (!trimmedName) return;
 
@@ -51,19 +52,18 @@ export function EditProjectDialog({
       return;
     }
 
-    setSaving(true);
-    try {
-      await updateProject(
-        projectId,
-        nameChanged ? trimmedName : undefined,
-        descChanged ? description : undefined,
-      );
-      onOpenChange(false);
-    } catch {
-      // Error handled by store
-    } finally {
-      setSaving(false);
-    }
+    onOpenChange(false);
+    startTransition(async () => {
+      try {
+        await updateProject(
+          projectId,
+          nameChanged ? trimmedName : undefined,
+          descChanged ? description : undefined,
+        );
+      } catch {
+        toast.error('Failed to save project. Please try again.');
+      }
+    });
   };
 
   return (
@@ -108,8 +108,8 @@ export function EditProjectDialog({
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving || !name.trim()}>
-            {saving ? 'Saving...' : 'Save'}
+          <Button onClick={handleSave} disabled={isPending || !name.trim()}>
+            {isPending ? 'Saving...' : 'Save'}
           </Button>
         </ResponsiveDialogFooter>
       </ResponsiveDialogContent>
