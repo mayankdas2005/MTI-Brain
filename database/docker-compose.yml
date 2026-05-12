@@ -141,17 +141,25 @@ services:
       start_period: 10s
 
   jena-fuseki:
-    image: stain/jena-fuseki:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.fuseki
+      args:
+        JENA_VERSION: ${JENA_ARQ_VERSION:-5.1.0}
+    image: mti-brain-fuseki:latest
     container_name: jena-fuseki
     restart: unless-stopped
     env_file: .env
+    volumes:
+      - ./docker_volume/fuseki:/fuseki
+      - ./docker_volume/fuseki-data:/work/data
+      - ./docker_volume/fuseki-queries:/work/queries
+      - ./docker_volume/fuseki-output:/work/output
     ports:
       - "3030:3030"
     environment:
       - ADMIN_PASSWORD=${JENA_ADMIN_PASSWORD:?JENA_ADMIN_PASSWORD is required}
       - JVM_ARGS=-Xms${JENA_JVM_XMS:-256m} -Xmx${JENA_JVM_XMX:-512m}
-    volumes:
-      - ./docker_volume/fuseki-data:/fuseki
     networks:
       - db_net
     deploy:
