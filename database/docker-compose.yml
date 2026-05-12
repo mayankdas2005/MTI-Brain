@@ -6,9 +6,9 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - ./docker_volume/postgres/data:/var/lib/postgresql/data/pgdata
@@ -26,11 +26,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1536M
-          cpus: "2.0"
+          memory: ${POSTGRES_MEMORY_LIMIT:-1536M}
+          cpus: "${POSTGRES_CPU_LIMIT:-2.0}"
         reservations:
-          memory: 512M
-          cpus: "0.5"
+          memory: ${POSTGRES_MEMORY_RESERVATION:-512M}
+          cpus: "${POSTGRES_CPU_RESERVATION:-0.5}"
     command:
       - postgres
       - -c
@@ -95,28 +95,28 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_NAME: ${POSTGRES_DB}
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB:?POSTGRES_DB is required}
+      DB_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
 
-      AUTH_TYPE: ${PGBOUNCER_AUTH_TYPE}
-      POOL_MODE: ${PGBOUNCER_POOL_MODE}
-      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN}
-      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE}
-      MIN_POOL_SIZE: ${PGBOUNCER_MIN_POOL_SIZE}
-      RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE}
-      RESERVE_POOL_TIMEOUT: ${PGBOUNCER_RESERVE_POOL_TIMEOUT}
-      SERVER_IDLE_TIMEOUT: ${PGBOUNCER_SERVER_IDLE_TIMEOUT}
-      CLIENT_IDLE_TIMEOUT: ${PGBOUNCER_CLIENT_IDLE_TIMEOUT}
-      LOG_CONNECTIONS: ${PGBOUNCER_LOG_CONNECTIONS}
-      LOG_DISCONNECTIONS: ${PGBOUNCER_LOG_DISCONNECTIONS}
-      LOG_STATS: ${PGBOUNCER_LOG_STATS}
-      STATS_PERIOD: ${PGBOUNCER_STATS_PERIOD}
+      AUTH_TYPE: ${PGBOUNCER_AUTH_TYPE:?PGBOUNCER_AUTH_TYPE is required}
+      POOL_MODE: ${PGBOUNCER_POOL_MODE:?PGBOUNCER_POOL_MODE is required}
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:?PGBOUNCER_MAX_CLIENT_CONN is required}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:?PGBOUNCER_DEFAULT_POOL_SIZE is required}
+      MIN_POOL_SIZE: ${PGBOUNCER_MIN_POOL_SIZE:?PGBOUNCER_MIN_POOL_SIZE is required}
+      RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:?PGBOUNCER_RESERVE_POOL_SIZE is required}
+      RESERVE_POOL_TIMEOUT: ${PGBOUNCER_RESERVE_POOL_TIMEOUT:?PGBOUNCER_RESERVE_POOL_TIMEOUT is required}
+      SERVER_IDLE_TIMEOUT: ${PGBOUNCER_SERVER_IDLE_TIMEOUT:?PGBOUNCER_SERVER_IDLE_TIMEOUT is required}
+      CLIENT_IDLE_TIMEOUT: ${PGBOUNCER_CLIENT_IDLE_TIMEOUT:?PGBOUNCER_CLIENT_IDLE_TIMEOUT is required}
+      LOG_CONNECTIONS: ${PGBOUNCER_LOG_CONNECTIONS:?PGBOUNCER_LOG_CONNECTIONS is required}
+      LOG_DISCONNECTIONS: ${PGBOUNCER_LOG_DISCONNECTIONS:?PGBOUNCER_LOG_DISCONNECTIONS is required}
+      LOG_STATS: ${PGBOUNCER_LOG_STATS:?PGBOUNCER_LOG_STATS is required}
+      STATS_PERIOD: ${PGBOUNCER_STATS_PERIOD:?PGBOUNCER_STATS_PERIOD is required}
       LISTEN_PORT: "5432"
       LISTEN_ADDR: "0.0.0.0"
-      ADMIN_USERS: ${POSTGRES_USER}
+      ADMIN_USERS: ${POSTGRES_USER:?POSTGRES_USER is required}
       # auth_query lets pgbouncer look up any PG user's SCRAM verifier on-demand
-      AUTH_USER: ${POSTGRES_USER}
+      AUTH_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       AUTH_QUERY: "SELECT usename, passwd FROM pg_shadow WHERE usename=$1"
     volumes:
       - ./docker_volume/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
@@ -128,17 +128,46 @@ services:
     deploy:
       resources:
         limits:
-          memory: 128M
-          cpus: "0.5"
+          memory: ${PGBOUNCER_MEMORY_LIMIT:-128M}
+          cpus: "${PGBOUNCER_CPU_LIMIT:-0.5}"
         reservations:
-          memory: 32M
-          cpus: "0.1"
+          memory: ${PGBOUNCER_MEMORY_RESERVATION:-32M}
+          cpus: "${PGBOUNCER_CPU_RESERVATION:-0.1}"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U ${POSTGRES_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  jena-fuseki:
+    image: stain/jena-fuseki:latest
+    container_name: jena-fuseki
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "3030:3030"
+    environment:
+      - ADMIN_PASSWORD=${JENA_ADMIN_PASSWORD:?JENA_ADMIN_PASSWORD is required}
+      - JVM_ARGS=-Xms${JENA_JVM_XMS:-256m} -Xmx${JENA_JVM_XMX:-512m}
+    volumes:
+      - ./docker_volume/fuseki-data:/fuseki
+    networks:
+      - db_net
+    deploy:
+      resources:
+        limits:
+          memory: ${JENA_MEMORY_LIMIT:-768M}
+          cpus: "${JENA_CPU_LIMIT:-1.0}"
+        reservations:
+          memory: ${JENA_MEMORY_RESERVATION:-256M}
+          cpus: "${JENA_CPU_RESERVATION:-0.25}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- 'http://localhost:3030/$/ping' || wget -qO- http://localhost:3030/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
 networks:
   db_net:
