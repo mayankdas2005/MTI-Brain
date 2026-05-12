@@ -26,7 +26,6 @@ services:
       - /tmp:size=64m,noexec,nosuid,nodev
     volumes:
       - backend_data:/app/data
-    pids_limit: 128
 
     # ── Log rotation ───────────────────────────────────────────────────────────
     logging:
@@ -47,6 +46,7 @@ services:
         limits:
           memory: 1024M
           cpus: "2.0"
+          pids: 128
         reservations:
           memory: 256M
           cpus: "0.5"
@@ -79,7 +79,6 @@ services:
       - /tmp:size=64m,noexec,nosuid,nodev
       # Cache dir for any ISR / fetch-cache writes Next.js may attempt.
       - /app/.next/cache:size=128m,noexec,nosuid,nodev
-    pids_limit: 64
 
     # ── Log rotation ───────────────────────────────────────────────────────────
     logging:
@@ -100,6 +99,7 @@ services:
         limits:
           memory: 512M
           cpus: "1.0"
+          pids: 64
         reservations:
           memory: 128M
           cpus: "0.25"
@@ -131,11 +131,15 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # nginx master process binds to ports 80 and 443 (privileged) as root,
-    # then drops to nobody for workers. NET_BIND_SERVICE is the only capability
-    # required; all others are dropped.
+    # Capabilities required for nginx's normal startup sequence:
+    #   NET_BIND_SERVICE — bind to privileged ports 80 and 443
+    #   CHOWN            — chown temp dirs (client_temp etc.) to the worker user
+    #   SETUID / SETGID  — master process drops from root to the nginx worker user
     cap_add:
       - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
     # Read-only root fs — nginx only needs to write its PID file and internal
     # proxy/cache scratch space; both are served from tmpfs.
     read_only: true
@@ -143,7 +147,6 @@ services:
       - /var/run:size=4m,noexec,nosuid,nodev
       - /var/cache/nginx:size=64m,noexec,nosuid,nodev
       - /tmp:size=32m,noexec,nosuid,nodev
-    pids_limit: 32
 
     # ── Log rotation ───────────────────────────────────────────────────────────
     logging:
@@ -166,6 +169,7 @@ services:
         limits:
           memory: 64M
           cpus: "0.25"
+          pids: 32
 
 # ─── Named volumes ─────────────────────────────────────────────────────────────
 
