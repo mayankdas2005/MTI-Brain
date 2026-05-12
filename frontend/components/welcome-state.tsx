@@ -296,7 +296,12 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
         {/* Pinned metrics — skeleton while loading, cards when ready */}
         {(pinnedLoading || pinnedMetrics.length > 0) && (
           <div className="w-full animate-fade-up" style={{ animationDelay: '20ms' }}>
-            <p className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-medium text-center mb-2">Pinned metrics</p>
+            {/* Header only shown once we know there are metrics — avoids
+                "PINNED METRICS" appearing above a skeleton that may resolve
+                to nothing if the user has no pinned metrics yet. */}
+            {pinnedFetched && (
+              <p className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-medium text-center mb-2">Pinned metrics</p>
+            )}
             {pinnedLoading && !pinnedFetched ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {[0, 1, 2].map((i) => (
