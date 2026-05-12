@@ -143,7 +143,7 @@ export function Topbar() {
     >
       {/* Left: hamburger on phone/tablet, spacer on desktop */}
       <div className="flex items-center gap-1">
-        {(isMobile || isTablet) && (
+        {isMobile && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button

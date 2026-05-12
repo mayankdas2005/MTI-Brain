@@ -12,12 +12,36 @@ services:
     networks:
       - app_net
       - db_net
+
+    # ── Hardening ──────────────────────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Read-only root fs — only /app/data (named volume) and /tmp (tmpfs) are
+    # writable. Prevents an attacker who gains code execution from modifying
+    # application binaries or installing tools.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    volumes:
+      - backend_data:/app/data
+    pids_limit: 128
+
+    # ── Log rotation ───────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request, sys; r=urllib.request.urlopen('http://localhost:8000/health', timeout=25); sys.exit(0 if r.status < 500 else 1)\" 2>/dev/null || exit 1"]
       interval: 30s
       timeout: 30s
       retries: 5
       start_period: 90s
+
     deploy:
       resources:
         limits:
@@ -42,12 +66,35 @@ services:
         condition: service_healthy
     networks:
       - app_net
+
+    # ── Hardening ──────────────────────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      # Next.js standalone writes nothing to disk at runtime when
+      # images.unoptimized=true; /tmp covers any transient OS needs.
+      - /tmp:size=64m,noexec,nosuid,nodev
+      # Cache dir for any ISR / fetch-cache writes Next.js may attempt.
+      - /app/.next/cache:size=128m,noexec,nosuid,nodev
+    pids_limit: 64
+
+    # ── Log rotation ───────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
+
     deploy:
       resources:
         limits:
@@ -69,20 +116,73 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
+    # Wait for both services to pass their own healthchecks before nginx starts.
+    # Previously used bare depends_on (only checks container existence, not readiness).
     depends_on:
-      - frontend
-      - backend
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
     networks:
       - app_net
+
+    # ── Hardening ──────────────────────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # nginx master process binds to ports 80 and 443 (privileged) as root,
+    # then drops to nobody for workers. NET_BIND_SERVICE is the only capability
+    # required; all others are dropped.
+    cap_add:
+      - NET_BIND_SERVICE
+    # Read-only root fs — nginx only needs to write its PID file and internal
+    # proxy/cache scratch space; both are served from tmpfs.
+    read_only: true
+    tmpfs:
+      - /var/run:size=4m,noexec,nosuid,nodev
+      - /var/cache/nginx:size=64m,noexec,nosuid,nodev
+      - /tmp:size=32m,noexec,nosuid,nodev
+    pids_limit: 32
+
+    # ── Log rotation ───────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "10"
+
+    healthcheck:
+      # Checks the master process is still alive via its PID file.
+      # Does not require curl/wget in the nginx:alpine image.
+      test: ["CMD-SHELL", "kill -0 \"$(cat /var/run/nginx.pid)\" 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
     deploy:
       resources:
         limits:
           memory: 64M
           cpus: "0.25"
 
+# ─── Named volumes ─────────────────────────────────────────────────────────────
+
+volumes:
+  # Persists /app/data across container restarts without touching the read-only
+  # root filesystem. Contains any backend-uploaded scheduling files.
+  backend_data:
+    driver: local
+
+# ─── Networks ──────────────────────────────────────────────────────────────────
+
 networks:
+  # Internal network shared by nginx, frontend, and backend.
+  # Backend and frontend expose no ports to the host — only nginx does.
   app_net:
     name: mti-brain-app
     driver: bridge
+  # External network for database connectivity, managed separately.
   db_net:
     external: true

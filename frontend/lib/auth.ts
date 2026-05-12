@@ -177,6 +177,14 @@ export async function logout(): Promise<void> {
 
   clearStoredToken();
   clearStoredUser();
+  // Clear the persisted threads cache so the next user on this device does
+  // not briefly see previous user's thread list before the first fetch.
+  try {
+    const { useThreadStore } = await import('./store/threads');
+    useThreadStore.persist.clearStorage();
+  } catch {
+    // best-effort
+  }
   try {
     const { resetAnalytics } = await import('./analytics');
     resetAnalytics();

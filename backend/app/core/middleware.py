@@ -137,6 +137,12 @@ class SecurityHeadersMiddleware:
                 headers.append(
                     (b"referrer-policy", b"strict-origin-when-cross-origin")
                 )
+                headers.append((b"x-permitted-cross-domain-policies", b"none"))
+                headers.append(
+                    (b"permissions-policy", b"geolocation=(), microphone=(), camera=()")
+                )
+                if not is_docs:
+                    headers.append((b"cache-control", b"no-store"))
                 if not is_docs:
                     headers.append((b"content-security-policy", _API_CSP))
                 if settings.is_production:

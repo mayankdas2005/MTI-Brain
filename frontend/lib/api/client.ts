@@ -4,10 +4,7 @@
 
 import { getAuthHeaders, clearStoredToken } from '@/lib/auth';
 
-const API_BASE =
-  (typeof window !== 'undefined'
-    ? process.env.NEXT_PUBLIC_API_URL
-    : process.env.NEXT_PUBLIC_API_URL) || '';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 export const apiBase = `${API_BASE}/api/v1`;
 
@@ -52,6 +49,18 @@ export async function apiFetch<T>(
     throw new ApiError(401, { detail: 'Session expired. Please log in again.' });
   }
 
+  if (res.status === 429) {
+    const retryAfter = res.headers.get('Retry-After');
+    const detail = retryAfter
+      ? `Too many requests. Please wait ${retryAfter} second${retryAfter === '1' ? '' : 's'} before trying again.`
+      : 'Too many requests. Please slow down and try again.';
+    throw new ApiError(429, { detail });
+  }
+
+  if (res.status === 503) {
+    throw new ApiError(503, { detail: 'Service temporarily unavailable. Please try again shortly.' });
+  }
+
   if (!res.ok) {
     let body: unknown;
     try {
@@ -62,5 +71,8 @@ export async function apiFetch<T>(
     throw new ApiError(res.status, body);
   }
 
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }

@@ -321,7 +321,7 @@ export default function SettingsPage() {
             aria-label="Settings sections"
             className="lg:w-48 shrink-0 lg:sticky lg:top-0 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto"
           >
-            <ul className="flex lg:flex-col gap-1 overflow-x-auto lg:overflow-x-visible -mx-1 px-1">
+            <ul className="flex lg:flex-col gap-1 overflow-x-auto lg:overflow-x-visible -mx-1 px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden pb-px lg:pb-0">
               {SECTIONS.map((s) => {
                 const Icon = s.icon;
                 const isActive = activeSection === s.id;

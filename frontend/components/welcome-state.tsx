@@ -8,6 +8,7 @@ import { MessageSquare, ArrowRight } from 'lucide-react';
 import { type Suggestion, pickSuggestions } from '@/lib/suggestions';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import { MetricPinCard } from './metric-pin-card';
+import { Skeleton } from '@/components/ui/skeleton';
 
 // ─── Taglines: time-of-day pools ───
 // Each time slot has its own pool so the vibe matches the moment.
@@ -237,6 +238,8 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
     s.threads.slice(0, 10).map((t) => t.title).filter(Boolean) as string[]
   );
   const pinnedMetrics = usePinnedMetricsStore((s) => s.metrics);
+  const pinnedLoading = usePinnedMetricsStore((s) => s.loading);
+  const pinnedFetched = usePinnedMetricsStore((s) => s.fetched);
   const fetchMetrics = usePinnedMetricsStore((s) => s.fetchMetrics);
   useEffect(() => { fetchMetrics(); }, [fetchMetrics]);
 
@@ -290,34 +293,47 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
           )}
         </div>
 
-        {/* Pinned metrics - max 6, capped so they never push the composer off screen */}
-        {pinnedMetrics.length > 0 && (
+        {/* Pinned metrics — skeleton while loading, cards when ready */}
+        {(pinnedLoading || pinnedMetrics.length > 0) && (
           <div className="w-full animate-fade-up" style={{ animationDelay: '20ms' }}>
             <p className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-medium text-center mb-2">Pinned metrics</p>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {pinnedMetrics.slice(0, 6).map((m) => (
-                <MetricPinCard key={m.id} metric={m} />
-              ))}
-            </div>
-            {pinnedMetrics.length > 6 && (
-              <p className="text-[11px] text-muted-foreground/60 text-center mt-2">
-                +{pinnedMetrics.length - 6} more - unpin some to see them here
-              </p>
+            {pinnedLoading && !pinnedFetched ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className={`rounded-xl border border-border bg-background px-4 py-3 space-y-2${i === 2 ? ' hidden sm:block' : ''}`}>
+                    <Skeleton className="h-3 w-3/4" />
+                    <Skeleton className="h-3 w-1/3" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {pinnedMetrics.slice(0, 6).map((m, i) => (
+                    <MetricPinCard key={m.id} metric={m} className={i >= 2 ? 'hidden sm:block' : ''} />
+                  ))}
+                </div>
+                {pinnedMetrics.length > 6 && (
+                  <p className="text-[11px] text-muted-foreground/60 text-center mt-2">
+                    +{pinnedMetrics.length - 6} more - unpin some to see them here
+                  </p>
+                )}
+              </>
             )}
           </div>
         )}
 
-        {/* Continue where you left off */}
+        {/* Continue — 2 threads on mobile, 3 on desktop */}
         {recentThreads.length > 0 && (
           <div className="flex flex-col items-center gap-2 animate-fade-up" style={{ animationDelay: '40ms' }}>
             <p className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-medium">Continue</p>
             <div className="flex flex-col w-full gap-1">
-              {recentThreads.map((t) => (
+              {recentThreads.map((t, i) => (
                 <button
                   key={t.id}
                   onClick={() => router.push(`/chat/${t.id}`)}
                   onMouseEnter={() => router.prefetch(`/chat/${t.id}`)}
-                  className="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-border bg-background hover:bg-accent hover:border-primary/20 transition-all duration-150 text-left group"
+                  className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border border-border bg-background hover:bg-accent hover:border-primary/20 transition-all duration-150 text-left group${i >= 2 ? ' hidden sm:flex' : ''}`}
                 >
                   <MessageSquare className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
                   <span className="text-sm text-foreground/80 group-hover:text-foreground truncate transition-colors flex-1">
@@ -330,64 +346,32 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
           </div>
         )}
 
-        {/* Suggestion chips - row 1: first 3, row 2: last 1 centered */}
-        <div className="flex flex-col items-center gap-2">
+        {/* Suggestion chips — single flex-wrap row, chips never truncate */}
+        <div className="flex flex-wrap items-center justify-center gap-2 w-full">
           {!mounted ? (
-            <>
-              <div className="flex items-center justify-center gap-2">
-                {[88, 112, 96].map((w, i) => (
-                  <div key={i} className="h-9 rounded-full bg-muted animate-pulse" style={{ width: `${w}px`, animationDelay: `${i * 60}ms` }} />
-                ))}
-              </div>
-              <div className="flex items-center justify-center gap-2">
-                <div className="h-9 w-28 rounded-full bg-muted animate-pulse" style={{ animationDelay: '180ms' }} />
-              </div>
-            </>
+            [88, 112, 96, 112].map((w, i) => (
+              <div key={i} className="h-9 rounded-full bg-muted animate-pulse shrink-0" style={{ width: `${w}px`, animationDelay: `${i * 60}ms` }} />
+            ))
           ) : (
-            <>
-              <div className="flex items-center justify-center gap-2">
-                {suggestions.slice(0, 3).map((s, i) => {
-                  const Icon = s.icon;
-                  return (
-                    <button
-                      key={i}
-                      onClick={() => handleSuggestion(s.prompt)}
-                      disabled={isStreaming}
-                      className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50"
-                      style={{
-                        animation: `fade-up 0.4s ease-out ${(i + 1) * 80}ms both, chip-breathe 4s ${1.5 + i * 0.3}s ease-in-out infinite`,
-                      }}
-                    >
-                      <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <span className="text-foreground/80 group-hover:text-foreground transition-colors">
-                        {s.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex items-center justify-center gap-2">
-                {suggestions.slice(3).map((s, i) => {
-                  const Icon = s.icon;
-                  return (
-                    <button
-                      key={i + 3}
-                      onClick={() => handleSuggestion(s.prompt)}
-                      disabled={isStreaming}
-                      className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50"
-                      style={{
-                        animation: `fade-up 0.4s ease-out ${(i + 4) * 80}ms both, chip-breathe 4s ${1.5 + (i + 3) * 0.3}s ease-in-out infinite`,
-                      }}
-                    >
-                      <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors" />
-                      <span className="text-foreground/80 group-hover:text-foreground transition-colors">
-                        {s.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </>
+            suggestions.map((s, i) => {
+              const Icon = s.icon;
+              return (
+                <button
+                  key={i}
+                  onClick={() => handleSuggestion(s.prompt)}
+                  disabled={isStreaming}
+                  className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50 shrink-0"
+                  style={{
+                    animation: `fade-up 0.4s ease-out ${(i + 1) * 80}ms both, chip-breathe 4s ${1.5 + i * 0.3}s ease-in-out infinite`,
+                  }}
+                >
+                  <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
+                  <span className="text-foreground/80 group-hover:text-foreground transition-colors whitespace-nowrap">
+                    {s.label}
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
       </div>

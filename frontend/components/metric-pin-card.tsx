@@ -10,9 +10,10 @@ import { toast } from '@/lib/toast';
 
 interface MetricPinCardProps {
   metric: PinnedMetric;
+  className?: string;
 }
 
-export function MetricPinCard({ metric }: MetricPinCardProps) {
+export function MetricPinCard({ metric, className }: MetricPinCardProps) {
   const router = useRouter();
   const unpin = usePinnedMetricsStore((s) => s.unpinMetric);
   const createThread = useThreadStore((s) => s.createThread);
@@ -41,7 +42,7 @@ export function MetricPinCard({ metric }: MetricPinCardProps) {
   };
 
   return (
-    <div className="group relative rounded-xl border border-border bg-background px-4 py-3 hover:border-primary/30 hover:bg-accent/20 transition-colors">
+    <div className={`group relative rounded-xl border border-border bg-background px-4 py-3 hover:border-primary/30 hover:bg-accent/20 transition-colors${className ? ` ${className}` : ''}`}>
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs font-medium text-foreground truncate leading-relaxed flex-1">
           {metric.label}
@@ -49,7 +50,7 @@ export function MetricPinCard({ metric }: MetricPinCardProps) {
         <button
           onClick={handleUnpin}
           aria-label="Unpin metric"
-          className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
+          className="shrink-0 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
         >
           <X className="w-3 h-3" />
         </button>

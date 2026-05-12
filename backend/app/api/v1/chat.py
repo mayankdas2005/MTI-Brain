@@ -29,10 +29,12 @@ from app.schemas.chat import (
     ThreadDetail,
     ThreadSummary,
 )
+from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.services import conversation as conv_service
 from app.services import feedback as fb_service
 from app.services.sql_analysis import extract_source_tables
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -173,8 +175,8 @@ def _build_sse_generator(
                 await conv_service.save_message(save_db, **msg_kwargs)
                 await conv_service.touch_thread(save_db, thread_id)
                 await save_db.commit()
-        except Exception as e:
-            logger.error(f"Failed to save assistant message: {e}")
+        except Exception:
+            logger.exception("Failed to save assistant message")
 
     async def event_generator():
         _stream_start = request_time or time.perf_counter()
@@ -438,8 +440,8 @@ def _build_sse_generator(
                         )
                         await patch_db.execute(stmt)
                         await patch_db.commit()
-                except Exception as e:
-                    logger.warning(f"Failed to patch duration_ms: {e}")
+                except Exception:
+                    logger.exception("Failed to patch duration_ms")
 
             asyncio.create_task(_patch_duration(conversation_id, final_data["duration_ms"]))
 
@@ -665,7 +667,9 @@ async def move_chat(
 
 
 @router.post("/{thread_id}/ask")
+@limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
 async def ask_question(
+    request: Request,
     thread_id: uuid.UUID,
     body: AskRequest,
     current_user: CurrentUser = Depends(get_current_user),
@@ -730,7 +734,9 @@ async def ask_question(
 
 
 @router.post("/{thread_id}/retry")
+@limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
 async def retry_response(
+    request: Request,
     thread_id: uuid.UUID,
     body: RetryRequest,
     current_user: CurrentUser = Depends(get_current_user),
@@ -779,7 +785,9 @@ async def retry_response(
 
 
 @router.post("/{thread_id}/edit")
+@limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
 async def edit_question(
+    request: Request,
     thread_id: uuid.UUID,
     body: EditRequest,
     current_user: CurrentUser = Depends(get_current_user),

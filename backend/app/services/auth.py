@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 import jwt
 from app.core.config import settings
 from app.core.logger import logger
@@ -9,11 +10,11 @@ from app.models.user import MTIBrainUser
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# ─── Hardcoded users ───
+# ─── Hardcoded users (dev only — replace with OIDC before production deploy) ───
 
 _USERS: dict[str, dict] = {
     "admin": {
-        "password": "admin123",
+        "password": "$2b$12$cIf.CmlZ0pO2sAWQy4Yzr.TRNpeL/Tx9r8omOPdzbpgQiKKIsXGgq",
         "name": "Admin User",
         "email": "admin@milestone.tech",
     },
@@ -24,8 +25,7 @@ def authenticate_user(username: str, password: str) -> dict | None:
     """Return the user dict if credentials are valid, else None."""
     key = (username or "").strip().lower()
     user = _USERS.get(key)
-    logger.debug(f"authenticate_user: key={key!r} found={user is not None} pw_match={user['password'] == password if user else False}")
-    if user and user["password"] == password:
+    if user and bcrypt.checkpw(password.encode(), user["password"].encode()):
         return user
     return None
 

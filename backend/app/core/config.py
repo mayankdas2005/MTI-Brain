@@ -19,7 +19,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 import yaml
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # ── Database secrets (.env) ───────────────────────────────────────────────
     POSTGRES_USER: str
-    POSTGRES_PASSWORD: str
+    POSTGRES_PASSWORD: str = Field(..., repr=False)
     POSTGRES_HOST: str
     POSTGRES_DB: str
 
@@ -79,10 +79,11 @@ class Settings(BaseSettings):
     # ── JWT config (config.yml) + secret (.env) ───────────────────────────────
     JWT_ALGORITHM: str = Field(default=_jwt.get("algorithm", "HS256"))
     JWT_EXPIRY_HOURS: int = Field(default=_jwt.get("expiry_hours", 8))
-    JWT_SECRET: str = Field(..., min_length=32)
+    JWT_SECRET: str = Field(..., min_length=32, repr=False)
 
     # ── Rate limiting (config.yml) ────────────────────────────────────────────
     RATE_LIMIT_LOGIN_PER_MINUTE: int = Field(default=_rl.get("login_per_minute", 5))
+    RATE_LIMIT_ASK_PER_MINUTE: int = Field(default=_rl.get("ask_per_minute", 30))
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
@@ -129,6 +130,15 @@ class Settings(BaseSettings):
                 "JWT_SECRET must be set to a real secret, not the placeholder default"
             )
         return v
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        if self.ENVIRONMENT == "production" and self.DATABASE_SSL_MODE == "disable":
+            raise ValueError(
+                "DATABASE_SSL_MODE cannot be 'disable' in production. "
+                "Set DATABASE_SSL_MODE=require or verify-full."
+            )
+        return self
 
     @property
     def DATABASE_URL(self) -> str:

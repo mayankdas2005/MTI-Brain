@@ -355,7 +355,7 @@ export default function AuthenticatedLayout({
         <div aria-hidden className="hidden md:block w-12 lg:w-[280px] shrink-0" />
       ) : isMobile ? (
         <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
-          <SheetContent side="left" className="p-0 w-[88%] sm:max-w-sm border-r-0 bg-sidebar">
+          <SheetContent side="left" showClose={false} aria-describedby={undefined} className="p-0 w-[88%] sm:max-w-sm border-r-0 bg-sidebar">
             <SheetTitle className="sr-only">Navigation</SheetTitle>
             <Sidebar forceExpanded />
           </SheetContent>
@@ -364,7 +364,7 @@ export default function AuthenticatedLayout({
         <>
           <Sidebar forceCollapsed />
           <Sheet open={tabletOverlayOpen} onOpenChange={setTabletOverlayOpen}>
-            <SheetContent side="left" className="p-0 w-[320px] border-r-0 bg-sidebar">
+            <SheetContent side="left" showClose={false} aria-describedby={undefined} className="p-0 w-[320px] border-r-0 bg-sidebar">
               <SheetTitle className="sr-only">Navigation</SheetTitle>
               <Sidebar forceExpanded />
             </SheetContent>

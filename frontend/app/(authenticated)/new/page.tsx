@@ -21,13 +21,18 @@ export default function NewPage() {
 
   return (
     <div className="flex flex-col h-full bg-background">
-      <div className="flex-1 flex flex-col items-center justify-center px-4">
-        <div className="w-full max-w-2xl">
-          <WelcomeState onSuggestion={(prompt) => setPendingSuggestion(prompt)} />
-          <div className="mt-6">
-            <Suspense fallback={<NewChatComposer initialValue="" centered />}>
-              <ComposerWithProject initialValue={pendingSuggestion} />
-            </Suspense>
+      {/* Single scrollable area — content + composer together.
+          justify-center keeps them visually centered when there's room;
+          overflow-y-auto lets them scroll on short viewports. */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="flex flex-col items-center justify-center min-h-full px-4 py-4">
+          <div className="w-full max-w-2xl">
+            <WelcomeState onSuggestion={(prompt) => setPendingSuggestion(prompt)} />
+            <div className="mt-4">
+              <Suspense fallback={<NewChatComposer initialValue="" centered />}>
+                <ComposerWithProject initialValue={pendingSuggestion} />
+              </Suspense>
+            </div>
           </div>
         </div>
       </div>

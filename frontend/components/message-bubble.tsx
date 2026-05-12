@@ -329,7 +329,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const rows = message.metadata_?.rows;
   const rowCount = message.metadata_?.row_count;
   const followUps = message.metadata_?.follow_ups;
-  const hasTableData = columns && columns.length > 0 && rows && rows.length > 0;
+  const hasTableData = !!(columns && columns.length > 0 && rows && rows.length > 0);
 
   // User preferences
   const prefShowSQL = usePreferencesStore((s) => s.showSQL);
@@ -338,8 +338,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
   const prefDefaultView = usePreferencesStore((s) => s.defaultDataView);
 
-  const showSQLTab = prefShowSQL && sql;
-  const hasDataView = !message.isStreaming && (showSQLTab || hasTableData);
+  const showSQLTab = !!(prefShowSQL && sql);
+  const hasDataView = !message.isStreaming && !!(showSQLTab || hasTableData);
 
   return (
     <div
@@ -414,7 +414,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               <div className="flex-1 overflow-y-auto p-3">
                 <pre
                   className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words"
-                  dangerouslySetInnerHTML={{ __html: hljs.highlight(sql, { language: 'sql' }).value }}
+                  dangerouslySetInnerHTML={{ __html: hljs.highlight(sql ?? '', { language: 'sql' }).value }}
                 />
               </div>
             </div>
@@ -427,14 +427,14 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       )}
 
       {/* Message Content */}
-      {message.content && (
+      {!!message.content && (
         <StreamingContent isStreaming={message.isStreaming} hasContent>
           <MarkdownRenderer content={message.content} isUser={false} />
         </StreamingContent>
       )}
 
       {/* Chart Visualization */}
-      {!message.isStreaming && prefAutoCharts && message.metadata_?.chart_spec && (
+      {!message.isStreaming && prefAutoCharts && !!message.metadata_?.chart_spec && (
         <MessageVisualization
           columns={columns}
           rows={rows}
@@ -447,27 +447,29 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       {!message.isStreaming && prefShowFollowUps && followUps && followUps.length > 0 && (
         <FollowUpChips threadId={threadId} followUps={followUps} conversationId={message.conversation_id} />
       )}
-      {!message.isStreaming && message.role === 'assistant' && message.content && (
+      {!message.isStreaming && message.role === 'assistant' && !!message.content &&
+        !!(message.metadata_ as Record<string, unknown> | null)?.sql && (
         <RefineInput threadId={threadId} conversationId={message.conversation_id} />
       )}
 
-      {/* Trust strip - provenance for the answer. The strip renders only
-          the fields the backend has populated; missing fields just hide
-          their cells (we never invent trust data on the client). All
-          source tables come from backend SQL analysis, not the UI. */}
+      {/* Trust strip — only for SQL-backed answers. We gate on sql being
+          non-empty so conversational responses ("Hi", "Sure, here's a plan")
+          never show 0 rows / freshness timestamps. */}
       {!message.isStreaming && (() => {
-        const m = message.metadata_;
+        const m = message.metadata_ as Record<string, unknown> | null;
         if (!m) return null;
+        const sql = (m.sql as string | null | undefined) ?? '';
+        if (!sql.trim()) return null;
         const metric = m.metric_name
-          ? { name: m.metric_name, owner: m.metric_owner, definedAt: m.metric_defined_at }
+          ? { name: m.metric_name as string, owner: m.metric_owner as string | null, definedAt: m.metric_defined_at as string | null }
           : null;
         return (
           <div className="mt-1.5">
             <TrustStrip
-              sources={m.source_tables}
-              freshnessAt={m.data_freshness_at}
+              sources={m.source_tables as string[] | null}
+              freshnessAt={m.data_freshness_at as string | null}
               metric={metric}
-              rowCount={m.row_count}
+              rowCount={m.row_count as number | null}
             />
           </div>
         );

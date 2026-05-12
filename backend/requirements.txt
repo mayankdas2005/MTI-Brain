@@ -29,6 +29,7 @@ loguru>=0.7.3
 
 # Auth (JWT)
 PyJWT>=2.8.0
+bcrypt>=4.2.0
 
 # Rate limiting
 slowapi>=0.1.9

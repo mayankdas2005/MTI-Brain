@@ -610,47 +610,60 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
   };
 
   return (
-    <div className={cn("flex flex-col h-full bg-sidebar border-r border-sidebar-border overflow-hidden shrink-0 transition-[width] duration-200", isOpen ? "w-[280px]" : "w-12")} data-onboarding="sidebar">
+    <div className={cn("flex flex-col h-full bg-sidebar overflow-hidden shrink-0", !forceExpanded && "border-r border-sidebar-border transition-[width] duration-200", forceExpanded ? "w-full" : isOpen ? "w-[280px]" : "w-12")} data-onboarding="sidebar">
       {/* Header */}
       <div
-        className="px-3 h-12 flex items-center justify-between border-b border-sidebar-border shrink-0"
+        className="h-12 flex items-center border-b border-sidebar-border shrink-0"
         style={{ backgroundColor: 'var(--header)' }}
       >
         {isOpen ? (
-          <Image
-            src="/milestone-logo-white.png"
-            alt="Milestone"
-            width={0}
-            height={0}
-            sizes="168px"
-            style={{ width: '168px', height: '55px', objectFit: 'contain', objectPosition: 'left' }}
-            loading="eager"
-            priority
-            className="select-none"
-          />
+          /* Expanded: logo left, close button right */
+          <>
+            <div className="flex-1 min-w-0 pl-3">
+              <Image
+                src="/milestone-logo-white.png"
+                alt="Milestone"
+                width={0}
+                height={0}
+                sizes="168px"
+                style={{ width: '168px', height: '55px', objectFit: 'contain', objectPosition: 'left' }}
+                loading="eager"
+                priority
+                className="select-none"
+              />
+            </div>
+            <button
+              type="button"
+              className="tap-44 flex h-8 w-8 items-center justify-center text-[var(--header-foreground)] shrink-0 mr-1"
+              onClick={handleToggle}
+              aria-label="Close sidebar"
+            >
+              <PanelLeft className="w-[18px] h-[18px]" />
+            </button>
+          </>
         ) : (
-          <Image
-            src="/milestone-icon.png"
-            alt="Milestone"
-            width={0}
-            height={0}
-            sizes="26px"
-            style={{ width: '26px', height: 'auto', objectFit: 'contain' }}
-            className="select-none"
-          />
+          /* Collapsed: the entire header is one centered click target */
+          <button
+            type="button"
+            className="tap-44 flex h-full w-full items-center justify-center text-[var(--header-foreground)]"
+            onClick={handleToggle}
+            aria-label="Open sidebar"
+          >
+            <Image
+              src="/milestone-icon.png"
+              alt="Milestone"
+              width={0}
+              height={0}
+              sizes="26px"
+              style={{ width: '26px', height: 'auto', objectFit: 'contain' }}
+              className="select-none"
+            />
+          </button>
         )}
-        <button
-          type="button"
-          className="tap-44 flex h-8 w-8 items-center justify-center text-[var(--header-foreground)] shrink-0"
-          onClick={handleToggle}
-          aria-label={isOpen ? 'Close sidebar' : 'Open sidebar'}
-        >
-          <PanelLeft className={cn("w-[18px] h-[18px] transition-transform duration-200", !isOpen && "rotate-180")} />
-        </button>
       </div>
 
       {/* New Chat */}
-      <div className="px-3 pt-3 pb-2 shrink-0">
+      <div className={cn("shrink-0 flex", isOpen ? "px-3 pt-3 pb-2" : "pt-3 pb-2 justify-center")}>
         {isOpen ? (
           <Button
             onClick={handleNewChat}
@@ -669,7 +682,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
                 data-onboarding="new-chat"
                 variant="ghost"
                 size="icon"
-                className="h-10 w-10 tap-44 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent mx-auto flex"
+                className="h-9 w-9 tap-44 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
               >
                 <Plus className="w-[18px] h-[18px]" />
               </Button>
@@ -680,7 +693,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
       </div>
 
       {/* Search - opens global search modal */}
-      <div className="px-3 pb-2 shrink-0">
+      <div className={cn("shrink-0 flex", isOpen ? "px-3 pb-2" : "pb-2 justify-center")}>
         {isOpen ? (
           <button
             onClick={() => useSearchStore.getState().openModal()}
@@ -697,7 +710,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
                 onClick={() => useSearchStore.getState().openModal()}
                 variant="ghost"
                 size="icon"
-                className="h-9 w-9 tap-44 text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent mx-auto flex"
+                className="h-9 w-9 tap-44 text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                 aria-label="Search"
               >
                 <Search className="w-4 h-4" />
@@ -708,65 +721,86 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
         )}
       </div>
 
-      <ScrollArea className="flex-1 min-h-0">
-        {isOpen && (<>
-        {/* Projects navigation */}
+      {/* Projects navigation — always visible */}
+      {isOpen ? (
         <div className="px-3 pt-1 pb-0.5 shrink-0">
           <div className="flex items-center">
+            <button
+              onClick={() => { closeOnNav(); router.push('/projects'); }}
+              onMouseEnter={() => router.prefetch('/projects')}
+              aria-current={onProjects ? 'page' : undefined}
+              className={cn("flex-1 flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar", onProjects && "bg-sidebar-accent")}
+            >
+              <span className="flex items-center h-5 shrink-0">
+                <FolderOpen className="w-[18px] h-[18px] text-sidebar-foreground/50" />
+              </span>
+              <span className="text-sm font-medium">Projects</span>
+            </button>
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
-                  onClick={() => { closeOnNav(); router.push('/projects'); }}
-                  onMouseEnter={() => router.prefetch('/projects')}
-                  aria-current={onProjects ? 'page' : undefined}
-                  className={cn("flex-1 flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar", onProjects && "bg-sidebar-accent")}
-                >
-                  <span className="flex items-center h-5 shrink-0">
-                    <FolderOpen className="w-[18px] h-[18px] text-sidebar-foreground/50" />
-                  </span>
-                  {isOpen && <span className="text-sm font-medium">Projects</span>}
-                </button>
+                <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-sidebar-foreground/60 hover:text-sidebar-foreground shrink-0" onClick={() => setCreateProjectOpen(true)}>
+                  <Plus className="w-3.5 h-3.5" />
+                </Button>
               </TooltipTrigger>
-              {!isOpen && <TooltipContent side="right" sideOffset={6}>Projects</TooltipContent>}
+              <TooltipContent side="right">New project</TooltipContent>
             </Tooltip>
-            {isOpen && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0 text-sidebar-foreground/60 hover:text-sidebar-foreground shrink-0"
-                    onClick={() => setCreateProjectOpen(true)}
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="right">New project</TooltipContent>
-              </Tooltip>
-            )}
           </div>
         </div>
-
-        {/* Chats navigation */}
-        <div className="px-3 pb-1 shrink-0">
+      ) : (
+        <div className="pt-1 pb-0.5 shrink-0 flex justify-center">
           <Tooltip>
             <TooltipTrigger asChild>
-              <button
-                onClick={() => { closeOnNav(); router.push('/chats'); }}
-                onMouseEnter={() => router.prefetch('/chats')}
-                aria-current={onChats ? 'page' : undefined}
-                className={cn("w-full flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar", onChats && "bg-sidebar-accent")}
+              <Button
+                onClick={() => { closeOnNav(); router.push('/projects'); }}
+                variant="ghost"
+                size="icon"
+                aria-current={onProjects ? 'page' : undefined}
+                className={cn("h-9 w-9 tap-44 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent", onProjects && "bg-sidebar-accent")}
               >
-                <span className="flex items-center h-5 shrink-0">
-                  <MessageSquare className="w-[18px] h-[18px] text-sidebar-foreground/50" />
-                </span>
-                {isOpen && <span className="text-sm font-medium">Chats</span>}
-              </button>
+                <FolderOpen className="w-[18px] h-[18px]" />
+              </Button>
             </TooltipTrigger>
-            {!isOpen && <TooltipContent side="right" sideOffset={6}>Chats</TooltipContent>}
+            <TooltipContent side="right" sideOffset={6}>Projects</TooltipContent>
           </Tooltip>
         </div>
+      )}
 
+      {/* Chats navigation — always visible */}
+      {isOpen ? (
+        <div className="px-3 pb-1 shrink-0">
+          <button
+            onClick={() => { closeOnNav(); router.push('/chats'); }}
+            onMouseEnter={() => router.prefetch('/chats')}
+            aria-current={onChats ? 'page' : undefined}
+            className={cn("w-full flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar", onChats && "bg-sidebar-accent")}
+          >
+            <span className="flex items-center h-5 shrink-0">
+              <MessageSquare className="w-[18px] h-[18px] text-sidebar-foreground/50" />
+            </span>
+            <span className="text-sm font-medium">Chats</span>
+          </button>
+        </div>
+      ) : (
+        <div className="pb-1 shrink-0 flex justify-center">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                onClick={() => { closeOnNav(); router.push('/chats'); }}
+                variant="ghost"
+                size="icon"
+                aria-current={onChats ? 'page' : undefined}
+                className={cn("h-9 w-9 tap-44 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent", onChats && "bg-sidebar-accent")}
+              >
+                <MessageSquare className="w-[18px] h-[18px]" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={6}>Chats</TooltipContent>
+          </Tooltip>
+        </div>
+      )}
+
+      <ScrollArea className="flex-1 min-h-0">
+        {isOpen && (<>
         {/* Starred Section - starred projects + starred threads, capped at 5 */}
         {(() => {
           const STARRED_LIMIT = 5;
@@ -885,7 +919,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
       {isOpen && <BulkActionBar />}
 
       {/* Footer - User menu */}
-      <div className="px-3 py-2 border-t border-sidebar-border shrink-0">
+      <div className={cn("border-t border-sidebar-border shrink-0", isOpen ? "px-3 py-2" : "py-2 flex justify-center")}>
         {!user ? (
           isOpen ? (
             <div className="flex items-center gap-2.5 px-2 py-[var(--density-pad-y-tight)]">
@@ -896,7 +930,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
               </div>
             </div>
           ) : (
-            <div className="flex justify-center py-[var(--density-pad-y-tight)]">
+            <div className="h-9 w-9 flex items-center justify-center">
               <Skeleton className="h-8 w-8 rounded-full shrink-0" />
             </div>
           )
@@ -926,7 +960,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
             <Tooltip>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
-                  <button data-onboarding="user-menu" className="flex items-center justify-center w-full py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors">
+                  <button data-onboarding="user-menu" className="h-9 w-9 flex items-center justify-center rounded-lg hover:bg-sidebar-accent transition-colors">
                     <Avatar className="h-8 w-8 shrink-0">
                       <AvatarFallback className="bg-primary/15 text-primary text-xs font-semibold">
                         {(user.name || user.email)?.charAt(0).toUpperCase()}

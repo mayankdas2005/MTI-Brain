@@ -42,10 +42,28 @@ const nextConfig = {
     unoptimized: true,
   },
   allowedDevOrigins,
-  // Defense-in-depth security headers. CSP is permissive (matches the
-  // permissive local-dev posture) - but X-Content-Type-Options, Referrer-Policy,
-  // and X-Frame-Options survive the Okta migration and cost nothing.
+  // Defense-in-depth security headers.
+  // CSP uses unsafe-inline + unsafe-eval because Next.js hydration scripts and
+  // the React Compiler require them. frame-ancestors, base-uri, and object-src
+  // provide meaningful protection even under that constraint.
+  // connect-src is intentionally open (*) because the API URL is runtime-
+  // configurable via NEXT_PUBLIC_API_URL and PostHog host varies by deployment.
   async headers() {
+    const csp = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "font-src 'self' data:",
+      "connect-src *",
+      "worker-src 'self' blob:",
+      "frame-src 'none'",
+      "frame-ancestors 'none'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "form-action 'self'",
+    ].join("; ");
+
     return [
       {
         source: "/:path*",
@@ -54,6 +72,7 @@ const nextConfig = {
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          { key: "Content-Security-Policy", value: csp },
         ],
       },
     ];

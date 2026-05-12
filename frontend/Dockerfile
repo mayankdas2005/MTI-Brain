@@ -53,7 +53,7 @@ RUN addgroup --system --gid 1001 nodejs && \
 RUN mkdir -p /app/.next/cache && chown -R nextjs:nodejs /app/.next
 
 # Copy only what's needed - minimal attack surface
-COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 

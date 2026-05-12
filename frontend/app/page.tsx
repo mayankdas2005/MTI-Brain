@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Eye, EyeOff } from 'lucide-react';
 import { isAuthenticated, login, setLoginGate, setLoginError, consumeLoginError } from '@/lib/auth';
+import { ApiError } from '@/lib/api/client';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -49,7 +50,19 @@ export default function LoginPage() {
     // it back via consumeLoginError() when it remounts.
     const gate = login(username.trim(), password)
       .then(() => {})
-      .catch(() => { setLoginError('Invalid username or password.'); });
+      .catch((err: unknown) => {
+        if (err instanceof ApiError) {
+          if (err.status === 401) {
+            setLoginError('Invalid username or password.');
+          } else if (err.status === 429) {
+            setLoginError('Too many login attempts. Please wait a moment and try again.');
+          } else {
+            setLoginError('Login failed. Please try again.');
+          }
+        } else {
+          setLoginError('Network error. Please check your connection and try again.');
+        }
+      });
     setLoginGate(gate);
     router.replace('/new');
   };

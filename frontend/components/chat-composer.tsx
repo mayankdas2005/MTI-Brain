@@ -22,16 +22,25 @@ import { VoiceInputButton } from './voice-input-button';
 import { usePlaybookStore } from '@/lib/store/playbook';
 import { PlaybookPopover } from './playbook-popover';
 
+function escHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function buildEmailHTML(markdown: string): string {
   const lines = markdown.split('\n');
   const htmlLines = lines.map((line) => {
-    if (line.startsWith('### ')) return `<h3 style="margin:12px 0 4px;font-size:14px;">${line.slice(4)}</h3>`;
-    if (line.startsWith('## ')) return `<h2 style="margin:16px 0 6px;font-size:16px;">${line.slice(3)}</h2>`;
-    if (line.startsWith('# ')) return `<h1 style="margin:0 0 12px;font-size:20px;">${line.slice(2)}</h1>`;
-    if (line.startsWith('- ') || line.startsWith('* ')) return `<li style="margin:2px 0;">${line.slice(2)}</li>`;
-    if (line.match(/^\d+\. /)) return `<li style="margin:2px 0;">${line.replace(/^\d+\. /, '')}</li>`;
+    if (line.startsWith('### ')) return `<h3 style="margin:12px 0 4px;font-size:14px;">${escHtml(line.slice(4))}</h3>`;
+    if (line.startsWith('## ')) return `<h2 style="margin:16px 0 6px;font-size:16px;">${escHtml(line.slice(3))}</h2>`;
+    if (line.startsWith('# ')) return `<h1 style="margin:0 0 12px;font-size:20px;">${escHtml(line.slice(2))}</h1>`;
+    if (line.startsWith('- ') || line.startsWith('* ')) return `<li style="margin:2px 0;">${escHtml(line.slice(2))}</li>`;
+    if (line.match(/^\d+\. /)) return `<li style="margin:2px 0;">${escHtml(line.replace(/^\d+\. /, ''))}</li>`;
     if (line.trim() === '') return '<br/>';
-    return `<p style="margin:4px 0;">${line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>')}</p>`;
+    return `<p style="margin:4px 0;">${escHtml(line).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>')}</p>`;
   });
   return `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.6;color:#1a1a1a;">${htmlLines.join('')}<hr style="margin:16px 0;border:none;border-top:1px solid #e5e5e5;"/><p style="font-size:11px;color:#888;">Shared from MTI Brain</p></div>`;
 }
