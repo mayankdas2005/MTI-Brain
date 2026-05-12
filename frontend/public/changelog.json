@@ -1,72 +1,42 @@
 [
   {
     "version": "2.0.0",
-    "date": "2025-05-11",
+    "date": "2026-05-12",
     "entries": [
       {
-        "type": "new",
-        "title": "Voice input",
-        "body": "Ask questions hands-free - click the microphone button in the composer or press Ctrl+Shift+V to start speaking. Transcribed text appears live as you speak."
-      },
-      {
-        "type": "new",
-        "title": "Read aloud",
-        "body": "Click the speaker icon on any response to have it read aloud using your device's text-to-speech engine. Adjust playback speed (0.75×–1.5×) in Settings → Appearance."
-      },
-      {
-        "type": "new",
-        "title": "Excel export",
-        "body": "Download query results as a formatted .xlsx file directly from any data table. Auto-sized columns and proper data types - ready to open in Excel or Google Sheets."
-      },
-      {
-        "type": "new",
-        "title": "Share conversation link",
-        "body": "Copy a direct link to the current chat with one click from the toolbar, or press Ctrl+Shift+L. Anyone with access to MTI Brain can open it directly."
-      },
-      {
-        "type": "new",
-        "title": "Extended slash commands",
-        "body": "New commands in the composer: /speak reads the last response aloud, /export saves the conversation to PDF, /tone switches response style, /rows changes max result rows - all without leaving the keyboard."
-      },
-      {
-        "type": "new",
-        "title": "More keyboard shortcuts",
-        "body": "Ctrl+Shift+V to toggle voice input, Ctrl+Shift+E to export PDF, Ctrl+Shift+L to copy share link, Ctrl+R to retry the last response."
-      },
-      {
-        "type": "new",
-        "title": "High contrast mode",
-        "body": "New accessibility option in Settings → Appearance. Boosts text and border contrast to WCAG AAA levels for users who need higher visual clarity."
+        "type": "improvement",
+        "title": "App visuals load instantly",
+        "body": "The Milestone logo and branding now appear the moment any page opens — no more blank space or delayed flash while navigating between sign-in, your workspace, or the loading screen."
       },
       {
         "type": "improvement",
-        "title": "Dialogs close instantly on save",
-        "body": "Edit, rename, and create dialogs now dismiss the moment you click Save - no waiting for the server. Changes apply optimistically and roll back silently if something goes wrong."
+        "title": "Faster experience on every visit",
+        "body": "Images and app assets are now stored in your browser after the first load, so returning to MTI Brain or switching pages feels significantly snappier. No waiting for the same visuals to re-download."
       },
       {
         "type": "improvement",
-        "title": "New chat navigates immediately",
-        "body": "Submitting a new question from the home screen navigates to the chat page at once. The thread is created in the background while you can already see the conversation forming."
+        "title": "Pinned metrics loads more cleanly",
+        "body": "The 'Pinned Metrics' heading no longer appears above a loading spinner if you have no metrics pinned yet. The section now waits until your data is ready before showing — no misleading labels while things are still loading."
       },
       {
         "type": "improvement",
-        "title": "Page transitions",
-        "body": "Navigating between pages now fades in with a subtle motion. Automatically disabled when your OS has reduce-motion enabled."
+        "title": "Clearer sign-in error messages",
+        "body": "When signing in fails, you now get a specific message explaining why — wrong password, too many attempts, or a connection problem each show their own prompt, so you always know exactly what to do next."
       },
       {
         "type": "improvement",
-        "title": "Meaningful error feedback",
-        "body": "Failed saves, renames, deletes, and moves now surface a specific toast message with a prompt to retry - rather than silently reverting with no explanation."
+        "title": "More secure sign-in",
+        "body": "Your login credentials are now protected with stronger, industry-standard security behind the scenes. Repeated sign-in attempts from the same location are also throttled automatically to protect your account."
       },
       {
         "type": "fix",
-        "title": "Session expiry on bookmarked links",
-        "body": "Visiting a saved URL after your 8-hour session expires now redirects cleanly to login instead of showing a raw error message."
+        "title": "Logo proportions corrected",
+        "body": "The Milestone logo now renders at its correct proportions on all screens and in all themes. A subtle sizing mismatch on certain devices has been resolved."
       },
       {
         "type": "fix",
-        "title": "Chat not found redirect",
-        "body": "Opening a link to a deleted or inaccessible conversation now shows a brief toast and redirects to the home screen, rather than a blank or broken page."
+        "title": "Analytics no longer causes console noise",
+        "body": "In environments where usage analytics are unavailable or misconfigured, the app now handles this silently without any impact on your experience or error messages in the background."
       }
     ]
   }

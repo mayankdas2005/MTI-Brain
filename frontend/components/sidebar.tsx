@@ -623,10 +623,9 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
               <Image
                 src="/milestone-logo-white.png"
                 alt="Milestone"
-                width={0}
-                height={0}
-                sizes="168px"
-                style={{ width: '168px', height: '55px', objectFit: 'contain', objectPosition: 'left' }}
+                width={98}
+                height={55}
+                style={{ width: 'auto', height: '55px', objectFit: 'contain', objectPosition: 'left' }}
                 loading="eager"
                 priority
                 className="select-none"

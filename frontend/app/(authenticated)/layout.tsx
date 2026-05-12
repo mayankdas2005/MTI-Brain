@@ -313,8 +313,9 @@ export default function AuthenticatedLayout({
             src="/milestone-logo-black.png"
             alt="Milestone"
             width={180}
-            height={100}
+            height={101}
             priority
+            style={{ height: 'auto' }}
             className="dark:hidden drop-shadow-sm select-none"
             draggable={false}
           />
@@ -322,8 +323,9 @@ export default function AuthenticatedLayout({
             src="/milestone-logo-white.png"
             alt="Milestone"
             width={180}
-            height={100}
+            height={101}
             priority
+            style={{ height: 'auto' }}
             className="hidden dark:block drop-shadow-sm select-none"
             draggable={false}
           />
