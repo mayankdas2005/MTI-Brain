@@ -34,23 +34,29 @@ async function ensureInit(): Promise<PostHog | null> {
   }
   initStarted = true;
 
-  const mod = await import('posthog-js');
-  const ph = mod.default;
-  ph.init(process.env.NEXT_PUBLIC_POSTHOG_KEY as string, {
-    api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com',
-    person_profiles: 'identified_only',
-    capture_pageview: false, // We capture manually via Next.js router events.
-    capture_pageleave: true,
-    autocapture: false,
-    persistence: 'localStorage+cookie',
-    disable_session_recording: true,
-    loaded: () => {
+  try {
+    const mod = await import('posthog-js');
+    const ph = mod.default;
+    ph.init(process.env.NEXT_PUBLIC_POSTHOG_KEY as string, {
+      api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com',
+      person_profiles: 'identified_only',
+      capture_pageview: false, // We capture manually via Next.js router events.
+      capture_pageleave: true,
+      autocapture: false,
+      persistence: 'localStorage+cookie',
+      disable_session_recording: true,
+      loaded: () => {
+        instance = ph;
+        initSettled = true;
+      },
+    });
+    if (!initSettled) {
       instance = ph;
       initSettled = true;
-    },
-  });
-  if (!initSettled) {
-    instance = ph;
+    }
+  } catch {
+    // PostHog is analytics-only; an SSL or network error must not bubble up
+    // as an uncaught rejection and must not affect app functionality.
     initSettled = true;
   }
   return instance;

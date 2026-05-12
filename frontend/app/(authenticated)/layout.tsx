@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { Sidebar } from '@/components/sidebar';
 import { Topbar } from '@/components/topbar';
 import { SearchModal } from '@/components/search-modal';
@@ -308,22 +309,22 @@ export default function AuthenticatedLayout({
 
         {/* Brand logo - gentle breathe */}
         <div className="relative z-10 animate-brand-pulse">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
+          <Image
             src="/milestone-logo-black.png"
             alt="Milestone"
             width={180}
             height={100}
-            className="dark:hidden drop-shadow-sm"
+            priority
+            className="dark:hidden drop-shadow-sm select-none"
             draggable={false}
           />
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
+          <Image
             src="/milestone-logo-white.png"
             alt="Milestone"
             width={180}
             height={100}
-            className="hidden dark:block drop-shadow-sm"
+            priority
+            className="hidden dark:block drop-shadow-sm select-none"
             draggable={false}
           />
         </div>

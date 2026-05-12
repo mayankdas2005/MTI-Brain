@@ -59,6 +59,17 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        {/*
+          Preload brand logos before React even runs.
+          Without this the browser discovers them only after the JS bundle
+          executes and renders the loading screen — a full parse + hydration
+          round-trip of extra latency (200–400 ms) that shows as a blank logo.
+          Both variants are fetched eagerly; the OS/theme toggle hides one via
+          CSS. At 73–74 KB each the double-fetch is cheaper than a blank flash.
+        */}
+        <link rel="preload" href="/milestone-logo-black.png" as="image" type="image/png" fetchPriority="high" />
+        <link rel="preload" href="/milestone-logo-white.png" as="image" type="image/png" fetchPriority="high" />
+        <link rel="preload" href="/milestone-icon.png"       as="image" type="image/png" />
         {apiOrigin ? (
           <>
             <link rel="preconnect" href={apiOrigin} />

@@ -78,7 +78,7 @@ export default function LoginPage() {
                 alt="Milestone"
                 width={200}
                 height={113}
-                loading="eager"
+                priority
                 className="dark:hidden"
               />
               <Image
@@ -86,7 +86,7 @@ export default function LoginPage() {
                 alt="Milestone"
                 width={200}
                 height={113}
-                loading="eager"
+                priority
                 className="hidden dark:block"
               />
             </div>
@@ -155,7 +155,7 @@ export default function LoginPage() {
               className="w-full h-11 rounded-xl text-sm font-medium flex items-center gap-2"
               onClick={() => {}}
             >
-              <Image src="/MSFT.png" alt="Microsoft" width={18} height={18} />
+              <Image src="/MSFT.png" alt="Microsoft" width={18} height={18} priority />
               Sign in with Microsoft
             </Button>
           </div>

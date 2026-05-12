@@ -656,6 +656,8 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
               height={0}
               sizes="26px"
               style={{ width: '26px', height: 'auto', objectFit: 'contain' }}
+              loading="eager"
+              priority
               className="select-none"
             />
           </button>
