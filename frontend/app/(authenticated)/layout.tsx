@@ -15,6 +15,7 @@ import { usePreferencesStore } from '@/lib/store/preferences';
 import { useSearchStore } from '@/lib/store/search';
 import { useThreadStore } from '@/lib/store/threads';
 import { useProjectStore } from '@/lib/store/projects';
+import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import { copyText } from '@/lib/utils';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { useStreamCompletionNotice } from '@/lib/hooks/use-stream-completion-notice';
@@ -117,6 +118,13 @@ export default function AuthenticatedLayout({
       const pStore = useProjectStore.getState();
       if (now - (pStore.lastFetched || 0) > FRESH_MS) {
         pStore.fetchProjects();
+      }
+      // Fire in parallel with threads + projects so pinned-metrics is ready
+      // by the time the user lands on /new, instead of waiting for WelcomeState
+      // to mount and trigger it sequentially.
+      const pmStore = usePinnedMetricsStore.getState();
+      if (!pmStore.fetched) {
+        pmStore.fetchMetrics();
       }
     };
 

@@ -8,8 +8,9 @@ Docker Compose stack providing the data layer for MTI Brain.
 |---|---|---|---|
 | **PostgreSQL** | `pgvector/pgvector:0.8.1-pg18` | None (internal only) | Primary relational store with pgvector extension for vector similarity search |
 | **PgBouncer** | `edoburu/pgbouncer:v1.25.1-p0` | `5432` | Connection pooler in front of PostgreSQL (transaction pooling mode). Depends on PostgreSQL being healthy. |
+| **Redis** | `redis:8.4-alpine` | `6379` | In-memory store for caching, rate limiting, session data, and Celery/task queues |
 
-Both services communicate via a private `db_net` bridge network.
+All services communicate via the `db_net` bridge network. PostgreSQL is internal-only; PgBouncer and Redis are accessible from outside on their respective ports.
 
 ## Prerequisites
 
@@ -92,21 +93,48 @@ Key runtime parameters are set in `docker-compose.yml` under the `postgres` serv
 
 ### PgBouncer
 
-Configured via environment variables in `.env`:
+**Pool mode: `transaction`** — required for compatibility with SQLAlchemy's `autobegin=False` read sessions and the LangGraph checkpointer.
+
+In transaction mode, a Postgres server connection is only held for the duration of a single transaction (or a single statement when `autobegin=False`). This allows many more concurrent clients than session mode, which holds a server connection for the entire client lifetime.
+
+#### Sizing (4-5 devs + 20+ testers)
+
+```
+25 users × 5 concurrent API calls = 125 peak concurrent requests
+
+With autobegin=False on reads, each SELECT holds a server connection
+for ~1-10 ms (query execution only). Effective concurrency need: ~5-10
+simultaneous server connections even under full load.
+
+Budget against postgres max_connections=100:
+  DEFAULT_POOL_SIZE (app):    40
+  RESERVE_POOL_SIZE:          10
+  LangGraph checkpointer:     10
+  Postgres internal:           5
+  Total:                      65 < 100 ✓
+```
+
+#### LangGraph checkpointer incompatibilities
+
+LangGraph's `AsyncPostgresSaver` must use a **separate asyncpg pool** — not the SQLAlchemy engine. Configure it with:
+- `prepared_statement_cache_size=0` — prepared statements are not supported in transaction pooling mode
+- `statement_cache_size=0` — same reason
+
+See `backend/app/db/session.py → get_langgraph_dsn()` for the connection string and a usage example.
 
 | Variable | Default | Description |
 |---|---|---|
 | `PGBOUNCER_AUTH_TYPE` | `scram-sha-256` | Authentication method |
-| `PGBOUNCER_POOL_MODE` | `transaction` | Pooling mode |
-| `PGBOUNCER_MAX_CLIENT_CONN` | `200` | Maximum client connections |
-| `PGBOUNCER_DEFAULT_POOL_SIZE` | `20` | Default pool size per user/db |
-| `PGBOUNCER_MIN_POOL_SIZE` | `5` | Minimum pool size |
-| `PGBOUNCER_RESERVE_POOL_SIZE` | `5` | Reserve connections for bursts |
-| `PGBOUNCER_RESERVE_POOL_TIMEOUT` | `3` | Seconds before using reserve pool |
-| `PGBOUNCER_SERVER_IDLE_TIMEOUT` | `600` | Close idle server connections after (seconds) |
+| `PGBOUNCER_POOL_MODE` | `transaction` | Pooling mode — do not change |
+| `PGBOUNCER_MAX_CLIENT_CONN` | `500` | Maximum client connections (SQLAlchemy sockets + LangGraph + headroom) |
+| `PGBOUNCER_DEFAULT_POOL_SIZE` | `40` | Server connections held per user/db pair |
+| `PGBOUNCER_MIN_POOL_SIZE` | `10` | Connections kept warm at all times |
+| `PGBOUNCER_RESERVE_POOL_SIZE` | `10` | Extra connections available during bursts |
+| `PGBOUNCER_RESERVE_POOL_TIMEOUT` | `2` | Seconds before using reserve pool |
+| `PGBOUNCER_SERVER_IDLE_TIMEOUT` | `600` | Close idle server connections after (seconds) — SQLAlchemy `pool_recycle` must be < this |
 | `PGBOUNCER_CLIENT_IDLE_TIMEOUT` | `1800` | Close idle client connections after (seconds) |
-| `PGBOUNCER_LOG_CONNECTIONS` | `1` | Log new connections |
-| `PGBOUNCER_LOG_DISCONNECTIONS` | `1` | Log disconnections |
+| `PGBOUNCER_LOG_CONNECTIONS` | `0` | Disabled in prod — noisy at scale |
+| `PGBOUNCER_LOG_DISCONNECTIONS` | `0` | Disabled in prod |
 | `PGBOUNCER_LOG_STATS` | `1` | Log periodic stats |
 | `PGBOUNCER_STATS_PERIOD` | `60` | Stats logging interval (seconds) |
 
@@ -150,12 +178,30 @@ docker_volume/
 
 This directory is git-ignored.
 
+## Redis
+
+Password-authenticated via `--requirepass`. No anonymous connections.
+
+**Persistence:** both RDB snapshots (900s/1 key, 300s/10 keys, 60s/10 000 keys) and AOF (`appendfsync everysec`) are enabled. Data survives container restarts via `./docker_volume/redis/data`.
+
+**Eviction:** `allkeys-lru` — Redis evicts the least-recently-used keys when `maxmemory` is reached. Suitable for caching workloads where stale data expiring is acceptable.
+
+**Connection string:** `redis://:${REDIS_PASSWORD}@<host>:6379/0`
+
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_PASSWORD` | — | Required. Authentication password |
+| `REDIS_PORT` | `6379` | Host port mapped to container port 6379 |
+| `REDIS_MAXMEMORY` | `256mb` | Hard memory cap for Redis data |
+| `REDIS_MAXMEMORY_POLICY` | `allkeys-lru` | Eviction policy when `maxmemory` is reached |
+
 ## Resource Limits
 
 | Service | Memory Limit | Memory Reserved | CPU Limit | CPU Reserved |
 |---|---|---|---|---|
 | PostgreSQL | 1.5 GB | 512 MB | 2.0 | 0.5 |
 | PgBouncer | 128 MB | 32 MB | 0.5 | 0.1 |
+| Redis | 384 MB | 64 MB | 0.5 | 0.1 |
 
 ## Health Checks
 

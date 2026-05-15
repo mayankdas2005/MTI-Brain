@@ -27,6 +27,7 @@ hljs.registerLanguage('sql', sql);
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
+import { generateDashboard } from '@/lib/api/dashboard';
 import { MarkdownRenderer } from './markdown-renderer';
 import { FeedbackWidget } from './feedback-widget';
 import { FollowUpChips } from './follow-up-chips';
@@ -484,7 +485,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       )}
 
       {/* Stopped indicator */}
-      {!message.isStreaming && (message.metadata_ as Record<string, unknown> | null)?.stopped && (
+      {!message.isStreaming && !!message.metadata_?.stopped && (
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 mt-1">
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
           Response stopped
@@ -588,8 +589,18 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                       Pin to home
                     </DropdownMenuItem>
                   )}
-                  {message.content && (
-                    <DropdownMenuItem onClick={() => { window.dispatchEvent(new CustomEvent('mti-brain:generate-dashboard', { detail: { conversationId: message.conversation_id, threadId } })); }} className="gap-2">
+                  {message.content && message.conversation_id && (
+                    <DropdownMenuItem
+                      onClick={() => {
+                        toast.info('Dashboard generation started.');
+                        void generateDashboard(message.conversation_id).catch((err: unknown) => {
+                          const msg =
+                            err instanceof Error ? err.message : 'Failed to generate dashboard.';
+                          toast.error(msg);
+                        });
+                      }}
+                      className="gap-2"
+                    >
                       <LayoutDashboard className="w-4 h-4" />
                       Generate Dashboard
                     </DropdownMenuItem>

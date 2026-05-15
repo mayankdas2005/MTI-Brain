@@ -26,9 +26,9 @@ database:
   ssl_root_cert: ""                # Path to CA cert when ssl_mode is verify-ca or verify-full
 
   pool:
-    size: 10                       # Base connections kept open at all times
-    max_overflow: 20               # Extra connections allowed above size (shed under peak load)
-    recycle_seconds: 1800          # Close and reopen connections older than N seconds
+    size: 2                        # Base connections kept open at all times
+    max_overflow: 8                # Extra connections allowed above size (shed under peak load)
+    recycle_seconds: 500           # Close and reopen connections older than N seconds
     timeout_seconds: 30            # Seconds to wait for a free connection before raising an error
 
 circuit_breaker:

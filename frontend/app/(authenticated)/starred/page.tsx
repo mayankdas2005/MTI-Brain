@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useNow } from '@/lib/hooks/use-now';
 import { formatRelativeTime } from '@/lib/utils/relative-time';
@@ -8,6 +8,7 @@ import { useThreadStore } from '@/lib/store/threads';
 import { useProjectStore } from '@/lib/store/projects';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Loader2 } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -21,6 +22,8 @@ import { highlightQueryInText, renderSearchSnippet } from '@/lib/utils/highlight
 import { Star, Search, X } from 'lucide-react';
 import * as api from '@/lib/api/threads';
 import type { ThreadSummary, SearchResult } from '@/lib/types/api';
+
+const PAGE_SIZE = 20;
 
 type SortMode = 'recent' | 'oldest' | 'alpha';
 
@@ -83,20 +86,68 @@ export default function StarredPage() {
   const router = useRouter();
   const now = useNow();
 
-  const threads = useThreadStore((s) => s.threads);
-  const fetchRecents = useThreadStore((s) => s.fetchRecents);
+  // Fetch starred threads directly from the backend — the Zustand store only
+  // holds the most-recent ~20 threads so older starred items would be missing.
+  const [starred, setStarred] = useState<ThreadSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
   const starThread = useThreadStore((s) => s.starThread);
   const projects = useProjectStore((s) => s.projects);
-
-  // Hydrate the thread cache if we landed cold (deep link, hard refresh).
-  useEffect(() => {
-    if (threads.length === 0) void fetchRecents();
-  }, [threads.length, fetchRecents]);
 
   const projectNameMap = useMemo(
     () => new Map(projects.map((p) => [p.id, p.name])),
     [projects],
   );
+
+  const fetchStarred = useCallback(async (append = false) => {
+    setLoading(true);
+    try {
+      const newOffset = append ? offset : 0;
+      const results = await api.getRecents({ starred: true, limit: PAGE_SIZE, offset: newOffset });
+      const items = results as ThreadSummary[];
+      if (append) {
+        setStarred((prev) => {
+          const ids = new Set(prev.map((t) => t.id));
+          return [...prev, ...items.filter((t) => !ids.has(t.id))];
+        });
+      } else {
+        setStarred(items);
+      }
+      setOffset(newOffset + items.length);
+      setHasMore(items.length === PAGE_SIZE);
+    } catch {
+      // non-critical — page still shows whatever loaded
+    }
+    setLoading(false);
+  }, [offset]);
+
+  const didInitRef = useRef(false);
+  useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+    void fetchStarred(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Scroll-based pagination — listens on the actual scroll container.
+  // Same fix as /chats: IntersectionObserver with root:null breaks inside
+  // overflow-hidden ancestors; a scroll event on the container is reliable.
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !hasMore || loading) return;
+    const onScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      if (scrollHeight - scrollTop - clientHeight < 300) {
+        void fetchStarred(true);
+      }
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => container.removeEventListener('scroll', onScroll);
+  }, [hasMore, loading, fetchStarred]);
 
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortMode>('recent');
@@ -107,9 +158,6 @@ export default function StarredPage() {
 
   const isSearching = search.trim().length >= 2;
 
-  // Debounced backend search whenever the filter input has 2+ chars.
-  // Aborts any in-flight call on each keystroke so a slow request can't
-  // overwrite fresher results.
   useEffect(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     if (searchAbortRef.current) searchAbortRef.current.abort();
@@ -143,8 +191,13 @@ export default function StarredPage() {
     };
   }, [search, isSearching]);
 
-  // Source: starred-only when not searching; backend results when searching.
-  const starred = useMemo(() => threads.filter((t) => t.starred), [threads]);
+  // Mirror unstar actions back into the local list without a refetch.
+  const handleUnstar = (threadId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    void starThread(threadId).then(() =>
+      setStarred((prev) => prev.filter((t) => t.id !== threadId)),
+    );
+  };
 
   const rows: StarredRow[] = useMemo(() => {
     if (isSearching) return searchResults.map(fromSearchResult);
@@ -152,9 +205,7 @@ export default function StarredPage() {
     const list = starred.map(fromSummary);
     return list.sort((a, b) => {
       if (sort === 'alpha') {
-        return (a.title || '').localeCompare(b.title || '', 'en-US', {
-          sensitivity: 'base',
-        });
+        return (a.title || '').localeCompare(b.title || '', 'en-US', { sensitivity: 'base' });
       }
       const aTime = new Date(sort === 'oldest' ? a.created_at : a.updated_at).getTime();
       const bTime = new Date(sort === 'oldest' ? b.created_at : b.updated_at).getTime();
@@ -162,16 +213,11 @@ export default function StarredPage() {
     });
   }, [isSearching, searchResults, starred, sort]);
 
-  const handleUnstar = (threadId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    void starThread(threadId);
-  };
-
-  const showEmptyState = !isSearching && starred.length === 0;
+  const showEmptyState = !isSearching && !loading && starred.length === 0;
   const showNoMatches = isSearching && !searchLoading && rows.length === 0;
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div ref={scrollContainerRef} className="h-full overflow-y-auto">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
@@ -179,7 +225,7 @@ export default function StarredPage() {
             <h1 className="text-2xl font-semibold tracking-tight">Starred</h1>
             {!isSearching && starred.length > 0 && (
               <span className="text-sm text-muted-foreground tabular-nums">
-                {starred.length} {starred.length === 1 ? 'thread' : 'threads'}
+                {starred.length}{hasMore ? '+' : ''} {starred.length === 1 ? 'thread' : 'threads'}
               </span>
             )}
           </div>
@@ -234,6 +280,8 @@ export default function StarredPage() {
               Star a thread from the sidebar or its header to keep it here for quick access.
             </p>
           </div>
+        ) : loading && starred.length === 0 ? (
+          <StarredSearchSkeleton />
         ) : isSearching && searchLoading ? (
           <StarredSearchSkeleton />
         ) : showNoMatches ? (
@@ -319,6 +367,11 @@ export default function StarredPage() {
                 </div>
               );
             })}
+            {!isSearching && loading && starred.length > 0 && (
+              <div className="flex justify-center py-4">
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+              </div>
+            )}
           </div>
         )}
       </div>

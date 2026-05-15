@@ -6,6 +6,7 @@ import { useThreadStore } from '@/lib/store/threads';
 import { getStoredUser } from '@/lib/auth';
 import { MessageSquare, ArrowRight } from 'lucide-react';
 import { type Suggestion, pickSuggestions } from '@/lib/suggestions';
+import { usePreferencesStore } from '@/lib/store/preferences';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import { MetricPinCard } from './metric-pin-card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -240,25 +241,20 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
   const pinnedMetrics = usePinnedMetricsStore((s) => s.metrics);
   const pinnedLoading = usePinnedMetricsStore((s) => s.loading);
   const pinnedFetched = usePinnedMetricsStore((s) => s.fetched);
-  const fetchMetrics = usePinnedMetricsStore((s) => s.fetchMetrics);
-  useEffect(() => { fetchMetrics(); }, [fetchMetrics]);
+  // fetchMetrics is fired from the auth layout prime() so it's already
+  // in-flight by the time WelcomeState mounts — no effect needed here.
 
-  const [firstName, setFirstName] = useState<string | undefined>(undefined);
-  const [greeting, setGreeting] = useState('');
-  const [tagline, setTagline] = useState('');
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    const user = getStoredUser();
-    setFirstName(user?.name?.split(' ')[0]);
-    setGreeting(getGreeting());
-    setTagline(pickTagline());
-    setSuggestions(pickSuggestions(recentTitles));
-    setMounted(true);
-  // recentTitles intentionally excluded: suggestions are picked once on mount
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // This component only renders after authChecked=true (client-side only,
+  // never in server HTML), so Math.random() / Date in useState initializers
+  // cannot cause a hydration mismatch — safe to run them synchronously.
+  const [firstName] = useState(() => getStoredUser()?.name?.split(' ')[0]);
+  const [greeting] = useState(getGreeting);
+  const [tagline] = useState(pickTagline);
+  // Suggestions are picked once from whatever titles are in the store at mount,
+  // using the persona that matches the user's saved response-tone preference.
+  const [suggestions] = useState(() =>
+    pickSuggestions(recentTitles, usePreferencesStore.getState().responseTone),
+  );
 
   const handleSuggestion = (prompt: string) => {
     if (onSuggestion) {
@@ -274,23 +270,14 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
       <div className="w-full max-w-2xl space-y-8">
         {/* Greeting */}
         <div className="text-center space-y-2 animate-fade-up">
-          {!mounted ? (
-            <>
-              <div className="h-4 w-40 rounded-full bg-muted animate-pulse mx-auto" />
-              <div className="h-14 w-3/4 rounded-xl bg-muted animate-pulse mx-auto mt-2" />
-            </>
-          ) : (
-            <>
-              {firstName && (
-                <p className="text-sm text-muted-foreground">
-                  {greeting}, {firstName}
-                </p>
-              )}
-              <h1 className="text-5xl font-light tracking-[-0.03em] text-foreground">
-                {tagline}
-              </h1>
-            </>
+          {firstName && (
+            <p className="text-sm text-muted-foreground">
+              {greeting}, {firstName}
+            </p>
           )}
+          <h1 className="text-5xl font-light tracking-[-0.03em] text-foreground">
+            {tagline}
+          </h1>
         </div>
 
         {/* Pinned metrics — skeleton while loading, cards when ready */}
@@ -353,31 +340,25 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
 
         {/* Suggestion chips — single flex-wrap row, chips never truncate */}
         <div className="flex flex-wrap items-center justify-center gap-2 w-full">
-          {!mounted ? (
-            [88, 112, 96, 112].map((w, i) => (
-              <div key={i} className="h-9 rounded-full bg-muted animate-pulse shrink-0" style={{ width: `${w}px`, animationDelay: `${i * 60}ms` }} />
-            ))
-          ) : (
-            suggestions.map((s, i) => {
-              const Icon = s.icon;
-              return (
-                <button
-                  key={i}
-                  onClick={() => handleSuggestion(s.prompt)}
-                  disabled={isStreaming}
-                  className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50 shrink-0"
-                  style={{
-                    animation: `fade-up 0.4s ease-out ${(i + 1) * 80}ms both, chip-breathe 4s ${1.5 + i * 0.3}s ease-in-out infinite`,
-                  }}
-                >
-                  <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
-                  <span className="text-foreground/80 group-hover:text-foreground transition-colors whitespace-nowrap">
-                    {s.label}
-                  </span>
-                </button>
-              );
-            })
-          )}
+          {suggestions.map((s, i) => {
+            const Icon = s.icon;
+            return (
+              <button
+                key={i}
+                onClick={() => handleSuggestion(s.prompt)}
+                disabled={isStreaming}
+                className="group inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 disabled:opacity-50 shrink-0"
+                style={{
+                  animation: `fade-up 0.4s ease-out ${(i + 1) * 80}ms both, chip-breathe 4s ${1.5 + i * 0.3}s ease-in-out infinite`,
+                }}
+              >
+                <Icon className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
+                <span className="text-foreground/80 group-hover:text-foreground transition-colors whitespace-nowrap">
+                  {s.label}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>

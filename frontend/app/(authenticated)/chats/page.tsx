@@ -67,7 +67,7 @@ export default function ChatsPage() {
 
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [focusedSearchIndex, setFocusedSearchIndex] = useState(-1);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const now = useNow();
 
   const isSearching = search.trim().length > 0;
@@ -77,6 +77,8 @@ export default function ChatsPage() {
   const fetchAllLabels = useLabelsStore((s) => s.fetchAllLabels);
   useEffect(() => { fetchAllLabels(); }, [fetchAllLabels]);
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
+  const [labelThreads, setLabelThreads] = useState<ThreadSummary[]>([]);
+  const [labelLoading, setLabelLoading] = useState(false);
 
   const availableLabels = useMemo(() => {
     const seen = new Map<string, { label: string; color: string }>();
@@ -86,11 +88,26 @@ export default function ChatsPage() {
     return Array.from(seen.values());
   }, [labelsByThread]);
 
+  // When a label is selected, fetch all matching threads from the backend.
+  // Client-side filtering only covers the currently-loaded page slice, so
+  // threads on later pages would be silently excluded.
+  useEffect(() => {
+    if (!activeLabel) { setLabelThreads([]); return; }
+    let cancelled = false;
+    setLabelLoading(true);
+    api.getRecents({ label: activeLabel, limit: 200 })
+      .then((results) => {
+        if (!cancelled) setLabelThreads(results as ThreadSummary[]);
+      })
+      .catch(() => { if (!cancelled) toast.error('Failed to filter by label'); })
+      .finally(() => { if (!cancelled) setLabelLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeLabel]);
+
   const displayedThreads = useMemo(() => {
-    const base = isSearching ? [] : threads;
-    if (!activeLabel) return base;
-    return base.filter((t) => (labelsByThread[t.id] ?? []).some((l) => l.label === activeLabel));
-  }, [isSearching, threads, activeLabel, labelsByThread]);
+    if (isSearching) return [];
+    return activeLabel ? labelThreads : threads;
+  }, [isSearching, threads, activeLabel, labelThreads]);
 
   const fetchThreads = useCallback(async (append = false) => {
     const hasCached = threads.length > 0;
@@ -194,21 +211,27 @@ export default function ChatsPage() {
     setFocusedSearchIndex(-1);
   }, [searchResults]);
 
-  // Infinite scroll sentinel.
+  // Infinite scroll — listen on the actual scroll container, not the viewport.
+  // IntersectionObserver with root:null breaks when the scroll container is
+  // nested inside overflow-hidden (the authenticated layout's main element):
+  // the sentinel always appears "in viewport", so the observer fires once and
+  // never again. A scroll event on the real container is reliable.
   useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting && hasMore && !loading) {
-          fetchThreads(true);
-        }
-      },
-      { threshold: 0.1 },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [hasMore, loading, fetchThreads]);
+    const container = scrollContainerRef.current;
+    if (!container || !hasMore || loading || activeLabel) return;
+
+    const onScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      if (scrollHeight - scrollTop - clientHeight < 300) {
+        fetchThreads(true);
+      }
+    };
+
+    container.addEventListener('scroll', onScroll, { passive: true });
+    // Fire immediately in case the first page doesn't fill the container.
+    onScroll();
+    return () => container.removeEventListener('scroll', onScroll);
+  }, [hasMore, loading, fetchThreads, activeLabel]);
 
   // Keyboard navigation.
   useEffect(() => {
@@ -303,7 +326,7 @@ export default function ChatsPage() {
   }, [threads.length, selectMode, selectedIds.size]);
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div ref={scrollContainerRef} className="h-full overflow-y-auto">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
@@ -534,6 +557,8 @@ export default function ChatsPage() {
                 New chat
               </Button>
             </div>
+          ) : labelLoading ? (
+            <ThreadListSkeleton />
           ) : displayedThreads.length === 0 && activeLabel ? (
             <div className="text-center py-10">
               <p className="text-sm text-muted-foreground">No chats with label &ldquo;{activeLabel}&rdquo;</p>
@@ -601,9 +626,7 @@ export default function ChatsPage() {
                 </div>
               ))}
 
-              {/* Infinite scroll sentinel */}
-              <div ref={sentinelRef} className="h-4" />
-              {loading && threads.length > 0 && (
+              {!activeLabel && loading && threads.length > 0 && (
                 <div className="flex justify-center py-4">
                   <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
                 </div>

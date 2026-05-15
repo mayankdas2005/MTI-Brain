@@ -1089,7 +1089,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onStopped: (data) => {
         const convId = (data.conversation_id as string) || '';
-        const finalSteps = (data.pipeline_steps as typeof import('@/lib/store/threads').StreamingStep[] | undefined);
+        const finalSteps = (data.pipeline_steps as StreamingStep[] | undefined);
         set((state) => {
           const updated = state.currentMessages.map((m) => {
             if (m.id === assistantMsgId) return {
@@ -1403,7 +1403,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onStopped: (data) => {
         const convId = (data.conversation_id as string) || '';
-        const finalSteps = (data.pipeline_steps as typeof import('@/lib/store/threads').StreamingStep[] | undefined);
+        const finalSteps = (data.pipeline_steps as StreamingStep[] | undefined);
         set((state) => {
           const updated = state.currentMessages.map((m) => {
             if (m.id === assistantMsgId) return {
@@ -1658,7 +1658,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onStopped: (data) => {
         const convId = (data.conversation_id as string) || '';
-        const finalSteps = (data.pipeline_steps as typeof import('@/lib/store/threads').StreamingStep[] | undefined);
+        const finalSteps = (data.pipeline_steps as StreamingStep[] | undefined);
         set((state) => {
           const updated = state.currentMessages.map((m) => {
             if (m.id === assistantMsgId) return {

@@ -30,7 +30,7 @@ export interface SSEHandlers {
   }) => void;
   onChart?: (data: { spec: Record<string, unknown> }) => void;
   onFollowUps?: (data: { questions: string[] }) => void;
-  onStopped?: (data: { message: string }) => void;
+  onStopped?: (data: { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number }) => void;
   onDone?: (data: Record<string, unknown>) => void;
   onError?: (data: { message: string; conversation_id?: string }) => void;
 }
@@ -159,7 +159,7 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       handlers.onFollowUps?.(data as { questions: string[] });
       break;
     case 'stopped':
-      handlers.onStopped?.(data as { message: string });
+      handlers.onStopped?.(data as { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number });
       break;
     case 'done':
       handlers.onDone?.(data);

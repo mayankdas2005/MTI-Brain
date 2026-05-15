@@ -7,7 +7,7 @@ import { toast } from '@/lib/toast';
 import { ArrowUp, Loader2, BrainCircuit, AudioLines } from 'lucide-react';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { VoiceInputButton } from './voice-input-button';
-import { GHOST_PROMPTS } from '@/lib/suggestions';
+import { GHOST_PROMPTS_BY_TONE } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
 import { useActivityStore } from '@/lib/store/activity';
 import { track, Events } from '@/lib/analytics';
@@ -32,11 +32,12 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [input, setInput] = useState(initialValue);
   const [submitting, setSubmitting] = useState(false);
-  // Start at index 0 so SSR and the first client render agree (no Math.random()
-  // in the initializer - that would hydrate-mismatch since the server and the
-  // browser pick different indices). Randomize once on mount, then rotate.
-  const [ghostIdx, setGhostIdx] = useState(0);
+  // Safe to randomise in the initializer — this component only renders after
+  // authChecked=true (client-side), so there is no hydration mismatch risk.
+  const [ghostIdx, setGhostIdx] = useState(() => Math.floor(Math.random() * (GHOST_PROMPTS_BY_TONE.executive.length)));
   const [ghostVisible, setGhostVisible] = useState(true);
+  const responseTone = usePreferencesStore((s) => s.responseTone);
+  const ghostPrompts = GHOST_PROMPTS_BY_TONE[responseTone] ?? GHOST_PROMPTS_BY_TONE.executive;
   const deepAnalysis = usePreferencesStore((s) => s.deepAnalysis ?? false);
   const setDeepAnalysis = usePreferencesStore((s) => s.setDeepAnalysis);
   const conversationMode = usePreferencesStore((s) => s.conversationMode ?? false);
@@ -46,11 +47,6 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   const setPendingQuestion = useThreadStore((s) => s.setPendingQuestion);
 
   // Pick a random starting prompt after hydration so the carousel doesn't
-  // always begin on the same one on every page load.
-  useEffect(() => {
-    setGhostIdx(Math.floor(Math.random() * GHOST_PROMPTS.length));
-  }, []);
-
   // Restore /new draft on mount unless an explicit initialValue was provided
   // (e.g. clicking a suggestion which sets the input directly).
   useEffect(() => {
@@ -79,7 +75,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
     const id = setInterval(() => {
       setGhostVisible(false);
       setTimeout(() => {
-        setGhostIdx((i) => (i + 1) % GHOST_PROMPTS.length);
+        setGhostIdx((i) => (i + 1) % ghostPrompts.length);
         setGhostVisible(true);
       }, 220);
     }, 4000);
@@ -168,7 +164,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
               className="pointer-events-none absolute left-4 top-4 text-sm leading-relaxed text-muted-foreground transition-opacity duration-200 ease-in-out"
               style={{ opacity: ghostVisible ? 1 : 0 }}
             >
-              {GHOST_PROMPTS[ghostIdx]}
+              {ghostPrompts[ghostIdx % ghostPrompts.length]}
             </span>
           )}
 

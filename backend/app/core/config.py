@@ -69,9 +69,14 @@ class Settings(BaseSettings):
     DATABASE_SSL_ROOT_CERT: str = Field(default=_db.get("ssl_root_cert", ""))
 
     # ── Connection pool (config.yml) ──────────────────────────────────────────
-    DB_POOL_SIZE: int = Field(default=_pool.get("size", 10))
-    DB_MAX_OVERFLOW: int = Field(default=_pool.get("max_overflow", 20))
-    DB_POOL_RECYCLE: int = Field(default=_pool.get("recycle_seconds", 1800))
+    # These values are tuned for PgBouncer TRANSACTION pooling mode.
+    # SQLAlchemy's pool manages cheap CLIENT→PgBouncer sockets, not Postgres
+    # server connections — keep pool_size small (1-2 per worker).
+    # pool_recycle MUST be below PgBouncer SERVER_IDLE_TIMEOUT (default 600 s)
+    # to avoid checking out a socket whose server connection PgBouncer already closed.
+    DB_POOL_SIZE: int = Field(default=_pool.get("size", 2))
+    DB_MAX_OVERFLOW: int = Field(default=_pool.get("max_overflow", 8))
+    DB_POOL_RECYCLE: int = Field(default=_pool.get("recycle_seconds", 500))
     DB_POOL_TIMEOUT: int = Field(default=_pool.get("timeout_seconds", 30))
 
     # ── Circuit breaker (config.yml) ──────────────────────────────────────────

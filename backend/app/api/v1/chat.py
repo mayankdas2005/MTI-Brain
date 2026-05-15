@@ -488,7 +488,8 @@ async def list_recent_chats(
     search: str | None = Query(default=None),
     project_id: uuid.UUID | None = Query(default=None),
     starred: bool | None = Query(default=None),
-    limit: int = Query(default=20, ge=1, le=100),
+    label: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_read_session),
@@ -507,7 +508,7 @@ async def list_recent_chats(
 
     threads = await conv_service.list_threads(
         db, project_id=project_id, limit=limit, offset=offset,
-        user_id=current_user.id, starred=starred,
+        user_id=current_user.id, starred=starred, label=label,
     )
     return [ThreadSummary(**t) for t in threads]
 

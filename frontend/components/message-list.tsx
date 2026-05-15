@@ -1,7 +1,6 @@
 'use client';
 
 import { useMemo, useEffect, useCallback, useRef } from 'react';
-import { motion } from 'framer-motion';
 import { Message, useThreadStore } from '@/lib/store/threads';
 import { MessageBubble } from './message-bubble';
 import {
@@ -10,7 +9,6 @@ import {
   getActiveIdx as getActiveIdxFromVersions,
   computeVisibility,
 } from '@/lib/utils/conversation-tree';
-import { usePrefersReducedMotion } from '@/lib/hooks/use-prefers-reduced-motion';
 
 interface MessageListProps {
   messages: Message[];
@@ -70,12 +68,7 @@ function ConversationTurn({
   const turnIsStreaming = msgs.some((m) => m.isStreaming);
 
   return (
-    // content-visibility: auto lets the browser skip layout/paint for
-    // off-screen turns while keeping them in the DOM (so scrollIntoView
-    // by id keeps working). contain-intrinsic-size tells the browser the
-    // approximate size to reserve when not rendered.
     <div
-      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 200px' }}
       aria-live={turnIsStreaming ? 'polite' : undefined}
       aria-atomic="false"
     >
@@ -116,31 +109,18 @@ export function MessageList({ messages, threadId }: MessageListProps) {
     [turns, activeVersionsForThread],
   );
 
-  const reduced = usePrefersReducedMotion();
-
   return (
     <div className="space-y-4">
       {turns.map((turn, i) =>
         visibleTurns[i] ? (
-          <motion.div
-            key={turn.turnKey}
-            {...(reduced ? {} : {
-              initial: { opacity: 0, y: 6 },
-              animate: { opacity: 1, y: 0 },
-              transition: {
-                duration: 0.18,
-                ease: 'easeOut' as const,
-                delay: Math.min(i * 0.04, 0.32),
-              },
-            })}
-          >
+          <div key={turn.turnKey}>
             <ConversationTurn
               turn={turn}
               threadId={threadId}
               activeIdx={getActiveIdx(turn)}
               onActiveIdxChange={(idx) => setActiveIdx(turn, idx)}
             />
-          </motion.div>
+          </div>
         ) : null,
       )}
     </div>

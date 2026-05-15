@@ -423,6 +423,15 @@ html[data-density="compact"] {
   animation: fade-up 0.4s ease-out both;
 }
 
+/* Sidebar expanded content - delay opacity until after width transition (200ms) */
+@keyframes sidebar-enter {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.sidebar-content-enter {
+  animation: sidebar-enter 0.12s ease-out 0.18s both;
+}
+
 /* One-time spring pop for the version pill when a turn first gains alternates */
 @keyframes pop-in {
   0%   { opacity: 0; transform: scale(0.6); }

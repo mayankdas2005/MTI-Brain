@@ -673,7 +673,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
           <Button
             onClick={handleNewChat}
             data-onboarding="new-chat"
-            className="w-full h-10 rounded-xl justify-center gap-2 font-semibold active:scale-[0.98] transition-transform"
+            className="w-full h-10 rounded-xl justify-center gap-2 font-semibold active:scale-[0.98] transition-transform sidebar-content-enter"
             variant="outline"
           >
             <Plus className="w-[18px] h-[18px]" />
@@ -703,7 +703,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
           <button
             onClick={() => useSearchStore.getState().openModal()}
             aria-label="Open search"
-            className="w-full flex items-center gap-2 px-2.5 h-9 rounded-xl border border-sidebar-border bg-sidebar text-sm text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+            className="sidebar-content-enter w-full flex items-center gap-2 px-2.5 h-9 rounded-xl border border-sidebar-border bg-sidebar text-sm text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
           >
             <Search className="w-4 h-4 shrink-0" />
             <span>Search...</span>
@@ -728,7 +728,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
 
       {/* Projects navigation — always visible */}
       {isOpen ? (
-        <div className="px-3 pt-1 pb-0.5 shrink-0">
+        <div className="px-3 pt-1 pb-0.5 shrink-0 sidebar-content-enter">
           <div className="flex items-center">
             <button
               onClick={() => { closeOnNav(); router.push('/projects'); }}
@@ -772,7 +772,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
 
       {/* Chats navigation — always visible */}
       {isOpen ? (
-        <div className="px-3 pb-1 shrink-0">
+        <div className="px-3 pb-1 shrink-0 sidebar-content-enter">
           <button
             onClick={() => { closeOnNav(); router.push('/chats'); }}
             onMouseEnter={() => router.prefetch('/chats')}
@@ -805,7 +805,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
       )}
 
       <ScrollArea className="flex-1 min-h-0">
-        {isOpen && (<>
+        {isOpen && (<div className="sidebar-content-enter">
         {/* Starred Section - starred projects + starred threads, capped at 5 */}
         {(() => {
           const STARRED_LIMIT = 5;
@@ -917,7 +917,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
             </>
           )}
         </div>
-        </>)}
+        </div>)}
       </ScrollArea>
 
       {/* Bulk action bar */}
@@ -935,7 +935,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
               </div>
             </div>
           ) : (
-            <div className="w-9 flex items-center justify-center py-[var(--density-pad-y-tight)]">
+            <div className="w-9 flex items-center justify-center py-[var(--density-pad-y)]">
               <Skeleton className="h-8 w-8 rounded-full shrink-0" />
             </div>
           )
@@ -965,7 +965,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
             <Tooltip>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
-                  <button data-onboarding="user-menu" className="w-9 flex items-center justify-center rounded-lg py-[var(--density-pad-y-tight)] hover:bg-sidebar-accent transition-colors">
+                  <button data-onboarding="user-menu" className="w-9 flex items-center justify-center rounded-lg py-[var(--density-pad-y)] hover:bg-sidebar-accent transition-colors">
                     <Avatar className="h-8 w-8 shrink-0">
                       <AvatarFallback className="bg-primary/15 text-primary text-xs font-semibold">
                         {(user.name || user.email)?.charAt(0).toUpperCase()}

@@ -448,6 +448,7 @@ async def list_threads(
     offset: int = 0,
     user_id: uuid.UUID | None = None,
     starred: bool | None = None,
+    label: str | None = None,
 ) -> list[dict]:
     """List threads with last message preview. 1 round-trip (single query).
 
@@ -482,6 +483,16 @@ async def list_threads(
 
     where_clause = ("WHERE " + " AND ".join(filters)) if filters else ""
 
+    # When filtering by label, JOIN against the label table so the DB returns
+    # only matching threads regardless of pagination offset. We still honour
+    # LIMIT/OFFSET so callers can page through large label sets if needed.
+    label_join = ""
+    if label is not None:
+        label_join = "JOIN mti_brain_thread_label tl ON tl.thread_id = t.id AND tl.label = :label_filter"
+        if user_id:
+            label_join += " AND tl.user_id = :user_id"
+        params["label_filter"] = label
+
     result = await db.execute(
         text(f"""
             SELECT
@@ -489,6 +500,7 @@ async def list_threads(
                 t.created_at, t.updated_at,
                 lm.content AS last_message
             FROM mti_brain_thread t
+            {label_join}
             LEFT JOIN LATERAL (
                 SELECT m.content
                 FROM mti_brain_message m
