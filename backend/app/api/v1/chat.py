@@ -414,7 +414,11 @@ def _build_sse_generator(
                 }),
             }
         finally:
-            _active_streams.pop(str(thread_id), None)
+            # Identity check: only remove OUR event. A subsequent ask/retry/edit
+            # may have already registered a new cancel_event for the same thread.
+            # A plain pop() would silently delete the NEW stream's ability to stop.
+            if _active_streams.get(str(thread_id)) is _cancel:
+                _active_streams.pop(str(thread_id), None)
 
     return event_generator
 
