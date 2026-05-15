@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useEffect, useCallback, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Message, useThreadStore } from '@/lib/store/threads';
 import { MessageBubble } from './message-bubble';
 import {
@@ -69,15 +69,6 @@ function ConversationTurn({
   // noisy re-announcements during virtual scroll.
   const turnIsStreaming = msgs.some((m) => m.isStreaming);
 
-  const bubbles = msgs.map((message) => (
-    <MessageBubble
-      key={message.id}
-      message={message}
-      threadId={threadId}
-      versionNav={message.role === 'user' ? versionNav : undefined}
-    />
-  ));
-
   return (
     // content-visibility: auto lets the browser skip layout/paint for
     // off-screen turns while keeping them in the DOM (so scrollIntoView
@@ -88,20 +79,14 @@ function ConversationTurn({
       aria-live={turnIsStreaming ? 'polite' : undefined}
       aria-atomic="false"
     >
-      {hasMultipleVersions ? (
-        <AnimatePresence initial={false}>
-          <motion.div
-            key={activeConvId}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
-          >
-            {bubbles}
-          </motion.div>
-        </AnimatePresence>
-      ) : (
-        bubbles
-      )}
+      {msgs.map((message) => (
+        <MessageBubble
+          key={message.id}
+          message={message}
+          threadId={threadId}
+          versionNav={message.role === 'user' ? versionNav : undefined}
+        />
+      ))}
     </div>
   );
 }
