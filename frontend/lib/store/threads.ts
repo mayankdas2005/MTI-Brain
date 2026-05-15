@@ -252,6 +252,7 @@ interface ThreadStore {
 
   // Streaming
   isStreaming: boolean;
+  isStopping: boolean;
   streamingMessageId: string | null;
   // Thread currently receiving the stream. Used by the chat page guard
   // so navigating to a different thread while one is generating doesn't
@@ -398,6 +399,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
   currentThreadProjectId: null,
   messagesLoading: false,
   isStreaming: false,
+  isStopping: false,
   streamingMessageId: null,
   streamingThreadId: null,
   streamingMessages: [],
@@ -1107,6 +1109,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
             streamingMessages: [],
             isStreaming: false,
+            isStopping: false,
             streamingMessageId: null,
             streamingThreadId: null,
             abortController: null,
@@ -1390,6 +1393,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
             streamingMessages: [],
             isStreaming: false,
+            isStopping: false,
             streamingMessageId: null,
             streamingThreadId: null,
             abortController: null,
@@ -1419,6 +1423,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
             streamingMessages: [],
             isStreaming: false,
+            isStopping: false,
             streamingMessageId: null,
             streamingThreadId: null,
             abortController: null,
@@ -1643,6 +1648,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
             streamingMessages: [],
             isStreaming: false,
+            isStopping: false,
             streamingMessageId: null,
             streamingThreadId: null,
             abortController: null,
@@ -1672,6 +1678,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
             streamingMessages: [],
             isStreaming: false,
+            isStopping: false,
             streamingMessageId: null,
             streamingThreadId: null,
             abortController: null,
@@ -1732,51 +1739,56 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
   },
 
   stopGeneration: async (threadId) => {
-    const { abortController, streamingMessageId } = get();
-    abortController?.abort();
+    // Mark as stopping immediately so the stop button disables.
+    set({ isStopping: true });
+
+    // Tell the backend to stop. The generator will hit the next _check()
+    // and yield a `stopped` event through the LIVE SSE connection.
+    // We deliberately do NOT abort the SSE connection here — aborting
+    // kills the stream before the `stopped` event can arrive, which is
+    // the root cause of stop not working reliably.
     try {
       await api.stopGeneration(threadId);
     } catch {
-      // Ignore errors on stop
+      // Network error on the stop request — fall through to 5s timeout
     }
-    // Finalize the in-progress assistant message so the UI shows
-    // whatever was streamed so far instead of a blank/stuck state.
-    // The onStopped SSE handler may also fire and do this, but abort
-    // often prevents it from arriving - this is the safety net.
-    set((state) => {
-      const updated = state.currentMessages.map((m) =>
-        m.id === streamingMessageId
-          ? {
-              ...m,
-              isStreaming: false,
-              metadata_: { ...m.metadata_, stopped: true },
-              streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
-            }
-          : m,
-      );
-      return {
-        currentMessages: updated,
-        threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
-        streamingMessages: [],
-        isStreaming: false,
-        streamingMessageId: null,
-        streamingThreadId: null,
-        abortController: null,
-      };
-    });
-    // Sync sidebar title from DB (backend commits the title before the
-    // stream starts, so it should be available immediately).
-    get().fetchRecents();
-    // Safety-net: re-fetch the thread after a short delay to pick up
-    // the assistant message that the backend saves asynchronously.
-    setTimeout(() => {
-      if (get().currentThreadId === threadId) {
-        get().fetchThread(threadId).catch(() => {});
-      }
-      // Also refresh sidebar again in case backend committed after our
-      // first fetchRecents call.
+
+    // 5-second timeout fallback: if the backend never sends stopped/done
+    // (e.g. the stop request was lost or the process crashed), force-abort
+    // the SSE connection and finalize the message locally.
+    const { abortController, streamingMessageId } = get();
+    const stopTimeout = setTimeout(() => {
+      if (!get().isStreaming) return; // onStopped already fired — nothing to do
+      abortController?.abort();
+      set((state) => {
+        const updated = state.currentMessages.map((m) =>
+          m.id === streamingMessageId
+            ? {
+                ...m,
+                isStreaming: false,
+                isStopping: false,
+                metadata_: { ...m.metadata_, stopped: true },
+                streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+              }
+            : m,
+        );
+        return {
+          currentMessages: updated,
+          threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
+          streamingMessages: [],
+          isStreaming: false,
+          isStopping: false,
+          streamingMessageId: null,
+          streamingThreadId: null,
+          abortController: null,
+        };
+      });
       get().fetchRecents();
-    }, 800);
+    }, 5000);
+
+    // Clean up the timeout when onStopped / onDone fires naturally.
+    // We attach it to the store so the SSE handlers can clear it.
+    set({ _stopTimeout: stopTimeout } as never);
   },
 
   // ─── Feedback ───

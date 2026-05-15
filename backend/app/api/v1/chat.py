@@ -188,6 +188,13 @@ def _build_sse_generator(
         final_data = _mock_response_payload(question, conversation_id)
         _reasoning_parts: list[str] = []
 
+        # Track what was actually delivered to the client. On stop, only the
+        # delivered content is saved to the DB — not the pre-computed full payload.
+        _streamed_answer: list[str] = []
+        _data_delivered = False    # execute.done was yielded
+        _chart_delivered = False   # chart was yielded
+        _followups_delivered = False  # follow_ups was yielded
+
         _steps: list[dict] = []
         _current_step: dict | None = None
 
@@ -351,9 +358,11 @@ def _build_sse_generator(
                     "metric_defined_at": final_data.get("metric_defined_at"),
                 }),
             }
+            _data_delivered = True
             _check()
             if final_data.get("chart_spec"):
                 yield {"event": "chart", "data": json.dumps({"spec": final_data["chart_spec"]})}
+                _chart_delivered = True
 
             # ── Respond ───────────────────────────────────────────────────
             _check()
@@ -377,10 +386,12 @@ def _build_sse_generator(
             for chunk in final_data["answer"].split(" "):
                 _check()
                 yield {"event": "answer.delta", "data": json.dumps({"text": chunk + " "})}
+                _streamed_answer.append(chunk + " ")
                 await asyncio.sleep(0.02)
 
             _check()
             yield {"event": "follow_ups", "data": json.dumps({"questions": final_data["follow_ups"]})}
+            _followups_delivered = True
 
             # ── Done ──────────────────────────────────────────────────────
             _close_steps()
@@ -396,6 +407,23 @@ def _build_sse_generator(
             _close_steps()
             final_data["stopped"] = True
             final_data["duration_ms"] = int((time.perf_counter() - _stream_start) * 1000)
+            # Trim final_data to only what was actually delivered to the client.
+            # The pre-computed payload contains the full response; if stop fired
+            # before certain sections were yielded, erase them so the DB record
+            # matches what the user actually saw.
+            final_data["answer"] = "".join(_streamed_answer)
+            if not _data_delivered:
+                final_data["sql"] = None
+                final_data["columns"] = []
+                final_data["rows"] = []
+                final_data["row_count"] = 0
+                final_data["source_tables"] = []
+                final_data["chart_spec"] = None
+                final_data["follow_ups"] = []
+            elif not _chart_delivered:
+                final_data["chart_spec"] = None
+            if not _followups_delivered:
+                final_data["follow_ups"] = []
             logger.info(f"[sse] stream stopped by user for thread {thread_id}")
             yield {"event": "stopped", "data": json.dumps({
                 "conversation_id": str(conversation_id),
@@ -413,6 +441,16 @@ def _build_sse_generator(
                     "conversation_id": str(conversation_id),
                 }),
             }
+
+        except BaseException:
+            # GeneratorExit (client navigated away / network drop) or other
+            # non-Exception BaseException. Save whatever was streamed so the
+            # DB is not left with a dangling unsaved record.
+            _close_steps()
+            final_data["stopped"] = True
+            final_data["duration_ms"] = int((time.perf_counter() - _stream_start) * 1000)
+            asyncio.create_task(_save_assistant_message(final_data))
+            raise  # re-raise so sse_starlette cleans up correctly
         finally:
             # Identity check: only remove OUR event. A subsequent ask/retry/edit
             # may have already registered a new cancel_event for the same thread.

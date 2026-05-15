@@ -483,6 +483,14 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         />
       )}
 
+      {/* Stopped indicator */}
+      {!message.isStreaming && (message.metadata_ as Record<string, unknown> | null)?.stopped && (
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 mt-1">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
+          Response stopped
+        </div>
+      )}
+
       {/* Follow-up Chips + Refine — appear as soon as follow_ups event fires */}
       {!!(message.followUpsReady ?? !message.isStreaming) && prefShowFollowUps && followUps && followUps.length > 0 && (
         <FollowUpChips threadId={threadId} followUps={followUps} conversationId={message.conversation_id} />

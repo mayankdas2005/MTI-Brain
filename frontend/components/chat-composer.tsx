@@ -91,6 +91,7 @@ export function ChatComposer() {
 
   const currentThreadId = useThreadStore((s) => s.currentThreadId);
   const isStreaming = useThreadStore((s) => s.isStreaming);
+  const isStopping = useThreadStore((s) => s.isStopping);
   const pendingQuestion = useThreadStore((s) => s.pendingQuestion);
   const pendingDeepAnalysis = useThreadStore((s) => s.pendingDeepAnalysis);
   const askQuestion = useThreadStore((s) => s.askQuestion);
@@ -661,9 +662,14 @@ export function ChatComposer() {
                 <button
                   type="button"
                   onClick={handleStop}
-                  className="tap-44 relative flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85]"
+                  disabled={isStopping}
+                  aria-label={isStopping ? 'Stopping…' : 'Stop generation'}
+                  className={`tap-44 relative flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85] ${isStopping ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
-                  <Square className="w-3.5 h-3.5 fill-current" />
+                  {isStopping
+                    ? <span className="w-3.5 h-3.5 rounded-full border-2 border-background/60 border-t-background animate-spin" />
+                    : <Square className="w-3.5 h-3.5 fill-current" />
+                  }
                 </button>
               ) : (
                 <button

@@ -43,3 +43,9 @@ jwt:
 rate_limit:
   login_per_minute: 5              # Max login attempts per IP per minute
   ask_per_minute: 30               # Max /ask, /retry, /edit requests per IP per minute
+
+model_routing:
+  llm_routing_enabled: true        # Model routing (Haiku / Sonnet / Opus)
+
+prompt_cache:
+  aws_bedrock_prompt_cache: true   # Enable AWS Bedrock prompt cache

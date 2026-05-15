@@ -665,3 +665,30 @@ html.dark.high-contrast {
   --input: #222222;
   --destructive: #ff6666;
 }
+
+/* Sidebar is excluded from high contrast — it has its own palette and
+   the dark header/nav treatment should remain visually distinct. */
+html.high-contrast [data-no-contrast] {
+  --foreground: #0f1b2d;
+  --background: #eaf1fa;
+  --muted-foreground: #4d637f;
+  --border: #bdd0e6;
+  --accent: #d4e1f1;
+  --accent-foreground: #0f1b2d;
+  --muted: #dce8f6;
+  --input: #e0eaf7;
+  --destructive: #EE2650;
+  --ring: #1B76B8;
+}
+html.dark.high-contrast [data-no-contrast] {
+  --foreground: #e4e8ee;
+  --background: #1c1f23;
+  --muted-foreground: #8a9bb0;
+  --border: #333c47;
+  --accent: #2c323b;
+  --accent-foreground: #e4e8ee;
+  --muted: #272c33;
+  --input: #272c33;
+  --destructive: #EE2650;
+  --ring: #1B76B8;
+}

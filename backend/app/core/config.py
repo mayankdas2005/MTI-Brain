@@ -41,6 +41,8 @@ _pool = _db.get("pool", {})
 _cb = _yml.get("circuit_breaker", {})
 _jwt = _yml.get("jwt", {})
 _rl = _yml.get("rate_limit", {})
+_mdl_rt = _yml.get("model_routing", {})
+_prompt_cache = _yml.get("prompt_cache", {})
 
 
 class Settings(BaseSettings):
@@ -84,6 +86,20 @@ class Settings(BaseSettings):
     # ── Rate limiting (config.yml) ────────────────────────────────────────────
     RATE_LIMIT_LOGIN_PER_MINUTE: int = Field(default=_rl.get("login_per_minute", 5))
     RATE_LIMIT_ASK_PER_MINUTE: int = Field(default=_rl.get("ask_per_minute", 30))
+
+    # ── AWS Bedrock config (.env) ─────────────────────────────────────────────
+    AWS_BEARER_TOKEN_BEDROCK: str = Field(default="")
+    AWS_REGION: str = Field(default="us-west-2")
+    AWS_BEDROCK_SONNET_ARN: str = Field(default="")
+    AWS_BEDROCK_HAIKU_ARN: str = Field(default="")
+    AWS_BEDROCK_OPUS_ARN: str = Field(default="")
+    AWS_BEDROCK_COHERE_EMBED_V4_ARN: str = Field(default="")
+
+    # ── Model routing (config.yml) ───────────────────────────────────────────
+    LLM_ROUTING_ENABLED: bool = Field(default=_mdl_rt.get("enabled", False))
+
+    # ── Prompt cache (config.yml) ───────────────────────────────────────────
+    AWS_BEDROCK_PROMPT_CACHE: bool = Field(default=_prompt_cache.get("aws_bedrock_prompt_cache", False))
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

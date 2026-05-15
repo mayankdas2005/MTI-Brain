@@ -610,7 +610,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
   };
 
   return (
-    <div className={cn("flex flex-col h-full bg-sidebar overflow-hidden shrink-0", !forceExpanded && "border-r border-sidebar-border transition-[width] duration-200", forceExpanded ? "w-full" : isOpen ? "w-[280px]" : "w-12")} data-onboarding="sidebar">
+    <div data-no-contrast className={cn("flex flex-col h-full bg-sidebar overflow-hidden shrink-0", !forceExpanded && "border-r border-sidebar-border transition-[width] duration-200", forceExpanded ? "w-full" : isOpen ? "w-[280px]" : "w-12")} data-onboarding="sidebar">
       {/* Header */}
       <div
         className="h-12 flex items-center shrink-0"
@@ -924,7 +924,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
       {isOpen && <BulkActionBar />}
 
       {/* Footer - User menu */}
-      <div className={cn("border-t border-sidebar-border shrink-0", isOpen ? "px-3 py-2" : "py-2 flex justify-center")}>
+      <div className={cn("border-t border-sidebar-border shrink-0", isOpen ? "px-3" : "flex justify-center")} style={{ paddingTop: 'var(--density-pad-y)', paddingBottom: 'var(--density-pad-y)' }}>
         {!user ? (
           isOpen ? (
             <div className="flex items-center gap-2.5 px-2 py-[var(--density-pad-y-tight)]">
@@ -935,7 +935,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
               </div>
             </div>
           ) : (
-            <div className="h-9 w-9 flex items-center justify-center">
+            <div className="w-9 flex items-center justify-center py-[var(--density-pad-y-tight)]">
               <Skeleton className="h-8 w-8 rounded-full shrink-0" />
             </div>
           )
@@ -965,7 +965,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
             <Tooltip>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
-                  <button data-onboarding="user-menu" className="h-9 w-9 flex items-center justify-center rounded-lg hover:bg-sidebar-accent transition-colors">
+                  <button data-onboarding="user-menu" className="w-9 flex items-center justify-center rounded-lg py-[var(--density-pad-y-tight)] hover:bg-sidebar-accent transition-colors">
                     <Avatar className="h-8 w-8 shrink-0">
                       <AvatarFallback className="bg-primary/15 text-primary text-xs font-semibold">
                         {(user.name || user.email)?.charAt(0).toUpperCase()}
