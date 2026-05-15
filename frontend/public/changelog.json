@@ -1,7 +1,7 @@
 [
   {
-    "version": "2.0.0",
-    "date": "2026-05-12",
+    "version": "2026.05.0",
+    "date": "2026-05-18",
     "entries": [
       {
         "type": "improvement",
@@ -12,31 +12,6 @@
         "type": "improvement",
         "title": "Faster experience on every visit",
         "body": "Images and app assets are now stored in your browser after the first load, so returning to MTI Brain or switching pages feels significantly snappier. No waiting for the same visuals to re-download."
-      },
-      {
-        "type": "improvement",
-        "title": "Pinned metrics loads more cleanly",
-        "body": "The 'Pinned Metrics' heading no longer appears above a loading spinner if you have no metrics pinned yet. The section now waits until your data is ready before showing — no misleading labels while things are still loading."
-      },
-      {
-        "type": "improvement",
-        "title": "Clearer sign-in error messages",
-        "body": "When signing in fails, you now get a specific message explaining why — wrong password, too many attempts, or a connection problem each show their own prompt, so you always know exactly what to do next."
-      },
-      {
-        "type": "improvement",
-        "title": "More secure sign-in",
-        "body": "Your login credentials are now protected with stronger, industry-standard security behind the scenes. Repeated sign-in attempts from the same location are also throttled automatically to protect your account."
-      },
-      {
-        "type": "fix",
-        "title": "Logo proportions corrected",
-        "body": "The Milestone logo now renders at its correct proportions on all screens and in all themes. A subtle sizing mismatch on certain devices has been resolved."
-      },
-      {
-        "type": "fix",
-        "title": "Analytics no longer causes console noise",
-        "body": "In environments where usage analytics are unavailable or misconfigured, the app now handles this silently without any impact on your experience or error messages in the background."
       }
     ]
   }

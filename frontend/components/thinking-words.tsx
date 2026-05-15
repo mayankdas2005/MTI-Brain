@@ -19,20 +19,16 @@ export function ThinkingWords({ label }: ThinkingWordsProps) {
 
   return (
     <span className="inline-flex items-center gap-2 text-muted-foreground">
-      <span className="relative flex h-2 w-2">
-        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
-        <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-      </span>
       <span
         className="text-sm transition-opacity duration-200 ease-in-out"
         style={{ opacity: visible ? 1 : 0 }}
       >
         {display}
       </span>
-      <span className="inline-flex gap-0.5">
-        <span className="w-1 h-1 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.3s]" />
-        <span className="w-1 h-1 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.15s]" />
-        <span className="w-1 h-1 rounded-full bg-muted-foreground/50 animate-bounce" />
+      <span className="inline-flex items-center gap-[3px]">
+        <span className="w-[5px] h-[5px] rounded-full bg-foreground/35 [animation:thinking-dot_1.4s_ease-in-out_0s_infinite]" />
+        <span className="w-[5px] h-[5px] rounded-full bg-foreground/35 [animation:thinking-dot_1.4s_ease-in-out_0.2s_infinite]" />
+        <span className="w-[5px] h-[5px] rounded-full bg-foreground/35 [animation:thinking-dot_1.4s_ease-in-out_0.4s_infinite]" />
       </span>
     </span>
   );

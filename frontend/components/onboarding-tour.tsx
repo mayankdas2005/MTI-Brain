@@ -43,24 +43,24 @@ function makeSteps(): Step[] {
       id: 'welcome',
       title: 'Welcome to MTI Brain',
       body:
-        'A guided tour of the things you might miss. Use Back / Next to walk through, or Skip if you want to dive in.',
+        'Your AI-powered financial data assistant. This short tour covers the key features - use Next to continue, or Skip to jump straight in.',
       icon: Sparkles,
     },
     {
       id: 'composer',
       selector: '[data-onboarding="composer"]',
-      title: 'Ask anything',
+      title: 'Ask in plain language',
       body:
-        'Type your question and press Enter. Drafts auto-save as you type. Type "/" for quick commands.',
+        'Type any question in natural language and press Enter. MTI Brain translates it into SQL, runs it against your data, and returns results as charts, tables, or summaries.',
       icon: MessageSquare,
       placement: 'top',
     },
     {
       id: 'sidebar',
       selector: '[data-onboarding="sidebar"]',
-      title: 'Your sidebar',
+      title: 'Navigate your work',
       body:
-        'Projects and Chats sit at the top - jump to either with one click. Starred items pin below for quick access, then Recents groups threads by Today / Yesterday / This week. Hover any thread for a rename pencil; ↑/↓ walks the list.',
+        'Switch between Projects and Chats at the top. Starred conversations stay pinned for quick access, and Recents shows your history grouped by date. Hover any conversation to rename it.',
       icon: FolderOpen,
       placement: 'right',
       skipIfMissing: true,
@@ -68,8 +68,8 @@ function makeSteps(): Step[] {
     {
       id: 'new-chat',
       selector: '[data-onboarding="new-chat"]',
-      title: 'Start a fresh chat',
-      body: `Click "New Chat" or press ${mod}+Shift+O. Each thread is private to you and shows up in the sidebar above.`,
+      title: 'Start a new conversation',
+      body: `Click New Chat or press ${mod}+Shift+O to begin a fresh query. Each conversation is private to you and saved automatically.`,
       icon: Plus,
       placement: 'right',
       skipIfMissing: true,
@@ -77,52 +77,53 @@ function makeSteps(): Step[] {
     {
       id: 'cmd-k',
       selector: '[data-onboarding="cmd-k"]',
-      title: 'Search past conversations',
-      body: `${mod}+K opens search. Find any thread by title or content. ${mod}+1 through ${mod}+9 jumps to a recent thread directly.`,
+      title: 'Search your history',
+      body: `Press ${mod}+K to search across all your past conversations by title or content. Use ${mod}+1 through ${mod}+9 to jump directly to a recent conversation.`,
       icon: Search,
       placement: 'bottom',
     },
     {
       id: 'star',
       selector: '[data-onboarding="star"]',
-      title: 'Pin important threads',
+      title: 'Star important conversations',
       body:
-        'Star a chat to keep it at the top of your sidebar. Use this for the conversations you come back to often.',
+        'Star any conversation to pin it to the top of your sidebar - ideal for ongoing analyses or reports you return to regularly.',
       icon: Star,
       placement: 'bottom',
       skipIfMissing: true,
     },
-    {
-      id: 'export-pdf',
-      selector: '[data-onboarding="export-pdf"]',
-      title: 'Export as PDF',
-      body:
-        'Save any conversation as a polished PDF - full responses, SQL, data tables, and rendered charts included.',
-      icon: FileDown,
-      placement: 'bottom',
-      skipIfMissing: true,
-    },
+    // Export PDF step - hidden
+    // {
+    //   id: 'export-pdf',
+    //   selector: '[data-onboarding="export-pdf"]',
+    //   title: 'Export as PDF',
+    //   body:
+    //     'Save any conversation as a polished PDF - full responses, SQL, data tables, and rendered charts included.',
+    //   icon: FileDown,
+    //   placement: 'bottom',
+    //   skipIfMissing: true,
+    // },
     {
       id: 'user-menu',
       selector: '[data-onboarding="user-menu"]',
-      title: 'Theme, settings, install',
+      title: 'Theme & preferences',
       body:
-        'Open the user menu to switch themes (light/dark/system), install the app, view shortcuts, or sign out.',
+        'Open the user menu to switch between light and dark theme, adjust your preferences in Settings, or sign out.',
       icon: UserIcon,
       placement: 'top',
       skipIfMissing: true,
     },
     {
       id: 'shortcuts',
-      title: 'Power-user shortcuts',
-      body: `Press ${mod}+/ at any time to see every keyboard shortcut. ${mod}+. toggles the sidebar, ${mod}+S stars the current thread, Esc stops a stream.`,
+      title: 'Keyboard shortcuts',
+      body: `Press ${mod}+/ to view all available shortcuts. Handy ones to know: ${mod}+. toggles the sidebar, ${mod}+S stars the current conversation, and Esc stops a running response.`,
       icon: Keyboard,
     },
     {
       id: 'done',
-      title: "You're set",
+      title: "You're ready",
       body:
-        'Tip: every panel has hover affordances - copy/retry on responses, rename pencil on threads, refine-query under each answer. Happy querying.',
+        'For best results, ask specific questions - include a metric, date range, or business segment. Use Deep Analysis for complex, multi-step queries.',
       icon: Sparkles,
     },
   ];

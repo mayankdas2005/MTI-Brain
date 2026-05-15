@@ -39,7 +39,7 @@ async def login(
     body: LoginRequest,
     db: AsyncSession = Depends(get_async_session),
 ):
-    user_data = auth_service.authenticate_user(body.username, body.password)
+    user_data = await auth_service.authenticate_user(body.username, body.password)
     if not user_data:
         logger.warning(
             f"Failed login for username={body.username!r} from {request.client.host if request.client else 'unknown'}"

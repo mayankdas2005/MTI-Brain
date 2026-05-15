@@ -434,17 +434,19 @@ html[data-density="compact"] {
   animation: pop-in 0.36s var(--spring) both;
 }
 
-/* Streaming cursor - brand identity */
+/* Streaming cursor - single neutral dot, keeps animating during stalls.
+   Uses thinking-dot (fade + subtle lift) so it feels alive without
+   being distracting. currentColor matches surrounding text tone. */
 .streaming-cursor {
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: var(--primary);
+  background: currentColor;
+  opacity: 0.25;
   margin-left: 3px;
   vertical-align: middle;
-  animation: cursor-breathe 1.4s ease-in-out infinite;
-  box-shadow: 0 0 6px 1px color-mix(in oklch, var(--primary) 40%, transparent);
+  animation: thinking-dot 1.4s ease-in-out infinite;
 }
 
 /* The streaming-cursor span (`.streaming-cursor`, defined above) is now
@@ -453,9 +455,26 @@ html[data-density="compact"] {
    `[data-streaming="true"]` attribute is kept on the container as a
    semantic hook for tests / debug overlays but no longer styled directly. */
 
+/* cursor-breathe retained for feature-pulse.tsx reuse */
 @keyframes cursor-breathe {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* Thinking dots - sequential wave fade (iMessage-style) */
+@keyframes thinking-dot {
+  0%, 60%, 100% { opacity: 0.2; transform: translateY(0); }
+  30%            { opacity: 1;   transform: translateY(-2px); }
+}
+
+/* Active pipeline step - smooth radial glow expand */
+@keyframes step-active {
+  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.4); }
+  50%       { box-shadow: 0 0 0 5px hsl(var(--primary) / 0); }
+}
+
+.step-active {
+  animation: step-active 2s ease-in-out infinite;
 }
 
 /* Thinking glow - heartbeat (fast attack, slow release) */

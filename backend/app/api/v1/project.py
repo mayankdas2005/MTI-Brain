@@ -12,7 +12,7 @@ from app.schemas.project import (
     ThreadBrief,
     UpdateProjectRequest,
 )
-from app.services import conversation as conv_service
+from app.services.chat import conversation as conv_service
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 

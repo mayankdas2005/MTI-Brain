@@ -5,7 +5,7 @@ import uuid
 from app.api.v1.deps import CurrentUser, get_current_user
 from app.db import get_async_session, get_read_session
 from app.schemas.user_features import PinnedMetricCreate, PinnedMetricOut, PinnedMetricUpdate
-from app.services import user_features as svc
+from app.services.user import pinned_metrics as svc
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 

@@ -1,5 +1,6 @@
 """Authentication service - JWT token management and user credential validation."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -21,13 +22,21 @@ _USERS: dict[str, dict] = {
 }
 
 
-def authenticate_user(username: str, password: str) -> dict | None:
-    """Return the user dict if credentials are valid, else None."""
+async def authenticate_user(username: str, password: str) -> dict | None:
+    """Return the user dict if credentials are valid, else None.
+
+    bcrypt.checkpw is CPU-bound and synchronous — offloaded to a thread
+    pool so it does not block the async event loop.
+    """
     key = (username or "").strip().lower()
     user = _USERS.get(key)
-    if user and bcrypt.checkpw(password.encode(), user["password"].encode()):
-        return user
-    return None
+    if not user:
+        return None
+    loop = asyncio.get_event_loop()
+    match = await loop.run_in_executor(
+        None, bcrypt.checkpw, password.encode(), user["password"].encode()
+    )
+    return user if match else None
 
 
 # ─── JWT management ───

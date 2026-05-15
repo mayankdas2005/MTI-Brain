@@ -196,7 +196,8 @@ export function Topbar() {
 
       {/* Right: Export + Search */}
       <div className="flex items-center gap-1 sm:gap-2">
-        {showThreadChrome && (
+        {/* Copy link button - hidden */}
+        {/* {showThreadChrome && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -209,8 +210,9 @@ export function Topbar() {
             </TooltipTrigger>
             <TooltipContent side="bottom">Copy link</TooltipContent>
           </Tooltip>
-        )}
-        {showThreadChrome && currentMessages.length > 0 && (
+        )} */}
+        {/* Export button - hidden */}
+        {/* {showThreadChrome && currentMessages.length > 0 && (
           <DropdownMenu>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -237,7 +239,7 @@ export function Topbar() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        )}
+        )} */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button

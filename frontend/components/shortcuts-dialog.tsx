@@ -39,11 +39,11 @@ const SHORTCUTS: Shortcut[] = [
   { variants: [`${mod} R`], label: 'Retry last response', section: 'chat' },
   { variants: [`${mod} S`], label: 'Star / unstar thread', section: 'chat' },
   { variants: [`${mod} ⇧ C`], label: 'Copy last response', section: 'chat' },
-  { variants: [`${mod} ⇧ E`], label: 'Export conversation to PDF', section: 'chat' },
-  { variants: [`${mod} ⇧ L`], label: 'Copy share link', section: 'chat' },
+  // { variants: [`${mod} ⇧ E`], label: 'Export conversation to PDF', section: 'chat' },
+  // { variants: [`${mod} ⇧ L`], label: 'Copy share link', section: 'chat' },
 
-  // ─── Voice ───
-  { variants: [`${mod} ⇧ V`], label: 'Toggle voice input', section: 'voice' },
+  // ─── Voice ─── (hidden)
+  // { variants: [`${mod} ⇧ V`], label: 'Toggle voice input', section: 'voice' },
 ];
 
 interface ShortcutsDialogProps {
@@ -68,7 +68,8 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
         <div className="px-5 pb-5 space-y-5 max-h-[70vh] overflow-y-auto">
           <ShortcutSection title="General" shortcuts={general} />
           <ShortcutSection title="In chats" shortcuts={chat} />
-          <ShortcutSection title="Voice" shortcuts={voice} />
+          {/* Voice section - hidden */}
+          {/* <ShortcutSection title="Voice" shortcuts={voice} /> */}
         </div>
       </ResponsiveDialogContent>
     </ResponsiveDialog>

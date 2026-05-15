@@ -151,6 +151,7 @@ class MTIBrainThread(Base):
         Index("ix_mti_brain_thread_user", "user_id"),
         Index("ix_mti_brain_thread_search", "search_vector", postgresql_using="gin"),
         Index("ix_mti_brain_thread_user_updated", "user_id", "updated_at"),
+        Index("ix_mti_brain_thread_starred", "starred"),
         Index(
             "ix_mti_brain_thread_title_trgm",
             "title",
@@ -227,6 +228,13 @@ class MTIBrainMessage(Base):
         Index("ix_mti_brain_message_created", "created_at"),
         Index("ix_mti_brain_message_search", "search_vector", postgresql_using="gin"),
         Index("ix_mti_brain_message_thread_created", "thread_id", "created_at"),
+        Index("ix_mti_brain_message_role", "role"),
+        Index("ix_mti_brain_message_thread_role", "thread_id", "role"),
+        Index(
+            "ix_mti_brain_message_parent_conversation",
+            "parent_conversation_id",
+            postgresql_where="parent_conversation_id IS NOT NULL",
+        ),
     )
 
 
@@ -277,4 +285,6 @@ class MTIBrainFeedback(Base):
     __table_args__ = (
         Index("ix_mti_brain_feedback_thread", "thread_id"),
         Index("ix_mti_brain_feedback_message", "message_id"),
+        Index("ix_mti_brain_feedback_created", "created_at"),
+        Index("ix_mti_brain_feedback_message_created", "message_id", "created_at"),
     )

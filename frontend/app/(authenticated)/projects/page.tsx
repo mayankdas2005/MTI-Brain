@@ -64,7 +64,7 @@ export default function ProjectsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
@@ -147,7 +147,7 @@ export default function ProjectsPage() {
             </Button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 auto-rows-fr">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 auto-rows-fr">
             {[...displayedProjects]
               .sort((a, b) => {
                 // Empty projects always sink to the bottom regardless of sort mode.
@@ -226,7 +226,7 @@ export default function ProjectsPage() {
 
 function ProjectGridSkeleton() {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
       {Array.from({ length: 6 }, (_, i) => (
         <div key={i} className="rounded-xl border border-border p-[var(--density-card-pad)]">
           <Skeleton className="h-5 w-3/5 mb-3" />

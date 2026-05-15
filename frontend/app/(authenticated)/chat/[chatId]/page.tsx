@@ -228,7 +228,7 @@ export default function ChatPage({ params }: ChatPageProps) {
     return (
       <div className="flex flex-col h-full bg-background">
         <div className="flex-1 py-6">
-          <div className="max-w-3xl mx-auto space-y-6 px-4">
+          <div className="max-w-3xl lg:max-w-[900px] mx-auto space-y-6 px-4 md:px-6">
             <div className="flex justify-end">
               <Skeleton className="h-12 w-3/5 rounded-2xl" />
             </div>
@@ -264,7 +264,7 @@ export default function ChatPage({ params }: ChatPageProps) {
             <div className="flex-1" />
           ) : (
             <div className="flex-1 py-6">
-              <div className="max-w-3xl mx-auto px-4 md:px-0">
+              <div className="max-w-3xl lg:max-w-[900px] mx-auto px-4 md:px-6">
                 <MessageList messages={displayedMessages} threadId={chatId} />
               </div>
             </div>

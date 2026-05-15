@@ -286,24 +286,14 @@ export function DataTable({ columns, rows, rowCount, filename }: DataTableProps)
               </TooltipContent>
             </Tooltip>
           )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] font-medium" onClick={() => downloadCSV(columns, sortedRows, resolvedFilename)}>
-                <FileText className="w-3 h-3" />
-                CSV
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="left">Download CSV</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] font-medium" onClick={async () => { try { await downloadXLSX(columns, sortedRows, resolvedFilename); } catch { toast.error('Failed to export Excel file.'); } }}>
-                <FileSpreadsheet className="w-3 h-3" />
-                Excel
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="left">Download Excel</TooltipContent>
-          </Tooltip>
+          <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] font-medium" onClick={() => downloadCSV(columns, sortedRows, resolvedFilename)}>
+            <FileText className="w-3 h-3" />
+            CSV
+          </Button>
+          <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] font-medium" onClick={async () => { try { await downloadXLSX(columns, sortedRows, resolvedFilename); } catch { toast.error('Failed to export Excel file.'); } }}>
+            <FileSpreadsheet className="w-3 h-3" />
+            Excel
+          </Button>
           {totalPages > 1 && (
             <>
               <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => setPage(0)} disabled={page === 0} title="First page"><ChevronsLeft className="w-3.5 h-3.5" /></Button>

@@ -4,6 +4,7 @@ export interface ConversationTurnData {
   versions: string[];
   allMessages: Map<string, Message[]>;
   sourceConversationId?: string;
+  turnKey: string;
 }
 
 export function groupConversationTurns(messages: Message[]): ConversationTurnData[] {
@@ -73,7 +74,11 @@ export function groupConversationTurns(messages: Message[]): ConversationTurnDat
     const sourceUserMsg = rootMsgs.find((m) => m.role === 'user');
     const sourceConversationId = sourceUserMsg?.source_conversation_id;
 
-    turns.push({ versions, allMessages, sourceConversationId });
+    const allMsgsFlat = [...allMessages.values()].flat();
+    const userMsg = allMsgsFlat.find((m) => m.role === 'user');
+    const turnKey = userMsg?.id ?? versions.join(',');
+
+    turns.push({ versions, allMessages, sourceConversationId, turnKey });
   }
 
   if (orphanStreaming.length > 0) {
@@ -83,6 +88,7 @@ export function groupConversationTurns(messages: Message[]): ConversationTurnDat
       versions: [tempId],
       allMessages: new Map([[tempId, orphanStreaming]]),
       sourceConversationId: streamingUserMsg?.source_conversation_id,
+      turnKey: streamingUserMsg?.id ?? tempId,
     });
   }
 

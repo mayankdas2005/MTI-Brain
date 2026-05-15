@@ -231,9 +231,7 @@ function BarLineAreaChart({ spec }: { spec: BarLineAreaSpec }) {
                   strokeWidth={2.5}
                   dot={{ r: 3.5, fill: CHART_COLORS[i % CHART_COLORS.length], strokeWidth: 0 }}
                   activeDot={{ r: 6, strokeWidth: 2, stroke: '#fff' }}
-                  isAnimationActive
-                  animationDuration={800}
-                  animationEasing="ease-out"
+                  isAnimationActive={false}
                 />
               ) : spec.type === 'area' ? (
                 <Area
@@ -244,9 +242,7 @@ function BarLineAreaChart({ spec }: { spec: BarLineAreaSpec }) {
                   fill={CHART_COLORS[i % CHART_COLORS.length]}
                   fillOpacity={0.15}
                   strokeWidth={2.5}
-                  isAnimationActive
-                  animationDuration={800}
-                  animationEasing="ease-out"
+                  isAnimationActive={false}
                 />
               ) : (
                 <Bar
@@ -254,9 +250,7 @@ function BarLineAreaChart({ spec }: { spec: BarLineAreaSpec }) {
                   dataKey={field}
                   fill={CHART_COLORS[i % CHART_COLORS.length]}
                   radius={[6, 6, 0, 0]}
-                  isAnimationActive
-                  animationDuration={600}
-                  animationEasing="ease-out"
+                  isAnimationActive={false}
                 />
               )
             )}
@@ -370,10 +364,7 @@ function PieChartView({ spec }: { spec: PieSpec }) {
           cornerRadius={4}
           label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
           labelLine={{ stroke: 'var(--muted-foreground)', strokeWidth: 1 }}
-          isAnimationActive
-          animationDuration={800}
-          animationBegin={100}
-          animationEasing="ease-out"
+          isAnimationActive={false}
         >
           {spec.data.map((_, i) => (
             <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} stroke="none" />
@@ -414,7 +405,7 @@ function ScatterChartView({ spec }: { spec: ScatterSpec }) {
           label={spec.y_label ? { value: spec.y_label, angle: -90, position: 'insideLeft', offset: 4, fontSize: 11, fontFamily: CHART_FONT } : undefined}
         />
         <ChartTooltip content={<ChartTooltipContent />} />
-        <Scatter data={spec.data} fill={CHART_COLORS[0]} isAnimationActive animationDuration={600} animationEasing="ease-out">
+        <Scatter data={spec.data} fill={CHART_COLORS[0]} isAnimationActive={false}>
           {spec.data.map((_, i) => (
             <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} stroke="#fff" strokeWidth={1} />
           ))}
@@ -615,7 +606,7 @@ export function MessageVisualization({
                 <ClipboardCopy className="w-3.5 h-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Copy chart to clipboard</TooltipContent>
+            <TooltipContent side="bottom">Copy chart</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -626,7 +617,7 @@ export function MessageVisualization({
                 <Download className="w-3.5 h-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Download chart as PNG</TooltipContent>
+            <TooltipContent side="bottom">Download chart</TooltipContent>
           </Tooltip>
         </div>
 

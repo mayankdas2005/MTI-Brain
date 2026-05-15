@@ -118,18 +118,18 @@ export function SearchModal() {
       shortcut: 'Ctrl+Shift+O',
       run: () => navigate('/new'),
     },
-    {
-      id: 'export-pdf',
-      label: 'Export as PDF',
-      icon: FileDown,
-      keywords: 'export pdf download conversation',
-      shortcut: 'Ctrl+Shift+E',
-      run: () => {
-        if (!currentThreadId) { toast.warning('Open a conversation first.'); return; }
-        window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
-        closeModal();
-      },
-    },
+    // {
+    //   id: 'export-pdf',
+    //   label: 'Export as PDF',
+    //   icon: FileDown,
+    //   keywords: 'export pdf download conversation',
+    //   shortcut: 'Ctrl+Shift+E',
+    //   run: () => {
+    //     if (!currentThreadId) { toast.warning('Open a conversation first.'); return; }
+    //     window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
+    //     closeModal();
+    //   },
+    // },
     {
       id: 'open-starred',
       label: 'Starred chats',

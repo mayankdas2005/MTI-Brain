@@ -153,18 +153,17 @@ export default function AuthenticatedLayout({
       const { currentThreadId, starThread } = useThreadStore.getState();
       if (currentThreadId) starThread(currentThreadId);
     },
-    'cmd-shift-v': () => {
-      window.dispatchEvent(new CustomEvent('mti-brain:toggle-voice'));
-    },
-    'cmd-shift-e': () => {
-      window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
-    },
-    'cmd-shift-l': () => {
-      void navigator.clipboard.writeText(window.location.href).then(() => {
-        // toast is imported at the top of this file
-        toast.success('Link copied to clipboard');
-      });
-    },
+    // 'cmd-shift-v': () => {
+    //   window.dispatchEvent(new CustomEvent('mti-brain:toggle-voice'));
+    // },
+    // 'cmd-shift-e': () => {
+    //   window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
+    // },
+    // 'cmd-shift-l': () => {
+    //   void navigator.clipboard.writeText(window.location.href).then(() => {
+    //     toast.success('Link copied to clipboard');
+    //   });
+    // },
     'cmd-r': () => {
       const { currentThreadId, currentMessages, retryResponse } = useThreadStore.getState();
       if (!currentThreadId) return;

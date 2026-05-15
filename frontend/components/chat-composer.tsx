@@ -475,7 +475,7 @@ export function ChatComposer() {
         paddingBottom: 'max(1rem, env(safe-area-inset-bottom), var(--vv-bottom-inset, 0px))',
       }}
     >
-      <div className="max-w-3xl mx-auto relative">
+      <div className="max-w-3xl lg:max-w-[900px] mx-auto relative">
         {atOpen && (
           <PlaybookPopover
             queries={atMatches}
@@ -524,30 +524,21 @@ export function ChatComposer() {
           <div className="flex items-center justify-between px-3 pb-3">
             {/* Left toolbar: Deep Analysis + Voice */}
             <div className="flex items-center gap-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    aria-pressed={deepAnalysis}
-                    onClick={() => setDeepAnalysis(!deepAnalysis)}
-                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
-                      deepAnalysis
-                        ? 'bg-primary/10 text-primary border border-primary/30'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
-                    }`}
-                  >
-                    <BrainCircuit className="w-3.5 h-3.5 shrink-0" />
-                    <span className="hidden sm:inline">Deep Analysis</span>
-                  </button>
-                </TooltipTrigger>
-                {!deepAnalysis && (
-                  <TooltipContent side="top" align="start">
-                    Deep Analysis - thorough multi-step reasoning for complex questions
-                  </TooltipContent>
-                )}
-              </Tooltip>
-              {/* VoiceInputButton is hidden - conversation mode drives it via window events */}
-              <span className="hidden" aria-hidden>
+              <button
+                type="button"
+                aria-pressed={deepAnalysis}
+                onClick={() => setDeepAnalysis(!deepAnalysis)}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                  deepAnalysis
+                    ? 'bg-primary/10 text-primary border border-primary/30'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
+                }`}
+              >
+                <BrainCircuit className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden sm:inline">Deep Analysis</span>
+              </button>
+              {/* VoiceInputButton - hidden, conversation mode drives it via window events */}
+              {/* <span className="hidden" aria-hidden>
                 <VoiceInputButton
                   onTranscript={(text, isFinal) => {
                     setInput(text);
@@ -557,8 +548,9 @@ export function ChatComposer() {
                   }}
                   disabled={isStreaming}
                 />
-              </span>
-              <Tooltip>
+              </span> */}
+              {/* Conversation mode button - hidden */}
+              {/* <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
@@ -588,7 +580,7 @@ export function ChatComposer() {
                     Conversation mode - hands-free
                   </TooltipContent>
                 )}
-              </Tooltip>
+              </Tooltip> */}
 
               {/* Save to Playbook */}
               {input.trim() && !slashOpen && !atOpen && (

@@ -123,7 +123,7 @@ export function MessageList({ messages, threadId }: MessageListProps) {
       {turns.map((turn, i) =>
         visibleTurns[i] ? (
           <motion.div
-            key={turn.versions.join(',')}
+            key={turn.turnKey}
             {...(reduced ? {} : {
               initial: { opacity: 0, y: 6 },
               animate: { opacity: 1, y: 0 },

@@ -26,7 +26,7 @@ export default function NewPage() {
           overflow-y-auto lets them scroll on short viewports. */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="flex flex-col items-center justify-center min-h-full px-4 py-4">
-          <div className="w-full max-w-2xl">
+          <div className="w-full max-w-2xl lg:max-w-3xl">
             <WelcomeState onSuggestion={(prompt) => setPendingSuggestion(prompt)} />
             <div className="mt-4">
               <Suspense fallback={<NewChatComposer initialValue="" centered />}>

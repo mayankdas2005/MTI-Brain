@@ -285,7 +285,7 @@ export default function SettingsPage() {
 
   return (
     <div ref={scrollContainerRef} className="h-full overflow-y-auto">
-      <div className="max-w-6xl mx-auto px-6 py-8">
+      <div className="max-w-5xl xl:max-w-6xl mx-auto px-6 xl:px-8 py-8">
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
@@ -529,7 +529,8 @@ export default function SettingsPage() {
                     </div>
                   </SettingBlock>
                 )}
-                {v('voice speed tts read aloud playback rate') && (
+                {/* Voice speed - hidden */}
+                {/* {v('voice speed tts read aloud playback rate') && (
                   <SettingBlock
                     label="Voice speed"
                     description="Playback speed for the Read Aloud feature."
@@ -557,17 +558,19 @@ export default function SettingsPage() {
                       })}
                     </div>
                   </SettingBlock>
-                )}
-                {v('voice voice type gender female male voice speaker') && (
+                )} */}
+                {/* Voice selector - hidden */}
+                {/* {v('voice voice type gender female male voice speaker') && (
                   <VoiceSelector
                     voiceURI={ttsVoiceURI}
                     onChange={setTTSVoiceURI}
                     v={v}
                   />
-                )}
-                {v('microphone voice permission browser mic') && (
+                )} */}
+                {/* Microphone permission - hidden */}
+                {/* {v('microphone voice permission browser mic') && (
                   <MicrophonePermissionRow />
-                )}
+                )} */}
                 {v('high contrast accessibility bold text sharp') && (
                   <SettingBlock
                     label="High contrast"
@@ -1269,7 +1272,7 @@ function AboutBlock() {
         onMouseLeave={() => setHovered(false)}
         className="text-muted-foreground/60 hover:text-muted-foreground transition-colors cursor-default"
       >
-        {hovered ? <span className="italic">{quote}</span> : 'Version 2.0.0'}
+        {hovered ? <span className="italic">{quote}</span> : 'Version 2026.05.0'}
       </p>
     </div>
   );

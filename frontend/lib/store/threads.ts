@@ -1,4 +1,3 @@
-import { startTransition } from 'react';
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import * as api from '../api';
@@ -46,6 +45,9 @@ export interface Message {
   metadata_?: MessageMetadata | null;
   created_at: string;
   isStreaming?: boolean;
+  dataReady?: boolean;
+  chartReady?: boolean;
+  followUpsReady?: boolean;
   streamingSteps?: StreamingStep[];
   feedback?: { liked: boolean; comment?: string };
   /** Timing anchor from backend timing.sync event - lets LiveTimer
@@ -933,16 +935,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     // (happy path render) AND streamingMessages (survives any clear of
     // currentMessages that happens while navigating away, so returning
     // to the streaming thread shows it live).
-    // Streaming chunk updates are low-priority - wrapping in startTransition
-    // lets React interrupt them when the user navigates, so tab switches feel
-    // instant even during active generation.
     const mapMsgs = (mapper: (m: Message) => Message) => {
-      startTransition(() => {
-        set((state) => ({
-          currentMessages: state.currentMessages.map(mapper),
-          streamingMessages: state.streamingMessages.map(mapper),
-        }));
-      });
+      set((state) => ({
+        currentMessages: state.currentMessages.map(mapper),
+        streamingMessages: state.streamingMessages.map(mapper),
+      }));
     };
 
     const handlers: SSEHandlers = {
@@ -996,6 +993,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId
             ? {
                 ...m,
+                dataReady: true,
                 metadata_: {
                   ...m.metadata_,
                   sql: data.sql,
@@ -1015,14 +1013,14 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onChart: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, metadata_: { ...m.metadata_, chart_spec: data.spec } }
+            ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec } }
             : m,
         );
       },
       onFollowUps: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, metadata_: { ...m.metadata_, follow_ups: data.questions } }
+            ? { ...m, followUpsReady: true, metadata_: { ...m.metadata_, follow_ups: data.questions } }
             : m,
         );
       },
@@ -1087,13 +1085,23 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           });
         }
       },
-      onStopped: () => {
+      onStopped: (data) => {
+        const convId = (data.conversation_id as string) || '';
+        const finalSteps = (data.pipeline_steps as typeof import('@/lib/store/threads').StreamingStep[] | undefined);
         set((state) => {
-          const updated = state.currentMessages.map((m) =>
-            m.id === assistantMsgId
-              ? { ...m, isStreaming: false, metadata_: { ...m.metadata_, stopped: true } }
-              : m,
-          );
+          const updated = state.currentMessages.map((m) => {
+            if (m.id === assistantMsgId) return {
+              ...m,
+              ...(convId ? { conversation_id: convId } : {}),
+              isStreaming: false,
+              metadata_: { ...m.metadata_, stopped: true },
+              streamingSteps: finalSteps
+                ? finalSteps.map((s) => ({ ...s, status: 'done' as const }))
+                : (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+            };
+            if (convId && m.id === userMsgId) return { ...m, conversation_id: convId };
+            return m;
+          });
           return {
             currentMessages: updated,
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
@@ -1104,10 +1112,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             abortController: null,
           };
         });
-        get().fetchRecents(); // Sync real title from DB into sidebar
-        // Delayed re-sync: backend may commit the assistant message
-        // after the SSE connection closes.
-        setTimeout(() => { get().fetchRecents(); }, 600);
+        get().fetchRecents();
       },
       onError: (data) => {
         set((state) => {
@@ -1270,16 +1275,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       abortController: controller,
     });
 
-    // Streaming chunk updates are low-priority - wrapping in startTransition
-    // lets React interrupt them when the user navigates, so tab switches feel
-    // instant even during active generation.
     const mapMsgs = (mapper: (m: Message) => Message) => {
-      startTransition(() => {
-        set((state) => ({
-          currentMessages: state.currentMessages.map(mapper),
-          streamingMessages: state.streamingMessages.map(mapper),
-        }));
-      });
+      set((state) => ({
+        currentMessages: state.currentMessages.map(mapper),
+        streamingMessages: state.streamingMessages.map(mapper),
+      }));
     };
 
     const handlers: SSEHandlers = {
@@ -1321,6 +1321,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId
             ? {
                 ...m,
+                dataReady: true,
                 metadata_: {
                   ...m.metadata_,
                   sql: data.sql,
@@ -1339,12 +1340,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onChart: (data) => {
         mapMsgs((m) =>
-          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, chart_spec: data.spec } } : m,
+          m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec } } : m,
         );
       },
       onFollowUps: (data) => {
         mapMsgs((m) =>
-          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, follow_ups: data.questions } } : m,
+          m.id === assistantMsgId ? { ...m, followUpsReady: true, metadata_: { ...m.metadata_, follow_ups: data.questions } } : m,
         );
       },
       onDone: (data) => {
@@ -1396,13 +1397,23 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         });
         get().fetchRecents();
       },
-      onStopped: () => {
+      onStopped: (data) => {
+        const convId = (data.conversation_id as string) || '';
+        const finalSteps = (data.pipeline_steps as typeof import('@/lib/store/threads').StreamingStep[] | undefined);
         set((state) => {
-          const updated = state.currentMessages.map((m) =>
-            m.id === assistantMsgId
-              ? { ...m, isStreaming: false, metadata_: { ...m.metadata_, stopped: true }, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) }
-              : m,
-          );
+          const updated = state.currentMessages.map((m) => {
+            if (m.id === assistantMsgId) return {
+              ...m,
+              ...(convId ? { conversation_id: convId } : {}),
+              isStreaming: false,
+              metadata_: { ...m.metadata_, stopped: true },
+              streamingSteps: finalSteps
+                ? finalSteps.map((s) => ({ ...s, status: 'done' as const }))
+                : (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+            };
+            if (convId && m.id === userMsgId) return { ...m, conversation_id: convId };
+            return m;
+          });
           return {
             currentMessages: updated,
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
@@ -1414,7 +1425,6 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           };
         });
         get().fetchRecents();
-        setTimeout(() => { get().fetchRecents(); }, 600);
       },
       onError: (data) => {
         set((state) => ({
@@ -1519,16 +1529,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       abortController: controller,
     });
 
-    // Streaming chunk updates are low-priority - wrapping in startTransition
-    // lets React interrupt them when the user navigates, so tab switches feel
-    // instant even during active generation.
     const mapMsgs = (mapper: (m: Message) => Message) => {
-      startTransition(() => {
-        set((state) => ({
-          currentMessages: state.currentMessages.map(mapper),
-          streamingMessages: state.streamingMessages.map(mapper),
-        }));
-      });
+      set((state) => ({
+        currentMessages: state.currentMessages.map(mapper),
+        streamingMessages: state.streamingMessages.map(mapper),
+      }));
     };
 
     const handlers: SSEHandlers = {
@@ -1578,6 +1583,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId
             ? {
                 ...m,
+                dataReady: true,
                 metadata_: {
                   ...m.metadata_,
                   sql: data.sql,
@@ -1596,12 +1602,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onChart: (data) => {
         mapMsgs((m) =>
-          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, chart_spec: data.spec } } : m,
+          m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec } } : m,
         );
       },
       onFollowUps: (data) => {
         mapMsgs((m) =>
-          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, follow_ups: data.questions } } : m,
+          m.id === assistantMsgId ? { ...m, followUpsReady: true, metadata_: { ...m.metadata_, follow_ups: data.questions } } : m,
         );
       },
       onDone: (data) => {
@@ -1644,11 +1650,23 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         });
         get().fetchRecents();
       },
-      onStopped: () => {
+      onStopped: (data) => {
+        const convId = (data.conversation_id as string) || '';
+        const finalSteps = (data.pipeline_steps as typeof import('@/lib/store/threads').StreamingStep[] | undefined);
         set((state) => {
-          const updated = state.currentMessages.map((m) =>
-            m.id === assistantMsgId ? { ...m, isStreaming: false, metadata_: { ...m.metadata_, stopped: true }, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) } : m,
-          );
+          const updated = state.currentMessages.map((m) => {
+            if (m.id === assistantMsgId) return {
+              ...m,
+              ...(convId ? { conversation_id: convId } : {}),
+              isStreaming: false,
+              metadata_: { ...m.metadata_, stopped: true },
+              streamingSteps: finalSteps
+                ? finalSteps.map((s) => ({ ...s, status: 'done' as const }))
+                : (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+            };
+            if (convId && m.id === userMsgId) return { ...m, conversation_id: convId };
+            return m;
+          });
           return {
             currentMessages: updated,
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
@@ -1660,7 +1678,6 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           };
         });
         get().fetchRecents();
-        setTimeout(() => { get().fetchRecents(); }, 600);
       },
       onError: (data) => {
         set((state) => ({

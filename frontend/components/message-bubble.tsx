@@ -3,7 +3,7 @@
 import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, Volume2, Square, MoreHorizontal, Pin } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, Volume2, Square, MoreHorizontal, Pin, LayoutDashboard } from 'lucide-react';
 import { useTTS, isTTSSupported } from '@/lib/hooks/use-tts';
 import { usePreferencesStore as usePrefStore } from '@/lib/store/preferences';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
@@ -34,6 +34,7 @@ import { MessageVisualization } from './message-visualization';
 import { DataTable } from './data-table';
 import { ThinkingWords } from './thinking-words';
 import { TrustStrip } from './messages/trust-strip';
+import { Skeleton } from '@/components/ui/skeleton';
 import { AboutPanel } from './messages/about-panel';
 import {
   Tooltip,
@@ -339,7 +340,10 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const prefDefaultView = usePreferencesStore((s) => s.defaultDataView);
 
   const showSQLTab = !!(prefShowSQL && sql);
-  const hasDataView = !message.isStreaming && !!(showSQLTab || hasTableData);
+  const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasTableData);
+  // Show data skeleton once SQL generation step has begun but data hasn't arrived yet
+  const sqlStepStarted = message.isStreaming && !message.dataReady &&
+    (message.streamingSteps?.some((s) => ['generate_sql', 'execute', 'respond'].includes(s.node)) ?? false);
 
   return (
     <div
@@ -354,6 +358,30 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           message={message}
           reasoningRef={reasoningRef}
         />
+      )}
+
+      {/* Data skeleton — table shape while SQL executes */}
+      {sqlStepStarted && (
+        <div className="mb-2 animate-fade-in">
+          {prefShowSQL && (
+            <div className="flex items-center gap-1 mb-2">
+              <Skeleton className="h-7 w-20 rounded-md" />
+              <Skeleton className="h-7 w-24 rounded-md" />
+            </div>
+          )}
+          <div className="rounded-lg border border-border overflow-hidden">
+            <div className="flex gap-4 px-3 py-2 border-b border-border bg-muted/30">
+              <Skeleton className="h-3 w-24 rounded" />
+              <Skeleton className="h-3 w-16 rounded ml-auto" />
+            </div>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="flex gap-4 px-3 py-2 border-b border-border/50 last:border-0">
+                <Skeleton className="h-3 rounded" style={{ width: `${[45, 55, 50][i]}%` }} />
+                <Skeleton className="h-3 w-16 rounded ml-auto" />
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* SQL Query / Data Table toggle */}
@@ -433,8 +461,20 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         </StreamingContent>
       )}
 
-      {/* Chart Visualization */}
-      {!message.isStreaming && prefAutoCharts && !!message.metadata_?.chart_spec && (
+      {/* Chart skeleton — shown after data arrives but before chart spec fires */}
+      {message.isStreaming && message.dataReady && !message.chartReady && prefAutoCharts && (
+        <div className="mt-3 rounded-xl border border-border bg-sidebar px-4 pt-4 pb-3 animate-fade-in">
+          <Skeleton className="h-3 w-40 rounded mb-4" />
+          <div className="flex items-end gap-2 h-24">
+            {[55, 80, 45, 95, 65, 70, 40].map((h, i) => (
+              <Skeleton key={i} className="flex-1 rounded-sm" style={{ height: `${h}%` }} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Chart Visualization — appears as soon as chart event fires */}
+      {!!(message.chartReady ?? !message.isStreaming) && prefAutoCharts && !!message.metadata_?.chart_spec && (
         <MessageVisualization
           columns={columns}
           rows={rows}
@@ -443,11 +483,11 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         />
       )}
 
-      {/* Follow-up Chips + Refine */}
-      {!message.isStreaming && prefShowFollowUps && followUps && followUps.length > 0 && (
+      {/* Follow-up Chips + Refine — appear as soon as follow_ups event fires */}
+      {!!(message.followUpsReady ?? !message.isStreaming) && prefShowFollowUps && followUps && followUps.length > 0 && (
         <FollowUpChips threadId={threadId} followUps={followUps} conversationId={message.conversation_id} />
       )}
-      {!message.isStreaming && message.role === 'assistant' && !!message.content &&
+      {!!(message.dataReady ?? !message.isStreaming) && message.role === 'assistant' && !!message.content &&
         !!(message.metadata_ as Record<string, unknown> | null)?.sql && (
         <RefineInput threadId={threadId} conversationId={message.conversation_id} />
       )}
@@ -455,7 +495,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       {/* Trust strip — only for SQL-backed answers. We gate on sql being
           non-empty so conversational responses ("Hi", "Sure, here's a plan")
           never show 0 rows / freshness timestamps. */}
-      {!message.isStreaming && (() => {
+      {!!(message.dataReady ?? !message.isStreaming) && (() => {
         const m = message.metadata_ as Record<string, unknown> | null;
         if (!m) return null;
         const sql = (m.sql as string | null | undefined) ?? '';
@@ -476,8 +516,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       })()}
 
       {/* Timestamp + Actions row */}
-      {!message.isStreaming && (
-        <div className="flex items-center gap-1.5 mt-1">
+      {/* Always rendered — opacity-0 during streaming prevents layout blink on done */}
+      <div className={`flex items-center gap-1.5 mt-1 transition-opacity duration-150 ${message.isStreaming ? 'opacity-0 pointer-events-none' : ''}`}>
           {message.created_at && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -520,24 +560,30 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
             )}
 
             {/* Overflow: TTS, Share, Pin, About */}
-            {!message.isStreaming && (
-              <DropdownMenu>
+            <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="sm" aria-label="More actions" className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent">
                     <MoreHorizontal className="w-3.5 h-3.5" aria-hidden />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="min-w-[180px]">
-                  {ttsAvailable && message.content && (
+                  {/* Read aloud - hidden */}
+                  {/* {ttsAvailable && message.content && (
                     <DropdownMenuItem onClick={() => isSpeaking ? ttsStop() : ttsSpeak(message.content)} className="gap-2">
                       {isSpeaking ? <Square className="w-4 h-4 fill-current" /> : <Volume2 className="w-4 h-4" />}
                       {isSpeaking ? 'Stop reading' : 'Read aloud'}
                     </DropdownMenuItem>
-                  )}
+                  )} */}
                   {message.content && (
                     <DropdownMenuItem onClick={() => { setPinLabel(''); setPinDialogOpen(true); }} className="gap-2">
                       <Pin className="w-4 h-4" />
                       Pin to home
+                    </DropdownMenuItem>
+                  )}
+                  {message.content && (
+                    <DropdownMenuItem onClick={() => { window.dispatchEvent(new CustomEvent('mti-brain:generate-dashboard', { detail: { conversationId: message.conversation_id, threadId } })); }} className="gap-2">
+                      <LayoutDashboard className="w-4 h-4" />
+                      Generate Dashboard
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuSeparator />
@@ -547,7 +593,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-            )}
             <Dialog open={pinDialogOpen} onOpenChange={(o) => { if (!o) setPinDialogOpen(false); }}>
               <DialogContent className="sm:max-w-sm p-6 gap-0">
                 <DialogTitle className="text-base font-semibold mb-1">Pin to home</DialogTitle>
@@ -577,7 +622,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
             </Dialog>
           </div>
         </div>
-      )}
       <AboutPanel
         open={aboutOpen}
         onOpenChange={setAboutOpen}
@@ -606,8 +650,13 @@ function useStreamingCursor(
 
   useEffect(() => {
     if (!active || !containerRef.current) {
-      cursorRef.current?.remove();
-      cursorRef.current = null;
+      if (cursorRef.current) {
+        const el = cursorRef.current;
+        el.style.transition = 'opacity 150ms';
+        el.style.opacity = '0';
+        setTimeout(() => { el.remove(); }, 160);
+        cursorRef.current = null;
+      }
       return;
     }
     if (!cursorRef.current) {
@@ -683,7 +732,11 @@ function ReasoningPanel({
     const wasStreaming = prevStreamingRef.current;
     const nowStreaming = !!message.isStreaming;
     if (!wasStreaming && nowStreaming) setOpen(true);
-    if (wasStreaming && !nowStreaming) setOpen(false);
+    if (wasStreaming && !nowStreaming) {
+      const t = setTimeout(() => setOpen(false), 400);
+      prevStreamingRef.current = nowStreaming;
+      return () => clearTimeout(t);
+    }
     prevStreamingRef.current = nowStreaming;
   }, [message.isStreaming]);
 
@@ -794,7 +847,7 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
             <span
               className={`absolute left-0 top-[0.6rem] flex items-center justify-center w-3.5 h-3.5 rounded-full transition-colors ${
                 isActive
-                  ? 'bg-primary ring-2 ring-primary/20 animate-pulse'
+                  ? 'bg-primary step-active'
                   : isDone
                   ? 'bg-primary/25'
                   : 'bg-muted'
@@ -903,13 +956,11 @@ function RefineInput({ threadId, conversationId }: { threadId: string; conversat
     setOpen(false);
   }, [text, isStreaming, threadId, conversationId]);
 
-  if (isStreaming) return null;
-
   if (!open) {
     return (
       <button
         onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 0); }}
-        className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+        className={`flex items-center gap-1.5 mt-2 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-[colors,opacity] duration-150 ${isStreaming ? 'opacity-0 pointer-events-none' : ''}`}
       >
         <SlidersHorizontal className="w-3 h-3" />
         Refine this query

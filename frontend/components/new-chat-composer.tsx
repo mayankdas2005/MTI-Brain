@@ -146,7 +146,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
 
   return (
     <div className={centered ? '' : 'px-4 pb-4 pt-2'}>
-      <div className={centered ? 'w-full' : 'max-w-3xl mx-auto'}>
+      <div className={centered ? 'w-full' : 'max-w-3xl lg:max-w-[900px] mx-auto'}>
         <div
           data-onboarding="composer"
           className="relative rounded-2xl border border-border bg-background shadow-lg shadow-black/5 overflow-hidden"
@@ -174,38 +174,30 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
 
           <div className="flex items-center justify-between px-3 pb-3">
             <div className="flex items-center gap-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    aria-pressed={deepAnalysis}
-                    onClick={() => setDeepAnalysis(!deepAnalysis)}
-                    className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
-                      deepAnalysis
-                        ? 'bg-primary/10 text-primary border border-primary/30'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
-                    }`}
-                  >
-                    <BrainCircuit className="w-3.5 h-3.5 shrink-0" />
-                    <span className="hidden sm:inline">Deep Analysis</span>
-                  </button>
-                </TooltipTrigger>
-                {!deepAnalysis && (
-                  <TooltipContent side="top" align="start">
-                    Deep Analysis - thorough multi-step reasoning for complex questions
-                  </TooltipContent>
-                )}
-              </Tooltip>
+              <button
+                type="button"
+                aria-pressed={deepAnalysis}
+                onClick={() => setDeepAnalysis(!deepAnalysis)}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                  deepAnalysis
+                    ? 'bg-primary/10 text-primary border border-primary/30'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
+                }`}
+              >
+                <BrainCircuit className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden sm:inline">Deep Analysis</span>
+              </button>
               {/* Hidden VoiceInputButton - handles mic events for conversation mode */}
-              <span className="hidden" aria-hidden>
+              {/* <span className="hidden" aria-hidden>
                 <VoiceInputButton
                   onTranscript={(text, isFinal) => {
                     setInput(text);
                     if (isFinal && text.trim()) handleSubmit(text.trim());
                   }}
                 />
-              </span>
-              <Tooltip>
+              </span> */}
+              {/* Conversation mode button - hidden */}
+              {/* <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
@@ -231,7 +223,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
                     Conversation mode - hands-free
                   </TooltipContent>
                 )}
-              </Tooltip>
+              </Tooltip> */}
             </div>
 
             <button

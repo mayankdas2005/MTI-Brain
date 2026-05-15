@@ -134,13 +134,11 @@ async def get_thread(
             LEFT JOIN mti_brain_message m
                 ON m.thread_id = t.id
                 AND m.conversation_id IN (SELECT conversation_id FROM valid_convos)
-            LEFT JOIN LATERAL (
-                SELECT f.liked, f.comment
-                FROM mti_brain_feedback f
-                WHERE f.message_id = m.id
-                ORDER BY f.created_at DESC
-                LIMIT 1
-            ) f ON true
+            LEFT JOIN (
+                SELECT DISTINCT ON (message_id) message_id, liked, comment
+                FROM mti_brain_feedback
+                ORDER BY message_id, created_at DESC
+            ) f ON f.message_id = m.id
             WHERE t.id = :tid {user_filter}
             ORDER BY m.created_at ASC,
                      CASE m.role
@@ -393,34 +391,40 @@ async def save_message_and_touch(
         or ``None`` when ``user_id`` was passed and no matching thread was
         found.
     """
-    # Touch + auto-title in single UPDATE. When user_id is supplied this
-    # doubles as the ownership check — rowcount==0 means thread doesn't
-    # exist OR doesn't belong to the user, which is the same 404 either way.
-    update_stmt = update(MTIBrainThread).where(MTIBrainThread.id == thread_id)
-    if user_id is not None:
-        update_stmt = update_stmt.where(MTIBrainThread.user_id == user_id)
-    if auto_title:
-        update_stmt = update_stmt.values(
-            title=func.coalesce(MTIBrainThread.title, auto_title[:500]),
-            updated_at=datetime.now(timezone.utc),
-        )
-    else:
-        update_stmt = update_stmt.values(updated_at=datetime.now(timezone.utc))
-
-    update_result = await db.execute(update_stmt)
-    if user_id is not None and update_result.rowcount == 0:
-        return None
-
-    # Check if any user messages already exist in this thread (before we insert ours)
-    exists_result = await db.execute(
-        select(
-            exists().where(
-                MTIBrainMessage.thread_id == thread_id,
-                MTIBrainMessage.role == "user",
-            )
-        )
+    # Combine thread touch + first-message check into a single round-trip
+    # using a CTE. The UPDATE returns the matched row (if any) so we can
+    # detect missing/unauthorised threads, and the EXISTS subquery runs in
+    # the same statement.
+    user_filter_sql = "AND user_id = :user_id" if user_id is not None else ""
+    title_sql = (
+        "title = COALESCE(title, :auto_title), " if auto_title else ""
     )
-    is_first_message = not exists_result.scalar()
+    combined = await db.execute(
+        text(f"""
+            WITH touch AS (
+                UPDATE mti_brain_thread
+                SET {title_sql}updated_at = :now
+                WHERE id = :thread_id {user_filter_sql}
+                RETURNING id
+            )
+            SELECT
+                (SELECT count(*) FROM touch) AS touched,
+                EXISTS(
+                    SELECT 1 FROM mti_brain_message
+                    WHERE thread_id = :thread_id AND role = 'user'
+                ) AS has_prior_user_msg
+        """),
+        {
+            "thread_id": str(thread_id),
+            "now": datetime.now(timezone.utc),
+            **({"user_id": str(user_id)} if user_id is not None else {}),
+            **({"auto_title": auto_title[:500]} if auto_title else {}),
+        },
+    )
+    row = combined.fetchone()
+    if user_id is not None and (row is None or row.touched == 0):
+        return None
+    is_first_message = not row.has_prior_user_msg
 
     message = MTIBrainMessage(
         thread_id=thread_id,
@@ -1019,7 +1023,13 @@ async def get_project(
                 t.id AS thread_id, t.title AS thread_title, t.starred AS thread_starred,
                 t.created_at AS thread_created_at, t.updated_at AS thread_updated_at
             FROM mti_brain_project p
-            LEFT JOIN mti_brain_thread t ON t.project_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT id, title, starred, created_at, updated_at
+                FROM mti_brain_thread
+                WHERE project_id = p.id
+                ORDER BY updated_at DESC
+                LIMIT 100
+            ) t ON true
             WHERE p.id = :pid {user_filter}
             ORDER BY t.updated_at DESC
         """),

@@ -613,8 +613,12 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
     <div className={cn("flex flex-col h-full bg-sidebar overflow-hidden shrink-0", !forceExpanded && "border-r border-sidebar-border transition-[width] duration-200", forceExpanded ? "w-full" : isOpen ? "w-[280px]" : "w-12")} data-onboarding="sidebar">
       {/* Header */}
       <div
-        className="h-12 flex items-center border-b border-sidebar-border shrink-0"
-        style={{ backgroundColor: 'var(--header)' }}
+        className="h-12 flex items-center shrink-0"
+        style={{
+          backgroundColor: 'var(--header)',
+          borderBottom: '1px solid var(--header-control-border)',
+          boxShadow: '0 1px 0 0 var(--header-control-border), 0 2px 12px -2px rgba(0,0,0,0.18)',
+        }}
       >
         {isOpen ? (
           /* Expanded: logo left, close button right */
