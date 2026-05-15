@@ -98,7 +98,7 @@ async def upsert_user(
         user.last_login = now
     else:
         user = MTIBrainUser(
-            okta_id=email,
+            keycloak_sub=email,
             email=email,
             name=name,
             groups=groups,

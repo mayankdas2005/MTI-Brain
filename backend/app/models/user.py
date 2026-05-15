@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM model for authenticated users (Okta OIDC)."""
+"""SQLAlchemy ORM model for authenticated users (Keycloak OIDC)."""
 
 import uuid
 from datetime import datetime, timezone
@@ -10,15 +10,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
 class MTIBrainUser(Base):
-    """An authenticated user synced from Okta.
+    """An authenticated user synced from Keycloak.
 
     Attributes:
         id: Internal primary key UUID.
-        okta_id: Okta subject identifier (``sub`` claim) - unique.
-        email: User's primary email from Okta profile.
-        name: Display name from Okta profile.
-        groups: Okta group names the user belongs to (JSON array).
-        organization: Organization name from Okta profile (may be empty).
+        keycloak_sub: Keycloak subject identifier (``sub`` claim) - unique.
+        email: User's primary email from Keycloak profile.
+        name: Display name from Keycloak profile.
+        groups: Keycloak group names the user belongs to (JSON array).
+        organization: Organization name from Keycloak profile (may be empty).
         last_login: Timestamp of the user's most recent login.
         created_at: Timestamp of first login / user creation.
         threads: Threads owned by this user.
@@ -30,7 +30,7 @@ class MTIBrainUser(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    okta_id: Mapped[str] = mapped_column(
+    keycloak_sub: Mapped[str] = mapped_column(
         String(255), nullable=False, unique=True, index=True
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
