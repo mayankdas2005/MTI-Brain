@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { type LucideIcon, Eraser, RotateCcw, Copy, Keyboard, Plus, FileDown, Volume2, BarChart3, Table2 } from 'lucide-react';
+import { type LucideIcon, RotateCcw, Copy, Keyboard, Plus, BarChart3, Table2 } from 'lucide-react';
 import { usePrefersReducedMotion } from '@/lib/hooks/use-prefers-reduced-motion';
 
 export interface SlashCommand {
@@ -18,13 +18,6 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
-  {
-    id: 'clear',
-    trigger: 'clear',
-    label: '/clear',
-    description: 'Clear the composer',
-    icon: Eraser,
-  },
   {
     id: 'retry',
     trigger: 'retry',
@@ -54,22 +47,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     label: '/help',
     description: 'Show keyboard shortcuts',
     icon: Keyboard,
-  },
-  {
-    id: 'speak',
-    trigger: 'speak',
-    label: '/speak',
-    description: 'Read last response aloud',
-    icon: Volume2,
-    requires: 'last-assistant',
-  },
-  {
-    id: 'export',
-    trigger: 'export',
-    label: '/export',
-    description: 'Export conversation to PDF',
-    icon: FileDown,
-    requires: 'thread',
   },
   {
     id: 'tone-analyst',

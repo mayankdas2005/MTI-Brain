@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from app.db.base import Base
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,6 +45,10 @@ class UserSavedQuery(Base):
 
     user: Mapped["MTIBrainUser | None"] = relationship()  # noqa: F821
 
+    __table_args__ = (
+        Index("ix_mti_brain_saved_query_user_created", "user_id", "created_at"),
+    )
+
 
 class UserPinnedMetric(Base):
     """A metric pinned to the home page dashboard by a user.
@@ -84,6 +88,10 @@ class UserPinnedMetric(Base):
 
     user: Mapped["MTIBrainUser | None"] = relationship()  # noqa: F821
 
+    __table_args__ = (
+        Index("ix_mti_brain_pinned_metric_user_position", "user_id", "position", "created_at"),
+    )
+
 
 class ThreadLabel(Base):
     """A colored label applied to a thread by a user.
@@ -118,4 +126,10 @@ class ThreadLabel(Base):
     color: Mapped[str] = mapped_column(String(20), nullable=False, default="blue")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        Index("ix_mti_brain_thread_label_user_created", "user_id", "created_at"),
+        Index("ix_mti_brain_thread_label_thread_user", "thread_id", "user_id"),
+        Index("ix_mti_brain_thread_label_label", "label"),
     )

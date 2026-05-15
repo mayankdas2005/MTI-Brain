@@ -4,7 +4,7 @@ import uuid
 
 from app.core.logger import logger
 from app.models.user_features import UserSavedQuery
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -52,29 +52,23 @@ async def update_saved_query(
         )
         return result.scalar_one_or_none()
 
-    await db.execute(
+    result = await db.scalars(
         update(UserSavedQuery)
         .where(UserSavedQuery.id == query_id, UserSavedQuery.user_id == user_id)
         .values(**patch)
+        .returning(UserSavedQuery)
     )
     await db.flush()
-    result = await db.execute(
-        select(UserSavedQuery).where(UserSavedQuery.id == query_id)
-    )
-    return result.scalar_one_or_none()
+    return result.one_or_none()
 
 
 async def delete_saved_query(
     db: AsyncSession, query_id: uuid.UUID, user_id: uuid.UUID
 ) -> bool:
     result = await db.execute(
-        select(UserSavedQuery).where(
-            UserSavedQuery.id == query_id, UserSavedQuery.user_id == user_id
-        )
+        delete(UserSavedQuery)
+        .where(UserSavedQuery.id == query_id, UserSavedQuery.user_id == user_id)
+        .returning(UserSavedQuery.id)
     )
-    obj = result.scalar_one_or_none()
-    if obj is None:
-        return False
-    await db.delete(obj)
     await db.flush()
-    return True
+    return result.scalar_one_or_none() is not None

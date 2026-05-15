@@ -3,7 +3,7 @@
 import uuid
 
 from app.models.user_features import ThreadLabel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -52,13 +52,9 @@ async def delete_thread_label(
     user_id: uuid.UUID,
 ) -> bool:
     result = await db.execute(
-        select(ThreadLabel).where(
-            ThreadLabel.id == label_id, ThreadLabel.user_id == user_id
-        )
+        delete(ThreadLabel)
+        .where(ThreadLabel.id == label_id, ThreadLabel.user_id == user_id)
+        .returning(ThreadLabel.id)
     )
-    obj = result.scalar_one_or_none()
-    if obj is None:
-        return False
-    await db.delete(obj)
     await db.flush()
-    return True
+    return result.scalar_one_or_none() is not None

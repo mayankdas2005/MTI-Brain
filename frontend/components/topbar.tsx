@@ -240,23 +240,18 @@ export function Topbar() {
             </DropdownMenuContent>
           </DropdownMenu>
         )} */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={openSearch}
-              aria-label="Search"
-              data-onboarding="cmd-k"
-              className="tap-44 flex items-center gap-2 min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
-            >
-              <Search className="w-3.5 h-3.5" aria-hidden />
-              <span className="hidden sm:inline">Search</span>
-              <kbd className="hidden sm:inline rounded border border-[var(--header-control-border)] bg-[var(--header-control-bg)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--header-foreground)]/60">
-                {isMac ? '⌘K' : 'Ctrl+K'}
-              </kbd>
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{`Search (${isMac ? '⌘' : 'Ctrl+'}K)`}</TooltipContent>
-        </Tooltip>
+        <button
+          onClick={openSearch}
+          aria-label="Search"
+          data-onboarding="cmd-k"
+          className="tap-44 flex items-center gap-2 min-h-[40px] px-3 py-1.5 rounded-lg border border-[var(--header-control-border)] bg-[var(--header-control-bg)] hover:bg-[var(--header-control-bg-hover)] transition-colors text-[var(--header-foreground)] text-sm backdrop-blur-sm"
+        >
+          <Search className="w-3.5 h-3.5" aria-hidden />
+          <span className="hidden sm:inline">Search</span>
+          <kbd className="hidden sm:inline rounded border border-[var(--header-control-border)] bg-[var(--header-control-bg)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--header-foreground)]/60">
+            {isMac ? '⌘K' : 'Ctrl+K'}
+          </kbd>
+        </button>
       </div>
     </div>
   );

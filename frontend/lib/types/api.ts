@@ -25,6 +25,7 @@ export interface MessageMetadata {
   follow_ups?: string[];
   run_id?: string;
   stopped?: boolean;
+  is_refinement?: boolean;
   needs_clarification?: boolean;
   duration_ms?: number;
   source_conversation_id?: string;

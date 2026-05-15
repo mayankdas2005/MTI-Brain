@@ -300,23 +300,6 @@ function ThreadItem({
             </button>
           )}
 
-          {/* Hover-revealed quick rename */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                aria-label="Rename"
-                className="shrink-0 mt-0.5 p-1 rounded-md opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setInlineRenaming(true);
-                }}
-              >
-                <Pencil className="w-3.5 h-3.5" aria-hidden />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Rename</TooltipContent>
-          </Tooltip>
-
           {/* Three-dot menu */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

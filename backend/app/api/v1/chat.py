@@ -683,6 +683,11 @@ async def ask_question(
     user_meta = None
     if body.source_conversation_id:
         user_meta = {"source_conversation_id": str(body.source_conversation_id)}
+        # prior_sql is only present on "Refine this query" actions.
+        # Flag the user message so the UI can distinguish refinements from
+        # regular follow-ups (which also carry source_conversation_id).
+        if body.prior_sql:
+            user_meta["is_refinement"] = True
 
     # Single round-trip: the thread UPDATE inside save_message_and_touch
     # filters by user_id, so it doubles as the ownership check. No separate

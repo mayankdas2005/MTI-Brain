@@ -112,7 +112,15 @@ async def get_thread(
     if user_id:
         params["uid"] = str(user_id)
 
-    # Single query: thread columns + filtered messages + feedback via raw SQL
+    # Single query: thread + filtered messages + per-message feedback.
+    #
+    # Performance notes:
+    #   - valid_convos uses ix_mti_brain_message_thread_role (thread_id, role)
+    #   - message join uses ix_mti_brain_message_conversation (conversation_id)
+    #   - LATERAL feedback uses ix_mti_brain_feedback_message_created
+    #     (message_id, created_at) for an indexed point-lookup per message.
+    #     The old DISTINCT ON pattern had NO WHERE clause on mti_brain_feedback
+    #     and therefore scanned the entire feedback table — catastrophic at scale.
     result = await db.execute(
         text(f"""
             WITH valid_convos AS (
@@ -134,11 +142,13 @@ async def get_thread(
             LEFT JOIN mti_brain_message m
                 ON m.thread_id = t.id
                 AND m.conversation_id IN (SELECT conversation_id FROM valid_convos)
-            LEFT JOIN (
-                SELECT DISTINCT ON (message_id) message_id, liked, comment
+            LEFT JOIN LATERAL (
+                SELECT liked, comment
                 FROM mti_brain_feedback
-                ORDER BY message_id, created_at DESC
-            ) f ON f.message_id = m.id
+                WHERE message_id = m.id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) f ON m.id IS NOT NULL
             WHERE t.id = :tid {user_filter}
             ORDER BY m.created_at ASC,
                      CASE m.role
@@ -911,27 +921,22 @@ async def delete_from_conversation(
     """Delete messages from a conversation point forward in a thread.
 
     Used by retry/edit to implement truncation: everything at or after
-    the target conversation is removed before the new response is
-    generated.
+    the target conversation's timestamp is removed before the new response
+    is generated. Single CTE — avoids a separate SELECT round-trip.
     """
-    # Find the earliest created_at of the target conversation
-    ts_result = await db.execute(
-        select(func.min(MTIBrainMessage.created_at)).where(
-            MTIBrainMessage.thread_id == thread_id,
-            MTIBrainMessage.conversation_id == conversation_id,
-        )
-    )
-    cutoff = ts_result.scalar_one_or_none()
-    if cutoff is None:
-        return 0
-
-    op = MTIBrainMessage.created_at >= cutoff if inclusive else MTIBrainMessage.created_at > cutoff
-
+    op_sql = ">=" if inclusive else ">"
     result = await db.execute(
-        delete(MTIBrainMessage).where(
-            MTIBrainMessage.thread_id == thread_id,
-            op,
-        )
+        text(f"""
+            WITH conv_cutoff AS (
+                SELECT min(created_at) AS cutoff
+                FROM mti_brain_message
+                WHERE thread_id = :tid AND conversation_id = :cid
+            )
+            DELETE FROM mti_brain_message
+            WHERE thread_id = :tid
+              AND created_at {op_sql} (SELECT cutoff FROM conv_cutoff)
+        """),
+        {"tid": str(thread_id), "cid": str(conversation_id)},
     )
     deleted = result.rowcount
     logger.info(

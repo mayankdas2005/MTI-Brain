@@ -153,11 +153,18 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
 
           {/* Source */}
           {((m?.source_tables?.length ?? 0) > 0 || m?.data_freshness_at) && (
-            <Section title="Source" icon={Database}>
+            <Section
+              title={
+                (m?.source_tables?.length ?? 0) > 1
+                  ? `Source · ${m!.source_tables!.length} tables`
+                  : 'Source'
+              }
+              icon={Database}
+            >
               {m?.source_tables?.map((tbl) => (
                 <div
                   key={tbl}
-                  className="font-mono text-[11px] text-foreground/85 mb-1 break-all leading-relaxed"
+                  className="font-mono text-[11px] text-foreground/85 py-0.5 break-all leading-relaxed border-b border-border/40 last:border-0"
                 >
                   {tbl}
                 </div>
@@ -294,7 +301,7 @@ function Section({
   icon: Icon,
   children,
 }: {
-  title: string;
+  title: ReactNode;
   icon?: ComponentType<{ className?: string }>;
   children: ReactNode;
 }) {

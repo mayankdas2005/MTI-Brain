@@ -37,11 +37,10 @@ export interface TrustStripProps {
   rowCount?: number | null;
 }
 
-/** How many source tables to render inline before collapsing the rest.
- *  Two: with exactly two tables we show both ("a, b") because the "+1"
- *  pill costs as much horizontal space as the second name. With three+
- *  we collapse to first + "+N" so the strip never wraps to two lines. */
-const INLINE_SOURCE_LIMIT = 2;
+/** Always show only the first table inline; the rest collapse into a "+N"
+ *  pill. With many tables or long names, showing two inline can overflow
+ *  the strip. One name + pill is consistently compact. */
+const INLINE_SOURCE_LIMIT = 1;
 
 function MetadataCell({
   icon,
@@ -83,22 +82,14 @@ function SourceCell({ sources }: { sources: string[] }) {
   const overflow = sources.slice(INLINE_SOURCE_LIMIT);
   const hasOverflow = overflow.length > 0;
 
-  // The tooltip lists every table. With 10+ tables this would push the
-  // tooltip taller than the viewport, so the list scrolls inside a
-  // capped container. Header includes the count so the user knows what
-  // to expect before scrolling.
   const tooltipBody = (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-[11px] uppercase tracking-wider opacity-70">
-        Source tables · {sources.length}
+    <div className="flex flex-col gap-1">
+      <span className="text-[10px] uppercase tracking-wider opacity-60">
+        {sources.length} {sources.length === 1 ? 'table' : 'tables'}
       </span>
-      <ul className="flex flex-col gap-0.5 max-h-60 overflow-y-auto pr-1">
-        {sources.map((s) => (
-          <li key={s} className="font-mono text-[11px] break-all">
-            {s}
-          </li>
-        ))}
-      </ul>
+      <span className="font-mono text-[11px] leading-relaxed break-all">
+        {sources.join(', ')}
+      </span>
     </div>
   );
 
@@ -161,11 +152,15 @@ export function TrustStrip({
         icon={<Clock className={`w-3 h-3 ${isStale ? 'text-amber-500' : ''}`} />}
         ariaLabel="Data freshness"
         tooltip={
-          <span>
-            Underlying data was last refreshed at{' '}
-            {new Date(freshnessAt).toLocaleString()}.
-            {isStale && ' This data may not reflect today\'s activity.'}
-          </span>
+          <div className="flex flex-col gap-0.5">
+            <span className="whitespace-nowrap">
+              Last refreshed{' '}
+              {new Date(freshnessAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+            </span>
+            {isStale && (
+              <span className="text-amber-400">May not reflect today&apos;s activity</span>
+            )}
+          </div>
         }
       >
         <span className={isStale ? 'text-amber-600 dark:text-amber-400 font-medium' : ''}>

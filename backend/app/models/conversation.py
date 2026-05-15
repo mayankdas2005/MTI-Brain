@@ -18,6 +18,7 @@ from sqlalchemy import Index
 from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import Text
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID
@@ -234,6 +235,16 @@ class MTIBrainMessage(Base):
             "ix_mti_brain_message_parent_conversation",
             "parent_conversation_id",
             postgresql_where="parent_conversation_id IS NOT NULL",
+        ),
+        # Added in migration 0004
+        Index("ix_mti_brain_message_thread_conversation", "thread_id", "conversation_id"),
+        # Added in migration 0005
+        Index("ix_mti_brain_message_conversation_role", "conversation_id", "role"),
+        Index("ix_mti_brain_message_thread_role_created", "thread_id", "role", "created_at"),
+        Index(
+            "ix_mti_brain_message_stopped",
+            sa_text("((metadata->>'stopped')::boolean)"),
+            postgresql_where="role = 'assistant'",
         ),
     )
 

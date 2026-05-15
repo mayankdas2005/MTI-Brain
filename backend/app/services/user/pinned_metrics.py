@@ -4,7 +4,7 @@ import uuid
 
 from app.core.logger import logger
 from app.models.user_features import UserPinnedMetric
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -48,15 +48,17 @@ async def update_pinned_metric(
     if position is not None:
         patch["position"] = position
     if patch:
-        await db.execute(
+        result = await db.scalars(
             update(UserPinnedMetric)
             .where(
                 UserPinnedMetric.id == metric_id,
                 UserPinnedMetric.user_id == user_id,
             )
             .values(**patch)
+            .returning(UserPinnedMetric)
         )
         await db.flush()
+        return result.one_or_none()
     result = await db.execute(
         select(UserPinnedMetric).where(
             UserPinnedMetric.id == metric_id, UserPinnedMetric.user_id == user_id
@@ -69,13 +71,12 @@ async def delete_pinned_metric(
     db: AsyncSession, metric_id: uuid.UUID, user_id: uuid.UUID
 ) -> bool:
     result = await db.execute(
-        select(UserPinnedMetric).where(
-            UserPinnedMetric.id == metric_id, UserPinnedMetric.user_id == user_id
+        delete(UserPinnedMetric)
+        .where(
+            UserPinnedMetric.id == metric_id,
+            UserPinnedMetric.user_id == user_id,
         )
+        .returning(UserPinnedMetric.id)
     )
-    obj = result.scalar_one_or_none()
-    if obj is None:
-        return False
-    await db.delete(obj)
     await db.flush()
-    return True
+    return result.scalar_one_or_none() is not None

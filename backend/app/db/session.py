@@ -88,10 +88,14 @@ connect_args = {"ssl": _ssl} if _ssl else {}
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    # Do NOT pre-ping — PgBouncer validates server connections internally.
-    # Enabling this sends an extra SELECT 1 per checkout and pins a server
-    # connection slot for the ping round-trip.
-    pool_pre_ping=False,
+    # Pre-ping validates each connection before use (~1 ms overhead per checkout).
+    # Required to detect connections that were silently dropped by PgBouncer or
+    # the network — without it, write sessions receive a dead asyncpg connection
+    # and fail with ConnectionDoesNotExistError mid-query.
+    # The ping is a single autocommit SELECT 1; in PgBouncer transaction mode it
+    # acquires a server connection, runs the ping, and releases it immediately —
+    # no server connection is held after the ping completes.
+    pool_pre_ping=True,
     # Keep the SQLAlchemy pool small — it caches client→PgBouncer sockets,
     # not actual Postgres server connections. PgBouncer handles the real pool.
     pool_size=settings.DB_POOL_SIZE,

@@ -888,6 +888,9 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       content: question,
       created_at: new Date().toISOString(),
       source_conversation_id: sourceConversationId,
+      // Mark refine-query messages so the UI shows "↳ Refining: …" only for
+      // these, not for follow-up chips that also carry source_conversation_id.
+      metadata_: priorSql ? { is_refinement: true } : null,
     };
 
     const assistantMsg: Message = {

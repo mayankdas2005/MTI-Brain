@@ -303,6 +303,26 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           </Tooltip>
         </div>
 
+        {/* Refinement context — only shown for "Refine this query" messages,
+            not follow-up chips which also carry source_conversation_id */}
+        {message.source_conversation_id && message.metadata_?.is_refinement && (() => {
+          const all = useThreadStore.getState().currentMessages;
+          const origin = all.find(
+            (m) => m.conversation_id === message.source_conversation_id && m.role === 'user',
+          );
+          if (!origin) return null;
+          const preview = origin.content.length > 60
+            ? origin.content.slice(0, 60).trimEnd() + '…'
+            : origin.content;
+          return (
+            <div className="flex items-center gap-1 mb-1 mr-1 max-w-[80%] text-right">
+              <span className="text-[10px] text-muted-foreground/50 truncate">
+                ↳ Refining: <span className="italic">{preview}</span>
+              </span>
+            </div>
+          );
+        })()}
+
         {/* Message bubble */}
         <div
           className="max-w-[92%] md:max-w-[80%] rounded-2xl px-5 py-3 text-sm leading-relaxed"
@@ -969,8 +989,11 @@ function RefineInput({ threadId, conversationId }: { threadId: string; conversat
     );
     const sql = (assistantMsg?.metadata_ as Record<string, unknown> | null)?.sql as string || undefined;
 
-    const instruction = `Refine the previous query: ${refinement}`;
-    useThreadStore.getState().askQuestion(threadId, instruction, conversationId, sql);
+    // Send the user's instruction as-is. The backend receives `prior_sql`
+    // (the SQL being refined) and `source_conversation_id` (the conversation
+    // to branch from) — those carry the refinement context, so the question
+    // text doesn't need a mechanical prefix.
+    useThreadStore.getState().askQuestion(threadId, refinement, conversationId, sql);
     setText('');
     setOpen(false);
   }, [text, isStreaming, threadId, conversationId]);

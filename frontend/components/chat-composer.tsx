@@ -281,19 +281,10 @@ export function ChatComposer() {
         setInput('');
         return;
       }
-      // Capture the prior input length so /clear can surface visible
-      // feedback only when the user actually had a draft worth wiping
-      // (saying "Draft cleared" with an empty composer would be noise).
-      const hadDraft = input.trim().length > cmd.label.length;
       setInput('');
       if (currentThreadId) void clearDraft(currentThreadId);
 
       switch (cmd.id) {
-        case 'clear':
-          toast.success(hadDraft ? 'Draft cleared' : 'Composer cleared', {
-            id: 'slash-cleared',
-          });
-          break;
         case 'retry':
           if (currentThreadId && lastAssistant?.conversation_id) {
             void retryResponse(currentThreadId, lastAssistant.conversation_id);
