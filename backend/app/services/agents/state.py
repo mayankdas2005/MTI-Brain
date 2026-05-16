@@ -27,7 +27,7 @@ class State(MessagesState):
     # ── Input / Classification ──────────────────────────────────────────────
     question: str
     question_type: str          # kg_query | general_chat | rejected
-    persona: str                # Analyst-F | Manager-F | Director-F | Executive-F
+    persona: str                # Analyst | Manager | Director | Executive
     complexity: str             # simple | complex | advanced
     intent: str                 # balance_lookup | fx_exposure | counterparty_risk | …
     routing: str                # kg_only | kg_tribal | hil

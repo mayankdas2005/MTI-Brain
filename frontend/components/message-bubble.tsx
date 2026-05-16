@@ -19,9 +19,38 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import hljs from 'highlight.js/lib/core';
-import sql from 'highlight.js/lib/languages/sql';
-hljs.registerLanguage('sql', sql);
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { useTheme } from 'next-themes';
+
+const _base = { background: 'transparent', margin: 0, padding: 0 };
+const sparqlDark: Record<string, React.CSSProperties> = {
+  'pre[class*="language-"]': _base,
+  'code[class*="language-"]': { ..._base, color: '#cbd5e1' },
+  keyword:     { color: '#7dd3fc' },
+  builtin:     { color: '#a5b4fc' },
+  string:      { color: '#86efac' },
+  url:         { color: '#6ee7b7' },
+  variable:    { color: '#f9a8d4' },
+  comment:     { color: '#475569', fontStyle: 'italic' },
+  number:      { color: '#fcd34d' },
+  operator:    { color: '#94a3b8' },
+  punctuation: { color: '#64748b' },
+  'class-name':{ color: '#c4b5fd' },
+};
+const sparqlLight: Record<string, React.CSSProperties> = {
+  'pre[class*="language-"]': _base,
+  'code[class*="language-"]': { ..._base, color: '#1e293b' },
+  keyword:     { color: '#2563eb' },
+  builtin:     { color: '#7c3aed' },
+  string:      { color: '#16a34a' },
+  url:         { color: '#0891b2' },
+  variable:    { color: '#9333ea' },
+  comment:     { color: '#94a3b8', fontStyle: 'italic' },
+  number:      { color: '#d97706' },
+  operator:    { color: '#475569' },
+  punctuation: { color: '#64748b' },
+  'class-name':{ color: '#7c3aed' },
+};
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
@@ -86,6 +115,7 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ message, threadId, versionNav }: MessageBubbleProps) {
+  const { resolvedTheme } = useTheme();
   const [editing, setEditing] = useState(false);
 
   const [editText, setEditText] = useState(message.content);
@@ -448,11 +478,15 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                   <Copy className="w-3.5 h-3.5" />
                 </Button>
               </div>
-              <div className="flex-1 overflow-y-auto p-3">
-                <pre
-                  className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words"
-                  dangerouslySetInnerHTML={{ __html: hljs.highlight(sql ?? '', { language: 'sql' }).value }}
-                />
+              <div className="flex-1 overflow-y-auto">
+                <SyntaxHighlighter
+                  language="sparql"
+                  style={resolvedTheme === 'dark' ? sparqlDark : sparqlLight}
+                  customStyle={{ margin: 0, padding: '12px', fontSize: '12px', lineHeight: '1.6', background: 'transparent' }}
+                  wrapLongLines
+                >
+                  {sql ?? ''}
+                </SyntaxHighlighter>
               </div>
             </div>
           )}
@@ -470,8 +504,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         </StreamingContent>
       )}
 
-      {/* Chart skeleton — only shown when backend confirmed viz is running */}
-      {message.isStreaming && message.dataReady && !message.chartReady && prefAutoCharts && hasTableData && message.willVisualize && (
+      {/* Chart skeleton — shown after data arrives but before chart spec fires */}
+      {message.isStreaming && message.dataReady && !message.chartReady && prefAutoCharts && hasTableData && (
         <div className="mt-3 rounded-xl border border-border bg-sidebar px-4 pt-4 pb-3 animate-fade-in">
           <Skeleton className="h-3 w-40 rounded mb-4" />
           <div className="flex items-end gap-2 h-24">
@@ -602,7 +636,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                       Pin to home
                     </DropdownMenuItem>
                   )}
-                  {message.content && message.conversation_id && !!(message.metadata_ as Record<string, unknown> | null)?.sql && (
+                  {message.conversation_id && !!(message.metadata_ as Record<string, unknown> | null)?.sql && (
                     <DropdownMenuItem
                       onClick={() => {
                         toast.info('Dashboard generation started.');

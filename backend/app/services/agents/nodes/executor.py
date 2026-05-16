@@ -27,7 +27,7 @@ async def _run_sub_question(sq: dict, state: State, inner_graph, writer=None) ->
     sub_initial = {
         "question": sq["question"],
         "question_type": "kg_query",
-        "persona": state.get("persona", "Analyst-F"),
+        "persona": state.get("persona", "Analyst"),
         "complexity": "simple",
         "intent": sq.get("intent", ""),
         "routing": state.get("routing", "kg_only"),

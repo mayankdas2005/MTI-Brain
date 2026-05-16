@@ -44,7 +44,7 @@ def _format_results_sample(columns: list[str], rows: list[list], limit: int = 30
 async def answer_synthesis_node(state: State) -> dict:
     question = state.get("question", "")
     intent = state.get("intent", "")
-    persona = state.get("persona", "Analyst-F")
+    persona = state.get("persona", "Analyst")
     kg_columns = state.get("kg_columns", [])
     kg_rows = state.get("kg_rows", [])
     tribal_facts = state.get("tribal_facts", [])
@@ -92,8 +92,8 @@ async def answer_synthesis_node(state: State) -> dict:
             "sample_rows": "\n".join(sample_lines) if sample_lines else "No data",
             "row_count": len(kg_rows),
             "col_stats": col_stats,
+            "reasoning_directive": REASONING_DIRECTIVE_NORMAL,
         },
-        config={"tags": ["no_stream"]},
     )
 
     narrative_raw, chart_raw = await asyncio.gather(narrative_coro, chart_coro)
@@ -108,7 +108,9 @@ async def answer_synthesis_node(state: State) -> dict:
     except (json.JSONDecodeError, ValueError):
         follow_ups = []
 
-    chart_json = parse_json_from_response(chart_text)
+    # Parse chart JSON from <chart> tag; fall back to raw JSON search
+    chart_tag = parse_tag(chart_text, "chart")
+    chart_json = parse_json_from_response(chart_tag if chart_tag else chart_text)
 
     messages = list(state.get("messages", [])) + [AIMessage(content=answer)]
     step = {

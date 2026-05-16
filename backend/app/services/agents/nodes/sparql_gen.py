@@ -36,7 +36,7 @@ def _format_tribal_facts(facts: list[dict]) -> str:
 async def sparql_gen_node(state: State) -> dict:
     question = state.get("question", "")
     intent = state.get("intent", "")
-    persona = state.get("persona", "Analyst-F")
+    persona = state.get("persona", "Analyst")
     ontology_terms = state.get("ontology_terms", [])
     tribal_facts = state.get("tribal_facts", [])
     sparql_error = state.get("sparql_error", "")
@@ -56,6 +56,7 @@ async def sparql_gen_node(state: State) -> dict:
             "sparql": existing_sparql,
             "error": sparql_error,
             "ontology_summary": get_ontology_summary(),
+            "ontology_terms": _format_ontology_terms(ontology_terms),
             "reasoning_directive": reasoning_directive,
         })
     else:
@@ -68,7 +69,7 @@ async def sparql_gen_node(state: State) -> dict:
             "ontology_summary": get_ontology_summary(),
             "ontology_terms": _format_ontology_terms(ontology_terms),
             "tribal_facts": _format_tribal_facts(tribal_facts),
-            "prior_error": sparql_error or "None.",
+            "prior_error_section": f"Prior error (fix this):\n{sparql_error}" if sparql_error else "",
             "max_rows": max_rows,
             "reasoning_directive": reasoning_directive,
         })

@@ -14,7 +14,8 @@ MARKDOWN FORMATTING RULES (apply to ALL reasoning and answer sections):
   - Use `backtick` for SPARQL variables, class names, property names, and values
   - Use bullet lists (- item) for enumeration; numbered lists for ordered steps
   - Use ```sparql ... ``` for SPARQL code blocks in answers
-  - NO markdown headers (##, ###) — the UI renders these at wrong sizes in reasoning
+  - Markdown headers (##, ###) are allowed in <answer> sections ONLY
+  - NO markdown headers in <reasoning> — the UI renders them at wrong sizes
   - NO horizontal rules (---) or HTML tags
   - Reasoning length and style are controlled by {reasoning_directive} — follow it exactly
 """
@@ -59,46 +60,37 @@ Conversation history (for context):
 
 User question: "{question}"
 
-Classify the question on three dimensions and output ONLY the JSON object below.
+Classify on three dimensions. Output ONLY the JSON object — no explanation, no preamble.
 
 question_type:
-  "kg_query"    — use for ANY question about our internal treasury and payments data, including:
+  "kg_query"    — ANY question about internal treasury OR payments data:
                   · Treasury: bank accounts, investment positions, FX forwards, liquidity, counterparty exposure
-                  · Payment operations: card processing, acquirer/processor performance, authorization rates,
-                    settlement timing, interchange, network fees, chargeback/dispute analytics
-                  · Payment methods: ACH, wire, RTP, FedNow, check, virtual card, commercial card
-                  · Payment hub: STP rate, exception handling, repair rates, throughput
-                  · Fraud and disputes: fraud loss, chargeback ratios, dispute win rates, fraud patterns
-                  · Supplier payments: DPO, on-time rate, rebates, virtual card programs
-                  · Cross-border: FX costs, corridor analysis, local acquiring
-                  · Strategic analytics: cost trends, forecasting, optimization, stress testing, scenario analysis,
-                    roadmaps, and comparisons that USE our internal data as the primary source
-                  · Questions mentioning "benchmarks" or "peers" are still kg_query if they are primarily
-                    asking us to COMPUTE something from our data — route them, do not reject them
-  "general_chat" — greeting, explanation, opinion, or meta question not requiring data retrieval
-  "rejected"    — ONLY reject if the question requires data we fundamentally cannot have:
-                  · Competitor internal data (another company's P&L, internal operations)
-                  · External ESG/sustainability ratings from third-party agencies
-                  · Macro economic indicators (GDP, CPI, interest rates from external sources)
-                  · Personal consumer finance or individual credit information
-                  · Stock/equity market prices and trading data
-                  · When in doubt, classify as "kg_query" — it is better to attempt and fail gracefully
+                  · Payments: card processing, authorization rates, settlement, interchange, network fees,
+                    chargebacks, ACH/wire/RTP/FedNow, payment hub STP rate, supplier payments, cross-border FX
+                  · Fraud & disputes: fraud loss, chargeback ratios, dispute win rates
+                  · Strategic: cost trends, forecasting, benchmarking using our data, scenario analysis
+                  · When in doubt → "kg_query". Always prefer attempting over rejecting.
+  "general_chat" — greeting, meta question, explanation, opinion, or capability question
+  "rejected"    — ONLY if data is fundamentally unavailable:
+                  competitor internal data, external ESG ratings, macro indicators (GDP/CPI),
+                  personal consumer finance, stock prices
 
-persona (user preset: {persona_preset} — if set, USE it and do not infer; otherwise infer from phrasing):
-  "Analyst"      — precise, tabular, raw numbers
-  "Manager"      — aggregated, policy context, trend flags
-  "Director"     — risk trends, exposures vs. limits, scenario flags
-  "Executive"    — one-page narrative, top-3 risks, executive summary
+persona (preset: {persona_preset}):
+  If preset is provided, use it exactly. Otherwise infer:
+  "Analyst"   — asks for raw data, columns, methodology
+  "Manager"   — asks about trends, breaches, operational summaries
+  "Director"  — asks about risk, limits, strategic exposure
+  "Executive" — asks for verdicts, top risks, recommendations
 
 complexity:
-  "simple"   — single fact/balance lookup; one SPARQL query; ≤3s
-  "complex"  — multi-join analysis, trend comparison, multi-entity aggregation; 1-3 SPARQL queries; ≤10s
-  "advanced" — forecasting, optimization, stress testing, multi-step DAG, strategic scenario analysis; ≤45s
+  "simple"   — single fact or balance; one SPARQL query
+  "complex"  — multi-join, trend comparison, multi-entity aggregation; 2-3 queries
+  "advanced" — forecasting, optimization, stress testing, multi-step DAG
 
 <reasoning>
 {reasoning_directive}
 
-Consider: question type, who is asking (language and scope), how many data retrieval steps are needed, and what could go wrong with the classification.
+Consider: is this truly a data question or conversation? Who is the likely audience? How many independent data fetches does a complete answer require?
 </reasoning>
 
 Output exactly this JSON (no other text):
@@ -118,50 +110,68 @@ Recent messages:
 
 User says: "{question}"
 
-Respond helpfully. If the user is asking what MTI Brain can do, describe treasury/payments
-analytics over investment positions, FX forwards, bank accounts, and counterparty exposure.
-Keep the response concise and friendly.
+Respond helpfully and concisely. If the user asks what MTI Brain can do, describe:
+- Treasury analytics: bank accounts, investment positions, FX forwards, counterparty exposure, liquidity
+- Payments analytics: authorization rates, settlement timing, interchange & network fees, chargeback ratios,
+  ACH/wire/RTP/FedNow volumes, payment hub STP rate, supplier payment KPIs, cross-border FX costs
+- Strategic: cost trends, scenario analysis, benchmarking, forecasting, fraud loss analysis
+
+Keep the tone warm and direct. Do not offer to "help" — just answer.
 
 <answer>
 Your response here.
 </answer>
 
-Suggest 2-3 follow-up questions the user might find useful.
+Write 2-3 follow-up questions phrased as the user asking the system (not the system offering to do something):
 <follow_ups>["...", "...", "..."]</follow_ups>"""
 )
 
 # ─── 3. Domain Specialist ─────────────────────────────────────────────────────
 
 DOMAIN_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
-    """You are the domain specialist for MTI Brain. Given the user's question, determine:
-1. The primary intent label (one of the standard treasury/payments intents)
-2. The routing decision for data retrieval
+    """You are the domain specialist for MTI Brain. Determine the primary intent and routing for this question.
 
 Question: "{question}"
 Persona: {persona}
 Complexity: {complexity}
 
-Standard intent labels:
-  balance_lookup         — account or position balance as of a date
-  counterparty_exposure  — total exposure to a bank across instruments
-  fx_exposure            — FX forward positions and net exposure
-  investment_positions   — investment book composition by type, company, or bank
-  maturity_ladder        — upcoming maturities bucketed by time period
-  policy_check           — checking a balance/exposure against a limit or policy
-  code_lookup            — find a code (BIC, LEI, account code) for an entity
-  trend_analysis         — change over time for positions, exposures, or balances
-  scenario_forecast      — forward-looking composition or breach detection
-  multi_entity_join      — cross-entity analysis requiring multiple graph traversals
+Intent labels — pick the ONE that best captures the data being requested:
 
-Routing options:
+Treasury:
+  balance_lookup         — account or position balance as of a date
+  counterparty_exposure  — total exposure to a bank or counterparty across instruments
+  fx_exposure            — FX forward positions, net exposure, open FX risk
+  investment_positions   — investment book composition by type, company, or bank
+  maturity_ladder        — upcoming maturities bucketed by time horizon
+  policy_check           — checking a balance or exposure against a policy limit or watchlist
+
+Payments:
+  authorization_analysis — authorization rates, decline reasons, approval by channel/acquirer
+  settlement_analysis    — settlement timing, STP rates, fails, repair rates, throughput
+  fee_analysis           — interchange, network fees, processing costs, fee trends
+  chargeback_analysis    — chargeback ratios, dispute win rates, fraud loss by category
+  payment_volume         — payment volumes, method mix (ACH/wire/card/RTP), channel breakdown
+  supplier_payments      — DPO, on-time payment rate, virtual card rebates, supplier terms
+  cross_border           — FX costs by corridor, local acquiring performance, conversion rates
+
+Strategic / Multi-domain:
+  cost_analysis          — cost as % of revenue, unit economics, total cost of payments
+  trend_analysis         — change over time for any metric (positions, fees, rates, volumes)
+  scenario_forecast      — forward-looking: stress test, breach detection, capacity planning
+  code_lookup            — find a code (BIC, LEI, account code, MCC) for an entity
+  general_analytics      — valid data question that doesn't fit the above labels
+
+Routing:
   "kg_only"   — answer fully from KG (LPP Fuseki graph); no policy context needed
-  "kg_tribal" — KG data + Tribal graph (policy limits, decisions, watchlists) required
-  "hil"       — human-in-loop required (Executive + advanced scenario + breach alert)
+  "kg_tribal" — KG data + Tribal graph (policy limits, decisions, watchlists) needed;
+                use when the question mentions limits, breaches, policies, or watchlists
+  "hil"       — human-in-loop required; only for Executive + advanced scenario WITH
+                explicit breach alert or regulatory decision required
 
 <reasoning>
 {reasoning_directive}
 
-Focus on: whether policy limits from the Tribal graph are needed, whether this is an Executive + advanced scenario that should trigger HIL, and which intent label best captures the data request.
+Focus on: which specific data is being requested, whether policy limits from Tribal are needed, and which intent label most precisely captures the request. If between two labels, pick the more specific one.
 </reasoning>
 
 Output exactly this JSON:
@@ -183,30 +193,27 @@ Ontology reference:
 Resolved ontology terms for this question:
 {ontology_terms}
 
-Tribal facts (policy/limit context, if any):
+Tribal facts (policy/limit context):
 {tribal_facts}
 
-Prior error (if retrying):
-{prior_error}
+{prior_error_section}
 
-Rules:
-- Use PREFIX lpp: <https://lpp.example/ontology#>
-- Use PREFIX lppid: <https://lpp.example/id/>
-- Only SELECT or ASK queries — no INSERT/DELETE/UPDATE
-- Use OPTIONAL for fields that may be absent
-- Bind computed values with BIND(... AS ?varname)
-- Use FILTER for date ranges (xsd:date literals)
-- Order results where natural (ORDER BY DESC(?amount))
-- LIMIT results to {max_rows} rows maximum (user-configured preference)
-- Variable names should be descriptive (not ?x, ?y)
-
-Respond using exactly these XML tags, replacing the placeholder text with your actual content.
-Use only **bold**, *italic*, `backtick` for variables/classes, and bullet lists. No markdown headers.
+SPARQL rules:
+- Prefixes: lpp: <https://lpp.example/ontology#> and lppid: <https://lpp.example/id/>
+- Add PREFIX xsd: <http://www.w3.org/2001/XMLSchema#> if using date filters
+- SELECT or ASK only — no INSERT/DELETE/UPDATE
+- Use OPTIONAL for fields that may be absent on some records
+- BIND(... AS ?varname) for computed or derived values
+- FILTER for date ranges using xsd:date literals: FILTER(?date >= "2024-01-01"^^xsd:date)
+- ORDER BY results where natural ranking is expected (ORDER BY DESC(?amount))
+- Variable names must be descriptive (not ?x, ?y, ?a)
+- LIMIT {max_rows} on the final SELECT; do NOT apply LIMIT inside sub-SELECTs used for aggregation
+- For aggregations (SUM, COUNT, AVG): use GROUP BY correctly; aggregated variable must not appear ungrouped
 
 <reasoning>
 {reasoning_directive}
 
-In your reasoning, cover: which classes are the starting point, which object properties join them, which datatype properties provide the answer values, and whether FILTER or OPTIONAL clauses are needed.
+Cover: which classes are the entry points, which object properties link them, which datatype properties provide the answer values, whether OPTIONAL or FILTER clauses are needed, and whether the query will return a useful result shape for the intent.
 </reasoning>
 
 <sparql>
@@ -239,15 +246,21 @@ Error:
 Ontology reference:
 {ontology_summary}
 
-Fix the SPARQL query to resolve the error. Keep the same logical intent.
-Only change what is needed to fix the error.
+Resolved ontology terms (use these as the authoritative list of valid classes and properties):
+{ontology_terms}
 
-Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+Fix rules:
+- Change ONLY what is needed to resolve the error
+- Preserve the original logical intent of the query
+- If a class or property does not exist, replace with the closest valid term from Resolved ontology terms
+- If the error is a GROUP BY violation, fix the aggregation grouping
+- If the error is a prefix issue, add the missing PREFIX declaration
+- Before finalising: mentally verify (1) the error is resolved and (2) the logical intent is unchanged
 
 <reasoning>
 {reasoning_directive}
 
-Focus on: the exact error cause, why the original query failed, what specifically must change, and whether the fix preserves the original logical intent.
+Cover: the exact cause of the error, why the original query failed, what specifically changes in the fix, and whether any ontology terms need to be substituted.
 </reasoning>
 
 <sparql>
@@ -276,16 +289,16 @@ Query results ({row_count} rows):
 Tribal policy context:
 {tribal_facts}
 
-Respond using exactly these XML tags, replacing the placeholder text with your actual content:
-
 <reasoning>
 {reasoning_directive}
 
-Cover: key numbers and patterns in the results, concentrations or anomalies worth flagging, any expected data that was absent, and 2-3 concrete evidence citations (entity codes, dates, amounts) that ground the answer.
+Cover: the key numbers and patterns in the results, any concentrations or anomalies worth flagging, expected data that is absent, and 2-3 concrete evidence citations that ground the answer.
 </reasoning>
 
-Output evidence citations as a JSON list:
-<evidence>["citation 1", "citation 2", "..."]</evidence>"""
+Output evidence citations as a JSON list. Each citation must include the entity name, value, and date where available.
+Good format: "HSBC counterparty exposure: $142.3M as of 2024-Q3"
+Bad format: "bank exposure data"
+<evidence>["entity: value (date/context)", "..."]</evidence>"""
 )
 
 # ─── 7. Verifier ─────────────────────────────────────────────────────────────
@@ -296,26 +309,34 @@ VERIFIER_PROMPT = ChatPromptTemplate.from_template(
 Question: "{question}"
 Intent: {intent}
 
-Results summary:
+Results:
   Columns: {columns}
   Row count: {row_count}
   Sample values: {sample}
 
-Expected characteristics for intent "{intent}":
-  - Monetary columns (amount, marketValue, faceAmount, mtmAmount) should be > 0 for active positions
-  - Date columns should be in ISO 8601 format (YYYY-MM-DD)
-  - For balance_lookup: expect 1-10 rows
-  - For counterparty_exposure: expect 1 row per bank, totals should be positive
-  - For investment_positions: expect multiple rows, amounts > 0
+Verify that the result is semantically correct for the question. Check:
 
-Does the result look semantically correct for the question?
-Answer with ONLY: PASS or FAIL: <brief reason>"""
+1. **Shape** — Does the row count make sense? A single-entity lookup should return 1-5 rows.
+   A portfolio-wide query may return 10-200 rows. Thousands of rows with no LIMIT is suspicious.
+
+2. **Data types** — Monetary columns should be numeric. Date columns should be ISO 8601.
+   If a monetary column contains only zeros AND the question expects real values, flag it.
+
+3. **Completeness** — Are the columns returned actually answering the question?
+   If the question asks for "total exposure" but only raw positions are returned, that is incomplete.
+
+4. **Zero result** — Zero rows is NOT automatically a failure. It may mean no data exists.
+   Only FAIL if the SPARQL logic appears wrong (e.g., wrong joins, impossible filters).
+
+Output ONLY one of these two formats, nothing else:
+PASS
+FAIL: <one sentence, max 20 words, stating the specific problem>"""
 )
 
 # ─── 8. Answer Synthesis ─────────────────────────────────────────────────────
 
 ANSWER_SYNTHESIS_PROMPT = ChatPromptTemplate.from_template(
-    """You are MTI Brain, a treasury & payments intelligence assistant.
+    """You are MTI Brain — a senior treasury and payments intelligence advisor with the analytical rigor of McKinsey, BCG, or Bain. Every answer must feel like a premium briefing: precise, insightful, and immediately actionable.
 
 Question: "{question}"
 Intent: {intent}
@@ -336,26 +357,43 @@ Evidence citations:
 Graph reasoning:
 {reasoning}
 
-Persona rendering guide:
-  Analyst-F    → Present raw data table summary, precise numbers, column definitions
-  Manager-F    → Aggregate by key dimension, flag policy breaches, trend vs. prior
-  Director-F   → Lead with risk concentration, limits vs. actuals, recommend action
-  Executive-F  → One-page narrative, top-3 risks, recommended decision, timeline
+━━━ WRITING STANDARDS ━━━
 
-Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+**Pyramid Principle — bottom line upfront.**
+Open with the single most important finding or risk in one sentence. Everything that follows supports or qualifies it. Never bury the headline.
+
+**Quantify every claim.**
+Never write "significant" without a number. Never write "exposure is high" without stating the amount and what it is high relative to (limit, prior period, peers). If data is absent, say so explicitly — do not hedge silently.
+
+**Business implication, not data description.**
+Don't describe what the table shows. Explain what it means for the business and what decision it informs.
+Exception: for Analyst persona with simple lookups (1-3 rows), a direct table + brief note is preferred over consulting prose.
+
+**Zero or anomalous results:**
+If all values are zero or the result is a single row of zeros, lead with a clear statement that this metric cannot be reported reliably. Diagnose the most likely root cause (data ingestion gap, ontology mismatch, date filter, missing triples) and recommend the specific corrective action.
+
+**Data gaps:**
+If a question cannot be answered from available data, say so directly. Name what is missing, why it matters, and what interim workaround exists.
+
+**Persona rendering:**
+- **Analyst** — Precise numbers, markdown table, column-level commentary, methodology notes. Use ## headers in your answer.
+- **Manager** — Key dimension aggregation, policy breach flags, variance vs. prior period, 2-3 concrete actions. Use ## headers.
+- **Director** — Risk concentration headline, limits vs. actuals, 3 prioritised recommendations with owners and timing. Use ## headers.
+- **Executive** — One-paragraph verdict, top-3 risks or opportunities, single recommended decision with rationale. No headers — flowing prose only.
+
+━━━ OUTPUT FORMAT ━━━
 
 <reasoning>
 {reasoning_directive}
 
-Cover: the headline number or finding, which supporting details matter most for {persona}, any policy flags or anomalies to highlight, and how to structure the answer for maximum clarity.
+Cover: the headline finding, which data points are load-bearing for {persona}'s decision, any policy breaches or anomalies, data quality concerns, and how to structure the answer for maximum impact.
 </reasoning>
 
 <answer>
-[Persona-appropriate answer here. Use markdown tables for Analyst-F/Manager-F.
-Use prose paragraphs for Director-F/Executive-F. Always cite evidence.]
+[Write here. Follow the pyramid principle. Open with the verdict. Support with evidence. Close with implications or actions. Match persona format above.]
 </answer>
 
-Suggest 3 natural follow-up questions:
+Write 3 follow-up questions that a {persona} would naturally ask next — phrased as the user querying the system, not as the system offering to help. Make them specific to the data returned, not generic.
 <follow_ups>["...", "...", "..."]</follow_ups>"""
 )
 
@@ -373,67 +411,80 @@ Total rows: {row_count}
 
 IMPORTANT: Sample rows may not show the full range of values. Always check Column stats above
 for actual min/max — if a column ranges from 0 to 25, the data has variation even if sample rows show zeros.
+If col_stats shows all NULL or NaN for a column, do not use that column as an axis.
 
 DECISION TREE — follow top to bottom, pick the FIRST match:
 
 1. SKIP (return {{}}) if ANY of these are true:
-   - Only 1 row, 1 column, or 1 unique category value
+   - Only 1 row, or 1 unique category value across all rows
    - y/value column contains text, URI strings, or mixed types
    - All values are zero or all values are identical
+   - col_stats shows all NULL/NaN for numeric columns
    - Each row is a unique entity with 8+ columns and no aggregation — this is a TABLE
    - 200+ rows of per-record detail — always skip, the table is the right display
 
-2. PIE — if <=5 categories AND one numeric count/sum metric:
+2. PIE — if 2-6 categories AND one numeric count/sum metric:
    "What share does each group have?" Works for: instrument type distribution,
-   account purpose breakdown, exposure by bank.
+   account purpose breakdown, exposure by bank (top 6 or fewer).
    value_key must be a count or sum, NEVER an average or percentage.
 
 3. LINE — if x-axis is a date column (daily, weekly, monthly):
    "How has it changed over time?" Only when x_key contains dates.
-   Examples: investment book trend, FX forward maturity profile over dates.
 
 4. AREA — if showing cumulative or stacked composition over time:
-   Same as line but for cumulative totals or stacked category breakdowns over dates.
+   Same as line but for cumulative totals or stacked breakdowns over dates.
 
-5. BAR — if 6-12 aggregated categories with one numeric metric:
-   "Which bank/company has the most exposure?" Ranked comparison.
-   x_key MUST have unique values.
+5. BAR — if 2-20 aggregated categories with one numeric metric:
+   "Which entity has the most/least?" Ranked comparison.
+   x_key MUST have unique values per row.
 
 6. SCATTER — ONLY when the question explicitly asks about correlation between two
-   numeric variables AND the data is pre-aggregated.
+   numeric variables AND the data is pre-aggregated (not raw records).
 
 KEY RULES:
 - ONE y_key only — the primary metric. Multiple y_keys only when same unit AND scale.
 - y_keys/value_key MUST be purely numeric columns.
-- Use exact column names from the Columns list.
-- Title: concise, insight-driven. Labels: clean business language.
-- "limit": how many rows to include (omit to use all).
+- Use exact column names from the Columns list above.
+- Title: specific and insight-driven. Examples: "Counterparty Exposure by Bank (Top 10)", "Authorization Rate Trend — Last 6 Months". Not: "Chart 1" or "Bank Data".
+- "limit": number of rows to include (omit to use all rows).
 
-Output ONLY a JSON object, nothing else:
+<reasoning>
+{reasoning_directive}
+
+Cover: which decision-tree rule applies and why, whether any SKIP condition is triggered, which columns map to which axes and why, and what the chart title should communicate about the finding.
+</reasoning>
+
+Output the chart spec as a JSON object inside a <chart> tag:
+<chart>
 For bar/line/area: {{"type":"...","title":"...","x_key":"col","x_label":"Label","y_keys":["col"],"y_label":"Label","sort":"asc|desc","limit":N}}
 For pie: {{"type":"pie","title":"...","name_key":"col","value_key":"col","limit":N}}
 For scatter: {{"type":"scatter","title":"...","x_key":"col","x_label":"Label","y_key":"col","y_label":"Label","limit":N}}
-Or {{}} for no chart."""
+Or {{}} for no chart.
+</chart>"""
 )
 
 # ─── 10. Summarize (Compress) ─────────────────────────────────────────────────
 
 SUMMARIZE_PROMPT = ChatPromptTemplate.from_template(
     """Summarize this treasury analytics conversation for a rolling context window.
+Keep the summary under 200 words. Prioritise precision over completeness.
 
 {existing_summary_section}
 
 Recent exchanges to summarize:
 {recent_exchanges}
 
-Capture:
-- Questions asked and their data intent (balance lookups, exposures, policy checks)
-- Key entities mentioned (company codes, bank names, account codes, instrument types)
-- Any anomalies, policy breaches, or flags that were raised
-- The tone/persona the user seems to prefer
+Capture — in order of priority:
+1. Entity identifiers mentioned: account codes, company codes, bank names, BIC/LEI codes, instrument IDs.
+   These are critical — preserve them verbatim so future SPARQL queries can reference them.
+2. Questions asked and their data intent (balance lookups, exposures, authorization rates, etc.)
+3. Key findings, anomalies, or policy flags that were surfaced
+4. User's tone and persona preference (if evident)
+
+Do NOT summarise the SPARQL queries themselves — only the intent and findings.
 
 <summary>
-[Concise 3-5 sentence summary here. Include key entities and data intents.]
+[Concise summary here. Max 200 words. Lead with entity identifiers, then intents and findings.]
 </summary>"""
 )
 
@@ -449,25 +500,29 @@ Ontology summary:
 {ontology_summary}
 
 Decompose this question into a directed acyclic graph (DAG) of sub-questions.
-Each sub-question should be independently answerable with a single SPARQL query.
-Specify dependencies explicitly.
+Each sub-question must be independently answerable with a SINGLE SPARQL query.
 
-Budget constraints (from pack.yaml):
-  max_subqs: 8
-  max_seconds: 45
+Constraints:
+- Maximum 8 sub-questions
+- Maximum 45 seconds total execution time
+- Each sub-question must reference specific ontology classes or properties
+- Sub-questions that can be answered independently must have no depends_on
 
-Guidelines:
-- Sub-questions that can be answered independently should have no depends_on
-- Sub-questions that need prior results should list depends_on IDs
-- Each sub-question must reference specific ontology classes/properties
-- Final sub-question(s) should compose/compare prior results
+Critical rules:
+- If the question can be answered with a SINGLE SPARQL query (even a complex one with joins),
+  create a plan with exactly 1 node. Do not split for the sake of it.
+- Split by LOGICAL INDEPENDENCE only — separate what genuinely requires separate data fetches.
+  Do not split what can be expressed as a single SPARQL join or aggregation.
+- Do not create a "combine results" final sub-question that just restates prior answers in prose.
+  Synthesis is handled downstream — your plan should only cover data retrieval.
+- Avoid padding: 3 well-chosen sub-questions beat 7 redundant ones.
 
-Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+{prior_context}
 
 <reasoning>
 {reasoning_directive}
 
-Cover: what independent data fetches are needed, which computations depend on which fetches, what the final composition step looks like, and whether the sub-question decomposition is minimal yet complete.
+Cover: whether this truly requires multiple fetches or could be one query, what the logical dependency structure looks like, which sub-questions are independently parallel, and whether the plan is minimal yet complete.
 </reasoning>
 
 <plan>
@@ -476,8 +531,7 @@ Cover: what independent data fetches are needed, which computations depend on wh
     {{"id": "sq1", "question": "...", "depends_on": [], "intent": "..."}},
     {{"id": "sq2", "question": "...", "depends_on": ["sq1"], "intent": "..."}}
   ],
-  "edges": [["sq1", "sq2"]],
-  "budget": {{"max_seconds": 45, "max_subqs": 8}}
+  "edges": [["sq1", "sq2"]]
 }}
 </plan>"""
 )
@@ -493,13 +547,16 @@ Plan JSON:
 Ontology available terms:
 {ontology_summary}
 
-Check:
-1. DAG is acyclic (no circular depends_on)
+Check all of the following:
+1. DAG is acyclic — no circular depends_on references
 2. Each sub-question is answerable with SPARQL against the LPP ontology
 3. Total sub-questions ≤ 8
-4. Dependencies resolve correctly (no dangling IDs)
+4. All depends_on IDs reference existing node IDs (no dangling references)
+5. No two sub-questions retrieve the same data (no redundant nodes)
 
-Answer with ONLY: VALID or INVALID: <brief reason>"""
+Output ONLY one of:
+VALID
+INVALID: [check N failed] <one sentence describing the specific problem and fix needed>"""
 )
 
 # ─── 13. Step Reflector ───────────────────────────────────────────────────────
@@ -519,26 +576,24 @@ Result: {row_count} rows
 Sample: {results_sample}
 Error (if any): {error}
 
-Does this result correctly answer the sub-question?
-
-Criteria:
-- PASS: Result is non-empty, semantically correct, and answers the sub-question
-- SKIP: Result is empty (0 rows) with no SPARQL error — this means the data does not exist in the graph; do NOT retry, accept the gap
-- SKIP: Sub-question refers to data that the ontology cannot represent
-- FAIL: SPARQL itself is syntactically or semantically wrong (bad predicates, wrong joins) — only use when an error message is present or the query logic is clearly broken
-
-Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+Verdict criteria — apply in this order:
+- PASS: result is non-empty, semantically correct, and directly answers the sub-question
+- FAIL: a SPARQL error message is present (syntax error, bad predicate, unknown class)
+- FAIL: 0 rows AND the SPARQL uses no OPTIONAL clauses — an unconditional query returning nothing suggests wrong joins or predicates
+- SKIP: 0 rows AND no error AND the query uses OPTIONAL broadly — the data genuinely may not exist in the graph
+- SKIP: the sub-question asks for data the ontology structurally cannot represent
+- SKIP: execution timed out — do not retry a timeout
 
 <reasoning>
 {reasoning_directive}
 
-Assess: whether the result shape and values actually answer the sub-question intent, whether empty results mean no data or a bad query, and whether a SKIP is honest or a cop-out.
+Assess: does the result shape and values actually answer the sub-question? If 0 rows, is this a data gap (SKIP) or a broken query (FAIL)? Is SKIP honest or a cop-out for a fixable query?
 </reasoning>
 
 Answer with ONLY one of:
 PASS
-FAIL: <specific reason>
-SKIP: <reason why this data is not in the graph>"""
+FAIL: <specific reason — bad predicate, wrong join, etc.>
+SKIP: <reason — data not in graph, ontology gap, timeout>"""
 )
 
 # ─── 14. Final Reflector ─────────────────────────────────────────────────────
@@ -549,23 +604,26 @@ FINAL_REFLECTOR_PROMPT = ChatPromptTemplate.from_template(
 Original question: "{question}"
 Persona: {persona}
 
-Completed sub-questions and their results:
+Sub-question results:
 {scratchpad_summary}
 
-Does the assembled results fully answer the original question?
+Assess whether the assembled results fully answer the original question.
 
-Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+Rules:
+- If 2+ sub-questions have SKIP status but the PASSed results still give a useful, honest answer, output PARTIAL not FAIL.
+- Only output FAIL if no useful answer is possible at all.
+- Be specific about what is missing and why — not "some data was unavailable" but "counterparty exposure for Bank X was not in the graph".
 
 <reasoning>
 {reasoning_directive}
 
-Assess: which parts of the question are fully answered, which have gaps (data not in graph or SKIP status), whether the partial answer is still useful and honest, and what caveats must be surfaced.
+Assess: which parts of the question are fully answered, which have gaps, whether the partial answer is still actionable and honest, and what caveats must be surfaced to the user.
 </reasoning>
 
 <reflection>
-PASS: Full answer achievable from available results.
+PASS
 OR
-PARTIAL: [list what was answered] | Gaps: [list what is missing and why]
+PARTIAL: [what was answered] / Gaps: [what is missing and why]
 OR
 FAIL: [specific reason the question cannot be answered at all]
 </reflection>"""

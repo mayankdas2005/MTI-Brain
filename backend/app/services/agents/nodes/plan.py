@@ -26,22 +26,24 @@ def _parse_plan(text: str) -> dict:
 
 async def plan_node(state: State) -> dict:
     question = state.get("question", "")
-    persona = state.get("persona", "Executive-F")
+    persona = state.get("persona", "Executive")
     plan_attempts = state.get("plan_attempts", 0)
     halt_reason = state.get("halt_reason", "")
     t0 = time.perf_counter()
 
-    prior_context = ""
-    if plan_attempts > 0 and halt_reason:
-        prior_context = f"\nPrior decomposition failed: {halt_reason}\nPlease re-decompose avoiding those issues."
+    prior_context = (
+        f"Note: prior decomposition failed — {halt_reason}. Re-decompose avoiding that issue."
+        if plan_attempts > 0 and halt_reason else ""
+    )
 
     tier = "deep" if state.get("deep_analysis") else "balanced"
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
     chain = PLAN_PROMPT | get_llm(tier)
     raw = await chain.ainvoke({
-        "question": question + prior_context,
+        "question": question,
         "persona": persona,
         "ontology_summary": get_ontology_summary(),
+        "prior_context": prior_context,
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

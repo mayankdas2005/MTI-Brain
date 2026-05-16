@@ -225,6 +225,24 @@ function appendStepReasoning(
   return steps;
 }
 
+/** Mark a specific node's step as done with its authoritative duration. */
+function markStepDone(
+  steps: StreamingStep[] | undefined,
+  node: string,
+  duration_ms: number,
+): StreamingStep[] | undefined {
+  if (!steps) return steps;
+  let found = false;
+  const next = steps.map((s) => {
+    if (!found && s.node === node && s.status === 'active') {
+      found = true;
+      return { ...s, status: 'done' as const, duration_ms };
+    }
+    return s;
+  });
+  return found ? next : steps;
+}
+
 /** Replace streamingSteps with the authoritative final list from `done`. */
 function finalizeStepsFromDone(rawSteps: unknown): StreamingStep[] | undefined {
   if (!Array.isArray(rawSteps) || rawSteps.length === 0) return undefined;
@@ -1046,6 +1064,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId ? { ...m, chartReady: true } : m,
         );
       },
+      onNodeDone: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms) }
+            : m,
+        );
+      },
       onFollowUps: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
@@ -1392,6 +1417,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId ? { ...m, chartReady: true } : m,
         );
       },
+      onNodeDone: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms) }
+            : m,
+        );
+      },
       onFollowUps: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, followUpsReady: true, metadata_: { ...m.metadata_, follow_ups: data.questions } } : m,
@@ -1680,6 +1712,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onVizSkip: () => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, chartReady: true } : m,
+        );
+      },
+      onNodeDone: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms) }
+            : m,
         );
       },
       onFollowUps: (data) => {

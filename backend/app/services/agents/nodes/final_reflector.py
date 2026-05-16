@@ -24,7 +24,7 @@ def _summarize_scratchpad(scratchpad: dict) -> str:
 
 async def final_reflector_node(state: State) -> dict:
     question = state.get("question", "")
-    persona = state.get("persona", "Executive-F")
+    persona = state.get("persona", "Executive")
     scratchpad = state.get("scratchpad", {})
     t0 = time.perf_counter()
 

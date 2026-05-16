@@ -12,7 +12,7 @@ from app.services.agents.state import State
 
 async def domain_specialist_node(state: State) -> dict:
     question = state.get("question", "")
-    persona = state.get("persona", "Analyst-F")
+    persona = state.get("persona", "Analyst")
     complexity = state.get("complexity", "simple")
     t0 = time.perf_counter()
 
@@ -32,7 +32,7 @@ async def domain_specialist_node(state: State) -> dict:
     hil_required = bool(parsed.get("hil_required", False))
 
     # Force HIL for Executive + advanced complexity
-    if persona == "Executive-F" and complexity == "advanced":
+    if persona == "Executive" and complexity == "advanced":
         hil_required = True
 
     step = {

@@ -36,7 +36,7 @@ def _format_tribal_facts(facts: list[dict]) -> str:
 async def graph_reasoning_node(state: State) -> dict:
     question = state.get("question", "")
     intent = state.get("intent", "")
-    persona = state.get("persona", "Analyst-F")
+    persona = state.get("persona", "Analyst")
     kg_columns = state.get("kg_columns", [])
     kg_rows = state.get("kg_rows", [])
     tribal_facts = state.get("tribal_facts", [])

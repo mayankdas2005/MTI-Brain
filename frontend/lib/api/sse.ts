@@ -29,6 +29,7 @@ export interface SSEHandlers {
     metric_owner?: string | null;
     metric_defined_at?: string | null;
   }) => void;
+  onNodeDone?: (data: { node: string; duration_ms: number }) => void;
   onChart?: (data: { spec: Record<string, unknown> }) => void;
   onVizSkip?: () => void;
   onFollowUps?: (data: { questions: string[] }) => void;
@@ -153,6 +154,9 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
         metric_owner?: string | null;
         metric_defined_at?: string | null;
       });
+      break;
+    case 'node.done':
+      handlers.onNodeDone?.(data as { node: string; duration_ms: number });
       break;
     case 'chart':
       handlers.onChart?.(data as { spec: Record<string, unknown> });
