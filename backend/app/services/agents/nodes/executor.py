@@ -54,31 +54,15 @@ async def _run_sub_question(sq: dict, state: State, inner_graph, writer=None) ->
         "summary": dep_context,
     }
 
+    # Use ainvoke (not astream_events) so inner sub-graph events don't bubble
+    # up to the outer graph's event stream. This prevents node repetition and
+    # garbled token interleaving when multiple sub-questions run in parallel.
     config = {"configurable": {"thread_id": f"subq-{sq['id']}-{int(time.time())}"}}
-    reasoning_parts: list[str] = []
-    final_state: dict = {}
 
     try:
-        async for ev in inner_graph.astream_events(sub_initial, version="v2", config=config):
-            kind = ev["event"]
-
-            if kind == "on_chat_model_stream":
-                chunk = ev.get("data", {}).get("chunk")
-                if chunk:
-                    raw = getattr(chunk, "content", "")
-                    if isinstance(raw, str):
-                        reasoning_parts.append(raw)
-                    elif isinstance(raw, list):
-                        for block in raw:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                reasoning_parts.append(block.get("text", ""))
-
-            elif kind == "on_chain_end":
-                node_name = ev.get("metadata", {}).get("langgraph_node")
-                if node_name is None:
-                    output = ev.get("data", {}).get("output", {})
-                    if isinstance(output, dict):
-                        final_state = output
+        final_state = await inner_graph.ainvoke(sub_initial, config=config)
+        if not isinstance(final_state, dict):
+            final_state = {}
 
         result = {
             "id": sq["id"],
@@ -90,7 +74,7 @@ async def _run_sub_question(sq: dict, state: State, inner_graph, writer=None) ->
             "kg_row_count": final_state.get("kg_row_count", 0),
             "evidence": final_state.get("evidence", []),
             "error": final_state.get("governance_halt") or final_state.get("sparql_error") or "",
-            "inner_reasoning": "".join(reasoning_parts),
+            "inner_reasoning": (final_state.get("reasoning") or "").strip()[:500],
         }
         if writer:
             rows = result["kg_row_count"]

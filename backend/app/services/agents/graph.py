@@ -579,6 +579,19 @@ async def stream_pipeline(
     pipeline_start = time.perf_counter()
     stopped = False
 
+    # Tracks run_ids of real outer executor node starts.
+    # Used to filter inner sub-graph events that bubble up to the outer stream
+    # even when ainvoke is used (LangGraph propagates via contextvars callbacks).
+    _executor_run_ids: set[str] = set()
+    # Nodes that exist in the inner sub-graph (run inside executor for sub-questions).
+    # Events for these nodes are filtered while any real executor is active.
+    _INNER_GRAPH_NODES: set[str] = {
+        "domain_specialist", "ontology_lookup", "brain_retrieval",
+        "sparql_gen", "sparql_validate", "governance_gate",
+        "sparql_execute", "graph_reasoning", "verifier",
+        "answer_synthesis", "visualization",
+    }
+
     logger.info(
         f"[{run_id}] Pipeline START | thread={thread_id} | "
         f"deep_analysis={deep_analysis} | persona={persona!r} | max_rows={max_rows} | "
@@ -592,13 +605,30 @@ async def stream_pipeline(
                 yield {"event": "stopped", "data": {"message": "Stopped by user"}}
                 break
 
-            # Skip events bubbled up from executor's inner sub-graphs.
-            # Inner reasoning is captured per-subquestion via subq_progress custom events.
+            # Skip events with proper LangGraph sub-graph namespace prefix
             if "|" in ev.get("metadata", {}).get("langgraph_checkpoint_ns", ""):
                 continue
 
             kind = ev["event"]
+            run_id_str = str(ev.get("run_id", ""))
             node = ev.get("metadata", {}).get("langgraph_node")
+
+            # Record real executor node starts (before any filtering)
+            if kind == "on_chain_start" and node == "executor":
+                _executor_run_ids.add(run_id_str)
+
+            # Filter events for inner sub-graph nodes while executor is active.
+            # These are sub-question runs — their events must not surface at the outer level.
+            if _executor_run_ids and node in _INNER_GRAPH_NODES:
+                continue
+
+            # Filter spurious executor on_chain_end events caused by inner graph
+            # completions leaking as executor ends (different run_id than the real executor).
+            if kind == "on_chain_end" and node == "executor":
+                if run_id_str not in _executor_run_ids:
+                    continue
+                _executor_run_ids.discard(run_id_str)
+
             if node not in _NODE_MESSAGE:
                 continue
 
