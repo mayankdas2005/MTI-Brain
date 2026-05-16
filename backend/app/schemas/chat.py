@@ -78,6 +78,7 @@ class RetryRequest(_StrictRequest):
     source_conversation_id: uuid.UUID | None = Field(default=None)
     response_tone: ResponseTone = Field(default="analyst")
     max_rows: int = Field(default=100, ge=10, le=500)
+    deep_analysis: bool = Field(default=False)
 
 
 class EditRequest(_StrictRequest):
@@ -97,6 +98,7 @@ class EditRequest(_StrictRequest):
     source_conversation_id: uuid.UUID | None = Field(default=None)
     response_tone: ResponseTone = Field(default="analyst")
     max_rows: int = Field(default=100, ge=10, le=500)
+    deep_analysis: bool = Field(default=False)
 
 
 class FeedbackRequest(_StrictRequest):

@@ -108,8 +108,6 @@ def route_after_verifier(state: State) -> str:
 
 
 def route_after_hil(state: State) -> str:
-    if state.get("hil_required") and not state.get("hil_approved"):
-        return END
     return "compress"
 
 
@@ -117,6 +115,10 @@ def route_after_synthesis(state: State) -> str:
     if len(state.get("messages", [])) >= SUMMARIZE_THRESHOLD:
         return "compress"
     return END
+
+
+def route_synthesis_to_viz(state: State) -> str:
+    return "visualization" if state.get("kg_rows") else "skip_viz"
 
 
 def route_after_general_chat(state: State) -> str:
@@ -208,7 +210,11 @@ def _build_inner_graph() -> StateGraph:
         route_after_verifier,
         {"sparql_gen": "sparql_gen", "answer_synthesis": "answer_synthesis"},
     )
-    b.add_edge("answer_synthesis", "visualization")
+    b.add_conditional_edges(
+        "answer_synthesis",
+        route_synthesis_to_viz,
+        {"visualization": "visualization", "skip_viz": END},
+    )
     b.add_edge("visualization", END)
 
     return b
@@ -319,7 +325,11 @@ def _build_main_graph() -> StateGraph:
     b.add_edge("final_reflector", "answer_synthesis")
 
     # ── Convergence: both paths → answer_synthesis → visualization → HIL → compress → END ──
-    b.add_edge("answer_synthesis", "visualization")
+    b.add_conditional_edges(
+        "answer_synthesis",
+        route_synthesis_to_viz,
+        {"visualization": "visualization", "skip_viz": "human_in_loop"},
+    )
     b.add_edge("visualization", "human_in_loop")
     b.add_conditional_edges(
         "human_in_loop",
@@ -372,18 +382,18 @@ async def init_pipeline() -> None:
 
 
 async def shutdown_pipeline() -> None:
-    """Close data pool and checkpoint pool."""
+    """Close data pool and checkpoint pool. Caller enforces the hard timeout."""
     global _checkpoint_pool
     try:
-        await asyncio.wait_for(dp.close_data_pool(), timeout=5.0)
-    except asyncio.TimeoutError:
-        logger.warning("Data pool close timed out")
-    if _checkpoint_pool:
+        await dp.close_data_pool()
+    except Exception:
+        logger.warning("Data pool close failed")
+    pool, _checkpoint_pool = _checkpoint_pool, None
+    if pool:
         try:
-            await asyncio.wait_for(_checkpoint_pool.close(), timeout=5.0)
-        except asyncio.TimeoutError:
-            logger.warning("Checkpoint pool close timed out")
-    _checkpoint_pool = None
+            await pool.close(timeout=3.0)
+        except Exception:
+            logger.warning("Checkpoint pool close failed")
     logger.info("MTI Brain pipeline shut down")
 
 
@@ -404,6 +414,15 @@ def cancel_stream(thread_id: str) -> bool:
 
 # ─── Node → SSE stream config ─────────────────────────────────────────────────
 
+# Nodes absent from _NODE_MESSAGE are completely hidden — no node.start event,
+# no pipeline step, nothing reaches the frontend or DB.
+# To hide a node: remove it from _NODE_MESSAGE (and _NODE_STREAM).
+#
+# Nodes in _NO_REASONING_NODES are shown as steps but their reasoning text
+# is stripped before being sent to the frontend / saved to DB.
+# To suppress reasoning for a node: add its name here.
+_NO_REASONING_NODES: set[str] = set()
+
 _NODE_STREAM = {
     "intake_classify": ("reasoning", "reasoning.delta"),
     "domain_specialist": ("reasoning", "reasoning.delta"),
@@ -411,20 +430,18 @@ _NODE_STREAM = {
     "graph_reasoning": ("reasoning", "reasoning.delta"),
     "answer_synthesis": "multi",
     "plan": ("reasoning", "reasoning.delta"),
-    "step_reflector": ("reasoning", "reasoning.delta"),
+    "step_reflector": None,
     "final_reflector": ("reasoning", "reasoning.delta"),
     "general_chat": ("answer", "answer.delta"),
-    "ontology_lookup": None,
-    "brain_retrieval": None,
-    "sparql_validate": None,
+    "ontology_lookup": ("reasoning", "reasoning.delta"),
+    "brain_retrieval": ("reasoning", "reasoning.delta"),
+    "sparql_validate": ("reasoning", "reasoning.delta"),
     "sparql_execute": None,
     "governance_gate": None,
     "verifier": None,
-    "visualization": None,
-    "human_in_loop": None,
-    "compress": None,
+    "visualization": ("reasoning", "reasoning.delta"),
     "plan_validator": None,
-    "executor": None,
+    "executor": ("reasoning", "reasoning.delta"),
     "repairer": None,
     "rejected": None,
 }
@@ -441,12 +458,9 @@ _NODE_MESSAGE = {
     "governance_gate": "Governance check",
     "sparql_execute": "Querying Knowledge Graph",
     "graph_reasoning": "Analyzing results",
-    "verifier": "Verifying data quality",
     "answer_synthesis": "Preparing your answer",
     "visualization": "Building chart",
-    "human_in_loop": "Awaiting approval",
-    "compress": "Updating conversation memory",
-    "plan": "Planning sub-question DAG",
+    "plan": "Planning sub-questions",
     "plan_validator": "Validating plan",
     "executor": "Executing sub-questions",
     "step_reflector": "Reflecting on sub-results",
@@ -473,6 +487,8 @@ async def stream_pipeline(
     thread_id: str = "default",
     persona: str | None = None,
     user_id: str | None = None,
+    max_rows: int = 100,
+    deep_analysis: bool = False,
     cancel_event: asyncio.Event | None = None,
 ):
     """Run the pipeline and yield SSE event dicts as processing progresses."""
@@ -518,6 +534,8 @@ async def stream_pipeline(
         "messages": [],
         "summary": "",
         "stopped": False,
+        "max_rows": max_rows,
+        "deep_analysis": deep_analysis,
         "_thread_id": thread_id,
         "_user_id": user_id or "",
         "plan": {},
@@ -554,10 +572,18 @@ async def stream_pipeline(
     state: dict = {}
     reasoning_entries: list[dict] = []
     _reasoning_idx: dict[str, int] = {}
+    _pipeline_steps: list[dict] = []
+    _step_by_visit: dict[str, int] = {}       # "node:visit" -> index in _pipeline_steps
+    _visit_timers: dict[str, float] = {}      # "node:visit" -> wall-clock start
+    _step_reasoning_idx: dict[str, list[int]] = {}  # "node:visit" -> reasoning_entries indices
     pipeline_start = time.perf_counter()
     stopped = False
 
-    logger.info(f"[{run_id}] Pipeline START | thread={thread_id} | question={question[:80]!r}")
+    logger.info(
+        f"[{run_id}] Pipeline START | thread={thread_id} | "
+        f"deep_analysis={deep_analysis} | persona={persona!r} | max_rows={max_rows} | "
+        f"question={question[:80]!r}"
+    )
 
     try:
         async for ev in _main_graph.astream_events(initial, version="v2", config=config):
@@ -565,6 +591,11 @@ async def stream_pipeline(
                 stopped = True
                 yield {"event": "stopped", "data": {"message": "Stopped by user"}}
                 break
+
+            # Skip events bubbled up from executor's inner sub-graphs.
+            # Inner reasoning is captured per-subquestion via subq_progress custom events.
+            if "|" in ev.get("metadata", {}).get("langgraph_checkpoint_ns", ""):
+                continue
 
             kind = ev["event"]
             node = ev.get("metadata", {}).get("langgraph_node")
@@ -579,6 +610,17 @@ async def stream_pipeline(
                 is_retry_node = node in node_first_seen
                 node_first_seen.add(node)
                 node_timers[node] = time.perf_counter()
+                _visit_timers[visit_key] = node_timers[node]
+                _pipeline_steps.append({
+                    "node": node,
+                    "message": _NODE_MESSAGE[node],
+                    "status": "active",
+                    "started_at_ms": int((node_timers[node] - pipeline_start) * 1000),
+                    "duration_ms": None,
+                    "reasoning": "",
+                    "is_retry": is_retry_node,
+                })
+                _step_by_visit[visit_key] = len(_pipeline_steps) - 1
                 elapsed = time.perf_counter() - pipeline_start
                 logger.info(f"[{run_id}] {node} START{' (retry)' if is_retry_node else ''} | +{elapsed:.1f}s")
                 yield {
@@ -630,38 +672,159 @@ async def stream_pipeline(
                                     "label": label,
                                     "tokens": [],
                                 })
+                                _step_reasoning_idx.setdefault(
+                                    f"{node}:{node_visit_count.get(node, 0)}", []
+                                ).append(_reasoning_idx[reasoning_key])
                             reasoning_entries[_reasoning_idx[reasoning_key]]["tokens"].append(text)
                         return {"event": etype, "data": {"node": node, "run_id": call_run_id, "text": text}}
 
                     if isinstance(s, MultiSectionStreamer):
                         text, etype = s.feed(token)
                         if text and etype:
-                            yield _emit(text, etype)
+                            ev_out = _emit(text, etype)
+                            if node not in _NO_REASONING_NODES or etype != "reasoning.delta":
+                                yield ev_out
                     else:
                         text = s.feed(token)
                         if text:
                             _, etype = _NODE_STREAM[node]
-                            yield _emit(text, etype)
+                            ev_out = _emit(text, etype)
+                            if node not in _NO_REASONING_NODES or etype != "reasoning.delta":
+                                yield ev_out
+
+            elif kind == "on_custom_event":
+                custom_data = ev.get("data", {})
+                if custom_data.get("kind") == "subq_progress":
+                    text = custom_data.get("text", "")
+                    sq_id = custom_data.get("id", "")
+                    if text:
+                        call_key = f"executor_subq:{sq_id}"
+                        exec_visit = node_visit_count.get("executor", 0)
+                        reasoning_entries.append({
+                            "node": "executor",
+                            "run_id": call_key,
+                            "label": f"Sub-question {sq_id}",
+                            "tokens": [text],
+                        })
+                        _step_reasoning_idx.setdefault(
+                            f"executor:{exec_visit}", []
+                        ).append(len(reasoning_entries) - 1)
+                        yield {"event": "reasoning.delta", "data": {
+                            "node": "executor",
+                            "run_id": call_key,
+                            "text": text,
+                        }}
 
             elif kind == "on_chain_end":
                 output = ev.get("data", {}).get("output")
                 if isinstance(output, dict):
+                    _visit_before_inc = node_visit_count.get(node, 0)
                     state.update({k: v for k, v in output.items() if k in _STATE_KEYS})
-                    node_visit_count[node] = node_visit_count.get(node, 0) + 1
+
+                    # Deterministic nodes: emit synthetic reasoning BEFORE closing
+                    # the step so it gets attached to the step record in the DB.
+                    _synthetic_text: str | None = None
+                    if node == "ontology_lookup":
+                        terms = state.get("ontology_terms", [])
+                        if terms:
+                            term_list = ", ".join(f"`lpp:{t['local']}`" for t in terms[:8])
+                            if len(terms) > 8:
+                                term_list += f" (+{len(terms) - 8} more)"
+                            _synthetic_text = f"Resolved {len(terms)} ontology terms: {term_list}."
+                        else:
+                            _synthetic_text = "No ontology terms matched — using full ontology reference."
+
+                    elif node == "brain_retrieval":
+                        facts = state.get("tribal_facts", [])
+                        routing = state.get("routing", "")
+                        if routing == "kg_only":
+                            _synthetic_text = "Policy context skipped — question answered from Knowledge Graph only."
+                        elif facts:
+                            fact_labels = ", ".join(
+                                f"[{f.get('type', '?')}] {f.get('label', '?')}" for f in facts[:3]
+                            )
+                            if len(facts) > 3:
+                                fact_labels += f" (+{len(facts) - 3} more)"
+                            _synthetic_text = f"Retrieved {len(facts)} policy facts: {fact_labels}."
+                        else:
+                            _synthetic_text = "No relevant policy context found for this query."
+
+                    elif node == "sparql_validate":
+                        err = state.get("sparql_error", "")
+                        _synthetic_text = (
+                            f"Validation failed — {err}"
+                            if err
+                            else "Syntax valid. All predicates confirmed."
+                        )
+
+                    elif node == "visualization":
+                        viz = state.get("viz_spec")
+                        if viz and isinstance(viz, dict) and viz.get("type"):
+                            chart_type = viz.get("type", "")
+                            x = viz.get("x_key", viz.get("name_key", ""))
+                            y = viz.get("y_keys", [viz.get("y_key", viz.get("value_key", ""))])
+                            y_str = ", ".join(y) if isinstance(y, list) else str(y)
+                            _synthetic_text = f"Generated {chart_type} chart — {x} vs {y_str}."
+                        else:
+                            _synthetic_text = "No chart applicable for this result set."
+
+                    elif node == "step_reflector":
+                        scratchpad = state.get("scratchpad", {})
+                        passed = sum(1 for r in scratchpad.values() if r.get("status") == "completed")
+                        skipped = sum(1 for r in scratchpad.values() if r.get("status") == "skipped")
+                        needs_repair = sum(1 for r in scratchpad.values() if r.get("status") == "needs_repair")
+                        parts = []
+                        if passed:
+                            parts.append(f"**{passed} passed**")
+                        if skipped:
+                            parts.append(f"*{skipped} skipped* (data not in graph)")
+                        if needs_repair:
+                            parts.append(f"`{needs_repair} flagged` for repair")
+                        _synthetic_text = "Sub-result verdicts: " + ", ".join(parts) + "." if parts else "No sub-questions reflected."
+
+                    if _synthetic_text is not None:
+                        call_key = f"{node}:{_visit_before_inc}"
+                        reasoning_entries.append({
+                            "node": node,
+                            "run_id": call_key,
+                            "label": _NODE_MESSAGE.get(node, node),
+                            "tokens": [_synthetic_text],
+                        })
+                        _step_reasoning_idx.setdefault(
+                            f"{node}:{_visit_before_inc}", []
+                        ).append(len(reasoning_entries) - 1)
+                        yield {"event": "reasoning.delta", "data": {"node": node, "run_id": call_key, "text": _synthetic_text}}
+
+                    node_visit_count[node] = _visit_before_inc + 1
                     node_dur = time.perf_counter() - node_timers.get(node, pipeline_start)
                     elapsed = time.perf_counter() - pipeline_start
                     logger.info(f"[{run_id}] {node} DONE | {node_dur:.1f}s | total +{elapsed:.1f}s")
 
+                    # close the pipeline step with timing + accumulated reasoning
+                    _step_visit_key = f"{node}:{_visit_before_inc}"
+                    if _step_visit_key in _step_by_visit:
+                        _s = _pipeline_steps[_step_by_visit[_step_visit_key]]
+                        _s["status"] = "done"
+                        _s["duration_ms"] = round(
+                            (time.perf_counter() - _visit_timers.get(_step_visit_key, pipeline_start)) * 1000
+                        )
+                        _s["reasoning"] = "" if node in _NO_REASONING_NODES else "".join(
+                            "".join(reasoning_entries[i]["tokens"])
+                            for i in _step_reasoning_idx.get(_step_visit_key, [])
+                        )
+
                     if node == "sparql_execute":
                         status = "error" if state.get("sparql_error") else "success"
+                        kg_rows = state.get("kg_rows", [])
                         yield {
                             "event": "sparql.executed",
                             "data": {
                                 "status": status,
                                 "sparql": state.get("sparql", ""),
                                 "columns": state.get("kg_columns", []),
-                                "rows": state.get("kg_rows", []),
+                                "rows": kg_rows,
                                 "row_count": state.get("kg_row_count", 0),
+                                "will_visualize": bool(kg_rows),
                             },
                         }
                     elif node == "sparql_gen":
@@ -683,10 +846,24 @@ async def stream_pipeline(
                     elif node == "visualization":
                         if state.get("viz_spec"):
                             yield {"event": "chart", "data": {"spec": state["viz_spec"]}}
+                        else:
+                            yield {"event": "viz.skip", "data": {}}
 
                     elif node == "answer_synthesis":
                         if state.get("follow_ups"):
                             yield {"event": "follow_ups", "data": {"questions": state["follow_ups"]}}
+
+                    # Emit node.done so frontend can mark step complete immediately
+                    # (without waiting for the final done event)
+                    if _step_visit_key in _step_by_visit:
+                        _done_step = _pipeline_steps[_step_by_visit[_step_visit_key]]
+                        yield {
+                            "event": "node.done",
+                            "data": {
+                                "node": node,
+                                "duration_ms": _done_step["duration_ms"],
+                            },
+                        }
 
         total = time.perf_counter() - pipeline_start
         duration_ms = round(total * 1000)
@@ -712,6 +889,7 @@ async def stream_pipeline(
                     "governance_halt": state.get("governance_halt"),
                     "final_reflection": state.get("final_reflection", ""),
                     "duration_ms": duration_ms,
+                    "pipeline_steps": _pipeline_steps,
                     "reasoning": [
                         {
                             "node": e["node"],
@@ -730,6 +908,6 @@ async def stream_pipeline(
 
     except Exception as e:
         logger.error(f"[{run_id}] Pipeline error: {e}")
-        yield {"event": "error", "data": {"message": str(e)}}
+        yield {"event": "error", "data": {"message": "Something went wrong while processing your question. Please try again."}}
     finally:
         _active_streams.pop(thread_id, None)

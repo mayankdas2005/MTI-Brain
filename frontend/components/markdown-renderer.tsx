@@ -82,13 +82,13 @@ const markdownComponents: Components = {
   },
   ul: ({ children }) => <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>,
   ol: ({ children }) => <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>,
-  li: ({ children }) => <li className="text-sm pl-1">{children}</li>,
+  li: ({ children }) => <li className="pl-1">{children}</li>,
   code: ({ children, className }) => {
     const isBlock = /language-/.test(className || '');
     return isBlock ? (
       <CodeBlock className={className}>{children}</CodeBlock>
     ) : (
-      <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">{children}</code>
+      <code className="bg-muted px-1.5 py-0.5 rounded text-[0.9em] font-mono">{children}</code>
     );
   },
   pre: ({ children }) => <>{children}</>,

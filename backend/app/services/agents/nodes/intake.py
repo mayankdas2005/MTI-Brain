@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage
 
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_tag, parse_json_from_response
-from app.services.agents.prompts import INTAKE_CLASSIFY_PROMPT
+from app.services.agents.prompts import INTAKE_CLASSIFY_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
 
@@ -18,14 +18,25 @@ async def intake_classify_node(state: State) -> dict:
     summary = state.get("summary", "")
     t0 = time.perf_counter()
 
+    preset = state.get("persona", "")
+    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
     chain = INTAKE_CLASSIFY_PROMPT | get_llm("fast")
-    raw = await chain.ainvoke({"question": question, "summary": summary or "None."})
+    raw = await chain.ainvoke({
+        "question": question,
+        "summary": summary or "None.",
+        "persona_preset": f"{preset} (use this — do not infer)" if preset else "not set — infer from question phrasing",
+        "reasoning_directive": reasoning_directive,
+    })
     text = raw.content if hasattr(raw, "content") else str(raw)
 
     parsed = parse_json_from_response(text)
     question_type = parsed.get("question_type", "kg_query")
-    persona = parsed.get("persona", "Analyst-F")
+    # If the user explicitly set a persona via response_tone, honour it.
+    persona = state.get("persona") or parsed.get("persona", "Analyst")
     complexity = parsed.get("complexity", "simple")
+    # deep_analysis overrides the classifier's complexity judgement.
+    if state.get("deep_analysis"):
+        complexity = "advanced"
 
     step = {
         "node": "intake_classify",

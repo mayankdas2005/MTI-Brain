@@ -10,6 +10,15 @@ export interface PinnedMetric {
   updated_at: string;
 }
 
+const PM_CACHE_KEY = 'mti_pinned_count';
+const _pmGetCache = (): number => {
+  try { return Math.max(0, parseInt(localStorage.getItem(PM_CACHE_KEY) ?? '0', 10) || 0); }
+  catch { return 0; }
+};
+const _pmSetCache = (n: number) => {
+  try { localStorage.setItem(PM_CACHE_KEY, String(n)); } catch {}
+};
+
 // In-flight dedup: welcome-state calls fetchMetrics on mount.
 // React StrictMode double-invokes effects before the first call resolves,
 // causing two real network requests without this guard.
@@ -19,6 +28,7 @@ interface PinnedMetricsStore {
   metrics: PinnedMetric[];
   loading: boolean;
   fetched: boolean;
+  lastKnownCount: number;
 
   fetchMetrics: () => Promise<void>;
   pinMetric: (label: string, sourceQuery: string) => Promise<PinnedMetric>;
@@ -30,6 +40,7 @@ export const usePinnedMetricsStore = create<PinnedMetricsStore>()((set, get) => 
   metrics: [],
   loading: false,
   fetched: false,
+  lastKnownCount: _pmGetCache(),
 
   fetchMetrics: () => {
     if (get().fetched) return Promise.resolve();
@@ -39,7 +50,8 @@ export const usePinnedMetricsStore = create<PinnedMetricsStore>()((set, get) => 
     const run = async () => {
       try {
         const data = await apiFetch<PinnedMetric[]>('/pinned-metrics');
-        set({ metrics: data, fetched: true, loading: false });
+        _pmSetCache(data.length);
+        set({ metrics: data, fetched: true, loading: false, lastKnownCount: data.length });
       } catch {
         set({ loading: false });
       }
@@ -55,7 +67,11 @@ export const usePinnedMetricsStore = create<PinnedMetricsStore>()((set, get) => 
       method: 'POST',
       body: JSON.stringify({ label, source_query: sourceQuery, position }),
     });
-    set((s) => ({ metrics: [...s.metrics, created] }));
+    set((s) => {
+      const next = [...s.metrics, created];
+      _pmSetCache(next.length);
+      return { metrics: next, lastKnownCount: next.length };
+    });
     return created;
   },
 
@@ -77,7 +93,11 @@ export const usePinnedMetricsStore = create<PinnedMetricsStore>()((set, get) => 
 
   unpinMetric: async (id) => {
     const prev = get().metrics;
-    set((s) => ({ metrics: s.metrics.filter((m) => m.id !== id) }));
+    set((s) => {
+      const next = s.metrics.filter((m) => m.id !== id);
+      _pmSetCache(next.length);
+      return { metrics: next, lastKnownCount: next.length };
+    });
     try {
       await apiFetch(`/pinned-metrics/${id}`, { method: 'DELETE' });
     } catch (err) {

@@ -1,8 +1,8 @@
 """FastAPI application entry point with lifespan management."""
 
+import asyncio
 import sys
 if sys.platform == "win32":
-    import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from contextlib import asynccontextmanager
@@ -35,10 +35,28 @@ async def lifespan(app: FastAPI):
         await init_pipeline()
     except Exception as e:
         logger.error(f"Pipeline init failed (continuing without pipeline): {e}")
-    yield
-    logger.info("Shutting down - releasing resources")
-    await shutdown_pipeline()
-    await dispose_engine()
+    try:
+        yield
+    finally:
+        # finally runs even when CancelledError is thrown at the yield point (Ctrl+C).
+        # asyncio.shield protects the cleanup coroutine from the already-cancelled task
+        # so pool.close() and dispose_engine() actually complete instead of aborting.
+        logger.info("Shutting down — forcing exit in ≤5s")
+
+        async def _cleanup() -> None:
+            try:
+                await asyncio.wait_for(shutdown_pipeline(), timeout=4.0)
+            except Exception:
+                logger.warning("Pipeline shutdown timed out or failed")
+            try:
+                await asyncio.wait_for(dispose_engine(), timeout=1.0)
+            except Exception:
+                pass
+
+        try:
+            await asyncio.shield(_cleanup())
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 app = FastAPI(

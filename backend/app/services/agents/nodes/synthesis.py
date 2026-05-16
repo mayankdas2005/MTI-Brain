@@ -15,7 +15,7 @@ from app.services.agents.helpers import (
     parse_tag,
     parse_json_from_response,
 )
-from app.services.agents.prompts import ANSWER_SYNTHESIS_PROMPT, CHART_PROMPT
+from app.services.agents.prompts import ANSWER_SYNTHESIS_PROMPT, CHART_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
 
@@ -70,7 +70,9 @@ async def answer_synthesis_node(state: State) -> dict:
     for row in spread_sample[:_NARRATIVE_SAMPLE_CAP]:
         sample_lines.append(" | ".join(str(v) if v is not None else "NULL" for v in row))
 
-    narrative_coro = (ANSWER_SYNTHESIS_PROMPT | get_llm("balanced")).ainvoke({
+    tier = "deep" if state.get("deep_analysis") else "balanced"
+    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
+    narrative_coro = (ANSWER_SYNTHESIS_PROMPT | get_llm(tier)).ainvoke({
         "question": question,
         "intent": intent,
         "persona": persona,
@@ -80,6 +82,7 @@ async def answer_synthesis_node(state: State) -> dict:
         "tribal_facts": _format_tribal_facts(tribal_facts),
         "evidence": ", ".join(evidence) if evidence else "None.",
         "reasoning": reasoning or "None.",
+        "reasoning_directive": reasoning_directive,
     })
 
     chart_coro = (CHART_PROMPT | get_llm("fast")).ainvoke(

@@ -241,6 +241,7 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
   const pinnedMetrics = usePinnedMetricsStore((s) => s.metrics);
   const pinnedLoading = usePinnedMetricsStore((s) => s.loading);
   const pinnedFetched = usePinnedMetricsStore((s) => s.fetched);
+  const pinnedLastKnown = usePinnedMetricsStore((s) => s.lastKnownCount);
   // fetchMetrics is fired from the auth layout prime() so it's already
   // in-flight by the time WelcomeState mounts — no effect needed here.
 
@@ -280,19 +281,16 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
           </h1>
         </div>
 
-        {/* Pinned metrics — skeleton while loading, cards when ready */}
-        {(pinnedLoading || pinnedMetrics.length > 0) && (
+        {/* Pinned metrics — honest skeleton (count-matched) + empty state */}
+        {(pinnedMetrics.length > 0 || (pinnedLoading && pinnedLastKnown > 0)) && (
           <div className="w-full animate-fade-up" style={{ animationDelay: '20ms' }}>
-            {/* Header only shown once we know there are metrics — avoids
-                "PINNED METRICS" appearing above a skeleton that may resolve
-                to nothing if the user has no pinned metrics yet. */}
-            {pinnedFetched && (
+            {pinnedFetched && pinnedMetrics.length > 0 && (
               <p className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-medium text-center mb-2">Pinned metrics</p>
             )}
             {pinnedLoading && !pinnedFetched ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className={`rounded-xl border border-border bg-background px-4 py-3 space-y-2${i === 2 ? ' hidden sm:block' : ''}`}>
+                {Array.from({ length: Math.min(pinnedLastKnown, 6) }, (_, i) => (
+                  <div key={i} className={`rounded-xl border border-border bg-background px-4 py-3 space-y-2${i >= 2 ? ' hidden sm:block' : ''}`}>
                     <Skeleton className="h-3 w-3/4" />
                     <Skeleton className="h-3 w-1/3" />
                   </div>

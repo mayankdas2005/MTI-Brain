@@ -1,6 +1,7 @@
 'use client';
 
 import { useThreadStore } from '@/lib/store/threads';
+import { usePreferencesStore } from '@/lib/store/preferences';
 import { getLastVisibleAssistantConvId } from '@/lib/utils/conversation-tree';
 
 interface FollowUpChipsProps {
@@ -14,12 +15,13 @@ export function FollowUpChips({ threadId, followUps, conversationId }: FollowUpC
   const isStreaming = useThreadStore((s) => s.isStreaming);
   const currentMessages = useThreadStore((s) => s.currentMessages);
   const activeVersionsForThread = useThreadStore((s) => s.activeVersions[threadId]);
+  const deepAnalysis = usePreferencesStore((s) => s.deepAnalysis ?? false);
 
   if (!followUps.length) return null;
 
   const handleClick = (q: string) => {
     const linearPrior = getLastVisibleAssistantConvId(currentMessages, activeVersionsForThread);
-    askQuestion(threadId, q, linearPrior ?? conversationId);
+    askQuestion(threadId, q, linearPrior ?? conversationId, undefined, deepAnalysis);
   };
 
   return (

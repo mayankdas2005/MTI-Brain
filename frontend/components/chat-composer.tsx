@@ -2,15 +2,23 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTheme } from 'next-themes';
 import { useThreadStore, getThreadCreationGate, setThreadCreationGate } from '@/lib/store/threads';
 import { useUIStore } from '@/lib/store/ui';
 import { usePreferencesStore } from '@/lib/store/preferences';
-import { ArrowUp, Square, BrainCircuit, AudioLines, Bookmark } from 'lucide-react';
+import { ArrowUp, Square, BrainCircuit, AudioLines, Bookmark, BookOpen } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 import { getLastVisibleAssistantConvId } from '@/lib/utils/conversation-tree';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
@@ -83,6 +91,7 @@ export function ChatComposer() {
   const ttsVoiceURI = usePreferencesStore((s) => s.ttsVoiceURI ?? '');
   const setResponseTone = usePreferencesStore((s) => s.setResponseTone);
   const setMaxResultRows = usePreferencesStore((s) => s.setMaxResultRows);
+  const { setTheme } = useTheme();
   const conversationMode = usePreferencesStore((s) => s.conversationMode ?? false);
   const setConversationMode = usePreferencesStore((s) => s.setConversationMode);
   const { speak: ttsSpeakFn, stop: ttsStop } = useTTS(ttsRate, ttsVoiceURI);
@@ -252,11 +261,13 @@ export function ChatComposer() {
 
   const handleSavePlaybook = () => {
     if (!saveQueryName.trim() || saveSubmittingRef.current) return;
+    const name = saveQueryName.trim();
+    const queryText = input.trim();
     saveSubmittingRef.current = true;
-    void createPlaybookQuery(saveQueryName.trim(), input.trim())
+    setSaveDialogOpen(false);
+    void createPlaybookQuery(name, queryText)
       .then(() => {
-        toast.success(`"${saveQueryName.trim()}" saved to Playbook`);
-        setSaveDialogOpen(false);
+        toast.success(`"${name}" saved — type @ to use it`);
       })
       .catch(() => toast.error('Failed to save.'))
       .finally(() => { saveSubmittingRef.current = false; });
@@ -350,9 +361,15 @@ export function ChatComposer() {
           setMaxResultRows(500);
           toast.success('Max rows set to 500');
           break;
+        case 'light':
+          setTheme('light');
+          break;
+        case 'dark':
+          setTheme('dark');
+          break;
       }
     },
-    [currentMessages, currentThreadId, retryResponse, router, setShortcutsOpen, ttsSpeakFn, setResponseTone, setMaxResultRows],
+    [currentMessages, currentThreadId, retryResponse, router, setShortcutsOpen, ttsSpeakFn, setResponseTone, setMaxResultRows, setTheme],
   );
 
   const handleSubmit = useCallback(
@@ -520,15 +537,28 @@ export function ChatComposer() {
                 type="button"
                 aria-pressed={deepAnalysis}
                 onClick={() => setDeepAnalysis(!deepAnalysis)}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors border outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                   deepAnalysis
-                    ? 'bg-primary/10 text-primary border border-primary/30'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
+                    ? 'chip-deep-analysis'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-accent border-transparent'
                 }`}
               >
                 <BrainCircuit className="w-3.5 h-3.5 shrink-0" />
                 <span className="hidden sm:inline">Deep Analysis</span>
               </button>
+              {playbookQueries.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInput('@');
+                    textareaRef.current?.focus();
+                  }}
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                  <span className="hidden sm:inline">Playbook</span>
+                </button>
+              )}
               {/* VoiceInputButton - hidden, conversation mode drives it via window events */}
               {/* <span className="hidden" aria-hidden>
                 <VoiceInputButton
@@ -587,39 +617,11 @@ export function ChatComposer() {
                       <Bookmark className="w-3.5 h-3.5" />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent side="top" align="start">Save to Playbook</TooltipContent>
+                  <TooltipContent side="right">Save to Playbook</TooltipContent>
                 </Tooltip>
               )}
             </div>
 
-            {/* Save-to-Playbook dialog */}
-            {saveDialogOpen && (
-              <div className="absolute inset-x-0 bottom-full mb-2 z-50">
-                <div className="mx-auto max-w-sm rounded-xl border border-border bg-popover shadow-lg p-4 space-y-3">
-                  <p className="text-sm font-medium">Save to Playbook</p>
-                  <input
-                    autoFocus
-                    value={saveQueryName}
-                    onChange={(e) => setSaveQueryName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') { e.preventDefault(); handleSavePlaybook(); }
-                      if (e.key === 'Escape') setSaveDialogOpen(false);
-                    }}
-                    placeholder="Name this query..."
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                  />
-                  <div className="flex justify-end gap-2">
-                    <button onClick={() => setSaveDialogOpen(false)} className="text-xs text-muted-foreground hover:text-foreground px-2 py-1">Cancel</button>
-                    <button
-                      onClick={handleSavePlaybook}
-                      className="rounded-lg bg-primary text-primary-foreground text-xs px-3 py-1.5 hover:bg-primary/90"
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
 
             <div className="relative h-9 w-9 flex items-center justify-center">
               {isStreaming && (
@@ -680,6 +682,30 @@ export function ChatComposer() {
           MTI Brain is AI and can make mistakes. Please double-check responses.
         </p>
       </div>
+
+      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+        <DialogContent className="sm:max-w-md p-6 gap-0">
+          <DialogTitle className="text-lg font-semibold text-foreground mb-1">
+            Save to Playbook
+          </DialogTitle>
+          <p className="text-sm text-muted-foreground mb-4">Give this query a name so you can reuse it later.</p>
+          <input
+            autoFocus
+            value={saveQueryName}
+            onChange={(e) => setSaveQueryName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); handleSavePlaybook(); }
+              if (e.key === 'Escape') setSaveDialogOpen(false);
+            }}
+            placeholder="Name this query…"
+            className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+          />
+          <DialogFooter className="mt-4">
+            <Button variant="ghost" onClick={() => setSaveDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleSavePlaybook}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

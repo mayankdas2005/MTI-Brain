@@ -8,7 +8,7 @@ import time
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_tag
 from app.services.agents.ontology_loader import get_ontology_summary
-from app.services.agents.prompts import PLAN_PROMPT
+from app.services.agents.prompts import PLAN_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
 
@@ -35,11 +35,14 @@ async def plan_node(state: State) -> dict:
     if plan_attempts > 0 and halt_reason:
         prior_context = f"\nPrior decomposition failed: {halt_reason}\nPlease re-decompose avoiding those issues."
 
-    chain = PLAN_PROMPT | get_llm("balanced")
+    tier = "deep" if state.get("deep_analysis") else "balanced"
+    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
+    chain = PLAN_PROMPT | get_llm(tier)
     raw = await chain.ainvoke({
         "question": question + prior_context,
         "persona": persona,
         "ontology_summary": get_ontology_summary(),
+        "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)
     plan = _parse_plan(text)
@@ -68,7 +71,7 @@ async def plan_node(state: State) -> dict:
 
     step = {
         "node": "plan",
-        "label": f"Planning sub-question DAG ({len(nodes)} sub-Qs)",
+        "label": f"Planning sub-questions ({len(nodes)} sub-Qs)",
         "duration_ms": round((time.perf_counter() - t0) * 1000),
     }
     return {

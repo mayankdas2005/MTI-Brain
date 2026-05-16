@@ -3,9 +3,7 @@
 import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, Volume2, Square, MoreHorizontal, Pin, LayoutDashboard } from 'lucide-react';
-import { useTTS, isTTSSupported } from '@/lib/hooks/use-tts';
-import { usePreferencesStore as usePrefStore } from '@/lib/store/preferences';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, MoreHorizontal, Pin, LayoutDashboard } from 'lucide-react';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import {
   Dialog,
@@ -89,6 +87,7 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ message, threadId, versionNav }: MessageBubbleProps) {
   const [editing, setEditing] = useState(false);
+
   const [editText, setEditText] = useState(message.content);
   const [dataView, setDataView] = useState<'sql' | 'table'>(() => {
     const pref = usePreferencesStore.getState();
@@ -121,10 +120,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const retryResponse = useThreadStore((s) => s.retryResponse);
   const editQuestion = useThreadStore((s) => s.editQuestion);
   const isStreaming = useThreadStore((s) => s.isStreaming);
-  const ttsRate = usePrefStore((s) => s.ttsRate ?? 1);
-  const ttsVoiceURI = usePrefStore((s) => s.ttsVoiceURI ?? '');
-  const { speak: ttsSpeak, stop: ttsStop, isSpeaking } = useTTS(ttsRate, ttsVoiceURI);
-  const ttsAvailable = isTTSSupported();
 
   const pinMetric = usePinnedMetricsStore((s) => s.pinMetric);
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
@@ -358,7 +353,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const prefAutoCharts = usePreferencesStore((s) => s.autoShowCharts);
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
-  const prefDefaultView = usePreferencesStore((s) => s.defaultDataView);
 
   const showSQLTab = !!(prefShowSQL && sql);
   const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasTableData);
@@ -374,7 +368,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       {/* Reasoning Block - vertical step timeline. The horizontal strip is gone:
           all per-step state (running, done, reasoning) lives inside this panel
           so it scales as the pipeline grows from 4 to 20+ nodes. */}
-      {prefShowReasoning && (message.isStreaming || message.reasoning || (message.streamingSteps?.length ?? 0) > 0) && (
+      {prefShowReasoning && (message.isStreaming || (message.streamingSteps?.length ?? 0) > 0 || message.reasoning || message.metadata_?.duration_ms != null) && (
         <ReasoningPanel
           message={message}
           reasoningRef={reasoningRef}
@@ -418,7 +412,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 onClick={() => setDataView('sql')}
               >
                 <Code2 className="w-3.5 h-3.5" />
-                SQL Query
+                SPARQL Query
               </Button>
             )}
             {hasTableData && (
@@ -437,28 +431,22 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
 
           {dataView === 'sql' && showSQLTab && (
             <div className="rounded-lg border border-border bg-muted/50 overflow-hidden max-h-96 flex flex-col">
-              <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-muted/30">
-                <span className="text-xs font-medium text-muted-foreground">SQL</span>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground hover:bg-accent"
-                      onClick={async () => {
-                        const ok = await copyText(sql);
-                        if (!ok) {
-                          toast.error('Copy failed');
-                          return;
-                        }
-                        toast.success('SQL copied to clipboard');
-                      }}
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">Copy SQL</TooltipContent>
-                </Tooltip>
+              <div className="flex items-center justify-end px-3 py-1.5 border-b border-border bg-muted/30">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0 text-muted-foreground"
+                  onClick={async () => {
+                    const ok = await copyText(sql);
+                    if (!ok) {
+                      toast.error('Copy failed');
+                      return;
+                    }
+                    toast.success('SPARQL copied');
+                  }}
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </Button>
               </div>
               <div className="flex-1 overflow-y-auto p-3">
                 <pre
@@ -482,8 +470,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         </StreamingContent>
       )}
 
-      {/* Chart skeleton — shown after data arrives but before chart spec fires */}
-      {message.isStreaming && message.dataReady && !message.chartReady && prefAutoCharts && (
+      {/* Chart skeleton — only shown when backend confirmed viz is running */}
+      {message.isStreaming && message.dataReady && !message.chartReady && prefAutoCharts && hasTableData && message.willVisualize && (
         <div className="mt-3 rounded-xl border border-border bg-sidebar px-4 pt-4 pb-3 animate-fade-in">
           <Skeleton className="h-3 w-40 rounded mb-4" />
           <div className="flex items-end gap-2 h-24">
@@ -504,12 +492,17 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         />
       )}
 
-      {/* Stopped indicator */}
+      {/* Stopped indicator — inline dot after content, or standalone if no content */}
       {!message.isStreaming && !!message.metadata_?.stopped && (
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 mt-1">
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
-          Response stopped
-        </div>
+        message.content
+          ? <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/40 mt-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
+              Generation stopped
+            </div>
+          : <div className="flex items-center gap-1.5 text-sm text-muted-foreground/60 mt-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
+              Response stopped before content was generated.
+            </div>
       )}
 
       {/* Follow-up Chips + Refine — appear as soon as follow_ups event fires */}
@@ -609,7 +602,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                       Pin to home
                     </DropdownMenuItem>
                   )}
-                  {message.content && message.conversation_id && (
+                  {message.content && message.conversation_id && !!(message.metadata_ as Record<string, unknown> | null)?.sql && (
                     <DropdownMenuItem
                       onClick={() => {
                         toast.info('Dashboard generation started.');
@@ -673,81 +666,16 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
 
 import React from 'react';
 
-// ─── Streaming cursor: stable DOM node, re-parented per render ───
-// Why imperative: the cursor must sit INLINE inside the deepest last-leaf
-// of streaming markdown (e.g. the last `<p>`'s last text node). React can't
-// easily inject siblings into ReactMarkdown's output. CSS `::after` ends
-// up on a new line below the prose container because Tailwind's prose
-// styles force it to break. The fix: keep ONE persistent <span> element
-// and `appendChild` it to the new last-leaf on each render - appendChild
-// moves an existing node, so the breathe animation never restarts.
-function useStreamingCursor(
-  containerRef: React.RefObject<HTMLDivElement | null>,
-  active: boolean,
-) {
-  const cursorRef = useRef<HTMLSpanElement | null>(null);
-
-  useEffect(() => {
-    if (!active || !containerRef.current) {
-      if (cursorRef.current) {
-        const el = cursorRef.current;
-        el.style.transition = 'opacity 150ms';
-        el.style.opacity = '0';
-        setTimeout(() => { el.remove(); }, 160);
-        cursorRef.current = null;
-      }
-      return;
-    }
-    if (!cursorRef.current) {
-      const span = document.createElement('span');
-      span.className = 'streaming-cursor';
-      span.setAttribute('aria-hidden', 'true');
-      cursorRef.current = span;
-    }
-    const cursor = cursorRef.current;
-    // Walk to the deepest last-leaf descendant, IGNORING the cursor node
-    // itself - otherwise on the next render we'd descend into the cursor
-    // and try to append it to itself (HierarchyRequestError).
-    let target: Element = containerRef.current;
-    while (true) {
-      let last = target.lastElementChild;
-      if (last === cursor) last = last.previousElementSibling;
-      if (!last) break;
-      target = last;
-    }
-    if (target === cursor) return;
-    // Already at end of the right parent? No-op (keeps animation continuous).
-    if (cursor.parentElement === target && cursor === target.lastElementChild) return;
-    // appendChild MOVES an existing node - animation stays alive.
-    target.appendChild(cursor);
-  });
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      cursorRef.current?.remove();
-      cursorRef.current = null;
-    };
-  }, []);
-}
 
 // ─── Reasoning content (italic, dim) ───
 
 const ReasoningContent = React.forwardRef<HTMLDivElement, { isStreaming?: boolean; content: string }>(
   ({ isStreaming, content }, ref) => {
-    const innerRef = useRef<HTMLDivElement | null>(null);
-    useStreamingCursor(innerRef, !!(isStreaming && content));
+    const active = !!(isStreaming && content);
     return (
-      <div
-        ref={(el) => {
-          innerRef.current = el;
-          if (typeof ref === 'function') ref(el);
-          else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
-        }}
-        data-streaming={isStreaming && content ? 'true' : undefined}
-        className="px-3 pb-2 border-t border-border/40 pt-2 text-sm text-muted-foreground leading-relaxed italic"
-      >
+      <div ref={ref} className="px-3 pb-2 border-t border-border/40 pt-2 text-sm text-muted-foreground leading-relaxed italic">
         <MarkdownRenderer content={content} />
+        {active && <span className="streaming-cursor" aria-hidden />}
       </div>
     );
   }
@@ -763,14 +691,21 @@ function ReasoningPanel({
   message: Message;
   reasoningRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  // Auto-expand while streaming, auto-collapse when it ends, but let the user
-  // override either direction with manual clicks.
-  const [open, setOpen] = useState<boolean>(!!message.isStreaming);
+  const steps = message.streamingSteps;
+  const hasSteps = !!steps && steps.length > 0;
+
+  // Closed until first step arrives from backend — avoids empty body flash.
+  // Auto-opens when steps land; auto-closes when streaming ends.
+  const [open, setOpen] = useState(hasSteps);
+  const prevHasStepsRef = useRef(hasSteps);
   const prevStreamingRef = useRef<boolean>(!!message.isStreaming);
+  useEffect(() => {
+    if (!prevHasStepsRef.current && hasSteps) setOpen(true);
+    prevHasStepsRef.current = hasSteps;
+  }, [hasSteps]);
   useEffect(() => {
     const wasStreaming = prevStreamingRef.current;
     const nowStreaming = !!message.isStreaming;
-    if (!wasStreaming && nowStreaming) setOpen(true);
     if (wasStreaming && !nowStreaming) {
       const t = setTimeout(() => setOpen(false), 400);
       prevStreamingRef.current = nowStreaming;
@@ -778,9 +713,6 @@ function ReasoningPanel({
     }
     prevStreamingRef.current = nowStreaming;
   }, [message.isStreaming]);
-
-  const steps = message.streamingSteps;
-  const hasSteps = !!steps && steps.length > 0;
   const activeStep = steps?.slice().reverse().find((s) => s.status === 'active');
   const lastStep = steps && steps.length > 0 ? steps[steps.length - 1] : undefined;
   // step.node arrives instantly at node.start; step.message is the prose body
@@ -811,16 +743,21 @@ function ReasoningPanel({
           message.isStreaming ? 'thinking-glow border border-primary/20' : 'reasoning-complete'
         }`}
       >
-        <AccordionTrigger className="py-2 px-3 text-xs text-muted-foreground hover:text-foreground hover:no-underline">
+        <AccordionTrigger
+          className="py-2 px-3 text-xs text-muted-foreground hover:text-foreground hover:no-underline"
+          disabled={!hasSteps && !legacyReasoning}
+        >
           {message.isStreaming ? (
             <span className="flex items-center gap-1.5">
               <ThinkingWords label={activeLabel} />
-              <span className="tabular-nums text-muted-foreground/60">
-                <LiveTimer
-                  startTime={new Date(message.created_at).getTime()}
-                  anchor={message._timingAnchor}
-                />
-              </span>
+              {hasSteps && (
+                <span className="tabular-nums text-muted-foreground/60">
+                  <LiveTimer
+                    startTime={new Date(message.created_at).getTime()}
+                    anchor={message._timingAnchor}
+                  />
+                </span>
+              )}
             </span>
           ) : (
             <span>
@@ -839,11 +776,6 @@ function ReasoningPanel({
               isStreaming={message.isStreaming}
               content={legacyReasoning}
             />
-          ) : message.isStreaming ? (
-            <div className="px-4 py-3 space-y-2">
-              <div className="h-3 w-3/4 rounded-md skeleton-shimmer" />
-              <div className="h-3 w-1/2 rounded-md skeleton-shimmer" style={{ animationDelay: '150ms' }} />
-            </div>
           ) : null}
         </AccordionContent>
       </AccordionItem>
@@ -876,15 +808,15 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
             : '';
 
         return (
-          <div key={step.node + i} className="relative pl-6 pt-2.5 first:pt-0.5">
+          <div key={step.node + i} className="relative pl-6 pt-2.5">
             {/* Connector line - drawn from the dot to the next step */}
             {!isLast && (
-              <span className="absolute left-[7px] top-3.5 w-px bg-border" style={{ bottom: '-0.625rem' }} />
+              <span className="absolute left-[7px] top-[1.3rem] w-px bg-border" style={{ bottom: '-0.625rem' }} />
             )}
 
             {/* Status dot */}
             <span
-              className={`absolute left-0 top-[0.6rem] flex items-center justify-center w-3.5 h-3.5 rounded-full transition-colors ${
+              className={`absolute left-0 top-[9px] flex items-center justify-center w-3.5 h-3.5 rounded-full transition-colors ${
                 isActive
                   ? 'bg-primary step-active'
                   : isDone
@@ -937,32 +869,20 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
 // ─── Message content with streaming cursor ───
 
 function StreamingContent({ isStreaming, hasContent, children }: { isStreaming?: boolean; hasContent: boolean; children: React.ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
   const active = !!(isStreaming && hasContent);
-  useStreamingCursor(ref, active);
   return (
-    <div
-      ref={ref}
-      data-streaming={active ? 'true' : undefined}
-      className="text-sm leading-relaxed text-foreground"
-    >
+    <div className="text-sm leading-relaxed text-foreground">
       {children}
+      {active && <span className="streaming-cursor" aria-hidden />}
     </div>
   );
 }
 
-// Per-step reasoning block in the thinking panel. Owns its own container
-// ref so the cursor lives inside the active step's deepest last-leaf.
 function StepReasoning({ text, active }: { text: string; active: boolean }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useStreamingCursor(ref, active);
   return (
-    <div
-      ref={ref}
-      data-streaming={active ? 'true' : undefined}
-      className="mt-1.5 pr-1 text-[12px] leading-relaxed text-muted-foreground/85 italic"
-    >
+    <div className="mt-1.5 pr-1 text-xs leading-relaxed text-muted-foreground/85">
       <MarkdownRenderer content={text} />
+      {active && <span className="streaming-cursor" aria-hidden />}
     </div>
   );
 }

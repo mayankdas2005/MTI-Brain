@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { type LucideIcon, RotateCcw, Copy, Keyboard, Plus, BarChart3, Table2 } from 'lucide-react';
+import { type LucideIcon, RotateCcw, Copy, Keyboard, Plus, BarChart3, Table2, Sun, Moon } from 'lucide-react';
 import { usePrefersReducedMotion } from '@/lib/hooks/use-prefers-reduced-motion';
 
 export interface SlashCommand {
@@ -40,6 +40,20 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     label: '/new',
     description: 'Start a fresh conversation',
     icon: Plus,
+  },
+  {
+    id: 'light',
+    trigger: 'light',
+    label: '/light',
+    description: 'Switch to light theme',
+    icon: Sun,
+  },
+  {
+    id: 'dark',
+    trigger: 'dark',
+    label: '/dark',
+    description: 'Switch to dark theme',
+    icon: Moon,
   },
   {
     id: 'help',

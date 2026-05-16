@@ -117,9 +117,9 @@ export default function ProjectsPage() {
 
         {/* Project Grid */}
         {!isSearching && projects.length === 0 && (loading || !fetched) ? (
-          <ProjectGridSkeleton />
+          null /* projects persisted — length=0 means no data cached, skip skeleton */
         ) : isSearching && searchLoading && displayedProjects.length === 0 ? (
-          <ProjectGridSkeleton />
+          <ProjectGridSkeleton count={Math.min(projects.length, 6) || 3} />
         ) : isSearching && displayedProjects.length === 0 ? (
           <div className="text-center py-16">
             <Search className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
@@ -224,10 +224,10 @@ export default function ProjectsPage() {
   );
 }
 
-function ProjectGridSkeleton() {
+function ProjectGridSkeleton({ count = 6 }: { count?: number }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-      {Array.from({ length: 6 }, (_, i) => (
+      {Array.from({ length: count }, (_, i) => (
         <div key={i} className="rounded-xl border border-border p-[var(--density-card-pad)]">
           <Skeleton className="h-5 w-3/5 mb-3" />
           <Skeleton className="h-3 w-4/5 mb-4" />

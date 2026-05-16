@@ -20,6 +20,7 @@ export interface SSEHandlers {
     columns: string[];
     rows: unknown[][];
     row_count: number;
+    will_visualize?: boolean;
     /** Trust-strip fields. Backend populates them when available
      *  (sqlglot for source_tables, Snowflake/catalog later). */
     source_tables?: string[];
@@ -29,6 +30,7 @@ export interface SSEHandlers {
     metric_defined_at?: string | null;
   }) => void;
   onChart?: (data: { spec: Record<string, unknown> }) => void;
+  onVizSkip?: () => void;
   onFollowUps?: (data: { questions: string[] }) => void;
   onStopped?: (data: { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number }) => void;
   onDone?: (data: Record<string, unknown>) => void;
@@ -154,6 +156,9 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       break;
     case 'chart':
       handlers.onChart?.(data as { spec: Record<string, unknown> });
+      break;
+    case 'viz.skip':
+      handlers.onVizSkip?.();
       break;
     case 'follow_ups':
       handlers.onFollowUps?.(data as { questions: string[] });

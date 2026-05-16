@@ -253,24 +253,19 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
           {/* SQL - collapsible, copyable, syntax-highlighted. */}
           {m?.sql && (
             <Collapsible
-              title="SQL"
+              title="SPARQL"
               icon={Database}
               actions={
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleCopy(m.sql!, 'SQL');
-                      }}
-                      className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                      aria-label="Copy SQL"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="left">Copy SQL</TooltipContent>
-                </Tooltip>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCopy(m.sql!, 'SPARQL');
+                  }}
+                  className="p-1 rounded text-muted-foreground"
+                  aria-label="Copy SPARQL"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
               }
             >
               <pre
@@ -284,7 +279,22 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
 
           {/* Reasoning trace - full text the LLM produced, for debugging. */}
           {message.reasoning && (
-            <Collapsible title="Reasoning trace" icon={ScrollText}>
+            <Collapsible
+              title="Reasoning trace"
+              icon={ScrollText}
+              actions={
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCopy(message.reasoning!, 'Reasoning trace');
+                  }}
+                  className="p-1 rounded text-muted-foreground"
+                  aria-label="Copy reasoning trace"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+              }
+            >
               <div className="text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto">
                 {message.reasoning}
               </div>

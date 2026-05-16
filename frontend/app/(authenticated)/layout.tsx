@@ -18,6 +18,7 @@ import { useProjectStore } from '@/lib/store/projects';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import { copyText } from '@/lib/utils';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
+import { useTheme } from 'next-themes';
 import { useStreamCompletionNotice } from '@/lib/hooks/use-stream-completion-notice';
 import { CreditsOverlay } from '@/components/credits-overlay';
 import { OnboardingTour } from '@/components/onboarding-tour';
@@ -39,6 +40,7 @@ export default function AuthenticatedLayout({
 }) {
   const router = useRouter();
   const openSearch = useSearchStore((s) => s.openModal);
+  const { theme, setTheme } = useTheme();
   const shortcutsOpen = useUIStore((s) => s.shortcutsOpen);
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen);
   const toggleShortcuts = useUIStore((s) => s.toggleShortcuts);
@@ -167,11 +169,7 @@ export default function AuthenticatedLayout({
     // 'cmd-shift-e': () => {
     //   window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
     // },
-    // 'cmd-shift-l': () => {
-    //   void navigator.clipboard.writeText(window.location.href).then(() => {
-    //     toast.success('Link copied to clipboard');
-    //   });
-    // },
+    'cmd-shift-l': () => setTheme(theme === 'dark' ? 'light' : 'dark'),
     'cmd-r': () => {
       const { currentThreadId, currentMessages, retryResponse } = useThreadStore.getState();
       if (!currentThreadId) return;

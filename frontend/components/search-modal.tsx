@@ -205,10 +205,11 @@ export function SearchModal() {
               {!loading && hasQuery && !hasResults && (
                 <CommandEmpty>No results found for &quot;{query}&quot;</CommandEmpty>
               )}
-              {loading && !hasQuery && recentChats.length === 0 && (
+              {/* Recent chats skeleton — only show if we know chats exist (persisted) */}
+              {loading && !hasQuery && recentChats.length === 0 && useThreadStore.getState().threads.length > 0 && (
                 <CommandGroup heading="Recent Chats">
                   <div className="px-2 py-1 space-y-2">
-                    {[60, 75, 55, 80].map((w, i) => (
+                    {[60, 75, 55, 80].slice(0, Math.min(useThreadStore.getState().threads.length, 4)).map((w, i) => (
                       <div key={i} className="flex items-center gap-2 px-2 py-1.5">
                         <Skeleton className="h-4 w-4 rounded shrink-0" />
                         <Skeleton className="h-4" style={{ width: `${w}%` }} />
@@ -216,6 +217,12 @@ export function SearchModal() {
                     ))}
                   </div>
                 </CommandGroup>
+              )}
+              {/* Empty state — no conversations yet */}
+              {!loading && !hasQuery && recentChats.length === 0 && (
+                <div className="px-4 py-8 text-center">
+                  <p className="text-sm text-muted-foreground/60">No conversations yet.</p>
+                </div>
               )}
               {loading && hasQuery && (
                 <CommandGroup heading="Conversations">

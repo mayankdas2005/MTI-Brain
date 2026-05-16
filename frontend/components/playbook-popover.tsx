@@ -1,7 +1,8 @@
 'use client';
 
-import { type SavedQuery } from '@/lib/store/playbook';
-import { BookOpen } from 'lucide-react';
+import { type SavedQuery, usePlaybookStore } from '@/lib/store/playbook';
+import { BookOpen, X } from 'lucide-react';
+import { toast } from '@/lib/toast';
 
 interface PlaybookPopoverProps {
   queries: SavedQuery[];
@@ -11,7 +12,20 @@ interface PlaybookPopoverProps {
 }
 
 export function PlaybookPopover({ queries, activeIndex, onSelect, onHover }: PlaybookPopoverProps) {
+  const deleteQuery = usePlaybookStore((s) => s.deleteQuery);
+
   if (queries.length === 0) return null;
+
+  const handleDelete = async (e: React.MouseEvent, q: SavedQuery) => {
+    e.stopPropagation();
+    try {
+      await deleteQuery(q.id);
+      toast.success(`"${q.name}" removed from Playbook`);
+    } catch {
+      toast.error('Failed to remove.');
+    }
+  };
+
   return (
     <div
       role="listbox"
@@ -24,23 +38,35 @@ export function PlaybookPopover({ queries, activeIndex, onSelect, onHover }: Pla
       </p>
       <ul className="py-1 max-h-[40vh] md:max-h-56 overflow-y-auto">
         {queries.map((q, i) => (
-          <li key={q.id}>
-            <button
-              type="button"
-              role="option"
-              aria-selected={i === activeIndex}
-              onMouseEnter={() => onHover(i)}
-              onClick={() => onSelect(q)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left transition-colors ${
+          <li key={q.id} className="group/item">
+            <div
+              className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors ${
                 i === activeIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
               }`}
+              onMouseEnter={() => onHover(i)}
             >
-              <BookOpen className="w-4 h-4 shrink-0 text-muted-foreground" aria-hidden />
-              <span className="font-medium truncate">{q.name}</span>
-              <span className="ml-auto text-xs text-muted-foreground/60 truncate hidden sm:inline max-w-[180px]">
-                {q.query_text.slice(0, 60)}{q.query_text.length > 60 ? '…' : ''}
-              </span>
-            </button>
+              <button
+                type="button"
+                role="option"
+                aria-selected={i === activeIndex}
+                onClick={() => onSelect(q)}
+                className="flex-1 flex items-center gap-2.5 text-left min-w-0"
+              >
+                <BookOpen className="w-4 h-4 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="font-medium truncate">{q.name}</span>
+                <span className="ml-auto text-xs text-muted-foreground/60 truncate hidden sm:inline max-w-[180px]">
+                  {q.query_text.slice(0, 60)}{q.query_text.length > 60 ? '…' : ''}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => handleDelete(e, q)}
+                aria-label={`Remove "${q.name}" from Playbook`}
+                className="shrink-0 p-1 rounded-md text-muted-foreground/40 opacity-0 group-hover/item:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </li>
         ))}
       </ul>

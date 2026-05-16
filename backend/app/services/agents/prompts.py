@@ -7,9 +7,47 @@ All prompts use XML tag conventions so streaming helpers can extract content:
   <summary>…</summary>       — rolling conversation summary
   <plan>…</plan>             — sub-question DAG JSON
   <reflection>…</reflection> — judge verdict
+
+MARKDOWN FORMATTING RULES (apply to ALL reasoning and answer sections):
+  - Use **bold** for key terms, findings, and labels
+  - Use *italic* for emphasis sparingly
+  - Use `backtick` for SPARQL variables, class names, property names, and values
+  - Use bullet lists (- item) for enumeration; numbered lists for ordered steps
+  - Use ```sparql ... ``` for SPARQL code blocks in answers
+  - NO markdown headers (##, ###) — the UI renders these at wrong sizes in reasoning
+  - NO horizontal rules (---) or HTML tags
+  - Reasoning length and style are controlled by {reasoning_directive} — follow it exactly
 """
 
 from langchain_core.prompts import ChatPromptTemplate
+
+# ─── Reasoning directives ─────────────────────────────────────────────────────
+# Injected as {reasoning_directive} into every prompt that has a <reasoning> block.
+# Style is always human-analyst, self-reflecting. Length scales with deep_analysis.
+
+_REASONING_FORMAT = (
+    "Format for maximum readability — a reader should be able to eyeball this in seconds:\n"
+    "- **Bold** every key term, entity name, decision, or finding\n"
+    "- *Italic* for uncertainty, caveats, or emphasis ('*this might not hold if...*')\n"
+    "- `backtick` for every class name, property, variable, value, or SPARQL term\n"
+    "- Bullet points (- item) for lists of options, observations, or reasoning steps\n"
+    "- Blank line between distinct thoughts — never write a wall of text\n"
+    "- NO markdown headers (##/###). No horizontal rules."
+)
+
+REASONING_DIRECTIVE_NORMAL = (
+    "Think out loud as a human analyst: notice ambiguity, question assumptions, explain each choice. "
+    "Do not narrate what you are doing — show the actual thinking. 2–5 sentences.\n\n"
+    + _REASONING_FORMAT
+)
+
+REASONING_DIRECTIVE_DEEP = (
+    "Think out loud as a senior analyst doing deep due diligence: surface hidden assumptions, "
+    "challenge the framing, consider alternative interpretations, flag data gaps, reason through "
+    "each decision with precision. Do not narrate — think. Explore fully, do not cut short. "
+    "8–15 sentences.\n\n"
+    + _REASONING_FORMAT
+)
 
 # ─── 1. Intake & Classification ───────────────────────────────────────────────
 
@@ -24,26 +62,43 @@ User question: "{question}"
 Classify the question on three dimensions and output ONLY the JSON object below.
 
 question_type:
-  "kg_query"       — answerable from the LPP Knowledge Graph (treasury positions,
-                     FX forwards, accounts, investment data, bank exposure)
-  "general_chat"   — greeting, explanation, opinion, or anything not requiring data
-  "rejected"       — request for data outside the system scope (ESG, peer benchmarks,
-                     macro economic data, personal finance)
+  "kg_query"    — use for ANY question about our internal treasury and payments data, including:
+                  · Treasury: bank accounts, investment positions, FX forwards, liquidity, counterparty exposure
+                  · Payment operations: card processing, acquirer/processor performance, authorization rates,
+                    settlement timing, interchange, network fees, chargeback/dispute analytics
+                  · Payment methods: ACH, wire, RTP, FedNow, check, virtual card, commercial card
+                  · Payment hub: STP rate, exception handling, repair rates, throughput
+                  · Fraud and disputes: fraud loss, chargeback ratios, dispute win rates, fraud patterns
+                  · Supplier payments: DPO, on-time rate, rebates, virtual card programs
+                  · Cross-border: FX costs, corridor analysis, local acquiring
+                  · Strategic analytics: cost trends, forecasting, optimization, stress testing, scenario analysis,
+                    roadmaps, and comparisons that USE our internal data as the primary source
+                  · Questions mentioning "benchmarks" or "peers" are still kg_query if they are primarily
+                    asking us to COMPUTE something from our data — route them, do not reject them
+  "general_chat" — greeting, explanation, opinion, or meta question not requiring data retrieval
+  "rejected"    — ONLY reject if the question requires data we fundamentally cannot have:
+                  · Competitor internal data (another company's P&L, internal operations)
+                  · External ESG/sustainability ratings from third-party agencies
+                  · Macro economic indicators (GDP, CPI, interest rates from external sources)
+                  · Personal consumer finance or individual credit information
+                  · Stock/equity market prices and trading data
+                  · When in doubt, classify as "kg_query" — it is better to attempt and fail gracefully
 
-persona (infer from question phrasing; default Analyst-F):
-  "Analyst-F"      — precise, tabular, raw numbers
-  "Manager-F"      — aggregated, policy context, trend flags
-  "Director-F"     — risk trends, exposures vs. limits, scenario flags
-  "Executive-F"    — one-page narrative, top-3 risks, executive summary
+persona (user preset: {persona_preset} — if set, USE it and do not infer; otherwise infer from phrasing):
+  "Analyst"      — precise, tabular, raw numbers
+  "Manager"      — aggregated, policy context, trend flags
+  "Director"     — risk trends, exposures vs. limits, scenario flags
+  "Executive"    — one-page narrative, top-3 risks, executive summary
 
 complexity:
   "simple"   — single fact/balance lookup; one SPARQL query; ≤3s
-  "complex"  — multi-entity join or policy overlay; 1-3 SPARQL queries; ≤10s
-  "advanced" — multi-step DAG with scenario modelling, forecasts, breach detection; ≤45s
+  "complex"  — multi-join analysis, trend comparison, multi-entity aggregation; 1-3 SPARQL queries; ≤10s
+  "advanced" — forecasting, optimization, stress testing, multi-step DAG, strategic scenario analysis; ≤45s
 
 <reasoning>
-Think step by step about the question type, who is asking (based on language and scope),
-and how many data retrieval steps are required.
+{reasoning_directive}
+
+Consider: question type, who is asking (language and scope), how many data retrieval steps are needed, and what could go wrong with the classification.
 </reasoning>
 
 Output exactly this JSON (no other text):
@@ -104,8 +159,9 @@ Routing options:
   "hil"       — human-in-loop required (Executive + advanced scenario + breach alert)
 
 <reasoning>
-Consider: does this need policy limits from the Tribal graph? Is the persona Executive
-with an advanced complexity question that should trigger HIL approval?
+{reasoning_directive}
+
+Focus on: whether policy limits from the Tribal graph are needed, whether this is an Executive + advanced scenario that should trigger HIL, and which intent label best captures the data request.
 </reasoning>
 
 Output exactly this JSON:
@@ -141,15 +197,16 @@ Rules:
 - Bind computed values with BIND(... AS ?varname)
 - Use FILTER for date ranges (xsd:date literals)
 - Order results where natural (ORDER BY DESC(?amount))
-- LIMIT results appropriately (default 100 for positions, 50 for accounts)
+- LIMIT results to {max_rows} rows maximum (user-configured preference)
 - Variable names should be descriptive (not ?x, ?y)
 
+Respond using exactly these XML tags, replacing the placeholder text with your actual content.
+Use only **bold**, *italic*, `backtick` for variables/classes, and bullet lists. No markdown headers.
+
 <reasoning>
-Plan the SPARQL query step by step:
-1. Which classes are the starting point?
-2. Which object properties join them?
-3. Which datatype properties provide the answer values?
-4. Are any FILTER or OPTIONAL clauses needed?
+{reasoning_directive}
+
+In your reasoning, cover: which classes are the starting point, which object properties join them, which datatype properties provide the answer values, and whether FILTER or OPTIONAL clauses are needed.
 </reasoning>
 
 <sparql>
@@ -185,8 +242,12 @@ Ontology reference:
 Fix the SPARQL query to resolve the error. Keep the same logical intent.
 Only change what is needed to fix the error.
 
+Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+
 <reasoning>
-Analyze the error, identify the root cause, and describe the fix.
+{reasoning_directive}
+
+Focus on: the exact error cause, why the original query failed, what specifically must change, and whether the fix preserves the original logical intent.
 </reasoning>
 
 <sparql>
@@ -215,11 +276,12 @@ Query results ({row_count} rows):
 Tribal policy context:
 {tribal_facts}
 
+Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+
 <reasoning>
-1. Summarize the key numbers and patterns in the results.
-2. Flag any concentrations, anomalies, or policy-relevant observations.
-3. Note if any expected data was absent (null values, zero rows for a subgroup).
-4. Identify 2-3 evidence citations (entity codes, dates, amounts) that ground the answer.
+{reasoning_directive}
+
+Cover: key numbers and patterns in the results, concentrations or anomalies worth flagging, any expected data that was absent, and 2-3 concrete evidence citations (entity codes, dates, amounts) that ground the answer.
 </reasoning>
 
 Output evidence citations as a JSON list:
@@ -280,11 +342,12 @@ Persona rendering guide:
   Director-F   → Lead with risk concentration, limits vs. actuals, recommend action
   Executive-F  → One-page narrative, top-3 risks, recommended decision, timeline
 
+Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+
 <reasoning>
-Draft the answer structure before writing:
-1. What is the headline number or finding?
-2. What supporting details are most relevant for {persona}?
-3. Are there any policy flags or anomalies to highlight?
+{reasoning_directive}
+
+Cover: the headline number or finding, which supporting details matter most for {persona}, any policy flags or anomalies to highlight, and how to structure the answer for maximum clarity.
 </reasoning>
 
 <answer>
@@ -399,10 +462,12 @@ Guidelines:
 - Each sub-question must reference specific ontology classes/properties
 - Final sub-question(s) should compose/compare prior results
 
+Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+
 <reasoning>
-1. What are the independent data fetches needed?
-2. What computations depend on which fetches?
-3. What is the final composition step?
+{reasoning_directive}
+
+Cover: what independent data fetches are needed, which computations depend on which fetches, what the final composition step looks like, and whether the sub-question decomposition is minimal yet complete.
 </reasoning>
 
 <plan>
@@ -458,11 +523,16 @@ Does this result correctly answer the sub-question?
 
 Criteria:
 - PASS: Result is non-empty, semantically correct, and answers the sub-question
-- FAIL: Result is empty/wrong when data should exist, or the SPARQL is semantically incorrect
-- SKIP: Sub-question refers to data not in the graph (acceptable gap, note the reason)
+- SKIP: Result is empty (0 rows) with no SPARQL error — this means the data does not exist in the graph; do NOT retry, accept the gap
+- SKIP: Sub-question refers to data that the ontology cannot represent
+- FAIL: SPARQL itself is syntactically or semantically wrong (bad predicates, wrong joins) — only use when an error message is present or the query logic is clearly broken
+
+Respond using exactly these XML tags, replacing the placeholder text with your actual content:
 
 <reasoning>
-Analyze whether the result shape and values answer the sub-question intent.
+{reasoning_directive}
+
+Assess: whether the result shape and values actually answer the sub-question intent, whether empty results mean no data or a bad query, and whether a SKIP is honest or a cop-out.
 </reasoning>
 
 Answer with ONLY one of:
@@ -484,10 +554,12 @@ Completed sub-questions and their results:
 
 Does the assembled results fully answer the original question?
 
+Respond using exactly these XML tags, replacing the placeholder text with your actual content:
+
 <reasoning>
-1. What parts of the question are answered?
-2. What parts have gaps (data not in graph, SKIP status)?
-3. Is the partial answer still useful and honest?
+{reasoning_directive}
+
+Assess: which parts of the question are fully answered, which have gaps (data not in graph or SKIP status), whether the partial answer is still useful and honest, and what caveats must be surfaced.
 </reasoning>
 
 <reflection>

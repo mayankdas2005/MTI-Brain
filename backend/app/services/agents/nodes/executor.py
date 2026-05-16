@@ -17,7 +17,7 @@ from app.services.agents.state import State
 PARALLEL_FANOUT = 4
 
 
-async def _run_sub_question(sq: dict, state: State, inner_graph) -> dict:
+async def _run_sub_question(sq: dict, state: State, inner_graph, writer=None) -> dict:
     """Invoke the inner graph for a single sub-question and return result dict."""
     from app.services.agents.helpers import _format_scratchpad_context
 
@@ -55,29 +55,71 @@ async def _run_sub_question(sq: dict, state: State, inner_graph) -> dict:
     }
 
     config = {"configurable": {"thread_id": f"subq-{sq['id']}-{int(time.time())}"}}
+    reasoning_parts: list[str] = []
+    final_state: dict = {}
+
     try:
-        result = await inner_graph.ainvoke(sub_initial, config=config)
-        return {
+        async for ev in inner_graph.astream_events(sub_initial, version="v2", config=config):
+            kind = ev["event"]
+
+            if kind == "on_chat_model_stream":
+                chunk = ev.get("data", {}).get("chunk")
+                if chunk:
+                    raw = getattr(chunk, "content", "")
+                    if isinstance(raw, str):
+                        reasoning_parts.append(raw)
+                    elif isinstance(raw, list):
+                        for block in raw:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                reasoning_parts.append(block.get("text", ""))
+
+            elif kind == "on_chain_end":
+                node_name = ev.get("metadata", {}).get("langgraph_node")
+                if node_name is None:
+                    output = ev.get("data", {}).get("output", {})
+                    if isinstance(output, dict):
+                        final_state = output
+
+        result = {
             "id": sq["id"],
-            "status": "completed" if not result.get("governance_halt") else "failed",
-            "answer": result.get("answer", ""),
-            "sparql": result.get("sparql", ""),
-            "kg_columns": result.get("kg_columns", []),
-            "kg_rows": result.get("kg_rows", []),
-            "kg_row_count": result.get("kg_row_count", 0),
-            "evidence": result.get("evidence", []),
-            "error": result.get("governance_halt") or result.get("sparql_error") or "",
+            "status": "completed" if not final_state.get("governance_halt") else "failed",
+            "answer": final_state.get("answer", ""),
+            "sparql": final_state.get("sparql", ""),
+            "kg_columns": final_state.get("kg_columns", []),
+            "kg_rows": final_state.get("kg_rows", []),
+            "kg_row_count": final_state.get("kg_row_count", 0),
+            "evidence": final_state.get("evidence", []),
+            "error": final_state.get("governance_halt") or final_state.get("sparql_error") or "",
+            "inner_reasoning": "".join(reasoning_parts),
         }
+        if writer:
+            rows = result["kg_row_count"]
+            status = result["status"]
+            reasoning = result["inner_reasoning"].strip()[:500]
+            question = sq.get("question", sq["id"])
+            text = (
+                f"**`{sq['id']}`** — *{question[:80]}*\n"
+                f"Status: **{status}** · {rows} rows returned\n"
+                + (reasoning if reasoning else "")
+            )
+            writer({"kind": "subq_progress", "id": sq["id"], "text": text})
+        return result
     except Exception as e:
         logger.warning(f"Sub-question {sq['id']} execution failed: {e}")
-        return {"id": sq["id"], "status": "failed", "error": str(e),
-                "answer": "", "sparql": "", "kg_columns": [], "kg_rows": [],
-                "kg_row_count": 0, "evidence": []}
+        result = {"id": sq["id"], "status": "failed", "error": str(e),
+                  "answer": "", "sparql": "", "kg_columns": [], "kg_rows": [],
+                  "kg_row_count": 0, "evidence": [], "inner_reasoning": ""}
+        if writer:
+            writer({"kind": "subq_progress", "id": sq["id"],
+                    "text": f"**`{sq['id']}`** — *{sq.get('question', sq['id'])[:80]}*\nStatus: **failed** — {str(e)[:120]}"})
+        return result
 
 
 async def executor_node(state: State) -> dict:
     from app.services.agents.graph import get_inner_graph
+    from langgraph.config import get_stream_writer
 
+    writer = get_stream_writer()
     sub_questions = list(state.get("sub_questions", []))
     scratchpad = dict(state.get("scratchpad", {}))
     budget_used = dict(state.get("budget_used", {"tokens": 0, "seconds": 0, "fuseki_rows": 0, "usd": 0.0}))
@@ -104,11 +146,12 @@ async def executor_node(state: State) -> dict:
             break
 
         batch = ready[:PARALLEL_FANOUT]
-        results = await asyncio.gather(*[_run_sub_question(sq, state, inner_graph) for sq in batch])
+        results = await asyncio.gather(*[_run_sub_question(sq, state, inner_graph, writer) for sq in batch])
 
         for res in results:
             sqid = res["id"]
-            new_scratchpad[sqid] = res
+            sq_meta = next((sq for sq in batch if sq["id"] == sqid), {})
+            new_scratchpad[sqid] = {**res, "question": sq_meta.get("question", sqid)}
             completed_ids.add(sqid)
             budget_used["fuseki_rows"] = budget_used.get("fuseki_rows", 0) + res.get("kg_row_count", 0)
 

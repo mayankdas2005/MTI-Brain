@@ -56,6 +56,14 @@ def cancel_stream(thread_id: str) -> bool:
     return False
 
 
+_TONE_TO_PERSONA = {
+    "analyst": "Analyst",
+    "manager": "Manager",
+    "director": "Director",
+    "executive": "Executive",
+}
+
+
 def _build_sse_generator(
     question: str,
     thread_id: uuid.UUID,
@@ -64,6 +72,8 @@ def _build_sse_generator(
     generate_title: bool = False,
     user_id: str | None = None,
     request_time: float | None = None,
+    persona: str | None = None,
+    max_rows: int = 100,
     deep_analysis: bool = False,
     cancel_event: asyncio.Event | None = None,
 ):
@@ -82,7 +92,7 @@ def _build_sse_generator(
             content=save_data.get("answer", ""),
             reasoning=reasoning,
             metadata={
-                "sparql": save_data.get("sparql", ""),
+                "sql": save_data.get("sparql", ""),
                 "intent": save_data.get("intent", ""),
                 "columns": save_data.get("columns", []),
                 "rows": save_data.get("rows", []),
@@ -92,7 +102,7 @@ def _build_sse_generator(
                 "run_id": save_data.get("run_id", ""),
                 "stopped": save_data.get("stopped", False),
                 "duration_ms": save_data.get("duration_ms"),
-                "pipeline_steps": save_data.get("reasoning") or [],
+                "pipeline_steps": save_data.get("pipeline_steps") or [],
                 "governance_halt": save_data.get("governance_halt"),
                 "question_type": save_data.get("question_type", ""),
                 "persona": save_data.get("persona", ""),
@@ -130,20 +140,57 @@ def _build_sse_generator(
                         "data": json.dumps({"thread_id": str(thread_id), "title": title}),
                     }
 
+            # Track partial answer tokens so we can save them if the user stops.
+            _partial_answer: list[str] = []
+
             async for sse_ev in stream_pipeline(
                 question=question,
                 thread_id=str(thread_id),
+                persona=persona,
                 user_id=user_id,
+                max_rows=max_rows,
+                deep_analysis=deep_analysis,
                 cancel_event=_cancel,
             ):
                 event_name = sse_ev["event"]
                 data = sse_ev["data"]
-                yield {"event": event_name, "data": json.dumps(data)}
+
+                if event_name == "stopped":
+                    duration_ms = int((time.perf_counter() - _stream_start) * 1000)
+                    data = {**data, "conversation_id": str(conversation_id), "duration_ms": duration_ms}
+                    yield {"event": event_name, "data": json.dumps(data)}
+                    asyncio.create_task(_save_assistant_message({
+                        "answer": "".join(_partial_answer),
+                        "stopped": True,
+                        "duration_ms": duration_ms,
+                    }))
+                    break
 
                 if event_name == "done":
+                    data = {**data, "conversation_id": str(conversation_id)}
+                    yield {"event": event_name, "data": json.dumps(data)}
                     asyncio.create_task(_save_assistant_message(data))
                     break
-                elif event_name == "error":
+
+                if event_name == "answer.delta":
+                    _partial_answer.append(data.get("text", ""))
+                elif event_name == "sparql.executed":
+                    data = {
+                        "sql": data.get("sparql", ""),
+                        "columns": data.get("columns", []),
+                        "rows": data.get("rows", []),
+                        "row_count": data.get("row_count", 0),
+                        "status": data.get("status", "success"),
+                        "will_visualize": data.get("will_visualize", False),
+                    }
+                    event_name = "execute.done"
+                elif event_name == "sparql.generated":
+                    data = {"sql": data.get("query", ""), "intent": ""}
+                    event_name = "generate_sql"
+
+                yield {"event": event_name, "data": json.dumps(data)}
+
+                if event_name == "error":
                     break
 
         except Exception as e:
@@ -155,6 +202,15 @@ def _build_sse_generator(
                     "conversation_id": str(conversation_id),
                 }),
             }
+
+        except BaseException:
+            # GeneratorExit (client disconnect / navigation). Save a stopped
+            # record so the DB is not left with a dangling unsaved message.
+            duration_ms = int((time.perf_counter() - _stream_start) * 1000)
+            asyncio.create_task(_save_assistant_message({
+                "answer": "", "stopped": True, "duration_ms": duration_ms,
+            }))
+            raise
 
         finally:
             # Identity check: only remove OUR event. A subsequent ask/retry/edit
@@ -433,6 +489,8 @@ async def ask_question(
         generate_title=is_first_message,
         user_id=str(current_user.id),
         request_time=request_time,
+        persona=_TONE_TO_PERSONA.get(body.response_tone, ""),
+        max_rows=body.max_rows,
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
     )
@@ -491,6 +549,9 @@ async def retry_response(
         parent_conversation_id=root,
         user_id=str(current_user.id),
         request_time=request_time,
+        persona=_TONE_TO_PERSONA.get(body.response_tone, ""),
+        max_rows=body.max_rows,
+        deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
     )
     return EventSourceResponse(generator(), ping=15)
@@ -554,6 +615,9 @@ async def edit_question(
         generate_title=regen_title,
         user_id=str(current_user.id),
         request_time=request_time,
+        persona=_TONE_TO_PERSONA.get(body.response_tone, ""),
+        max_rows=body.max_rows,
+        deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
     )
     return EventSourceResponse(generator(), ping=15)

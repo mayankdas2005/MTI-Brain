@@ -89,26 +89,41 @@ def extract_lpp_predicates(query: str) -> list[str]:
 
 async def validate_predicates(
     query: str,
-    fuseki_client,
+    fuseki_client=None,
     skip_classes: bool = False,
 ) -> tuple[bool, str]:
-    """Check that every lpp: predicate in the query exists in the graph.
+    """Check that every lpp: predicate in the query is defined in the ontology.
 
-    Returns (True, "") on success, (False, error_message) if any predicate
-    is missing. Skips the check when no lpp: predicates are found.
+    Uses the in-memory ontology dict (loaded from lpp-ontology.ttl at startup)
+    instead of querying Fuseki. Fuseki ASK checks test data existence, not
+    schema validity — valid ontology terms with no instances would fail even
+    though they are correct predicates.
     """
+    from app.services.agents.ontology_loader import get_ontology_dict
+
     predicates = extract_lpp_predicates(query)
     if not predicates:
         return True, ""
 
-    missing: list[str] = []
-    for uri in predicates:
-        exists = await fuseki_client.check_predicate_exists(uri)
-        if not exists and not skip_classes:
-            exists = await fuseki_client.check_class_exists(uri)
-        if not exists:
-            missing.append(uri.split("#")[-1])
+    ont = get_ontology_dict()
+    if not ont:
+        logger.warning("Ontology not loaded; skipping predicate validation")
+        return True, ""
+
+    known: set[str] = set()
+    for c in ont.get("classes", []):
+        known.add(c["local"])
+    for p in ont.get("object_properties", []):
+        known.add(p["local"])
+    for p in ont.get("datatype_properties", []):
+        known.add(p["local"])
+
+    missing = [
+        uri.split("#")[-1]
+        for uri in predicates
+        if uri.split("#")[-1] not in known
+    ]
 
     if missing:
-        return False, f"Predicates not found in graph: {', '.join(missing)}"
+        return False, f"Predicates not found in ontology: {', '.join(missing)}"
     return True, ""

@@ -4,11 +4,6 @@ import { useMemo, useRef, useCallback, useState } from 'react';
 import { Download, ClipboardCopy, RotateCcw } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   ScatterChart, Scatter, AreaChart, Area,
   XAxis, YAxis, CartesianGrid,
@@ -583,7 +578,7 @@ export function MessageVisualization({
       canvas.toBlob(async (blob) => {
         if (!blob) return;
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-        toast.success('Chart copied to clipboard');
+        toast.success('Chart copied');
       }, 'image/png');
     } catch {
       toast.error('Failed to copy chart');
@@ -597,28 +592,18 @@ export function MessageVisualization({
       <div ref={chartRef} data-chart-conv-id={conversationId} className="group relative rounded-xl border border-border pt-4 px-4 pb-2 bg-sidebar">
         {/* Chart action buttons */}
         <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={handleCopy}
-                className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-              >
-                <ClipboardCopy className="w-3.5 h-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Copy chart</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={handleDownload}
-                className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-              >
-                <Download className="w-3.5 h-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Download chart</TooltipContent>
-          </Tooltip>
+          <button
+            onClick={handleCopy}
+            className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground"
+          >
+            <ClipboardCopy className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={handleDownload}
+            className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground"
+          >
+            <Download className="w-3.5 h-3.5" />
+          </button>
         </div>
 
         {spec.title && (

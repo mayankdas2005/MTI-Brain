@@ -174,10 +174,10 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
                 type="button"
                 aria-pressed={deepAnalysis}
                 onClick={() => setDeepAnalysis(!deepAnalysis)}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors border outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                   deepAnalysis
-                    ? 'bg-primary/10 text-primary border border-primary/30'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent'
+                    ? 'chip-deep-analysis'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-accent border-transparent'
                 }`}
               >
                 <BrainCircuit className="w-3.5 h-3.5 shrink-0" />

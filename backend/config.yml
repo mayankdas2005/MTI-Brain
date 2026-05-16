@@ -51,13 +51,7 @@ prompt_cache:
   aws_bedrock_prompt_cache: true   # Enable AWS Bedrock prompt cache
 
 fuseki:
-  url: http://localhost:3030       # Apache Jena Fuseki base URL
-  dataset: lpp                     # KG dataset name
-  timeout_seconds: 30
-
-tribal_graph:
-  url: http://localhost:3030       # Tribal graph Fuseki base URL (may be same instance)
-  dataset: tribal                  # Tribal dataset name
+  timeout_seconds: 60
 
 pipeline:
   recursion_limit: 80              # LangGraph recursion limit (advanced queries need headroom)

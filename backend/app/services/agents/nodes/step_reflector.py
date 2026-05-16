@@ -6,11 +6,11 @@ import asyncio
 import time
 
 from app.services.agents.bedrock import get_llm
-from app.services.agents.prompts import STEP_REFLECTOR_PROMPT
+from app.services.agents.prompts import STEP_REFLECTOR_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
 
-async def _reflect_one(sq: dict, result: dict, llm) -> dict:
+async def _reflect_one(sq: dict, result: dict, llm, reasoning_directive: str) -> dict:
     results_sample = ""
     cols = result.get("kg_columns", [])
     rows = result.get("kg_rows", [])
@@ -20,14 +20,18 @@ async def _reflect_one(sq: dict, result: dict, llm) -> dict:
             " | ".join(str(v) if v is not None else "NULL" for v in r) for r in rows[:10]
         )
 
-    raw = await (STEP_REFLECTOR_PROMPT | llm).ainvoke({
-        "sub_question": sq.get("question", ""),
-        "intent": sq.get("intent", ""),
-        "sparql": result.get("sparql", ""),
-        "row_count": result.get("kg_row_count", 0),
-        "results_sample": results_sample or "No data",
-        "error": result.get("error", ""),
-    })
+    raw = await (STEP_REFLECTOR_PROMPT | llm).ainvoke(
+        {
+            "sub_question": sq.get("question", ""),
+            "intent": sq.get("intent", ""),
+            "sparql": result.get("sparql", ""),
+            "row_count": result.get("kg_row_count", 0),
+            "results_sample": results_sample or "No data",
+            "error": result.get("error", ""),
+            "reasoning_directive": reasoning_directive,
+        },
+        config={"tags": ["no_stream"]},
+    )
     verdict = (raw.content if hasattr(raw, "content") else str(raw)).strip()
 
     if verdict.startswith("PASS"):
@@ -44,6 +48,7 @@ async def step_reflector_node(state: State) -> dict:
     t0 = time.perf_counter()
 
     llm = get_llm("fast")
+    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
 
     to_reflect = [sq for sq in sub_questions if sq["id"] in scratchpad and
                   scratchpad[sq["id"]].get("status") not in ("skipped", "reflected")]
@@ -53,7 +58,7 @@ async def step_reflector_node(state: State) -> dict:
                 "duration_ms": round((time.perf_counter() - t0) * 1000)}
         return {"pipeline_steps": state.get("pipeline_steps", []) + [step]}
 
-    reflect_tasks = [_reflect_one(sq, scratchpad[sq["id"]], llm) for sq in to_reflect]
+    reflect_tasks = [_reflect_one(sq, scratchpad[sq["id"]], llm, reasoning_directive) for sq in to_reflect]
     results = await asyncio.gather(*reflect_tasks)
 
     updated_scratchpad = {r["id"]: r for r in results}

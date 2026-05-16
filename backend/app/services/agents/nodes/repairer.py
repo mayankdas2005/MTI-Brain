@@ -12,8 +12,8 @@ import time
 from app.core.logger import logger
 from app.services.agents.state import State
 
-_MAX_L1_PER_SUBQ = 2
-_MAX_L2_PER_SUBQ = 1
+_MAX_L1_PER_SUBQ = 1
+_MAX_L2_PER_SUBQ = 0
 _MAX_PLAN_ATTEMPTS = 2
 
 

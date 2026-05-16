@@ -149,6 +149,14 @@ function ThreadItem({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [inlineRenaming, setInlineRenaming] = useState(false);
   const [inlineDraft, setInlineDraft] = useState(title);
+  const prevTitleRef = useRef(title);
+  const [titleAnimKey, setTitleAnimKey] = useState(0);
+  useEffect(() => {
+    if (prevTitleRef.current !== title && title && title !== 'Untitled') {
+      setTitleAnimKey((k) => k + 1);
+    }
+    prevTitleRef.current = title;
+  }, [title]);
   const inlineInputRef = useRef<HTMLInputElement>(null);
   const [labelPickerOpen, setLabelPickerOpen] = useState(false);
   const [newLabelName, setNewLabelName] = useState('');
@@ -281,7 +289,11 @@ function ThreadItem({
               className="flex-1 text-left min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
             >
               <div className="flex items-center gap-1.5 min-w-0">
-                <p className="text-sm font-medium truncate">{title}</p>
+                {!title ? (
+                  <Skeleton className="h-4 w-3/4 max-w-[140px] bg-sidebar-foreground/20" />
+                ) : (
+                  <p key={titleAnimKey} className={`text-sm font-medium truncate${titleAnimKey > 0 ? ' title-reveal' : ''}`}>{title}</p>
+                )}
                 {threadLabels.slice(0, 3).map((lbl) => {
                   const color = LABEL_COLORS.find((c) => c.name === lbl.color) ?? LABEL_COLORS[0];
                   return (
@@ -576,7 +588,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
     // this gate the sidebar would keep showing a thread as "current"
     // long after the user left it.
     const isCurrent = pathname === `/chat/${thread.id}`;
-    const title = thread.title || 'Untitled';
+    const title = thread.title || '';
 
     return (
       <ThreadItem
@@ -862,7 +874,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
         </div>
         <div className="px-2 pb-3 pt-0 space-y-[var(--density-list-gap)]">
           {threads.length === 0 && threadsLoading ? (
-            <SidebarThreadsSkeleton />
+            null /* no skeleton — threads persisted so length=0 means truly empty; skip false promise */
           ) : threads.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-sm text-sidebar-foreground/60" suppressHydrationWarning>

@@ -47,6 +47,7 @@ export interface Message {
   isStreaming?: boolean;
   dataReady?: boolean;
   chartReady?: boolean;
+  willVisualize?: boolean;
   followUpsReady?: boolean;
   streamingSteps?: StreamingStep[];
   feedback?: { liked: boolean; comment?: string };
@@ -200,19 +201,28 @@ function appendActiveStep(
 function appendStepReasoning(
   steps: StreamingStep[] | undefined,
   text: string,
+  node?: string,
 ): StreamingStep[] | undefined {
   if (!steps || steps.length === 0) return steps;
-  let attributed = false;
-  // Walk from the end so the most recently active step wins.
   const next = [...steps];
+  // Prefer the last step whose node matches — this prevents late-arriving
+  // tokens from a slow LLM node landing under a faster node that started after.
+  if (node) {
+    for (let i = next.length - 1; i >= 0; i--) {
+      if (next[i].node === node) {
+        next[i] = { ...next[i], reasoning: (next[i].reasoning || '') + text };
+        return next;
+      }
+    }
+  }
+  // Fallback: last active step
   for (let i = next.length - 1; i >= 0; i--) {
     if (next[i].status === 'active') {
       next[i] = { ...next[i], reasoning: (next[i].reasoning || '') + text };
-      attributed = true;
-      break;
+      return next;
     }
   }
-  return attributed ? next : steps;
+  return steps;
 }
 
 /** Replace streamingSteps with the authoritative final list from `done`. */
@@ -965,11 +975,19 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onNodeStart: (data) => {
         const startedAtMs = data.started_at_ms ?? Date.now() - streamStartedAt;
-        mapMsgs((m) =>
-          m.id === assistantMsgId
-            ? { ...m, streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs) }
-            : m,
-        );
+        mapMsgs((m) => {
+          if (m.id !== assistantMsgId) return m;
+          const update: Partial<typeof m> = {
+            streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs),
+          };
+          // Retry: sparql_gen starting again means a new execution cycle —
+          // reset data/chart readiness so stale 0-row results are cleared.
+          if (data.node === 'sparql_gen' && m.dataReady) {
+            update.dataReady = false;
+            update.chartReady = false;
+          }
+          return { ...m, ...update };
+        });
       },
       onAnswerDelta: (data) => {
         mapMsgs((m) =>
@@ -988,7 +1006,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 ...m,
                 reasoning: (m.reasoning || '') + data.text,
                 reasoningPending: false,
-                streamingSteps: appendStepReasoning(m.streamingSteps, data.text),
+                streamingSteps: appendStepReasoning(m.streamingSteps, data.text, data.node as string | undefined),
               }
             : m,
         );
@@ -999,6 +1017,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             ? {
                 ...m,
                 dataReady: true,
+                willVisualize: data.will_visualize ?? false,
                 metadata_: {
                   ...m.metadata_,
                   sql: data.sql,
@@ -1020,6 +1039,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId
             ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec } }
             : m,
+        );
+      },
+      onVizSkip: () => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, chartReady: true } : m,
         );
       },
       onFollowUps: (data) => {
@@ -1092,6 +1116,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onStopped: (data) => {
         const convId = (data.conversation_id as string) || '';
+        const durationMs = data.duration_ms as number | undefined;
         const finalSteps = (data.pipeline_steps as StreamingStep[] | undefined);
         set((state) => {
           const updated = state.currentMessages.map((m) => {
@@ -1099,7 +1124,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               ...m,
               ...(convId ? { conversation_id: convId } : {}),
               isStreaming: false,
-              metadata_: { ...m.metadata_, stopped: true },
+              metadata_: {
+                ...m.metadata_,
+                stopped: true,
+                ...(durationMs != null ? { duration_ms: durationMs } : {}),
+              },
               streamingSteps: finalSteps
                 ? finalSteps.map((s) => ({ ...s, status: 'done' as const }))
                 : (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
@@ -1298,11 +1327,19 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onNodeStart: (data) => {
         const startedAtMs = data.started_at_ms ?? Date.now() - streamStartedAt;
-        mapMsgs((m) =>
-          m.id === assistantMsgId
-            ? { ...m, streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs) }
-            : m,
-        );
+        mapMsgs((m) => {
+          if (m.id !== assistantMsgId) return m;
+          const update: Partial<typeof m> = {
+            streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs),
+          };
+          // Retry: sparql_gen starting again means a new execution cycle —
+          // reset data/chart readiness so stale 0-row results are cleared.
+          if (data.node === 'sparql_gen' && m.dataReady) {
+            update.dataReady = false;
+            update.chartReady = false;
+          }
+          return { ...m, ...update };
+        });
       },
       onAnswerDelta: (data) => {
         mapMsgs((m) => (m.id === assistantMsgId ? { ...m, content: m.content + data.text } : m));
@@ -1317,7 +1354,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 ...m,
                 reasoning: (m.reasoning || '') + data.text,
                 reasoningPending: false,
-                streamingSteps: appendStepReasoning(m.streamingSteps, data.text),
+                streamingSteps: appendStepReasoning(m.streamingSteps, data.text, data.node as string | undefined),
               }
             : m,
         );
@@ -1328,6 +1365,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             ? {
                 ...m,
                 dataReady: true,
+                willVisualize: data.will_visualize ?? false,
                 metadata_: {
                   ...m.metadata_,
                   sql: data.sql,
@@ -1347,6 +1385,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onChart: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec } } : m,
+        );
+      },
+      onVizSkip: () => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, chartReady: true } : m,
         );
       },
       onFollowUps: (data) => {
@@ -1406,6 +1449,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onStopped: (data) => {
         const convId = (data.conversation_id as string) || '';
+        const durationMs = data.duration_ms as number | undefined;
         const finalSteps = (data.pipeline_steps as StreamingStep[] | undefined);
         set((state) => {
           const updated = state.currentMessages.map((m) => {
@@ -1413,7 +1457,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               ...m,
               ...(convId ? { conversation_id: convId } : {}),
               isStreaming: false,
-              metadata_: { ...m.metadata_, stopped: true },
+              metadata_: {
+                ...m.metadata_,
+                stopped: true,
+                ...(durationMs != null ? { duration_ms: durationMs } : {}),
+              },
               streamingSteps: finalSteps
                 ? finalSteps.map((s) => ({ ...s, status: 'done' as const }))
                 : (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
@@ -1451,7 +1499,14 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     };
 
     try {
-      const retryBody: Record<string, unknown> = { conversation_id: conversationId };
+      const { usePreferencesStore: retryPrefs } = await import('./preferences');
+      const retryPrefsState = retryPrefs.getState();
+      const retryBody: Record<string, unknown> = {
+        conversation_id: conversationId,
+        response_tone: retryPrefsState.responseTone,
+        max_rows: retryPrefsState.maxResultRows,
+        deep_analysis: retryPrefsState.deepAnalysis ?? false,
+      };
       if (sourceConversationId) retryBody.source_conversation_id = sourceConversationId;
       await streamSSE(`/chat/${threadId}/retry`, retryBody, handlers, controller.signal);
     } catch (err: unknown) {
@@ -1562,11 +1617,19 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onNodeStart: (data) => {
         const startedAtMs = data.started_at_ms ?? Date.now() - streamStartedAt;
-        mapMsgs((m) =>
-          m.id === assistantMsgId
-            ? { ...m, streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs) }
-            : m,
-        );
+        mapMsgs((m) => {
+          if (m.id !== assistantMsgId) return m;
+          const update: Partial<typeof m> = {
+            streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs),
+          };
+          // Retry: sparql_gen starting again means a new execution cycle —
+          // reset data/chart readiness so stale 0-row results are cleared.
+          if (data.node === 'sparql_gen' && m.dataReady) {
+            update.dataReady = false;
+            update.chartReady = false;
+          }
+          return { ...m, ...update };
+        });
       },
       onAnswerDelta: (data) => {
         mapMsgs((m) => (m.id === assistantMsgId ? { ...m, content: m.content + data.text } : m));
@@ -1581,7 +1644,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 ...m,
                 reasoning: (m.reasoning || '') + data.text,
                 reasoningPending: false,
-                streamingSteps: appendStepReasoning(m.streamingSteps, data.text),
+                streamingSteps: appendStepReasoning(m.streamingSteps, data.text, data.node as string | undefined),
               }
             : m,
         );
@@ -1592,6 +1655,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             ? {
                 ...m,
                 dataReady: true,
+                willVisualize: data.will_visualize ?? false,
                 metadata_: {
                   ...m.metadata_,
                   sql: data.sql,
@@ -1611,6 +1675,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onChart: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec } } : m,
+        );
+      },
+      onVizSkip: () => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, chartReady: true } : m,
         );
       },
       onFollowUps: (data) => {
@@ -1661,6 +1730,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onStopped: (data) => {
         const convId = (data.conversation_id as string) || '';
+        const durationMs = data.duration_ms as number | undefined;
         const finalSteps = (data.pipeline_steps as StreamingStep[] | undefined);
         set((state) => {
           const updated = state.currentMessages.map((m) => {
@@ -1668,7 +1738,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               ...m,
               ...(convId ? { conversation_id: convId } : {}),
               isStreaming: false,
-              metadata_: { ...m.metadata_, stopped: true },
+              metadata_: {
+                ...m.metadata_,
+                stopped: true,
+                ...(durationMs != null ? { duration_ms: durationMs } : {}),
+              },
               streamingSteps: finalSteps
                 ? finalSteps.map((s) => ({ ...s, status: 'done' as const }))
                 : (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
@@ -1706,7 +1780,15 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
     };
 
     try {
-      const editBody: Record<string, unknown> = { conversation_id: conversationId, question };
+      const { usePreferencesStore: editPrefs } = await import('./preferences');
+      const editPrefsState = editPrefs.getState();
+      const editBody: Record<string, unknown> = {
+        conversation_id: conversationId,
+        question,
+        response_tone: editPrefsState.responseTone,
+        max_rows: editPrefsState.maxResultRows,
+        deep_analysis: editPrefsState.deepAnalysis ?? false,
+      };
       if (sourceConversationId) editBody.source_conversation_id = sourceConversationId;
       await streamSSE(
         `/chat/${threadId}/edit`,

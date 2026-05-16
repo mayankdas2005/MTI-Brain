@@ -61,11 +61,14 @@ def init_llms() -> None:
 
     _llm_map = {"fast": fast, "balanced": balanced, "deep": deep}
 
+    def _short(arn: str) -> str:
+        return arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
+
     logger.info(
-        f"Bedrock LLMs ready: "
-        f"fast={_region_from_arn(haiku_arn)} "
-        f"balanced={_region_from_arn(sonnet_arn)} "
-        f"deep={_region_from_arn(opus_arn)}"
+        f"Bedrock LLMs ready | "
+        f"fast={'Haiku (' + _short(haiku_arn) + ')' if haiku_arn != sonnet_arn else 'FALLBACK→Sonnet (set AWS_BEDROCK_HAIKU_ARN)'} | "
+        f"balanced=Sonnet ({_short(sonnet_arn)}) | "
+        f"deep={'Opus (' + _short(opus_arn) + ')' if opus_arn != sonnet_arn else 'FALLBACK→Sonnet'}"
     )
 
 

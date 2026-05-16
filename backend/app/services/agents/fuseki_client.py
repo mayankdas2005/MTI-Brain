@@ -20,10 +20,14 @@ class FusekiClient:
     """Async SPARQL client backed by a persistent aiohttp session."""
 
     def __init__(self, base_url: str, dataset: str, timeout: int = 30) -> None:
-        self._query_url = f"{base_url.rstrip('/')}/{dataset}/sparql"
-        self._update_url = f"{base_url.rstrip('/')}/{dataset}/update"
+        self._query_url = f"{base_url.rstrip('/')}/{dataset.strip('/')}/sparql"
+        self._update_url = f"{base_url.rstrip('/')}/{dataset.strip('/')}/update"
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
+
+    @property
+    def query_url(self) -> str:
+        return self._query_url
 
     async def open(self) -> None:
         self._session = aiohttp.ClientSession(
@@ -115,8 +119,9 @@ class FusekiClient:
         return await self.execute_ask(query)
 
     async def health_check(self) -> bool:
-        """Lightweight ping — true if Fuseki is reachable."""
+        """Lightweight ping — true if Fuseki is reachable.
+        ASK {} always returns true if the endpoint responds, regardless of data."""
         try:
-            return await self.execute_ask("ASK { ?s ?p ?o }")
+            return await self.execute_ask("ASK {}")
         except Exception:
             return False

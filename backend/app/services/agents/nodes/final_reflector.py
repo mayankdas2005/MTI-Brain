@@ -6,7 +6,7 @@ import time
 
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_tag
-from app.services.agents.prompts import FINAL_REFLECTOR_PROMPT
+from app.services.agents.prompts import FINAL_REFLECTOR_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
 
@@ -28,11 +28,13 @@ async def final_reflector_node(state: State) -> dict:
     scratchpad = state.get("scratchpad", {})
     t0 = time.perf_counter()
 
+    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
     chain = FINAL_REFLECTOR_PROMPT | get_llm("balanced")
     raw = await chain.ainvoke({
         "question": question,
         "persona": persona,
         "scratchpad_summary": _summarize_scratchpad(scratchpad),
+        "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)
     reflection = parse_tag(text, "reflection") or text.strip()

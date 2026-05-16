@@ -64,7 +64,8 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str = Field(..., repr=False)
     POSTGRES_HOST: str
-    POSTGRES_DB: str
+    POSTGRES_DB: str = Field(default="postgres")
+    POSTGRES_SCHEMA: str = Field(default="public")
 
     # ── Database config (config.yml) ──────────────────────────────────────────
     POSTGRES_PORT: int = Field(default=_db.get("port", 5432))
@@ -109,12 +110,12 @@ class Settings(BaseSettings):
     # ── Prompt cache (config.yml) ───────────────────────────────────────────
     AWS_BEDROCK_PROMPT_CACHE: bool = Field(default=_prompt_cache.get("aws_bedrock_prompt_cache", False))
 
-    # ── Fuseki / KG (config.yml + .env override) ─────────────────────────────
-    FUSEKI_URL: str = Field(default=_fuseki.get("url", "http://localhost:3030"))
-    FUSEKI_DATASET: str = Field(default=_fuseki.get("dataset", "lpp"))
+    # ── Fuseki / KG (config.yml + .env) ─────────────────────────────
+    FUSEKI_URL: str
+    FUSEKI_DATASET: str = Field(default="dataset")
     FUSEKI_TIMEOUT: int = Field(default=_fuseki.get("timeout_seconds", 30))
-    TRIBAL_GRAPH_URL: str = Field(default=_tribal.get("url", "http://localhost:3030"))
-    TRIBAL_GRAPH_DATASET: str = Field(default=_tribal.get("dataset", "tribal"))
+    # TRIBAL_GRAPH_URL: str = Field(default="http://localhost:3030")
+    # TRIBAL_GRAPH_DATASET: str = Field(default="dataset")
 
     # ── Pipeline (config.yml) ─────────────────────────────────────────────────
     PIPELINE_RECURSION_LIMIT: int = Field(default=_pipeline.get("recursion_limit", 80))

@@ -7,7 +7,7 @@ import time
 
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_tag
-from app.services.agents.prompts import GRAPH_REASONING_PROMPT
+from app.services.agents.prompts import GRAPH_REASONING_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
 
@@ -45,6 +45,7 @@ async def graph_reasoning_node(state: State) -> dict:
     results_sample = _format_results_sample(kg_columns, kg_rows)
     tribal_str = _format_tribal_facts(tribal_facts)
 
+    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
     chain = GRAPH_REASONING_PROMPT | get_llm("balanced")
     raw = await chain.ainvoke({
         "question": question,
@@ -53,6 +54,7 @@ async def graph_reasoning_node(state: State) -> dict:
         "results_sample": results_sample,
         "row_count": len(kg_rows),
         "tribal_facts": tribal_str,
+        "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)
 

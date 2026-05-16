@@ -19,9 +19,10 @@ import requests
 # Add backend to path so we can import the graph builder
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.services.pipeline.graph import _build_graph
+from app.services.agents.graph import _build_inner_graph, _build_main_graph
 
-OUT_DIR = Path(__file__).resolve().parent.parent / "app" / "data"
+OUT_DIR = Path(__file__).resolve().parent.parent / "data"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def render_mermaid(graph, save_as: str = None):
@@ -39,8 +40,8 @@ def render_mermaid(graph, save_as: str = None):
     mermaid_str = graph.draw_mermaid()
     mermaid_str = re.sub(r"^---.*?---\s*", "", mermaid_str, flags=re.DOTALL).strip()
 
-    # Save .mmd file
-    mmd_path = OUT_DIR / "pipeline_graph.mmd"
+    stem = (save_as or "pipeline_graph.png").replace(".png", "")
+    mmd_path = OUT_DIR / f"{stem}.mmd"
     mmd_path.write_text(mermaid_str, encoding="utf-8")
     print(f"Saved {mmd_path}")
 
@@ -55,5 +56,5 @@ def render_mermaid(graph, save_as: str = None):
 
 
 if __name__ == "__main__":
-    drawable = _build_graph().compile().get_graph()
-    render_mermaid(drawable, "pipeline_graph.png")
+    render_mermaid(_build_main_graph().compile().get_graph(), "main_graph.png")
+    render_mermaid(_build_inner_graph().compile().get_graph(), "inner_graph.png")

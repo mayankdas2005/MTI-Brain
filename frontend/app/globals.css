@@ -448,14 +448,17 @@ html[data-density="compact"] {
    being distracting. currentColor matches surrounding text tone. */
 .streaming-cursor {
   display: inline-block;
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: currentColor;
-  opacity: 0.25;
+  background: hsl(var(--primary));
   margin-left: 3px;
   vertical-align: middle;
-  animation: thinking-dot 1.4s ease-in-out infinite;
+  animation: beat-cursor 0.8s ease-in-out infinite;
+}
+@keyframes beat-cursor {
+  0%, 100% { transform: scale(1);   opacity: 0.5; }
+  50%       { transform: scale(1.5); opacity: 1;   }
 }
 
 /* The streaming-cursor span (`.streaming-cursor`, defined above) is now
@@ -543,6 +546,43 @@ html[data-density="compact"] {
 
 .star-burst {
   animation: star-burst 0.38s var(--spring) both;
+}
+
+/* Thread title reveal — typing feel without cursor */
+@keyframes title-reveal {
+  from { clip-path: inset(0 100% 0 0); }
+  to   { clip-path: inset(0 0% 0 0); }
+}
+.title-reveal {
+  animation: title-reveal 0.6s steps(30, end) both;
+}
+
+/* Streaming cursor — inline at end of last text block, never on its own line.
+   Targets the last child block element directly so the dot sits within the
+   text flow regardless of whether streaming ends mid-paragraph or mid-list. */
+.streaming-prose[data-streaming] > div > p:last-child::after,
+.streaming-prose[data-streaming] > div > ul:last-child > li:last-child::after,
+.streaming-prose[data-streaming] > div > ol:last-child > li:last-child::after,
+.streaming-prose[data-streaming] > p:last-child::after,
+.streaming-prose[data-streaming] > ul:last-child > li:last-child::after,
+.streaming-prose[data-streaming] > ol:last-child > li:last-child::after {
+  content: "\00A0\25CF";
+  font-size: 0.6em;
+  vertical-align: middle;
+  line-height: 0;
+  animation: cursor-breathe 1s ease-in-out infinite;
+}
+
+/* Deep Analysis chip — amber treatment in both themes */
+.chip-deep-analysis {
+  color: #92400e;
+  background-color: #fef3c7;
+  border-color: #f59e0b;
+}
+.dark .chip-deep-analysis {
+  color: #fbbf24;
+  background-color: rgba(120, 53, 15, 0.25);
+  border-color: #92400e;
 }
 
 /* ── SQL / Code syntax highlighting (highlight.js) ── */

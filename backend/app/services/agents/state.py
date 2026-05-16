@@ -70,6 +70,8 @@ class State(MessagesState):
     _thread_id: str
     _user_id: str
     stopped: bool
+    max_rows: int                # user-configured row limit (default 100)
+    deep_analysis: bool          # true → force advanced complexity
 
     # ── Outer Loop: Plan / Execute / Reflect / Repair ────────────────────────
     plan: dict                          # {nodes: [SubQ], edges: [(id, id)], budget: {}}
