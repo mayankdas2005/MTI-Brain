@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>LPP Conversational Analytics &mdash; LangGraph + KG + Tribal Graph</title>
+<style>
+:root { --navy:#1f3a5f; --gold:#d48806; --green:#137333; --purple:#6f42c1; --rule:#e1e4e8; --bg:#fafbfc; --soft:#f6f8fa; --code:#0d1117; }
+body { font-family:-apple-system,"Segoe UI",system-ui,sans-serif; max-width:1180px; margin:2em auto; padding:0 1em; color:#222; line-height:1.55; }
+h1 { border-bottom:3px solid var(--navy); padding-bottom:.3em; }
+h2 { color:var(--navy); border-left:5px solid var(--navy); padding-left:.5em; margin-top:2em; }
+h3 { color:var(--navy); margin-top:1.4em; }
+h4 { color:var(--navy); margin:1em 0 .3em; }
+.meta { color:#57606a; font-size:.9em; }
+section { background:var(--bg); border:1px solid var(--rule); border-radius:6px; padding:1.2em 1.5em; margin:1.4em 0; }
+pre.diagram, pre.code { background:var(--code); color:#c9d1d9; padding:1em 1.2em; border-radius:4px; overflow-x:auto; font-size:.85em; line-height:1.4; }
+pre.diagram { font-family:"Cascadia Mono","JetBrains Mono",Consolas,monospace; }
+code { background:#f6f8fa; padding:.1em .3em; border-radius:3px; font-size:.92em; }
+table { border-collapse:collapse; width:100%; margin:.8em 0; font-size:.92em; }
+th, td { border:1px solid #d0d7de; padding:.5em .75em; text-align:left; vertical-align:top; }
+th { background:var(--navy); color:#fff; }
+tr:nth-child(even) td { background:var(--soft); }
+.role-kg { background:#e6f4ff; }
+.role-brain { background:#f5f0ff; }
+.role-llm { background:#fff7e6; }
+.role-tool { background:#e6fffb; }
+.callout { border-left:4px solid var(--gold); background:#fff8e1; padding:.8em 1em; margin:1em 0; border-radius:4px; }
+.callout.kg { border-left-color:#0969da; background:#e6f4ff; }
+.callout.brain { border-left-color:var(--purple); background:#f5f0ff; }
+.callout.warn { border-left-color:#cf1322; background:#ffeef0; }
+ol, ul { margin:.4em 0 .6em 1.4em; }
+li { margin:.15em 0; }
+.persona-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:.6em; margin:1em 0; }
+.persona { background:#fff; border:1px solid var(--rule); padding:.7em .9em; border-radius:4px; }
+.persona b { color:var(--navy); display:block; margin-bottom:.3em; }
+.lane { display:grid; grid-template-columns:140px 1fr; gap:.8em; align-items:start; margin:.4em 0; padding:.6em .8em; border:1px solid var(--rule); border-radius:4px; background:#fff; }
+.lane .label { font-weight:600; color:var(--navy); }
+.lane.kg { border-left:4px solid #0969da; }
+.lane.brain { border-left:4px solid var(--purple); }
+.lane.both { border-left:4px solid var(--green); }
+.lane.fail { border-left:4px solid #cf1322; }
+.tag { display:inline-block; background:var(--navy); color:#fff; font-size:.72em; font-weight:600; padding:.2em .6em; border-radius:3px; letter-spacing:.04em; text-transform:uppercase; margin-right:.4em; }
+.tag.kg { background:#0969da; }
+.tag.brain { background:var(--purple); }
+.tag.green { background:var(--green); }
+.tag.gold { background:var(--gold); }
+.tag.red { background:#cf1322; }
+.kpis { display:flex; gap:.7em; flex-wrap:wrap; margin:1em 0; }
+.kpi { background:var(--navy); color:#fff; padding:.5em .9em; border-radius:4px; }
+.kpi b { display:block; font-size:1.2em; }
+footer { margin-top:3em; padding-top:1em; border-top:1px solid var(--rule); color:#57606a; font-size:.88em; }
+</style></head>
+<body>
+
+<h1>LPP Conversational Analytics</h1>
+<p class="meta">Reference architecture for answering the Treasury &amp; Payments prompts (the 4-step CFO demo and the Prompts_Retail_v_0.1 catalog) using LangGraph orchestration over (a) the LPP Knowledge Graph in Jena and (b) the Tribal / Brain graph of institutional memory.</p>
+
+<div class="kpis">
+  <div class="kpi">Personas <b>8</b> &middot; Analyst / Manager / Director / Executive &times; Finance / Payments</div>
+  <div class="kpi">Prompts in scope <b>~150</b></div>
+  <div class="kpi">Complexity tiers <b>Simple &middot; Complex &middot; Advanced</b></div>
+  <div class="kpi">Graphs <b>2</b> &middot; KG + Tribal</div>
+</div>
+
+<!-- ============================================================ -->
+<section>
+<h2>1 &middot; Design goal</h2>
+
+<p>Take any of the ~150 prompts in the Retail Treasury / Payments catalog, route it through a LangGraph state machine, and return a grounded answer that combines:</p>
+<ol>
+  <li><b>Formal facts</b> from the <span class="tag kg">KG</span> &mdash; the LPP ontology in Apache Jena Fuseki. Today: 14 banks, 24 companies, 115 accounts, 9,547 investment positions, 1,800 FX forwards, 36,569 derivative MTMs.</li>
+  <li><b>Institutional context</b> from the <span class="tag brain">Tribal</span> graph &mdash; board limits, policy thresholds, prior decisions, watchlists, commitments, hedge intent, SME-taught edges, recent incidents.</li>
+  <li><b>Persona &amp; intent shaping</b> &mdash; an Analyst gets the data table, a CFO gets a one-pager with risks and a recommendation. Same backing query, different framing.</li>
+</ol>
+
+<div class="callout">
+<b>Why both graphs.</b> The 4-step demo run showed the gap: Step 1&ndash;3 answered from KG alone; Step 4 ("does this require action?") cannot be answered from KG facts because the answer depends on policy limits, prior decisions, and current commitments. That is the tribal graph's job.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>2 &middot; The two-graph data plane</h2>
+
+<pre class="diagram">
+                  ┌─────────────────────────────────────┐
+                  │      USER QUESTION + PERSONA        │
+                  │  (Analyst / Manager / Director /    │
+                  │   Executive  ×  Finance / Payments) │
+                  └─────────────────────────────────────┘
+                                   │
+                                   ▼
+                   ┌────────────────────────────────┐
+                   │     LangGraph orchestration    │
+                   │   (state machine, §4 below)    │
+                   └────────────────────────────────┘
+                       │                       │
+              SPARQL  │                       │  SPARQL + GraphRAG
+                       ▼                       ▼
+   ┌───────────────────────────────┐  ┌────────────────────────────────┐
+   │   KG  ─  Apache Jena Fuseki   │  │  TRIBAL / BRAIN  ─  Jena +     │
+   │   /lpp dataset                │  │  Snowflake Cortex Search       │
+   │                               │  │                                │
+   │   Ontology: lpp:              │  │   Ontology: brain:             │
+   │   • Bank, Company, Account    │  │   • Policy, Limit              │
+   │   • InvestmentPosition        │  │   • Decision, Commitment       │
+   │   • FxForward, DerivativeMtm  │  │   • Watchlist, Incident        │
+   │   • Currency, InstrumentType  │  │   • SME-taught edges,          │
+   │                               │  │     verbal commitments,        │
+   │   416,818 triples             │  │     side letters, RM signals   │
+   │   System of record:           │  │                                │
+   │   Snowflake (R2RML)           │  │   System of record:            │
+   │                               │  │   SME interviews + decision    │
+   │                               │  │   minutes (Cortex Search       │
+   │                               │  │   over transcripts)            │
+   └───────────────────────────────┘  └────────────────────────────────┘
+              ▲                                       ▲
+              │  R2RML materialization                │  Tribal-fact ingest
+              │                                       │  (SME UI + transcript NLP)
+              │                                       │
+   ┌────────────────────────────────────────────────────────────────────┐
+   │             Snowflake  ─  raw + curated + conformed marts          │
+   └────────────────────────────────────────────────────────────────────┘
+</pre>
+
+<p>Both stores expose the same surface to the agents: <b>SPARQL endpoints</b>. The tribal graph adds a second retrieval path (Cortex Search over SME transcripts) used only by the Brain Retrieval node.</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>3 &middot; LangGraph state machine</h2>
+
+<p>One deterministic graph. Conditional edges select the path based on prompt complexity, persona, and whether the tribal graph is in play. State carries: <code>question, persona, intent, plan, ontology_terms, sparql, results, tribal_facts, evidence, answer, viz</code>.</p>
+
+<pre class="diagram">
+                     ┌──────────────────────┐
+                     │  intake_classify     │  persona, intent, complexity
+                     └──────────┬───────────┘
+                                ▼
+                     ┌──────────────────────┐
+              ┌──────│  router              │  picks specialist domain (F/P)
+              │      │                      │  decides if tribal_needed
+              │      └──────────┬───────────┘
+              │                 ▼
+              │      ┌──────────────────────┐
+              │      │  domain_specialist   │  builds <b>question plan</b>
+              │      │  (treasury / payments)│  &mdash; entities, time windows,
+              │      │                      │    metrics, output shape
+              │      └──────────┬───────────┘
+              │                 ▼
+              │      ┌──────────────────────┐
+              │      │  ontology_lookup     │  resolves business terms →
+              │      │                      │  KG classes / predicates
+              │      └──────────┬───────────┘
+              │                 │
+              │   (tribal_needed)│      (not needed)
+              │            ┌────┴────┐
+              │            ▼         │
+              │  ┌──────────────────┐│
+              │  │ brain_retrieval  ││  GraphRAG over tribal graph:
+              │  │ (GraphRAG)       ││  seed nodes + expansion depth
+              │  └────────┬─────────┘│
+              │           ▼          │
+              │  ┌──────────────────────────┐
+              │  │  sparql_gen              │  NL → SPARQL,
+              │  │                          │  grounded in ontology + brain
+              │  └────────┬─────────────────┘
+              │           ▼
+              │  ┌──────────────────────────┐
+              │  │  sparql_validate         │  parse, SHACL, prefix check,
+              │  │                          │  cardinality sanity
+              │  └────────┬─────────────────┘
+              │           │  fail  ─→ retry/repair (max 2)  ──┐
+              │           ▼                                   │
+              │  ┌──────────────────────────┐                 │
+              │  │  governance_gate         │  row-level ACL, PII redact,
+              │  │                          │  rate-limit, cost budget
+              │  └────────┬─────────────────┘                 │
+              │           ▼                                   │
+              │  ┌──────────────────────────┐                 │
+              │  │  sparql_execute          │  Fuseki /lpp +  │
+              │  │                          │  /tribal        │
+              │  └────────┬─────────────────┘                 │
+              │           ▼                                   │
+              │  ┌──────────────────────────┐                 │
+              │  │  graph_reasoning         │  OWL inference, │
+              │  │                          │  multi-hop joins│
+              │  └────────┬─────────────────┘                 │
+              │           ▼                                   │
+              │  ┌──────────────────────────┐                 │
+              │  │  verifier                │  cardinality,   │
+              │  │                          │  unit checks,   │
+              │  │                          │  threshold xref │
+              │  └────────┬─────────────────┘                 │
+              │           ▼                                   │
+              │  ┌──────────────────────────┐                 │
+              │  │  answer_synthesis        │  persona-shaped │
+              │  │                          │  narrative with │
+              │  │                          │  citations      │
+              │  └────────┬─────────────────┘                 │
+              │           ▼                                   │
+              │  ┌──────────────────────────┐                 │
+              │  │  visualization           │  table / chart /│
+              │  │                          │  one-pager HTML │
+              │  └────────┬─────────────────┘                 │
+              │           ▼                                   │
+              │     ┌──────────────┐                          │
+              └────►│  human_in_loop│  (Advanced + Executive) │
+                    │   (optional) │                          │
+                    └──────┬───────┘                          │
+                           ▼                                  │
+                       ANSWER  ───────────────────────────────┘
+                                          (retry edge)
+</pre>
+
+<p>Edges are deterministic; retries are bounded; every transition emits an OpenTelemetry span. The end-state always contains <b>(answer, sparql, results_uri, tribal_evidence, persona_render)</b> for audit.</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>4 &middot; Node responsibilities</h2>
+
+<table>
+<thead><tr><th>#</th><th>Node</th><th>Input</th><th>Output</th><th>Backed by</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><b>intake_classify</b></td><td>Raw NL question + user profile</td><td>Persona, complexity (Simple / Complex / Advanced), intent class</td><td class="role-llm">LLM classifier</td></tr>
+<tr><td>2</td><td><b>router</b></td><td>Classified intake</td><td>Domain (Finance / Payments), <code>tribal_needed</code> flag, output shape</td><td class="role-llm">Rules + small LLM</td></tr>
+<tr><td>3</td><td><b>domain_specialist</b></td><td>Question + classification</td><td>Question plan: entities, time window, metrics, expected schema</td><td class="role-llm">Domain LLM with ontology preamble</td></tr>
+<tr><td>4</td><td><b>ontology_lookup</b></td><td>Business terms</td><td>Resolved <code>lpp:</code> classes/predicates + skos labels</td><td class="role-kg">SKOS lookup on /lpp</td></tr>
+<tr><td>5</td><td><b>brain_retrieval</b></td><td>Question plan</td><td>Seed <code>brain:TribalFact</code> URIs + Cortex Search hits + expansion depth</td><td class="role-brain">Cortex Search + tribal SPARQL</td></tr>
+<tr><td>6</td><td><b>sparql_gen</b></td><td>Plan + ontology terms + tribal seeds</td><td>Draft SPARQL (UNION across KG + tribal named graphs)</td><td class="role-llm">LLM with strict grounding</td></tr>
+<tr><td>7</td><td><b>sparql_validate</b></td><td>Draft SPARQL</td><td>Parse OK, SHACL OK, predicate-existence OK, cardinality sane</td><td class="role-tool">Jena ARQ parser + SHACL</td></tr>
+<tr><td>8</td><td><b>governance_gate</b></td><td>Validated SPARQL + user</td><td>Filter rewrites (row-level ACL), PII mask, cost ceiling</td><td class="role-tool">Policy engine</td></tr>
+<tr><td>9</td><td><b>sparql_execute</b></td><td>Final SPARQL</td><td>Result bindings (JSON), exec time, byte budget</td><td class="role-kg">Fuseki /lpp + /tribal</td></tr>
+<tr><td>10</td><td><b>graph_reasoning</b></td><td>Bindings</td><td>Derived facts (subclass, transitive ownership, concentration math)</td><td class="role-kg">OWL inference or Python post-proc</td></tr>
+<tr><td>11</td><td><b>verifier</b></td><td>Bindings + derived</td><td>Sanity flags: zero-rows, currency mismatches, threshold trips</td><td class="role-tool">Deterministic Python checks</td></tr>
+<tr><td>12</td><td><b>answer_synthesis</b></td><td>Verified results + tribal facts + persona</td><td>NL answer with explicit citations to triples and SME sessions</td><td class="role-llm">LLM with grounded-only prompt</td></tr>
+<tr><td>13</td><td><b>visualization</b></td><td>Verified results + persona</td><td>Table, chart, or one-page HTML (same engine that produced the demo report)</td><td class="role-tool">Templated renderer</td></tr>
+<tr><td>14</td><td><b>human_in_loop</b></td><td>Draft answer (Advanced + Executive only)</td><td>Approval / edit / reject (AgentCore)</td><td class="role-tool">AgentCore HIL</td></tr>
+</tbody>
+</table>
+
+<p class="meta">
+<span class="tag kg">KG</span> nodes touch Jena. <span class="tag brain">Tribal</span> nodes touch Cortex Search + the brain named graph. <span class="tag gold">LLM</span> nodes are stateless and grounded; only nodes 1, 2, 3, 6, 12 invoke an LLM at all. The rest are deterministic.
+</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>5 &middot; Routing by persona and complexity</h2>
+
+<p>The Prompts_Retail catalog spans 8 personas &times; 3 complexity tiers. Routing decisions:</p>
+
+<table>
+<thead><tr><th>Persona</th><th>Typical prompt</th><th>Path</th><th>Tribal needed?</th><th>HIL?</th></tr></thead>
+<tbody>
+<tr><td>Analyst &mdash; F &middot; Simple</td><td>"Show me the closing balance of our JPMorgan operating account for the last 7 days."</td><td>KG &rarr; table</td><td>No</td><td>No</td></tr>
+<tr><td>Analyst &mdash; F &middot; Complex</td><td>"Match yesterday&apos;s bank balances against our ERP ledger balances and list all discrepancies above $10K"</td><td>KG (multi-source UNION) &rarr; reasoning &rarr; flagged table</td><td>No</td><td>No</td></tr>
+<tr><td>Analyst &mdash; F &middot; Advanced</td><td>"Detect vendors with anomalous payment patterns&hellip; flag &gt; 3&sigma; from typical."</td><td>KG &rarr; reasoning (z-score) &rarr; tribal (vendor watchlist) &rarr; ranked flags</td><td>Yes &mdash; vendor watchlist, prior fraud rulings</td><td>No</td></tr>
+<tr><td>Manager &mdash; F &middot; Complex</td><td>"Show me our investment portfolio mix&hellip; flag positions outside investment policy guidelines."</td><td>KG &rarr; <b>tribal (policy thresholds)</b> &rarr; policy-overlaid table</td><td><b>Yes</b> &mdash; policy lives in tribal</td><td>No</td></tr>
+<tr><td>Director &mdash; F &middot; Advanced</td><td>"Build a capital structure optimization model&hellip;"</td><td>KG (current debt/cash) &rarr; tribal (rating-agency targets, prior decisions) &rarr; scenario model &rarr; one-pager</td><td>Yes</td><td><b>Yes</b></td></tr>
+<tr><td>Executive &mdash; F &middot; Complex</td><td>"Give me a one-page CFO briefing on treasury health."</td><td>KG (Q1+Q3a+Q3b+Q3c bundle) &rarr; tribal (risk register, prior briefings) &rarr; one-pager</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Executive &mdash; F &middot; Advanced</td><td>"Model the enterprise impact of a major black swan scenario&hellip;"</td><td>Multi-cycle: KG snapshot &rarr; tribal commitments &rarr; scenario engine &rarr; HIL</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Analyst &mdash; P &middot; Simple</td><td>"Show me total card payment volume processed&hellip; yesterday."</td><td>KG &rarr; table</td><td>No</td><td>No</td></tr>
+<tr><td>Analyst &mdash; P &middot; Complex</td><td>"Reconcile gross card sales against net settlements&hellip; break out variance by interchange, fees, chargebacks."</td><td>KG (multi-feed reconcile) &rarr; reasoning &rarr; variance table</td><td>Optional &mdash; for fee schedule</td><td>No</td></tr>
+<tr><td>Director &mdash; P &middot; Advanced</td><td>"Build a 5-year payments strategy roadmap&hellip;"</td><td>KG snapshot &rarr; tribal (commitments, contracts, member growth plan) &rarr; HIL &rarr; deck</td><td>Yes</td><td>Yes</td></tr>
+</tbody>
+</table>
+
+<div class="callout brain">
+<b>Heuristics for <code>tribal_needed</code>.</b> Set the flag whenever the prompt contains: <i>policy, limit, threshold, watchlist, recommend, should we, breach, anomaly vs. typical, committee, board, prior decision, commitment, intent, hedge purpose, strategy, roadmap, 5-year, optimize, black swan, scenario</i>. These are signals that the answer requires institutional context, not just instrument facts.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>6 &middot; Three worked traces from the catalog</h2>
+
+<h3>6a &middot; <span class="tag green">SIMPLE</span> Analyst-F #1: "What is our total cash balance across all bank accounts as of yesterday?"</h3>
+
+<div class="lane kg">
+<div class="label">Path</div>
+<div>
+intake_classify (Analyst, Simple, "balance lookup") &rarr;
+router (Finance, tribal_needed=false) &rarr;
+domain_specialist (entities: BankAccount; time: yesterday; metric: bookValue SUM) &rarr;
+ontology_lookup (<code>lpp:BankAccount</code>, <code>lpp:bookValue</code>, <code>lpp:asOfDate</code>) &rarr;
+sparql_gen (UNION-free aggregation) &rarr;
+validate &rarr; gate &rarr; execute &rarr; verify (one row, currency uniform) &rarr;
+synthesis ("$X across N accounts, vs. $Y 7-day average") &rarr;
+viz (table + sparkline)
+</div>
+</div>
+
+<h3>6b &middot; <span class="tag gold">COMPLEX</span> Manager-F #11: "Show me investment portfolio mix&hellip; flag positions outside investment policy guidelines."</h3>
+
+<div class="lane both">
+<div class="label">Path</div>
+<div>
+intake_classify (Manager, Complex, "policy compliance") &rarr;
+router (Finance, <b>tribal_needed=true</b>) &rarr;
+domain_specialist &rarr;
+ontology_lookup &rarr;
+<b>brain_retrieval</b> &mdash; pulls active <code>brain:Policy</code> facts: max single-issuer 10%, min A-rating, max duration 365d &rarr;
+sparql_gen &mdash; one query joining <code>lpp:InvestmentPosition</code> to <code>brain:Limit</code> via <code>brain:appliesTo</code> &rarr;
+validate &rarr; gate &rarr; execute &rarr;
+graph_reasoning (compute % of book, compare to limit) &rarr;
+verifier (flag positions where limit_pct&lt;observed_pct) &rarr;
+synthesis ("3 breaches: position X at 14% vs 10% issuer cap, sourced from Policy 2024-IM-07, decided 2024-09-15 by Treasury Committee") &rarr;
+viz (policy-overlaid table)
+</div>
+</div>
+
+<h3>6c &middot; <span class="tag red">ADVANCED</span> Executive-F #11: "Give me a one-page CFO briefing on treasury health&hellip;"</h3>
+
+<div class="lane both">
+<div class="label">Path</div>
+<div>
+intake_classify (Executive, Complex, "executive briefing") &rarr;
+router (Finance, tribal_needed=true, output_shape=<b>one_pager</b>) &rarr;
+domain_specialist <b>splits into sub-plans</b>: {liquidity, debt, FX, IR, risks} &rarr;
+For each: ontology_lookup &rarr; sparql_gen &rarr; execute (parallel fan-out) &rarr;
+brain_retrieval pulls <code>brain:RiskRegister</code>, recent <code>brain:Decision</code> minutes, <code>brain:Commitment</code> in next 30d &rarr;
+graph_reasoning (concentration %, threshold checks against tribal limits) &rarr;
+verifier (snapshot-staleness check, currency reconcile) &rarr;
+synthesis (CFO-grade one-pager with risks + recommendations) &rarr;
+viz (HTML one-pager &mdash; <i>this is the cfo-demo-report.html artifact</i>) &rarr;
+<b>human_in_loop</b> (Treasury Director reviews before CFO send)
+</div>
+</div>
+
+<p class="meta">Trace 6c is the demo we just ran. KG produced Steps 1&ndash;3; the Brain layer is what lets Step 4 ("does this need action?") become a recommendation rather than a "data not available" refusal.</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>7 &middot; State shape and node code stubs</h2>
+
+<pre class="code">from typing import TypedDict, Literal, Annotated
+from langgraph.graph import StateGraph, END
+
+class S(TypedDict):
+    question: str
+    user: dict                # { id, role, region, entitlements }
+    persona: Literal["analyst-F","manager-F","director-F","executive-F",
+                     "analyst-P","manager-P","director-P","executive-P"]
+    complexity: Literal["simple","complex","advanced"]
+    intent: str
+    domain: Literal["finance","payments"]
+    tribal_needed: bool
+    plan: dict                # entities, time, metrics, output_shape
+    ontology_terms: list[dict]
+    tribal_facts: list[dict]  # seed brain: nodes + scores
+    sparql: str
+    validation: dict
+    bindings: list[dict]
+    derived: dict
+    verification: dict
+    answer: str
+    evidence: list[dict]      # triples + SME session refs
+    viz: dict                 # html | table | chart
+
+def router(s: S) -&gt; S:
+    s["domain"]    = pick_domain(s["question"], s["persona"])
+    s["tribal_needed"] = needs_tribal(s["question"], s["intent"])
+    return s
+
+def brain_retrieval(s: S) -&gt; S:
+    seeds = cortex_search("TRIBAL_FACT_SEARCH",
+                          query=s["question"],
+                          today=now(),
+                          persona=s["persona"])
+    expanded = sparql_traverse("/tribal",
+                               seed_uris=[h.uri for h in seeds],
+                               depth=2,
+                               predicates=["brain:appliesTo","brain:supersedes","brain:committed"])
+    s["tribal_facts"] = seeds + expanded
+    return s
+
+def sparql_gen(s: S) -&gt; S:
+    s["sparql"] = llm_generate(
+        system=GROUNDED_SPARQL_PROMPT,
+        ontology=s["ontology_terms"],
+        tribal_seeds=s["tribal_facts"],
+        plan=s["plan"])
+    return s
+
+# ---- graph wiring -------------------------------------------------
+g = StateGraph(S)
+for n in [intake_classify, router, domain_specialist, ontology_lookup,
+          brain_retrieval, sparql_gen, sparql_validate, governance_gate,
+          sparql_execute, graph_reasoning, verifier, answer_synthesis,
+          visualization, human_in_loop]:
+    g.add_node(n.__name__, n)
+
+g.set_entry_point("intake_classify")
+g.add_edge("intake_classify", "router")
+g.add_conditional_edges("router",
+    lambda s: "brain_retrieval" if s["tribal_needed"] else "sparql_gen")
+g.add_edge("brain_retrieval", "sparql_gen")
+g.add_edge("sparql_gen", "sparql_validate")
+g.add_conditional_edges("sparql_validate",
+    lambda s: "sparql_gen" if not s["validation"]["ok"] and s["validation"]["retries"]&lt;2
+              else "governance_gate")
+g.add_edge("governance_gate", "sparql_execute")
+g.add_edge("sparql_execute", "graph_reasoning")
+g.add_edge("graph_reasoning", "verifier")
+g.add_edge("verifier", "answer_synthesis")
+g.add_edge("answer_synthesis", "visualization")
+g.add_conditional_edges("visualization",
+    lambda s: "human_in_loop"
+              if s["complexity"]=="advanced" and s["persona"].startswith(("director","executive"))
+              else END)
+g.add_edge("human_in_loop", END)
+
+app = g.compile(checkpointer=checkpointer_postgres)
+</pre>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>8 &middot; Tribal graph &mdash; what lives there</h2>
+
+<table>
+<thead><tr><th>Brain class</th><th>Example facts (from the catalog prompts)</th><th>Source of truth</th></tr></thead>
+<tbody>
+<tr><td><code>brain:Policy</code></td><td>Counterparty &le; 25% of total exposure; min investment rating A; FX hedge ratio &ge; 60% of forecasted EUR; debt covenant Net Debt/EBITDA &lt; 3.0&times;</td><td>Treasury Policy doc, board minutes</td></tr>
+<tr><td><code>brain:Limit</code></td><td>$200M minimum operating cash; $5B revolver capacity; $1B CP program ceiling; single-vendor 25% concentration cap</td><td>Approved limit register</td></tr>
+<tr><td><code>brain:Decision</code></td><td>"Reduce Citi to 20% by Q4 2026" &mdash; Treasury Committee 2026-03-12</td><td>Committee minutes</td></tr>
+<tr><td><code>brain:Commitment</code></td><td>$230M KRW settlement on 2026-05-18; $750M dividend payment 2026-06-30; $400M debt maturity 2026-08-15</td><td>Forward calendar</td></tr>
+<tr><td><code>brain:Watchlist</code></td><td>Citibank &mdash; elevated CDS spreads as of 2026-04-30; Vendor X &mdash; OFAC review pending</td><td>Credit/compliance team</td></tr>
+<tr><td><code>brain:HedgeIntent</code></td><td>KRW notional categorized as translation hedge for Korean subsidiary (not transaction)</td><td>Hedge documentation</td></tr>
+<tr><td><code>brain:Incident</code></td><td>2026-04-22 ACH file rejection batch, root cause vendor master mismatch</td><td>Ops postmortem</td></tr>
+<tr><td><code>brain:SMEEdge</code></td><td>"BANK_HSBC London branch is the primary KRW liquidity provider, not Singapore" (taught by SME Maria Chen, 2026-03-04)</td><td>SME interview transcript</td></tr>
+</tbody>
+</table>
+
+<p>Every tribal fact carries <code>brain:effectiveFrom</code> / <code>brain:effectiveTo</code>, <code>brain:status</code>, <code>brain:source</code>, and <code>brain:supersedes</code>. Old facts are not deleted &mdash; they are superseded, preserving the decision audit trail.</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>9 &middot; Personas shape the answer, not the data</h2>
+
+<div class="persona-grid">
+  <div class="persona"><b>Analyst</b>Wide tabular detail, source columns, raw counts. SPARQL surfaced. Few prose lines.</div>
+  <div class="persona"><b>Manager</b>Aggregated KPIs vs. policy. Drill-down link to analyst view. Variance call-outs.</div>
+  <div class="persona"><b>Director</b>Risk register + trend + benchmark. Tribal facts inline as "context".</div>
+  <div class="persona"><b>Executive</b>One-page narrative, top 3 risks, recommendation. SPARQL hidden. HIL gate.</div>
+</div>
+
+<p>The <b>same backing SPARQL</b> can serve all four; <code>answer_synthesis</code> and <code>visualization</code> pick the render based on persona. The Analyst's table and the Executive's one-pager come out of the same node graph &mdash; only the final two nodes differ in temperature and template.</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>10 &middot; Coverage map &mdash; what answers cleanly, what doesn&apos;t</h2>
+
+<table>
+<thead><tr><th>Catalog tier</th><th>Count</th><th>KG alone covers</th><th>Needs tribal</th><th>Out of scope today</th></tr></thead>
+<tbody>
+<tr><td>Simple</td><td>~50</td><td>~45 (90%)</td><td>~5</td><td>0</td></tr>
+<tr><td>Complex</td><td>~60</td><td>~30 (50%)</td><td>~25</td><td>~5 (peer-benchmark, macro)</td></tr>
+<tr><td>Advanced</td><td>~40</td><td>~5</td><td>~25</td><td>~10 (ESG, pension OCI, geopolitical projections, peer M&amp;A)</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>What is genuinely out of scope.</b> Some Director/Executive prompts ("impact of the recent gulf war", "compare leverage vs Walmart/Target/Home Depot", "model EPS impact of 100bps rate hike on pension discount rate") require <i>external</i> data the LPP graph does not own &mdash; macro feeds, peer financial filings, pension actuarial models. The platform should <b>refuse honestly</b> on these rather than hallucinate, and direct the user to the relevant external system. This refusal itself is a tribal-graph fact (<code>brain:OutOfScopeReason</code>).
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>11 &middot; Non-functional cuts</h2>
+
+<table>
+<thead><tr><th>Concern</th><th>How it&apos;s handled</th></tr></thead>
+<tbody>
+<tr><td>Latency budget</td><td>Simple &le; 3s, Complex &le; 10s, Advanced &le; 45s (with HIL out of band). Parallel fan-out in domain_specialist for multi-section briefings.</td></tr>
+<tr><td>Cost budget</td><td>governance_gate enforces per-query LLM token + Fuseki row caps; sparql_validate rejects queries with cartesian risk.</td></tr>
+<tr><td>Determinism</td><td>Only nodes 1, 2, 3, 6, 12 use an LLM. Same SPARQL output produces same answer. Checkpoints in Postgres for replay.</td></tr>
+<tr><td>Audit</td><td>Every answer ships with (SPARQL, result-hash, tribal_evidence_uris, prompt_template, model_version). AgentCore stores the trace.</td></tr>
+<tr><td>Entitlements</td><td>governance_gate rewrites SPARQL with <code>FILTER</code>s based on user&apos;s region/entity access. Single user can never see another&apos;s row.</td></tr>
+<tr><td>Freshness</td><td>KG materialized from Snowflake on a CDC schedule per domain (treasury 15-min, payments 5-min). Tribal facts have explicit effective dates and are queried with <code>FILTER(now() BETWEEN effectiveFrom &amp;&amp; effectiveTo)</code>.</td></tr>
+<tr><td>Hallucination control</td><td>sparql_gen prompt allows only ontology terms supplied by ontology_lookup. sparql_validate rejects unknown predicates. answer_synthesis prompt forbids facts not in <code>bindings</code> or <code>tribal_facts</code>.</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<h2>12 &middot; What changes vs. the existing architecture doc</h2>
+
+<p>The 1,385-line <code>sparql-conversational-analytics-architecture.md</code> already specifies the layered model, 12-agent decomposition, and Brain-layer ontology. This document is a <b>focused operational view</b> of that design, specialized to:</p>
+<ol>
+  <li>The actual 4-step CFO demo run on the LPP dataset (Step 4 &harr; Brain motivation).</li>
+  <li>The Prompts_Retail catalog as the input distribution &mdash; mapping each tier to a path.</li>
+  <li>A concrete LangGraph <code>StateGraph</code> wiring with conditional edges for tribal vs. non-tribal paths and HIL gating for Executive/Advanced prompts.</li>
+  <li>An explicit coverage map for what fails honestly vs. what answers cleanly today.</li>
+</ol>
+</section>
+
+<footer>
+Generated by Claude Code. Companion to <a href="cfo-demo-report.html">cfo-demo-report.html</a> and <a href="cfo-demo-qa.html">cfo-demo-qa.html</a>.
+Source artifacts: <code>../semantic/lpp-ontology.ttl</code>, <code>../fuseki-data/lpp-data.ttl</code>, <code>../sparql-conversational-analytics-architecture.md</code>, <code>../Prompts_Retail_v_0.1.xlsx</code>.
+</footer>
+
+</body></html>

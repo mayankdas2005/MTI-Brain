@@ -43,6 +43,9 @@ _jwt = _yml.get("jwt", {})
 _rl = _yml.get("rate_limit", {})
 _mdl_rt = _yml.get("model_routing", {})
 _prompt_cache = _yml.get("prompt_cache", {})
+_fuseki = _yml.get("fuseki", {})
+_tribal = _yml.get("tribal_graph", {})
+_pipeline = _yml.get("pipeline", {})
 
 
 class Settings(BaseSettings):
@@ -101,10 +104,20 @@ class Settings(BaseSettings):
     AWS_BEDROCK_COHERE_EMBED_V4_ARN: str = Field(default="")
 
     # ── Model routing (config.yml) ───────────────────────────────────────────
-    LLM_ROUTING_ENABLED: bool = Field(default=_mdl_rt.get("enabled", False))
+    LLM_ROUTING_ENABLED: bool = Field(default=_mdl_rt.get("llm_routing_enabled", True))
 
     # ── Prompt cache (config.yml) ───────────────────────────────────────────
     AWS_BEDROCK_PROMPT_CACHE: bool = Field(default=_prompt_cache.get("aws_bedrock_prompt_cache", False))
+
+    # ── Fuseki / KG (config.yml + .env override) ─────────────────────────────
+    FUSEKI_URL: str = Field(default=_fuseki.get("url", "http://localhost:3030"))
+    FUSEKI_DATASET: str = Field(default=_fuseki.get("dataset", "lpp"))
+    FUSEKI_TIMEOUT: int = Field(default=_fuseki.get("timeout_seconds", 30))
+    TRIBAL_GRAPH_URL: str = Field(default=_tribal.get("url", "http://localhost:3030"))
+    TRIBAL_GRAPH_DATASET: str = Field(default=_tribal.get("dataset", "tribal"))
+
+    # ── Pipeline (config.yml) ─────────────────────────────────────────────────
+    PIPELINE_RECURSION_LIMIT: int = Field(default=_pipeline.get("recursion_limit", 80))
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

@@ -1,0 +1,147 @@
+@prefix lpp:    <https://lpp.example/ontology#> .
+@prefix lppid:  <https://lpp.example/id/> .
+@prefix owl:    <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix skos:   <http://www.w3.org/2004/02/skos/core#> .
+
+<https://lpp.example/ontology>
+    a owl:Ontology ;
+    rdfs:label "LPP Treasury Ontology — Counterparty Exposure slice"@en ;
+    rdfs:comment "Starter ontology covering Bank, Company, BankAccount, and the instruments that contribute to counterparty exposure: deposits, investments, FX forwards, and derivative MTM."@en ;
+    owl:versionInfo "0.1.0" .
+
+#################################################################
+# Core entities
+#################################################################
+
+lpp:Currency       a owl:Class ; rdfs:label "Currency"@en .
+lpp:Company        a owl:Class ; rdfs:label "Company"@en .
+lpp:Bank           a owl:Class ; rdfs:label "Bank"@en .
+lpp:BankBranch     a owl:Class ; rdfs:label "Bank Branch"@en .
+lpp:BankAccount    a owl:Class ; rdfs:label "Bank Account"@en .
+
+# Account purpose specializations — drive subclass inference from the
+# ACCOUNT_PURPOSE column added in lpp-schema-extensions.sql (section A).
+lpp:OperatingAccount       rdfs:subClassOf lpp:BankAccount ; rdfs:label "Operating Account"@en .
+lpp:CollectionAccount      rdfs:subClassOf lpp:BankAccount .
+lpp:ConcentrationAccount   rdfs:subClassOf lpp:BankAccount .
+lpp:DisbursementAccount    rdfs:subClassOf lpp:BankAccount .
+lpp:InvestmentAccount      rdfs:subClassOf lpp:BankAccount .
+
+#################################################################
+# Financial instruments — anything that can create exposure
+#################################################################
+
+lpp:FinancialInstrument    a owl:Class ;
+    rdfs:label "Financial Instrument"@en ;
+    rdfs:comment "Abstract parent for anything that contributes to counterparty exposure."@en .
+
+lpp:InvestmentInstrument   rdfs:subClassOf lpp:FinancialInstrument .
+lpp:InvestmentPosition     a owl:Class ;
+    rdfs:label "Investment Position"@en ;
+    rdfs:comment "A holding (face/market value) of an InvestmentInstrument by a Company on a date."@en .
+
+lpp:FxForward              rdfs:subClassOf lpp:FinancialInstrument ;
+    rdfs:label "FX Forward"@en .
+
+lpp:DerivativeMtm          a owl:Class ;
+    rdfs:label "Derivative Mark-to-Market"@en ;
+    rdfs:comment "Periodic valuation of a derivative deal against a counterparty bank."@en .
+
+# Optional: instrument-type taxonomy as SKOS concepts so they are queryable
+lpp:InstrumentType        a owl:Class ; rdfs:subClassOf skos:Concept .
+<https://lpp.example/id/instrument-type/MMF>              a lpp:InstrumentType ; skos:prefLabel "Money Market Fund" .
+<https://lpp.example/id/instrument-type/TIME_DEPOSIT>     a lpp:InstrumentType ; skos:prefLabel "Time Deposit" .
+<https://lpp.example/id/instrument-type/CD>               a lpp:InstrumentType ; skos:prefLabel "Certificate of Deposit" .
+<https://lpp.example/id/instrument-type/TREASURY>         a lpp:InstrumentType ; skos:prefLabel "Treasury" .
+<https://lpp.example/id/instrument-type/COMMERCIAL_PAPER> a lpp:InstrumentType ; skos:prefLabel "Commercial Paper" .
+<https://lpp.example/id/instrument-type/REPO>             a lpp:InstrumentType ; skos:prefLabel "Repurchase Agreement" .
+<https://lpp.example/id/instrument-type/BOND>             a lpp:InstrumentType ; skos:prefLabel "Bond" .
+
+#################################################################
+# Aggregate / derived
+#################################################################
+
+lpp:CounterpartyExposure   a owl:Class ;
+    rdfs:label "Counterparty Exposure (snapshot)"@en ;
+    rdfs:comment "Materialized total exposure to a bank as of a date. Often derivable from instruments via SPARQL, but stored when reported."@en .
+
+#################################################################
+# Object properties (relationships — these are the joins you'll traverse)
+#################################################################
+
+lpp:hasCurrency        a owl:ObjectProperty ; rdfs:range lpp:Currency .
+
+lpp:ownedBy            a owl:ObjectProperty ;
+    rdfs:domain lpp:BankAccount ; rdfs:range lpp:Company ;
+    rdfs:label "owned by"@en .
+
+lpp:heldAt             a owl:ObjectProperty ;
+    rdfs:domain lpp:BankAccount ; rdfs:range lpp:Bank ;
+    rdfs:label "held at"@en ;
+    rdfs:comment "Convenience shortcut: BankAccount → Bank, bypassing BankBranch."@en .
+
+lpp:branchOf           a owl:ObjectProperty ;
+    rdfs:domain lpp:BankBranch ; rdfs:range lpp:Bank .
+
+lpp:atBranch           a owl:ObjectProperty ;
+    rdfs:domain lpp:BankAccount ; rdfs:range lpp:BankBranch .
+
+lpp:counterparty       a owl:ObjectProperty ;
+    rdfs:range lpp:Bank ;
+    rdfs:label "counterparty bank"@en ;
+    rdfs:comment "Domain is the union of FxForward, InvestmentInstrument (issuer bank), DerivativeMtm, BankAccount (deposits)."@en .
+
+lpp:issuerBank         a owl:ObjectProperty ;
+    rdfs:subPropertyOf lpp:counterparty ;
+    rdfs:domain lpp:InvestmentInstrument ; rdfs:range lpp:Bank .
+
+lpp:hasInstrument      a owl:ObjectProperty ;
+    rdfs:domain lpp:InvestmentPosition ; rdfs:range lpp:InvestmentInstrument .
+
+lpp:heldBy             a owl:ObjectProperty ;
+    rdfs:domain lpp:InvestmentPosition ; rdfs:range lpp:Company .
+
+lpp:fundedBy           a owl:ObjectProperty ;
+    rdfs:domain lpp:InvestmentPosition ; rdfs:range lpp:BankAccount .
+
+lpp:valuesInstrument   a owl:ObjectProperty ;
+    rdfs:domain lpp:DerivativeMtm ; rdfs:range lpp:FinancialInstrument .
+
+lpp:tradedBy           a owl:ObjectProperty ;
+    rdfs:range lpp:Company .
+
+lpp:instrumentType     a owl:ObjectProperty ;
+    rdfs:domain lpp:InvestmentInstrument ; rdfs:range lpp:InstrumentType .
+
+#################################################################
+# Datatype properties (literals)
+#################################################################
+
+lpp:code               a owl:DatatypeProperty ; rdfs:range xsd:string ;
+    rdfs:comment "Business key, unique within its class."@en .
+lpp:name               a owl:DatatypeProperty ; rdfs:range xsd:string .
+lpp:bic                a owl:DatatypeProperty ; rdfs:range xsd:string .
+lpp:lei                a owl:DatatypeProperty ; rdfs:range xsd:string .
+lpp:countryCode        a owl:DatatypeProperty ; rdfs:range xsd:string .
+lpp:currencyCode       a owl:DatatypeProperty ; rdfs:range xsd:string .
+
+# Monetary / temporal
+lpp:amount             a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+lpp:faceAmount         a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+lpp:marketValue        a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+lpp:bookValue          a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+lpp:mtmAmount          a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+lpp:notionalAmount     a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+
+lpp:tradeDate          a owl:DatatypeProperty ; rdfs:range xsd:date .
+lpp:valueDate          a owl:DatatypeProperty ; rdfs:range xsd:date .
+lpp:maturityDate       a owl:DatatypeProperty ; rdfs:range xsd:date .
+lpp:asOfDate           a owl:DatatypeProperty ; rdfs:range xsd:date .
+
+lpp:status             a owl:DatatypeProperty ; rdfs:range xsd:string .
+lpp:rating             a owl:DatatypeProperty ; rdfs:range xsd:string .
+lpp:yieldToMaturity    a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+lpp:durationDays       a owl:DatatypeProperty ; rdfs:range xsd:decimal .

@@ -18,6 +18,7 @@ from app.core.middleware import (
 )
 from app.core.rate_limit import limiter
 from app.db import dispose_engine, warm_pool
+from app.services.agents.graph import init_pipeline, shutdown_pipeline
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -30,8 +31,13 @@ from slowapi.middleware import SlowAPIMiddleware
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} [env={settings.ENVIRONMENT}]")
     await warm_pool()
+    try:
+        await init_pipeline()
+    except Exception as e:
+        logger.error(f"Pipeline init failed (continuing without pipeline): {e}")
     yield
     logger.info("Shutting down - releasing resources")
+    await shutdown_pipeline()
     await dispose_engine()
 
 

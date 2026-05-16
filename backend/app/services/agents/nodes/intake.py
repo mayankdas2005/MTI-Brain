@@ -1,0 +1,94 @@
+"""intake_classify_node — classify question type, persona, and complexity."""
+
+from __future__ import annotations
+
+import json
+import time
+
+from langchain_core.messages import HumanMessage
+
+from app.services.agents.bedrock import get_llm
+from app.services.agents.helpers import parse_tag, parse_json_from_response
+from app.services.agents.prompts import INTAKE_CLASSIFY_PROMPT
+from app.services.agents.state import State
+
+
+async def intake_classify_node(state: State) -> dict:
+    question = state.get("question", "")
+    summary = state.get("summary", "")
+    t0 = time.perf_counter()
+
+    chain = INTAKE_CLASSIFY_PROMPT | get_llm("fast")
+    raw = await chain.ainvoke({"question": question, "summary": summary or "None."})
+    text = raw.content if hasattr(raw, "content") else str(raw)
+
+    parsed = parse_json_from_response(text)
+    question_type = parsed.get("question_type", "kg_query")
+    persona = parsed.get("persona", "Analyst-F")
+    complexity = parsed.get("complexity", "simple")
+
+    step = {
+        "node": "intake_classify",
+        "label": "Understanding your question",
+        "duration_ms": round((time.perf_counter() - t0) * 1000),
+    }
+
+    messages = list(state.get("messages", []))
+    messages.append(HumanMessage(content=question))
+
+    return {
+        "question_type": question_type,
+        "persona": persona,
+        "complexity": complexity,
+        "messages": messages,
+        "pipeline_steps": [step],
+    }
+
+
+async def general_chat_node(state: State) -> dict:
+    """Return a conversational response for non-data questions."""
+    question = state.get("question", "")
+    summary = state.get("summary", "")
+    messages = state.get("messages", [])
+
+    from app.services.agents.prompts import GENERAL_CHAT_PROMPT
+    from langchain_core.messages import AIMessage
+
+    msg_text = "\n".join(
+        f"{'User' if getattr(m, 'type', '') == 'human' else 'Assistant'}: {m.content}"
+        for m in messages[-6:]
+    )
+
+    chain = GENERAL_CHAT_PROMPT | get_llm("fast")
+    raw = await chain.ainvoke({"question": question, "summary": summary or "None.", "messages": msg_text})
+    text = raw.content if hasattr(raw, "content") else str(raw)
+
+    answer = parse_tag(text, "answer") or text
+    follow_ups_raw = parse_tag(text, "follow_ups")
+    try:
+        follow_ups = json.loads(follow_ups_raw) if follow_ups_raw else []
+    except (json.JSONDecodeError, ValueError):
+        follow_ups = []
+
+    updated_messages = list(messages) + [AIMessage(content=answer)]
+    return {"answer": answer, "follow_ups": follow_ups, "messages": updated_messages}
+
+
+async def rejected_node(state: State) -> dict:
+    """Return a static rejection response for out-of-scope questions."""
+    from langchain_core.messages import AIMessage
+    answer = (
+        "This question falls outside MTI Brain's scope. I can help with treasury positions, "
+        "FX forwards, bank account balances, counterparty exposure, and investment analytics "
+        "from the LPP Knowledge Graph. Please rephrase or ask about one of those topics."
+    )
+    messages = list(state.get("messages", [])) + [AIMessage(content=answer)]
+    return {
+        "answer": answer,
+        "follow_ups": [
+            "What is our total counterparty exposure to JPMorgan?",
+            "Show me the investment positions for Company ABC.",
+            "What FX forwards mature this week?",
+        ],
+        "messages": messages,
+    }

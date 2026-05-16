@@ -1,0 +1,77 @@
+backend_graph/
+├── app/
+│   ├── main.py                          # FastAPI entry point + lifespan
+│   ├── api/
+│   │   ├── health.py                    # GET /health
+│   │   └── v1/
+│   │       ├── __init__.py              # v1 router
+│   │       ├── auth.py                  # Okta OIDC (/verify_code, /me)
+│   │       ├── chat.py                  # Thread mgmt + SSE streaming
+│   │       ├── project.py               # Project CRUD
+│   │       ├── admin.py                 # Execution-log admin endpoints
+│   │       └── deps.py                  # CurrentUser dependency
+│   ├── core/
+│   │   ├── config.py                    # Pydantic Settings
+│   │   ├── datasources.py               # Multi-datasource registry
+│   │   ├── logger.py                    # Loguru config
+│   │   ├── middleware.py                # Request-ID + timing middleware
+│   │   ├── circuit_breaker.py           # Circuit breakers for external services
+│   │   └── langfuse_integration.py      # Langfuse init (flag-gated)
+│   ├── db/
+│   │   ├── session.py                   # SQLAlchemy async session + pool warmup
+│   │   └── base.py                      # Declarative ORM base
+│   ├── models/
+│   │   ├── conversation.py              # QuestProject / QuestThread / QuestMessage / QuestFeedback
+│   │   ├── user.py                      # Okta-backed user
+│   │   ├── execution_log.py             # Per-run telemetry row
+│   │   └── context_suggestion.py        # Admin-curated semantic-model hints
+│   ├── schemas/
+│   │   ├── chat.py                      # Chat Pydantic schemas
+│   │   └── project.py                   # Project Pydantic schemas
+│   └── services/
+│       ├── auth.py                      # Okta token exchange + JWT signing
+│       ├── bedrock_retry.py             # Tenacity retry wrappers for Bedrock
+│       ├── cache.py                     # Redis async cache (graceful when absent)
+│       ├── conversation.py              # Thread/message CRUD + 3-layer search
+│       ├── feedback.py                  # Feedback + pgvector similarity
+│       ├── health/
+│       │   └── service.py               # Postgres / LLM / Embedding health checks
+│       ├── graph/                       # Neo4j driver + retrieval
+│       │   ├── driver.py                # Async Neo4j driver lifecycle
+│       │   ├── embedding.py             # Question embedding via Bedrock
+│       │   ├── retrieval.py             # Vector search + join-path traversal
+│       │   ├── schema_cache.py          # Value maps / table index caches
+│       │   ├── patterns.py              # QueryPattern + anti-pattern storage
+│       │   ├── fusion.py                # Multi-source retrieval fusion scoring
+│       │   └── gds.py                   # Graph Data Science path scoring
+│       ├── learning/                    # Background learning jobs
+│       │   ├── execution_log.py         # Per-run telemetry writer
+│       │   ├── join_success_updater.py  # Dynamic JOINS_TO EMA
+│       │   └── pattern_miner.py         # Discover reusable query patterns
+│       └── pipeline/
+│           ├── __init__.py              # Public API: stream_pipeline, init/shutdown
+│           ├── graph.py                 # LangGraph state machine
+│           ├── state.py                 # Pipeline state schema
+│           ├── nodes.py                 # Node implementations
+│           ├── prompts.py               # LLM prompts + dialect_instructions()
+│           ├── helpers.py               # XML parser, dialect-aware syntax check
+│           ├── semantic_config.py       # Per-schema context loader (from app Postgres)
+│           ├── data_pool.py             # Multi-datasource pool orchestration + guardrails
+│           ├── validators.py            # Deterministic validators
+│           ├── subquery_validators.py   # LLM semantic check (dialect-aware)
+│           ├── bedrock_cache.py         # Bedrock prompt caching wrappers
+│           ├── cache_logger.py          # Cache hit/miss telemetry
+│           └── dialects/                # SQL dialect adapters
+│               ├── __init__.py          # Registry + normalize_dialect()
+│               ├── base.py              # DialectAdapter ABC
+│               ├── postgresql.py        # PostgresAdapter (psycopg3)
+│               ├── tsql.py              # TsqlAdapter (aioodbc + ODBC Driver 18)
+│               └── pymssql_adapter.py   # PymssqlAdapter (pymssql + FreeTDS)
+├── alembic/
+│   └── versions/                        # Migration scripts
+├── requirements.txt
+├── Dockerfile                           # Multi-stage build (incl. ODBC Driver 18)
+├── alembic.ini
+├── .env.example
+├── datasource_config.json               # Datasource registry (gitignored)
+└── .gitignore

@@ -50,6 +50,10 @@ slowapi>=0.1.9
 
 # HTTP client
 httpx>=0.28.1
+aiohttp>=3.9.0
+
+# Knowledge graph / ontology
+rdflib>=7.0.0
 
 # SQL analysis (extract source tables for trust strip; Snowflake dialect)
 sqlglot>=25.0.0

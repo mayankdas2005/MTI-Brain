@@ -1,10 +1,9 @@
-"""Chat API endpoints for thread management and (mocked) Q&A streaming."""
+"""Chat API endpoints for thread management and Q&A streaming."""
 
 import asyncio
 import json
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
 
 from app.api.v1.deps import CurrentUser, get_current_user
 from app.core.logger import logger
@@ -33,7 +32,6 @@ from app.core.config import settings
 from app.core.rate_limit import limiter
 from app.services.chat import conversation as conv_service
 from app.services.chat import feedback as fb_service
-from app.services.analysis.sql import extract_source_tables
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -58,72 +56,6 @@ def cancel_stream(thread_id: str) -> bool:
     return False
 
 
-def _mock_response_payload(question: str, conversation_id: uuid.UUID) -> dict:
-    answer = (
-        f"This is a mock response for: \"{question[:120]}\". "
-        "The text-to-SQL pipeline is disabled in this build."
-    )
-    columns = ["account", "balance_usd"]
-    rows = [
-        ["Operating", 4_250_000],
-        ["Payroll", 1_875_000],
-        ["Reserve", 6_500_000],
-        ["FX Hedge", 920_000],
-        ["Liquidity Buffer", 3_100_000],
-    ]
-    sql = (
-        "SELECT account, balance_usd\n"
-        "FROM treasury_accounts\n"
-        "WHERE snapshot_date = CURRENT_DATE - INTERVAL '1 day'\n"
-        "ORDER BY balance_usd DESC;"
-    )
-    # Trust-strip fields. `source_tables` is real (sqlglot on the SQL above).
-    # `data_freshness_at` is mocked at "two hours ago" until the Snowflake
-    # integration ships a real value (e.g. INFORMATION_SCHEMA.TABLES.LAST_ALTERED).
-    # Metric metadata stays None until the metric catalog backend lands.
-    source_tables = extract_source_tables(sql, dialect="snowflake")
-    data_freshness_at = (
-        datetime.now(timezone.utc) - timedelta(hours=2)
-    ).isoformat()
-    return {
-        "answer": answer,
-        "sql": sql,
-        "intent": "cash_position",
-        "resolved_filters": "",
-        "columns": columns,
-        "rows": rows,
-        "row_count": len(rows),
-        "chart_spec": {
-            "type": "bar",
-            "title": "Cash Balance by Account (Yesterday)",
-            "x_key": "account",
-            "y_keys": ["balance_usd"],
-            "y_label": "USD",
-            "data": [
-                {"account": row[0], "balance_usd": row[1]}
-                for row in rows
-            ],
-        },
-        "follow_ups": [
-            "Show me a breakdown by account type",
-            "How does this compare to last week?",
-        ],
-        "schema_fqn": "",
-        "run_id": str(uuid.uuid4()),
-        "stopped": False,
-        "needs_clarification": False,
-        "duration_ms": 50,
-        "langfuse_trace_id": None,
-        "conversation_id": str(conversation_id),
-        # Trust-strip provenance — see comment above.
-        "source_tables": source_tables,
-        "data_freshness_at": data_freshness_at,
-        "metric_name": None,
-        "metric_owner": None,
-        "metric_defined_at": None,
-    }
-
-
 def _build_sse_generator(
     question: str,
     thread_id: uuid.UUID,
@@ -138,17 +70,20 @@ def _build_sse_generator(
     async def _save_assistant_message(save_data: dict) -> None:
         from app.db import async_session_factory
 
+        reasoning = save_data.get("reasoning")
+        if isinstance(reasoning, list):
+            reasoning = json.dumps(reasoning)
+
         msg_kwargs = dict(
             thread_id=thread_id,
             conversation_id=conversation_id,
             parent_conversation_id=parent_conversation_id,
             role="assistant",
             content=save_data.get("answer", ""),
-            reasoning=save_data.get("reasoning"),
+            reasoning=reasoning,
             metadata={
-                "sql": save_data.get("sql", ""),
+                "sparql": save_data.get("sparql", ""),
                 "intent": save_data.get("intent", ""),
-                "resolved_filters": save_data.get("resolved_filters", ""),
                 "columns": save_data.get("columns", []),
                 "rows": save_data.get("rows", []),
                 "row_count": save_data.get("row_count", 0),
@@ -157,18 +92,11 @@ def _build_sse_generator(
                 "run_id": save_data.get("run_id", ""),
                 "stopped": save_data.get("stopped", False),
                 "duration_ms": save_data.get("duration_ms"),
-                # Authoritative pipeline timeline. Replaces extractSteps
-                # heuristics on the client - each entry has node, message,
-                # status, started_at_ms, duration_ms, and per-step reasoning.
-                "pipeline_steps": save_data.get("pipeline_steps") or [],
-                # Trust-strip provenance. source_tables comes from sqlglot
-                # on the executed SQL; data_freshness_at + metric_* come
-                # from Snowflake/catalog integrations once they ship.
-                "source_tables": save_data.get("source_tables") or [],
-                "data_freshness_at": save_data.get("data_freshness_at"),
-                "metric_name": save_data.get("metric_name"),
-                "metric_owner": save_data.get("metric_owner"),
-                "metric_defined_at": save_data.get("metric_defined_at"),
+                "pipeline_steps": save_data.get("reasoning") or [],
+                "governance_halt": save_data.get("governance_halt"),
+                "question_type": save_data.get("question_type", ""),
+                "persona": save_data.get("persona", ""),
+                "complexity": save_data.get("complexity", ""),
             },
         )
         try:
@@ -180,86 +108,11 @@ def _build_sse_generator(
             logger.exception("Failed to save assistant message")
 
     async def event_generator():
+        from app.services.agents.graph import stream_pipeline
+
         _stream_start = request_time or time.perf_counter()
-        # Use the pre-registered event (created before DB work so stop works
-        # immediately), or fall back to a new one for safety.
         _cancel = cancel_event if cancel_event is not None else asyncio.Event()
         _active_streams[str(thread_id)] = _cancel
-        final_data = _mock_response_payload(question, conversation_id)
-        _reasoning_parts: list[str] = []
-
-        # Track what was actually delivered to the client. On stop, only the
-        # delivered content is saved to the DB — not the pre-computed full payload.
-        _streamed_answer: list[str] = []
-        _data_delivered = False    # execute.done was yielded
-        _chart_delivered = False   # chart was yielded
-        _followups_delivered = False  # follow_ups was yielded
-
-        _steps: list[dict] = []
-        _current_step: dict | None = None
-
-        def _now_ms() -> int:
-            return int((time.perf_counter() - _stream_start) * 1000)
-
-        def _begin_step(node: str, message: str) -> dict:
-            nonlocal _current_step
-            now = _now_ms()
-            if _current_step is not None:
-                _current_step["status"] = "done"
-                _current_step["duration_ms"] = max(0, now - _current_step["started_at_ms"])
-            step = {
-                "node": node,
-                "message": message,
-                "status": "active",
-                "started_at_ms": now,
-                "duration_ms": None,
-                "reasoning": "",
-            }
-            _steps.append(step)
-            _current_step = step
-            return step
-
-        def _close_steps() -> None:
-            nonlocal _current_step
-            if _current_step is not None:
-                now = _now_ms()
-                _current_step["status"] = "done"
-                _current_step["duration_ms"] = max(0, now - _current_step["started_at_ms"])
-                _current_step = None
-
-        # Sentinel raised at every cancel-check point so we exit the entire
-        # pipeline immediately regardless of nesting depth.
-        class _Stopped(BaseException):
-            pass
-
-        def _check() -> None:
-            if _cancel.is_set():
-                raise _Stopped()
-
-        async def _patch_duration(conv_id: uuid.UUID, duration: int) -> None:
-            try:
-                from app.db import async_session_factory
-                from app.models.conversation import MTIBrainMessage
-                from sqlalchemy import cast, update
-                from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
-
-                async with async_session_factory() as patch_db:
-                    stmt = (
-                        update(MTIBrainMessage)
-                        .where(
-                            MTIBrainMessage.conversation_id == conv_id,
-                            MTIBrainMessage.role == "assistant",
-                        )
-                        .values(
-                            metadata_=MTIBrainMessage.metadata_.op("||")(
-                                cast({"duration_ms": duration}, PG_JSONB)
-                            )
-                        )
-                    )
-                    await patch_db.execute(stmt)
-                    await patch_db.commit()
-            except Exception:
-                logger.exception("Failed to patch duration_ms")
 
         try:
             _elapsed = int((time.perf_counter() - _stream_start) * 1000)
@@ -277,163 +130,24 @@ def _build_sse_generator(
                         "data": json.dumps({"thread_id": str(thread_id), "title": title}),
                     }
 
-            # ── Classify ──────────────────────────────────────────────────
-            _check()
-            step = _begin_step("classify", "Classifying question")
-            yield {"event": "node.start", "data": json.dumps({"node": step["node"], "message": step["message"], "started_at_ms": step["started_at_ms"]})}
-            yield {"event": "reasoning.pending", "data": json.dumps({"node": "classify"})}
-            for _chunk in [
-                "**Reading the question**\n\n",
-                "Parsing intent from natural language input. ",
-                "Question references financial data - likely a treasury or cash management query.\n\n",
-                "**Routing decision**\n\n",
-                "Matches pattern: balance enquiry across accounts. ",
-                "Classifying as `data_query` → will route to SQL generation.\n",
-            ]:
-                _check()
-                if _current_step is not None:
-                    _current_step["reasoning"] += _chunk
-                yield {"event": "reasoning.delta", "data": json.dumps({"node": "classify", "text": _chunk})}
-                await asyncio.sleep(0.05)
-            _check()
-            yield {"event": "classify", "data": json.dumps({"question_type": "data_query"})}
+            async for sse_ev in stream_pipeline(
+                question=question,
+                thread_id=str(thread_id),
+                user_id=user_id,
+                cancel_event=_cancel,
+            ):
+                event_name = sse_ev["event"]
+                data = sse_ev["data"]
+                yield {"event": event_name, "data": json.dumps(data)}
 
-            # ── Generate SQL ──────────────────────────────────────────────
-            _check()
-            step = _begin_step("generate_sql", "Building SQL query")
-            yield {"event": "node.start", "data": json.dumps({"node": step["node"], "message": step["message"], "started_at_ms": step["started_at_ms"]})}
-            yield {"event": "reasoning.pending", "data": json.dumps({"node": "generate_sql"})}
-            for _chunk in [
-                "**Analyzing question and building query**\n\n",
-                "The question asks for total cash balance across all bank accounts as of yesterday. ",
-                "I need to query the `treasury_accounts` table and filter by `snapshot_date = CURRENT_DATE - 1`.\n\n",
-                "Identifying relevant columns: `account`, `balance_usd`, `snapshot_date`.\n\n",
-                "**Resolving entities**\n\n",
-                "Mapping 'bank accounts' → `treasury_accounts` table. ",
-                "Mapping 'yesterday' → `snapshot_date = CURRENT_DATE - INTERVAL '1 day'`.\n\n",
-                "No FX conversion needed - all balances stored in USD.\n\n",
-                "**Validating results**\n\n",
-                "Ordering by `balance_usd DESC` to surface largest positions first. ",
-                "Query looks correct - returning all 5 accounts with end-of-day balances.\n",
-            ]:
-                _check()
-                _reasoning_parts.append(_chunk)
-                if _current_step is not None:
-                    _current_step["reasoning"] += _chunk
-                yield {"event": "reasoning.delta", "data": json.dumps({"node": "generate_sql", "text": _chunk})}
-                await asyncio.sleep(0.06)
-            _check()
-            yield {"event": "generate_sql", "data": json.dumps({"sql": final_data["sql"], "intent": final_data["intent"]})}
-
-            # ── Execute ───────────────────────────────────────────────────
-            _check()
-            step = _begin_step("execute", "Executing query")
-            yield {"event": "node.start", "data": json.dumps({"node": step["node"], "message": step["message"], "started_at_ms": step["started_at_ms"]})}
-            yield {"event": "reasoning.pending", "data": json.dumps({"node": "execute"})}
-            for _chunk in [
-                "**Running query against data warehouse**\n\n",
-                "Submitting SQL to execution engine. ",
-                f"Retrieved {final_data['row_count']} row{'s' if final_data['row_count'] != 1 else ''}.\n\n",
-                "**Validating output**\n\n",
-                "No null values in key columns. ",
-                "Row count within expected range - no anomalies detected.\n",
-            ]:
-                _check()
-                if _current_step is not None:
-                    _current_step["reasoning"] += _chunk
-                yield {"event": "reasoning.delta", "data": json.dumps({"node": "execute", "text": _chunk})}
-                await asyncio.sleep(0.05)
-            _check()
-            yield {
-                "event": "execute.done",
-                "data": json.dumps({
-                    "sql": final_data["sql"],
-                    "columns": final_data["columns"],
-                    "rows": final_data["rows"],
-                    "row_count": final_data["row_count"],
-                    "source_tables": final_data.get("source_tables") or [],
-                    "data_freshness_at": final_data.get("data_freshness_at"),
-                    "metric_name": final_data.get("metric_name"),
-                    "metric_owner": final_data.get("metric_owner"),
-                    "metric_defined_at": final_data.get("metric_defined_at"),
-                }),
-            }
-            _data_delivered = True
-            _check()
-            if final_data.get("chart_spec"):
-                yield {"event": "chart", "data": json.dumps({"spec": final_data["chart_spec"]})}
-                _chart_delivered = True
-
-            # ── Respond ───────────────────────────────────────────────────
-            _check()
-            step = _begin_step("respond", "Preparing answer")
-            yield {"event": "node.start", "data": json.dumps({"node": step["node"], "message": step["message"], "started_at_ms": step["started_at_ms"]})}
-            yield {"event": "reasoning.pending", "data": json.dumps({"node": "respond"})}
-            for _chunk in [
-                "**Composing response**\n\n",
-                "Structuring query results into a readable answer. ",
-                "Selecting appropriate chart type based on data shape.\n\n",
-                "**Generating follow-up suggestions**\n\n",
-                "Identifying logical next questions based on the result set. ",
-                "Follow-up chips ready.\n",
-            ]:
-                _check()
-                if _current_step is not None:
-                    _current_step["reasoning"] += _chunk
-                yield {"event": "reasoning.delta", "data": json.dumps({"node": "respond", "text": _chunk})}
-                await asyncio.sleep(0.05)
-
-            for chunk in final_data["answer"].split(" "):
-                _check()
-                yield {"event": "answer.delta", "data": json.dumps({"text": chunk + " "})}
-                _streamed_answer.append(chunk + " ")
-                await asyncio.sleep(0.02)
-
-            _check()
-            yield {"event": "follow_ups", "data": json.dumps({"questions": final_data["follow_ups"]})}
-            _followups_delivered = True
-
-            # ── Done ──────────────────────────────────────────────────────
-            _close_steps()
-            final_data["reasoning"] = "".join(_reasoning_parts)
-            final_data["pipeline_steps"] = _steps
-            final_data["duration_ms"] = int((time.perf_counter() - _stream_start) * 1000)
-            logger.info(f"[sse] stream done for thread {thread_id}: total_duration={final_data['duration_ms']}ms")
-            yield {"event": "done", "data": json.dumps(final_data)}
-            asyncio.create_task(_save_assistant_message(final_data))
-            asyncio.create_task(_patch_duration(conversation_id, final_data["duration_ms"]))
-
-        except _Stopped:
-            _close_steps()
-            final_data["stopped"] = True
-            final_data["duration_ms"] = int((time.perf_counter() - _stream_start) * 1000)
-            # Trim final_data to only what was actually delivered to the client.
-            # The pre-computed payload contains the full response; if stop fired
-            # before certain sections were yielded, erase them so the DB record
-            # matches what the user actually saw.
-            final_data["answer"] = "".join(_streamed_answer)
-            if not _data_delivered:
-                final_data["sql"] = None
-                final_data["columns"] = []
-                final_data["rows"] = []
-                final_data["row_count"] = 0
-                final_data["source_tables"] = []
-                final_data["chart_spec"] = None
-                final_data["follow_ups"] = []
-            elif not _chart_delivered:
-                final_data["chart_spec"] = None
-            if not _followups_delivered:
-                final_data["follow_ups"] = []
-            logger.info(f"[sse] stream stopped by user for thread {thread_id}")
-            yield {"event": "stopped", "data": json.dumps({
-                "conversation_id": str(conversation_id),
-                "duration_ms": final_data["duration_ms"],
-                "pipeline_steps": _steps,
-            })}
-            asyncio.create_task(_save_assistant_message(final_data))
+                if event_name == "done":
+                    asyncio.create_task(_save_assistant_message(data))
+                    break
+                elif event_name == "error":
+                    break
 
         except Exception as e:
-            logger.exception(f"Mock stream error: {e}")
+            logger.exception(f"Stream error for thread {thread_id}: {e}")
             yield {
                 "event": "error",
                 "data": json.dumps({
@@ -442,19 +156,9 @@ def _build_sse_generator(
                 }),
             }
 
-        except BaseException:
-            # GeneratorExit (client navigated away / network drop) or other
-            # non-Exception BaseException. Save whatever was streamed so the
-            # DB is not left with a dangling unsaved record.
-            _close_steps()
-            final_data["stopped"] = True
-            final_data["duration_ms"] = int((time.perf_counter() - _stream_start) * 1000)
-            asyncio.create_task(_save_assistant_message(final_data))
-            raise  # re-raise so sse_starlette cleans up correctly
         finally:
             # Identity check: only remove OUR event. A subsequent ask/retry/edit
             # may have already registered a new cancel_event for the same thread.
-            # A plain pop() would silently delete the NEW stream's ability to stop.
             if _active_streams.get(str(thread_id)) is _cancel:
                 _active_streams.pop(str(thread_id), None)
 
