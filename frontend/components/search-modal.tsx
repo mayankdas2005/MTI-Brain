@@ -81,6 +81,10 @@ export function SearchModal() {
   const [mode, setMode] = useState<ModalMode>('search');
   const [actionQuery, setActionQuery] = useState('');
 
+  const switchMode = (next: ModalMode) => {
+    setMode(next);
+  };
+
   const hasQuery = query.trim().length > 0;
   const hasResults = chatResults.length > 0 || projectResults.length > 0;
 
@@ -163,6 +167,10 @@ export function SearchModal() {
     }
   };
 
+  const handleModeKeyDown = (e: React.KeyboardEvent, next: ModalMode) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchMode(next); }
+  };
+
   return (
     <ResponsiveDialog open={open} onOpenChange={handleOpenChange}>
       <ResponsiveDialogContent className="overflow-hidden p-0 w-full sm:max-w-lg rounded-2xl border-border/80" showCloseButton={false}>
@@ -174,7 +182,9 @@ export function SearchModal() {
           {(['search', 'actions'] as ModalMode[]).map((m) => (
             <button
               key={m}
-              onClick={() => setMode(m)}
+              tabIndex={-1}
+              onClick={() => switchMode(m)}
+              onKeyDown={(e) => handleModeKeyDown(e, m)}
               className={`flex-1 py-2 text-xs font-medium capitalize transition-colors ${
                 mode === m
                   ? 'text-foreground border-b-2 border-primary'
@@ -191,9 +201,13 @@ export function SearchModal() {
           <Command shouldFilter={false} className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[13px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-tight">
             <div className="relative">
               <CommandInput
+                autoFocus
                 placeholder="Search chats and projects..."
                 value={query}
                 onValueChange={search}
+                onKeyDown={(e) => {
+                  if (e.key === 'Tab') { e.preventDefault(); switchMode('actions'); }
+                }}
               />
               {loading && hasQuery && (
                 <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
@@ -201,7 +215,7 @@ export function SearchModal() {
                 </div>
               )}
             </div>
-            <CommandList className="h-72 overflow-hidden">
+            <CommandList className="h-72 overflow-y-auto">
               {!loading && hasQuery && !hasResults && (
                 <CommandEmpty>No results found for &quot;{query}&quot;</CommandEmpty>
               )}
@@ -308,9 +322,13 @@ export function SearchModal() {
         {mode === 'actions' && (
           <Command shouldFilter={false} className="w-full">
             <CommandInput
+              autoFocus
               placeholder="Search actions..."
               value={actionQuery}
               onValueChange={setActionQuery}
+              onKeyDown={(e) => {
+                if (e.key === 'Tab') { e.preventDefault(); switchMode('search'); }
+              }}
             />
             <CommandList className="h-72 overflow-y-auto">
               {filteredActions !== null && filteredActions.length === 0 && (

@@ -236,7 +236,8 @@ export default function ChatsPage() {
   // Keyboard navigation.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      // Block arrow keys from inputs (cursor movement), but always let Enter through.
+      if (e.target instanceof HTMLInputElement && e.key !== 'Enter') return;
 
       if (isSearching) {
         if (e.key === 'ArrowDown') {
@@ -246,6 +247,7 @@ export default function ChatsPage() {
           e.preventDefault();
           setFocusedSearchIndex((i) => Math.max(i - 1, 0));
         } else if (e.key === 'Enter' && focusedSearchIndex >= 0) {
+          e.preventDefault();
           router.push(`/chat/${searchResults[focusedSearchIndex].thread_id}`);
         } else if (e.key === 'Escape') {
           setSearch('');
@@ -260,6 +262,7 @@ export default function ChatsPage() {
         e.preventDefault();
         setFocusedIndex((i) => Math.max(i - 1, 0));
       } else if (e.key === 'Enter' && focusedIndex >= 0) {
+        e.preventDefault();
         router.push(`/chat/${displayedThreads[focusedIndex].id}`);
       } else if (e.key === 'Escape') {
         setFocusedIndex(-1);

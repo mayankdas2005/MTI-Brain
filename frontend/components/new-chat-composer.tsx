@@ -274,7 +274,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
               autoFocus
               rows={1}
               aria-label="Start a new conversation"
-              className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm leading-relaxed focus:outline-none min-h-[52px]"
+              className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-base md:text-sm leading-relaxed focus:outline-none min-h-[52px]"
             />
             {input.length === 0 && (
               <span
@@ -317,19 +317,21 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
                 </button>
               </div>
 
-              <button
-                type="button"
-                onClick={() => handleSubmit()}
-                disabled={!canSend}
-                aria-label={submitting ? 'Sending message' : 'Send message'}
-                className="group/btn flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring disabled:opacity-25 hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-              >
-                {submitting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <ArrowUp className="w-4 h-4 transition-transform duration-150 group-hover/btn:-translate-y-0.5" />
-                )}
-              </button>
+              <div className="relative h-9 w-9 flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={() => handleSubmit()}
+                  disabled={!canSend}
+                  aria-label={submitting ? 'Sending message' : 'Send message'}
+                  className="group/btn flex items-center justify-center h-8 w-8 rounded-xl bg-foreground text-background shadow-sm transition-spring disabled:opacity-25 hover:bg-foreground/85 hover:shadow-md hover:scale-[1.06] active:scale-[0.85] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                >
+                  {submitting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ArrowUp className="w-4 h-4 transition-transform duration-150 group-hover/btn:-translate-y-0.5" />
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
