@@ -9,45 +9,28 @@ interface CreditsOverlayProps {
 }
 
 const CREW = [
-  // Executive Team
-  // { num: '01', name: 'CEO', role: 'Chief Executive Officer', status: 'VIP', statusClass: 'bg-amber-500/15 text-amber-400' },
-  // { num: '02', name: 'CFO', role: 'Chief Financial Officer', status: 'VIP', statusClass: 'bg-amber-500/15 text-amber-400' },
-  // { num: '03', name: 'CRO', role: 'Chief Revenue Officer', status: 'VIP', statusClass: 'bg-amber-500/15 text-amber-400' },
-  // { num: '04', name: 'CPO', role: 'Chief People Officer', status: 'VIP', statusClass: 'bg-amber-500/15 text-amber-400' },
-  // { num: '05', name: 'COO', role: 'Chief Operating Officer', status: 'VIP', statusClass: 'bg-amber-500/15 text-amber-400' },
-  // { num: '06', name: 'Chief of Staff', role: 'Office of the CEO', status: 'VIP', statusClass: 'bg-amber-500/15 text-amber-400' },
-  // { num: '07', name: 'President, DW/Cloud/Infra', role: 'Data & Cloud Infrastructure', status: 'VIP', statusClass: 'bg-amber-500/15 text-amber-400' },
-  // MTI Brain Core Team - ordered by corporate ladder
-  { num: '01', name: 'President, Apps & DE', role: 'Applications & Data Engineering', status: 'VIP', statusClass: 'bg-amber-500/15 text-amber-400' },
-  { num: '02', name: 'VP, Data & AI Practice', role: 'Data & AI Strategy', status: 'LEAD', statusClass: 'bg-sky-500/15 text-sky-400' },
-  
-  { num: '03', name: 'Director, Enterprise Data', role: 'Enterprise Data Solutions', status: 'LEAD', statusClass: 'bg-sky-500/15 text-sky-400' },
-  { num: '04', name: 'Director, AI CoE', role: 'AI Center of Excellence', status: 'LEAD', statusClass: 'bg-sky-500/15 text-sky-400' },
-  
-  { num: '05', name: 'Sr. Director, Engineering', role: 'Engineering Leadership', status: 'LEAD', statusClass: 'bg-sky-500/15 text-sky-400' },
-  { num: '06', name: 'Program Manager', role: 'Data and AI', status: 'ACTIVE', statusClass: 'bg-emerald-500/15 text-emerald-400' },
-
-  { num: '07', name: 'Agile Program Manager', role: 'Delivery & Sprints', status: 'ACTIVE', statusClass: 'bg-emerald-500/15 text-emerald-400' },
-  { num: '08', name: 'Developers', role: 'The ones who shipped it', status: 'SHIPPED', statusClass: 'bg-emerald-500/15 text-emerald-400' },
-  // Teams
-  { num: '09', name: 'QA & Testing', role: 'Quality guardians', status: 'PASSED', statusClass: 'bg-emerald-500/15 text-emerald-400' },
-  { num: '10', name: 'Design', role: 'Pixel perfectionists', status: 'SHIPPED', statusClass: 'bg-emerald-500/15 text-emerald-400' },
-  { num: '11', name: 'DevOps & Infra', role: 'Keeping the lights on', status: 'ONLINE', statusClass: 'bg-emerald-500/15 text-emerald-400' },
-  { num: '12', name: 'You', role: 'Found the easter egg', status: 'INSIDER', statusClass: 'bg-amber-500/15 text-amber-400' },
+  { num: '01', name: 'President, Apps & DE',   role: 'Applications & Data Engineering', status: 'VIP',     statusClass: 'bg-amber-500/15 text-amber-400' },
+  { num: '02', name: 'VP, Data & AI Practice', role: 'Data & AI Strategy',              status: 'LEAD',    statusClass: 'bg-sky-500/15 text-sky-400' },
+  { num: '03', name: 'Directors',              role: 'Data & AI',        status: 'LEAD',    statusClass: 'bg-sky-500/15 text-sky-400' },
+  { num: '04', name: 'Program Managers',       role: 'Data & AI',                     status: 'ACTIVE',  statusClass: 'bg-emerald-500/15 text-emerald-400' },
+  { num: '05', name: 'Developers',             role: 'The ones who shipped it',         status: 'SHIPPED', statusClass: 'bg-emerald-500/15 text-emerald-400' },
+  { num: '06', name: 'QA & Testing',           role: 'Quality guardians',               status: 'PASSED',  statusClass: 'bg-emerald-500/15 text-emerald-400' },
+  { num: '07', name: 'Design',                 role: 'Pixel perfectionists',            status: 'SHIPPED', statusClass: 'bg-emerald-500/15 text-emerald-400' },
+  { num: '08', name: 'DevOps & Infra',         role: 'Keeping the lights on',           status: 'ONLINE',  statusClass: 'bg-emerald-500/15 text-emerald-400' },
+  { num: '09', name: 'You',                    role: 'Found the easter egg',            status: 'INSIDER', statusClass: 'bg-amber-500/15 text-amber-400' },
 ];
 
 const TICKER_MESSAGES = [
-  'MILESTONE TECHNOLOGIES \u00B7 POWERING SMARTER IT SINCE 1997',
-  'HEADQUARTERED IN FREMONT, CA \u00B7 OPERATING IN 36 COUNTRIES',
-  '3500+ EMPLOYEES \u00B7 200+ CLIENTS \u00B7 INFINITE POSSIBILITIES',
-  'GREAT PLACE TO WORK CERTIFIED \u00B7 USA \u00B7 INDIA \u00B7 IRELAND \u00B7 PHILIPPINES \u00B7 UK \u00B7 MEXICO',
-  'EMPLOYEE FIRST \u00B7 PERFORMANCE DRIVEN \u00B7 ALWAYS SHIPPING',
+  'MILESTONE TECHNOLOGIES · POWERING SMARTER IT SINCE 1997',
+  'HEADQUARTERED IN FREMONT, CA · OPERATING IN 36 COUNTRIES',
+  '3500+ EMPLOYEES · 200+ CLIENTS · INFINITE POSSIBILITIES',
+  'GREAT PLACE TO WORK CERTIFIED · USA · INDIA · IRELAND · PHILIPPINES · UK · MEXICO',
+  'EMPLOYEE FIRST · PERFORMANCE DRIVEN · ALWAYS SHIPPING',
 ];
 
-const TICKER_TEXT = TICKER_MESSAGES.join('  \u00B7  ') + '  \u00B7  ';
+const TICKER_TEXT = TICKER_MESSAGES.join('  ·  ') + '  ·  ';
 
 export function CreditsOverlay({ open, onClose }: CreditsOverlayProps) {
-  // Close on Escape
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -90,7 +73,7 @@ export function CreditsOverlay({ open, onClose }: CreditsOverlayProps) {
 
         {/* Body */}
         <div className="relative px-5 py-5 space-y-5 max-h-[75vh] md:max-h-[60vh] overflow-y-auto">
-          {/* Hero card */}
+          {/* Hero card — CEO */}
           <div className="flex items-center gap-4 bg-amber-400/5 border border-amber-400/20 rounded-lg p-4 animate-fade-up">
             <div className="w-12 h-12 rounded-full bg-amber-400 flex items-center justify-center shrink-0">
               <span className="text-[#0d0d0d] font-bold text-lg">MT</span>
@@ -128,7 +111,7 @@ export function CreditsOverlay({ open, onClose }: CreditsOverlayProps) {
           </div>
         </div>
 
-        {/* Footer with ticker */}
+        {/* Footer ticker */}
         <div className="relative flex items-center justify-between px-5 py-2.5 border-t border-white/6">
           <div className="overflow-hidden whitespace-nowrap flex-1 mr-4">
             <div className="inline-block animate-[marquee_30s_linear_infinite] text-[11px] text-white/20 font-mono tracking-wide">
