@@ -7,7 +7,7 @@ import { useThreadStore, setThreadCreationGate } from '@/lib/store/threads';
 import { toast } from '@/lib/toast';
 import { ArrowUp, Loader2, BrainCircuit, BookOpen } from 'lucide-react';
 import { usePreferencesStore } from '@/lib/store/preferences';
-import { GHOST_PROMPTS_BY_TONE } from '@/lib/suggestions';
+import { GHOST_PROMPTS } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
 import { useActivityStore } from '@/lib/store/activity';
 import { useUIStore } from '@/lib/store/ui';
@@ -36,13 +36,13 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [input, setInput] = useState(initialValue);
   const [submitting, setSubmitting] = useState(false);
-  const [ghostIdx, setGhostIdx] = useState(() => Math.floor(Math.random() * (GHOST_PROMPTS_BY_TONE.executive.length)));
+  const [ghostIdx, setGhostIdx] = useState(() => Math.floor(Math.random() * GHOST_PROMPTS.length));
   const [ghostVisible, setGhostVisible] = useState(true);
 
   const responseTone = usePreferencesStore((s) => s.responseTone);
   const setResponseTone = usePreferencesStore((s) => s.setResponseTone);
   const setMaxResultRows = usePreferencesStore((s) => s.setMaxResultRows);
-  const ghostPrompts = GHOST_PROMPTS_BY_TONE[responseTone] ?? GHOST_PROMPTS_BY_TONE.executive;
+  const ghostPrompts = GHOST_PROMPTS;
   const deepAnalysis = usePreferencesStore((s) => s.deepAnalysis ?? false);
   const setDeepAnalysis = usePreferencesStore((s) => s.setDeepAnalysis);
 

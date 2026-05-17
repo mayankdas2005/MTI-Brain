@@ -254,7 +254,7 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
   // Suggestions are picked once from whatever titles are in the store at mount,
   // using the persona that matches the user's saved response-tone preference.
   const [suggestions] = useState(() =>
-    pickSuggestions(recentTitles, usePreferencesStore.getState().responseTone),
+    pickSuggestions(recentTitles),
   );
 
   const handleSuggestion = (prompt: string) => {
