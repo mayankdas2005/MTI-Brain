@@ -1007,6 +1007,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           return { ...m, ...update };
         });
       },
+      onSparqlGenerated: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, metadata_: { ...m.metadata_, sql: data.sql } }
+            : m,
+        );
+      },
       onAnswerDelta: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, content: m.content + data.text } : m,
@@ -1109,6 +1116,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
                 metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
                 metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
+                sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
+                sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
               },
             };
           }
@@ -1366,6 +1375,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           return { ...m, ...update };
         });
       },
+      onSparqlGenerated: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, metadata_: { ...m.metadata_, sql: data.sql } }
+            : m,
+        );
+      },
       onAnswerDelta: (data) => {
         mapMsgs((m) => (m.id === assistantMsgId ? { ...m, content: m.content + data.text } : m));
       },
@@ -1458,6 +1474,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
                 metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
                 metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
+                sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
+                sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
               },
             };
           }
@@ -1663,6 +1681,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           return { ...m, ...update };
         });
       },
+      onSparqlGenerated: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, metadata_: { ...m.metadata_, sql: data.sql } }
+            : m,
+        );
+      },
       onAnswerDelta: (data) => {
         mapMsgs((m) => (m.id === assistantMsgId ? { ...m, content: m.content + data.text } : m));
       },
@@ -1739,6 +1764,10 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
             metadata_: {
               ...m.metadata_,
+              sql: (data.sql as string) ?? m.metadata_?.sql,
+              columns: (data.columns as string[]) ?? m.metadata_?.columns,
+              rows: (data.rows as unknown[][]) ?? m.metadata_?.rows,
+              row_count: (data.row_count as number) ?? m.metadata_?.row_count,
               duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
               pipeline_steps:
                 (data.pipeline_steps as PipelineStep[] | undefined) ?? m.metadata_?.pipeline_steps,
@@ -1747,6 +1776,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
               metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
               metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
+              sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
+              sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
             },
           };
           if (m.id === userMsgId) return { ...m, conversation_id: convId };

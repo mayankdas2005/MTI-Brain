@@ -11,6 +11,7 @@ build/
 tsconfig.tsbuildinfo
 
 # Environment variables
+frontend.env
 .env
 .env.*
 !.env.example

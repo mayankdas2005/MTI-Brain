@@ -957,6 +957,8 @@ async def stream_pipeline(
                     "follow_ups": state.get("follow_ups", []),
                     "governance_halt": state.get("governance_halt"),
                     "final_reflection": state.get("final_reflection", ""),
+                    "sparql_error": state.get("sparql_error", ""),
+                    "sparql_retries": state.get("sparql_retries", 0),
                     "duration_ms": duration_ms,
                     "pipeline_steps": _pipeline_steps,
                     "reasoning": [

@@ -213,8 +213,26 @@ Tribal facts (policy/limit context):
 
 {refinement_section}
 
+TEMPORAL RESOLUTION (use these pre-computed literals — never invent SPARQL date arithmetic):
+  today      = {today_date}
+  yesterday  = {yesterday_date}
+  this month = {this_month_start} to {today_date}
+  last month = {last_month_start} to {last_month_end}
+
+FORBIDDEN date constructs — Apache Jena Fuseki does not support these and they will silently return 0 rows:
+  BIND(xsd:date(SUBSTR(STR(NOW()),1,10)) - "P1D"^^xsd:dayTimeDuration AS ?y)  ← WRONG
+  Correct: lpp:asOfDate "{yesterday_date}"^^xsd:date  ← RIGHT
+
+NAMED GRAPHS (always include FROM for the relevant domain — omitting it queries the empty default graph and returns 0 rows):
+  Treasury balances & snapshots : FROM <graph:treasury:all>
+  FX positions & hedges         : FROM <graph:fx:current>
+  Investment portfolio          : FROM <graph:investments:all>
+
+DOMAIN PATTERNS:
+  Cash/balance queries: always include lpp:currencyCode ?currency; GROUP BY ?currency; ORDER BY DESC(?totalBalance)
+
 SPARQL rules:
-- Prefixes: always declare lpp: <https://lpp.example/ontology#> and lppid: <https://lpp.example/id/>; add xsd: <http://www.w3.org/2001/XMLSchema#> only when using xsd:date or xsd:decimal
+- Prefixes: always declare lpp: <https://lpp.example/ontology#>; add lppid: <https://lpp.example/id/> only when using lppid: URIs; add xsd: <http://www.w3.org/2001/XMLSchema#> only when using xsd:date or xsd:decimal
 - SELECT or ASK only — no INSERT/DELETE/UPDATE
 - OPTIONAL for fields that may be absent; BIND(... AS ?var) for derived values; descriptive variable names
 - Date filters: FILTER(?date >= "2024-01-01"^^xsd:date)
@@ -230,9 +248,9 @@ Cover: which classes are the entry points, which object properties link them, wh
 
 <sparql>
 PREFIX lpp: <https://lpp.example/ontology#>
-PREFIX lppid: <https://lpp.example/id/>
 
 SELECT ...
+FROM <graph:...>
 WHERE {{
   ...
 }}

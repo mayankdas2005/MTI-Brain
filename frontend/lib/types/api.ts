@@ -45,6 +45,8 @@ export interface MessageMetadata {
   metric_name?: string;
   metric_owner?: string;
   metric_defined_at?: string;
+  sparql_error?: string;
+  sparql_retries?: number;
 }
 
 // ─── Response Types ───

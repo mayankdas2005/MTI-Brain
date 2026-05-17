@@ -13,6 +13,7 @@ export interface SSEHandlers {
   onReasoningPending?: (data: { node: string }) => void;
   onReasoningDelta?: (data: { node: string; text: string }) => void;
   onAnswerDelta?: (data: { node: string; text: string }) => void;
+  onSparqlGenerated?: (data: { sql: string }) => void;
   onValidation?: (data: { status: string; message: string }) => void;
   onExecuteDone?: (data: {
     status: 'success' | 'error';
@@ -137,6 +138,9 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       break;
     case 'answer.delta':
       handlers.onAnswerDelta?.(data as { node: string; text: string });
+      break;
+    case 'generate_sql':
+      handlers.onSparqlGenerated?.(data as { sql: string });
       break;
     case 'validation':
       handlers.onValidation?.(data as { status: string; message: string });

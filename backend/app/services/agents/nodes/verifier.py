@@ -8,6 +8,8 @@ from app.services.agents.bedrock import get_llm
 from app.services.agents.prompts import VERIFIER_PROMPT
 from app.services.agents.state import State
 
+_MAX_SPARQL_RETRIES = 2  # keep in sync with MAX_SPARQL_RETRIES in graph.py
+
 _INTENT_ROW_RANGES: dict[str, tuple[int, int]] = {
     "balance_lookup": (0, 50),
     "balance_and_policy": (0, 50),
@@ -79,6 +81,22 @@ async def verifier_node(state: State) -> dict:
                 "duration_ms": round((time.perf_counter() - t0) * 1000)}
         return {
             "sparql_error": monetary_issue,
+            "pipeline_steps": state.get("pipeline_steps", []) + [step],
+        }
+
+    if row_count == 0 and state.get("sparql_retries", 0) < _MAX_SPARQL_RETRIES:
+        step = {**step_base, "label": "Verifier: 0 rows — triggering guided retry",
+                "duration_ms": round((time.perf_counter() - t0) * 1000)}
+        return {
+            "sparql_error": (
+                "Query executed successfully but returned 0 rows. "
+                "Likely causes: "
+                "(1) wrong predicate — e.g. used lpp:sourceAccount instead of lpp:forAccount for balance snapshots; "
+                "(2) missing named graph — include FROM <graph:treasury:all> for treasury data, "
+                "FROM <graph:fx:current> for FX, FROM <graph:investments:all> for investments; "
+                "(3) date literal mismatch — use exact xsd:date literals, never SPARQL date arithmetic. "
+                "Regenerate with corrected predicates, the correct FROM clause, and literal date values."
+            ),
             "pipeline_steps": state.get("pipeline_steps", []) + [step],
         }
 

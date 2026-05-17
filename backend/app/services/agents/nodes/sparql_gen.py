@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 
 from app.core.logger import logger
 from app.services.agents.bedrock import get_llm
@@ -10,6 +11,21 @@ from app.services.agents.helpers import parse_sparql_from_response
 from app.services.agents.ontology_loader import get_ontology_summary
 from app.services.agents.prompts import SPARQL_GEN_PROMPT, SPARQL_FIX_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
+
+
+def _get_date_context() -> dict[str, str]:
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+    last_month_end = today.replace(day=1) - timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
+    this_month_start = today.replace(day=1)
+    return {
+        "today_date": str(today),
+        "yesterday_date": str(yesterday),
+        "this_month_start": str(this_month_start),
+        "last_month_start": str(last_month_start),
+        "last_month_end": str(last_month_end),
+    }
 
 
 def _format_ontology_terms(terms: list[dict]) -> str:
@@ -87,6 +103,7 @@ async def sparql_gen_node(state: State) -> dict:
             "feedback_context": state.get("feedback_context") or "None.",
             "max_rows": max_rows,
             "reasoning_directive": reasoning_directive,
+            **_get_date_context(),
         })
 
     text = raw.content if hasattr(raw, "content") else str(raw)

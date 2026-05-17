@@ -119,11 +119,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const [editing, setEditing] = useState(false);
 
   const [editText, setEditText] = useState(message.content);
-  const [dataView, setDataView] = useState<'sql' | 'table'>(() => {
-    const pref = usePreferencesStore.getState();
-    // If SQL is hidden, always default to table
-    return pref.showSQL ? pref.defaultDataView : 'table';
-  });
   const [aboutOpen, setAboutOpen] = useState(false);
   const [aboutQuestion, setAboutQuestion] = useState<string | null>(null);
   const reasoningRef = useRef<HTMLDivElement>(null);
@@ -375,17 +370,19 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const columns = message.metadata_?.columns;
   const rows = message.metadata_?.rows;
   const rowCount = message.metadata_?.row_count;
+  const sparqlError = message.metadata_?.sparql_error;
+  const sparqlRetries = message.metadata_?.sparql_retries;
   const followUps = message.metadata_?.follow_ups;
   const hasTableData = !!(columns && columns.length > 0 && rows && rows.length > 0);
 
   // User preferences
-  const prefShowSQL = usePreferencesStore((s) => s.showSQL);
   const prefAutoCharts = usePreferencesStore((s) => s.autoShowCharts);
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
 
-  const showSQLTab = !!(prefShowSQL && sql);
-  const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasTableData);
+  const dataReady = !!(message.dataReady ?? !message.isStreaming);
+  // Show SPARQL debug panel whenever a query has been generated (regardless of row count)
+  const hasSparqlDebug = dataReady && !!sql;
   // Show data skeleton once SQL generation step has begun but data hasn't arrived yet
   const sqlStepStarted = message.isStreaming && !message.dataReady &&
     (message.streamingSteps?.some((s) => ['generate_sql', 'execute', 'respond'].includes(s.node)) ?? false);
@@ -408,12 +405,10 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       {/* Data skeleton — table shape while SQL executes */}
       {sqlStepStarted && (
         <div className="mb-2 animate-fade-in">
-          {prefShowSQL && (
-            <div className="flex items-center gap-1 mb-2">
-              <Skeleton className="h-7 w-20 rounded-md" />
-              <Skeleton className="h-7 w-24 rounded-md" />
-            </div>
-          )}
+          <div className="flex items-center gap-1 mb-2">
+            <Skeleton className="h-6 w-28 rounded-md" />
+            <Skeleton className="h-4 w-16 rounded-full" />
+          </div>
           <div className="rounded-lg border border-border overflow-hidden">
             <div className="flex gap-4 px-3 py-2 border-b border-border bg-muted/30">
               <Skeleton className="h-3 w-24 rounded" />
@@ -429,71 +424,23 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         </div>
       )}
 
-      {/* SQL Query / Data Table toggle */}
-      {hasDataView && (
-        <div className="mb-2 space-y-2">
-          {showSQLTab && hasTableData && (
-          <div className="flex items-center gap-1">
-            {showSQLTab && (
-              <Button
-                variant={dataView === 'sql' ? 'secondary' : 'ghost'}
-                size="sm"
-                className="h-7 px-2.5 text-xs gap-1.5"
-                onClick={() => setDataView('sql')}
-              >
-                <Code2 className="w-3.5 h-3.5" />
-                SPARQL Query
-              </Button>
-            )}
-            {hasTableData && (
-              <Button
-                variant={dataView === 'table' ? 'secondary' : 'ghost'}
-                size="sm"
-                className="h-7 px-2.5 text-xs gap-1.5"
-                onClick={() => setDataView('table')}
-              >
-                <TableIcon className="w-3.5 h-3.5" />
-                Data Table
-              </Button>
-            )}
-          </div>
-          )}
+      {/* SPARQL Debug Panel — always visible when a query was generated */}
+      {hasSparqlDebug && (
+        <SparqlDebugPanel
+          sql={sql!}
+          columns={columns}
+          rows={rows}
+          rowCount={rowCount}
+          sparqlError={sparqlError}
+          sparqlRetries={sparqlRetries}
+          isStreaming={!!message.isStreaming}
+        />
+      )}
 
-          {dataView === 'sql' && showSQLTab && (
-            <div className="rounded-lg border border-border bg-muted/50 overflow-hidden max-h-96 flex flex-col">
-              <div className="flex items-center justify-end px-3 py-1.5 border-b border-border bg-muted/30">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 w-6 p-0 text-muted-foreground"
-                  onClick={async () => {
-                    const ok = await copyText(sql);
-                    if (!ok) {
-                      toast.error('Copy failed');
-                      return;
-                    }
-                    toast.success('SPARQL copied');
-                  }}
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                </Button>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                <SyntaxHighlighter
-                  language="sparql"
-                  style={resolvedTheme === 'dark' ? sparqlDark : sparqlLight}
-                  customStyle={{ margin: 0, padding: '12px', fontSize: '12px', lineHeight: '1.6', background: 'transparent' }}
-                  wrapLongLines
-                >
-                  {sql ?? ''}
-                </SyntaxHighlighter>
-              </div>
-            </div>
-          )}
-
-          {dataView === 'table' && hasTableData && (
-            <DataTable columns={columns!} rows={rows!} rowCount={rowCount} />
-          )}
+      {/* Data Table — standalone, shown when results are present */}
+      {dataReady && hasTableData && (
+        <div className="mb-2">
+          <DataTable columns={columns!} rows={rows!} rowCount={rowCount} />
         </div>
       )}
 
@@ -918,6 +865,181 @@ function StepReasoning({ text, active }: { text: string; active: boolean }) {
       <MarkdownRenderer content={text} />
       {active && <span className="streaming-cursor" aria-hidden />}
     </div>
+  );
+}
+
+// ─── SPARQL Debug Panel ───
+
+function SparqlDebugPanel({
+  sql,
+  columns,
+  rows,
+  rowCount,
+  sparqlError,
+  sparqlRetries,
+  isStreaming,
+}: {
+  sql: string;
+  columns?: string[];
+  rows?: unknown[][];
+  rowCount?: number;
+  sparqlError?: string;
+  sparqlRetries?: number;
+  isStreaming: boolean;
+}) {
+  const { resolvedTheme } = useTheme();
+  const [tab, setTab] = useState<'query' | 'results'>('results');
+  const zeroRows = !isStreaming && typeof rowCount === 'number' && rowCount === 0;
+  const hasRows = typeof rowCount === 'number' && rowCount > 0;
+
+  const [open, setOpen] = useState(zeroRows);
+  // Auto-open when zero rows arrive after streaming ends
+  useEffect(() => {
+    if (zeroRows) setOpen(true);
+  }, [zeroRows]);
+
+  const statusBadge = isStreaming ? (
+    <span className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+      <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+      generating
+    </span>
+  ) : zeroRows ? (
+    <span className="rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-medium px-1.5 py-0.5">
+      0 rows
+    </span>
+  ) : hasRows ? (
+    <span className="rounded-full bg-muted text-muted-foreground text-[10px] font-medium px-1.5 py-0.5">
+      {rowCount} {rowCount === 1 ? 'row' : 'rows'}
+    </span>
+  ) : null;
+
+  return (
+    <Accordion
+      type="single"
+      collapsible
+      value={open ? 'sparql-debug' : ''}
+      onValueChange={(v) => setOpen(v === 'sparql-debug')}
+      className="mb-2"
+    >
+      <AccordionItem
+        value="sparql-debug"
+        className="rounded-lg border border-border bg-muted/20"
+      >
+        <AccordionTrigger className="py-2 px-3 text-xs text-muted-foreground hover:text-foreground hover:no-underline">
+          <span className="flex items-center gap-2">
+            <Code2 className="w-3.5 h-3.5" />
+            Response
+            {statusBadge}
+            {typeof sparqlRetries === 'number' && sparqlRetries > 0 && (
+              <span className="rounded-full bg-muted text-muted-foreground/70 text-[10px] px-1.5 py-0.5">
+                {sparqlRetries} {sparqlRetries === 1 ? 'retry' : 'retries'}
+              </span>
+            )}
+          </span>
+        </AccordionTrigger>
+        <AccordionContent>
+          <div className="px-3 pb-3 pt-1 border-t border-border/40 space-y-2">
+            {/* Tab toggle */}
+            <div className="flex items-center gap-1">
+              <Button
+                variant={tab === 'results' ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-6 px-2 text-xs gap-1"
+                onClick={() => setTab('results')}
+              >
+                <TableIcon className="w-3 h-3" />
+                Results
+              </Button>
+              <Button
+                variant={tab === 'query' ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-6 px-2 text-xs gap-1"
+                onClick={() => setTab('query')}
+              >
+                <Code2 className="w-3 h-3" />
+                Query
+              </Button>
+            </div>
+
+            {/* Query tab */}
+            {tab === 'query' && (
+              <div className="rounded-lg border border-border bg-muted/50 overflow-hidden max-h-80 flex flex-col">
+                <div className="flex items-center justify-end px-2 py-1 border-b border-border bg-muted/30">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-5 w-5 p-0 text-muted-foreground"
+                    onClick={async () => {
+                      const ok = await copyText(sql);
+                      if (ok) toast.success('SPARQL copied');
+                      else toast.error('Copy failed');
+                    }}
+                  >
+                    <Copy className="w-3 h-3" />
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  <SyntaxHighlighter
+                    language="sparql"
+                    style={resolvedTheme === 'dark' ? sparqlDark : sparqlLight}
+                    customStyle={{ margin: 0, padding: '10px', fontSize: '11px', lineHeight: '1.6', background: 'transparent' }}
+                    wrapLongLines
+                  >
+                    {sql}
+                  </SyntaxHighlighter>
+                </div>
+              </div>
+            )}
+
+            {/* Results tab */}
+            {tab === 'results' && (
+              <div className="space-y-2">
+                {/* Row count summary */}
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    {isStreaming ? 'Executing…' : `${rowCount ?? 0} row${rowCount !== 1 ? 's' : ''} returned`}
+                  </span>
+                  {zeroRows && !sparqlError && (
+                    <span className="text-amber-600 dark:text-amber-400">— check query logic or ontology terms</span>
+                  )}
+                </div>
+
+                {/* Error message */}
+                {sparqlError && (
+                  <div className="rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2 text-xs text-destructive leading-relaxed">
+                    <span className="font-semibold">Execution error: </span>{sparqlError}
+                  </div>
+                )}
+
+                {/* Column list */}
+                {columns && columns.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Columns</p>
+                    <div className="flex flex-wrap gap-1">
+                      {columns.map((col) => (
+                        <span
+                          key={col}
+                          className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground"
+                        >
+                          {col}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {!isStreaming && (!rows || rows.length === 0) && !sparqlError && (
+                  <p className="text-xs text-muted-foreground/60 italic">
+                    No results returned by the knowledge graph for this query.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
   );
 }
 

@@ -105,6 +105,8 @@ def _build_sse_generator(
                 "duration_ms": save_data.get("duration_ms"),
                 "pipeline_steps": save_data.get("pipeline_steps") or [],
                 "governance_halt": save_data.get("governance_halt"),
+                "sparql_error": save_data.get("sparql_error", ""),
+                "sparql_retries": save_data.get("sparql_retries", 0),
                 "question_type": save_data.get("question_type", ""),
                 "persona": save_data.get("persona", ""),
                 "complexity": save_data.get("complexity", ""),
