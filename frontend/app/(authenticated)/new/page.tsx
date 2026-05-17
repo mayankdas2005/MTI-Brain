@@ -13,7 +13,7 @@ import { NewChatComposer } from '@/components/new-chat-composer';
 function ComposerWithProject({ initialValue }: { initialValue: string }) {
   const searchParams = useSearchParams();
   const projectId = searchParams.get('project') || undefined;
-  return <NewChatComposer initialValue={initialValue} centered projectId={projectId} />;
+  return <NewChatComposer initialValue={initialValue} projectId={projectId} />;
 }
 
 export default function NewPage() {
@@ -21,21 +21,18 @@ export default function NewPage() {
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* Single scrollable area — content + composer together.
-          justify-center keeps them visually centered when there's room;
-          overflow-y-auto lets them scroll on short viewports. */}
+      {/* Scrollable welcome content — vertically centered when there's space */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="flex flex-col items-center justify-center min-h-full px-4 py-4">
-          <div className="w-full max-w-2xl lg:max-w-3xl">
+          <div className="w-full max-w-3xl lg:max-w-[900px]">
             <WelcomeState onSuggestion={(prompt) => setPendingSuggestion(prompt)} />
-            <div className="mt-4">
-              <Suspense fallback={<NewChatComposer initialValue="" centered />}>
-                <ComposerWithProject initialValue={pendingSuggestion} />
-              </Suspense>
-            </div>
           </div>
         </div>
       </div>
+      {/* Composer anchored to bottom — same position as ChatComposer on chat pages */}
+      <Suspense fallback={<NewChatComposer initialValue="" />}>
+        <ComposerWithProject initialValue={pendingSuggestion} />
+      </Suspense>
     </div>
   );
 }

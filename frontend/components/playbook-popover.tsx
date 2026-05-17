@@ -1,5 +1,6 @@
 'use client';
 
+import { useRef, useEffect } from 'react';
 import { type SavedQuery, usePlaybookStore } from '@/lib/store/playbook';
 import { BookOpen, X } from 'lucide-react';
 import { toast } from '@/lib/toast';
@@ -13,6 +14,12 @@ interface PlaybookPopoverProps {
 
 export function PlaybookPopover({ queries, activeIndex, onSelect, onHover }: PlaybookPopoverProps) {
   const deleteQuery = usePlaybookStore((s) => s.deleteQuery);
+  const listRef = useRef<HTMLUListElement>(null);
+  const activeItemRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    activeItemRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
 
   if (queries.length === 0) return null;
 
@@ -36,10 +43,11 @@ export function PlaybookPopover({ queries, activeIndex, onSelect, onHover }: Pla
         <BookOpen className="w-3 h-3" />
         Playbook
       </p>
-      <ul className="py-1 max-h-[40vh] md:max-h-56 overflow-y-auto">
+      <ul ref={listRef} className="py-1 max-h-[40vh] md:max-h-56 overflow-y-auto">
         {queries.map((q, i) => (
           <li key={q.id} className="group/item">
             <div
+              ref={i === activeIndex ? activeItemRef : undefined}
               className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors ${
                 i === activeIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
               }`}

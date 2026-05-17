@@ -93,6 +93,8 @@ export default function StarredPage() {
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [focusedSearchIndex, setFocusedSearchIndex] = useState(-1);
 
   const starThread = useThreadStore((s) => s.starThread);
   const projects = useProjectStore((s) => s.projects);
@@ -216,6 +218,35 @@ export default function StarredPage() {
   const showEmptyState = !isSearching && !loading && starred.length === 0;
   const showNoMatches = isSearching && !searchLoading && rows.length === 0;
 
+  // Reset focused index when the row set changes.
+  useEffect(() => { setFocusedIndex(-1); }, [rows.length]);
+  useEffect(() => { setFocusedSearchIndex(-1); }, [searchResults.length]);
+
+  // Keyboard navigation — mirrors the pattern in /chats.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Block arrow keys from inputs (cursor movement), but always let Enter through.
+      if (e.target instanceof HTMLInputElement && e.key !== 'Enter') return;
+      const activeIdx = isSearching ? focusedSearchIndex : focusedIndex;
+      const setActive = isSearching ? setFocusedSearchIndex : setFocusedIndex;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActive((i) => Math.min(i + 1, rows.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActive((i) => Math.max(i - 1, 0));
+      } else if (e.key === 'Enter' && activeIdx >= 0) {
+        e.preventDefault();
+        router.push(`/chat/${rows[activeIdx].id}`);
+      } else if (e.key === 'Escape') {
+        if (isSearching) setSearch('');
+        else setFocusedIndex(-1);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [focusedIndex, focusedSearchIndex, rows, isSearching, router]);
+
   return (
     <div ref={scrollContainerRef} className="h-full overflow-y-auto">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
@@ -309,8 +340,16 @@ export default function StarredPage() {
                   {index > 0 && <div className="border-t border-border mx-4" />}
                   <div
                     onClick={() => router.push(`/chat/${row.id}`)}
-                    onMouseEnter={() => router.prefetch(`/chat/${row.id}`)}
-                    className="group flex items-center gap-3 px-4 py-[var(--density-pad-y-loose)] rounded-lg cursor-pointer transition-colors hover:bg-muted/50"
+                    onMouseEnter={() => {
+                      router.prefetch(`/chat/${row.id}`);
+                      if (isSearching) setFocusedSearchIndex(index);
+                      else setFocusedIndex(index);
+                    }}
+                    className={`group flex items-center gap-3 px-4 py-[var(--density-pad-y-loose)] rounded-lg cursor-pointer transition-colors ${
+                      (isSearching ? focusedSearchIndex : focusedIndex) === index
+                        ? 'bg-muted/40 ring-1 ring-border'
+                        : 'hover:bg-muted/50'
+                    }`}
                   >
                     <Tooltip>
                       <TooltipTrigger asChild>

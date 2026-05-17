@@ -1,5 +1,6 @@
 'use client';
 
+import { useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { type LucideIcon, RotateCcw, Copy, Keyboard, Plus, BarChart3, Table2, Sun, Moon } from 'lucide-react';
 import { usePrefersReducedMotion } from '@/lib/hooks/use-prefers-reduced-motion';
@@ -145,6 +146,13 @@ export function SlashCommandPopover({
   onHover,
 }: SlashCommandPopoverProps) {
   const reduced = usePrefersReducedMotion();
+  const listRef = useRef<HTMLUListElement>(null);
+  const activeItemRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    activeItemRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+
   if (commands.length === 0) return null;
   return (
     <motion.div
@@ -158,13 +166,14 @@ export function SlashCommandPopover({
       <p className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-muted-foreground/60 font-medium">
         Slash commands
       </p>
-      <ul className="py-1 max-h-[40vh] md:max-h-64 overflow-y-auto">
+      <ul ref={listRef} className="py-1 max-h-[40vh] md:max-h-64 overflow-y-auto">
         {commands.map((cmd, i) => {
           const Icon = cmd.icon;
           const active = i === activeIndex;
           return (
             <li key={cmd.id}>
               <button
+                ref={active ? activeItemRef : undefined}
                 type="button"
                 role="option"
                 aria-selected={active}
