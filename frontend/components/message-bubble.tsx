@@ -385,8 +385,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
 
-  const showSQLTab = !!(prefShowSQL && sql);
-  const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasTableData);
+  // Always show SPARQL when generated — independent of row count and prefShowSQL
+  const hasSparql = !!(message.dataReady ?? !message.isStreaming) && !!sql;
   // Show data skeleton once SQL generation step has begun but data hasn't arrived yet
   const sqlStepStarted = message.isStreaming && !message.dataReady &&
     (message.streamingSteps?.some((s) => ['generate_sql', 'execute', 'respond'].includes(s.node)) ?? false);
@@ -430,37 +430,71 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         </div>
       )}
 
-      {/* SQL Query / Data Table toggle */}
-      {hasDataView && (
-        <div className="mb-2 space-y-2">
-          {showSQLTab && hasTableData && (
-          <div className="flex items-center gap-1">
-            {showSQLTab && (
-              <Button
-                variant={dataView === 'sql' ? 'secondary' : 'ghost'}
-                size="sm"
-                className="h-7 px-2.5 text-xs gap-1.5"
-                onClick={() => setDataView('sql')}
-              >
-                <Code2 className="w-3.5 h-3.5" />
+      {/* SPARQL Query — always shown when generated, regardless of row count */}
+      {hasSparql && !hasTableData && (
+        <div className="mb-2">
+          <div className="rounded-lg border border-border bg-muted/50 overflow-hidden max-h-96 flex flex-col">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-muted/30">
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Code2 className="w-3 h-3" />
                 SPARQL
-              </Button>
-            )}
-            {hasTableData && (
+                {typeof rowCount === 'number' && (
+                  <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${rowCount === 0 ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400' : 'bg-muted text-muted-foreground'}`}>
+                    {rowCount} {rowCount === 1 ? 'row' : 'rows'}
+                  </span>
+                )}
+              </span>
               <Button
-                variant={dataView === 'table' ? 'secondary' : 'ghost'}
+                variant="ghost"
                 size="sm"
-                className="h-7 px-2.5 text-xs gap-1.5"
-                onClick={() => setDataView('table')}
+                className="h-6 w-6 p-0 text-muted-foreground"
+                onClick={async () => {
+                  const ok = await copyText(sql!);
+                  if (ok) toast.success('SPARQL copied');
+                  else toast.error('Copy failed');
+                }}
               >
-                <TableIcon className="w-3.5 h-3.5" />
-                Data Table
+                <Copy className="w-3.5 h-3.5" />
               </Button>
-            )}
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <SyntaxHighlighter
+                language="sparql"
+                style={resolvedTheme === 'dark' ? sparqlDark : sparqlLight}
+                customStyle={{ margin: 0, padding: '12px', fontSize: '12px', lineHeight: '1.6', background: 'transparent' }}
+                wrapLongLines
+              >
+                {sql ?? ''}
+              </SyntaxHighlighter>
+            </div>
           </div>
-          )}
+        </div>
+      )}
 
-          {dataView === 'sql' && showSQLTab && (
+      {/* SQL / Data Table toggle — only shown when both are available */}
+      {hasSparql && hasTableData && (
+        <div className="mb-2 space-y-2">
+          <div className="flex items-center gap-1">
+            <Button
+              variant={dataView === 'sql' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 px-2.5 text-xs gap-1.5"
+              onClick={() => setDataView('sql')}
+            >
+              <Code2 className="w-3.5 h-3.5" />
+              SPARQL
+            </Button>
+            <Button
+              variant={dataView === 'table' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 px-2.5 text-xs gap-1.5"
+              onClick={() => setDataView('table')}
+            >
+              <TableIcon className="w-3.5 h-3.5" />
+              Data Table
+            </Button>
+          </div>
+          {dataView === 'sql' && (
             <div className="rounded-lg border border-border bg-muted/50 overflow-hidden max-h-96 flex flex-col">
               <div className="flex items-center justify-end px-3 py-1.5 border-b border-border bg-muted/30">
                 <Button
@@ -468,12 +502,9 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                   size="sm"
                   className="h-6 w-6 p-0 text-muted-foreground"
                   onClick={async () => {
-                    const ok = await copyText(sql);
-                    if (!ok) {
-                      toast.error('Copy failed');
-                      return;
-                    }
-                    toast.success('SPARQL copied');
+                    const ok = await copyText(sql!);
+                    if (ok) toast.success('SPARQL copied');
+                    else toast.error('Copy failed');
                   }}
                 >
                   <Copy className="w-3.5 h-3.5" />
@@ -491,10 +522,16 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               </div>
             </div>
           )}
-
-          {dataView === 'table' && hasTableData && (
+          {dataView === 'table' && (
             <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} />
           )}
+        </div>
+      )}
+
+      {/* Data Table only — when no SQL was generated but results exist */}
+      {!hasSparql && hasTableData && (
+        <div className="mb-2">
+          <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} />
         </div>
       )}
 

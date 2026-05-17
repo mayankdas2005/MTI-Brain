@@ -228,8 +228,11 @@ NAMED GRAPHS (always include FROM for the relevant domain — omitting it querie
   FX positions & hedges         : FROM <graph:fx:current>
   Investment portfolio          : FROM <graph:investments:all>
 
-DOMAIN PATTERNS:
-  Cash/balance queries: always include lpp:currencyCode ?currency; GROUP BY ?currency; ORDER BY DESC(?totalBalance)
+DOMAIN PATTERNS — balance snapshot queries (lpp:BalanceSnapshot):
+  Account link : lpp:forAccount  (domain: BalanceSnapshot → BankAccount)
+                 !! NOT lpp:sourceAccount — that has domain SweepEvent, not BalanceSnapshot !!
+  Currency     : lpp:currencyCode ?currency   ← required for multi-currency totals
+  Grouping     : GROUP BY ?currency; ORDER BY DESC(?totalBalance)
 
 SPARQL rules:
 - Prefixes: always declare lpp: <https://lpp.example/ontology#>; add lppid: <https://lpp.example/id/> only when using lppid: URIs; add xsd: <http://www.w3.org/2001/XMLSchema#> only when using xsd:date or xsd:decimal

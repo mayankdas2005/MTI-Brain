@@ -87,17 +87,33 @@ def extract_lpp_predicates(query: str) -> list[str]:
     return list(set(uris))
 
 
+def extract_subject_types(query: str) -> set[str]:
+    """Return the set of lpp: class local-names used as subject types in the query.
+
+    Matches '?var a lpp:Cls' and '?var rdf:type lpp:Cls' patterns, including
+    occurrences after a semicolon continuation (';' on its own line before a
+    predicate has no preceding '?var').  We only need the class names — not
+    which variable has them — to validate domain constraints.
+    """
+    return set(re.findall(
+        r'(?:^|[\s{;,.])\?\w+\s+(?:a|rdf:type)\s+lpp:(\w+)',
+        query,
+        re.MULTILINE | re.IGNORECASE,
+    ))
+
+
 async def validate_predicates(
     query: str,
     fuseki_client=None,
     skip_classes: bool = False,
 ) -> tuple[bool, str]:
-    """Check that every lpp: predicate in the query is defined in the ontology.
+    """Check that every lpp: predicate in the query is defined in the ontology,
+    and that each object-property is used with a subject type that matches its
+    declared rdfs:domain.
 
     Uses the in-memory ontology dict (loaded from lpp-ontology.ttl at startup)
-    instead of querying Fuseki. Fuseki ASK checks test data existence, not
-    schema validity — valid ontology terms with no instances would fail even
-    though they are correct predicates.
+    instead of querying Fuseki. Fuseki ASK checks data existence, not schema
+    validity — valid terms with no instances would fail even when correct.
     """
     from app.services.agents.ontology_loader import get_ontology_dict
 
@@ -126,4 +142,40 @@ async def validate_predicates(
 
     if missing:
         return False, f"Predicates not found in ontology: {', '.join(missing)}"
+
+    # ── Domain check: verify object-property domain matches query subject types ──
+    subject_classes = extract_subject_types(query)
+    if subject_classes:
+        prop_domain: dict[str, str | None] = {
+            p["local"]: p.get("domain")
+            for p in ont.get("object_properties", [])
+        }
+        used_locals = {uri.split("#")[-1] for uri in predicates}
+        for local in used_locals:
+            declared_domain = prop_domain.get(local)
+            if declared_domain and declared_domain not in subject_classes:
+                # Build a hint: find properties with the same range whose domain
+                # DOES appear in the query — those are the correct alternatives.
+                pred_range = next(
+                    (p.get("range") for p in ont.get("object_properties", []) if p["local"] == local),
+                    None,
+                )
+                alternatives = [
+                    p["local"]
+                    for p in ont.get("object_properties", [])
+                    if p.get("domain") in subject_classes
+                    and p.get("range") == pred_range
+                    and p["local"] != local
+                ]
+                hint = (
+                    f" Consider: {', '.join(f'lpp:{a}' for a in alternatives)}"
+                    if alternatives
+                    else ""
+                )
+                return False, (
+                    f"lpp:{local} has domain lpp:{declared_domain} but the query uses "
+                    f"{', '.join(f'lpp:{c}' for c in sorted(subject_classes))} as subject types. "
+                    f"Wrong predicate for this class.{hint}"
+                )
+
     return True, ""
