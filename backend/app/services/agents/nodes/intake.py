@@ -57,7 +57,6 @@ async def intake_classify_node(state: State) -> dict:
     raw = await chain.ainvoke({
         "question": question,
         "conversation_context": conversation_context,
-        "cross_thread_context": cross_thread_context or "None.",
         "persona_preset": f"{preset} (use this — do not infer)" if preset else "not set — infer from question phrasing",
         "reasoning_directive": reasoning_directive,
     })
@@ -104,13 +103,11 @@ async def general_chat_node(state: State) -> dict:
     from app.services.agents.prompts import GENERAL_CHAT_PROMPT
     from langchain_core.messages import AIMessage
 
-    msg_text = "\n".join(
-        f"{'User' if getattr(m, 'type', '') == 'human' else 'Assistant'}: {m.content}"
-        for m in messages[-6:]
-    )
+    recent = _format_recent_messages(messages, n=6)
+    conversation_context = "\n\n".join(filter(None, [summary, recent])) or "None."
 
     chain = GENERAL_CHAT_PROMPT | get_llm("fast")
-    raw = await chain.ainvoke({"question": question, "summary": summary or "None.", "messages": msg_text})
+    raw = await chain.ainvoke({"question": question, "conversation_context": conversation_context})
     text = raw.content if hasattr(raw, "content") else str(raw)
 
     answer = parse_tag(text, "answer") or text

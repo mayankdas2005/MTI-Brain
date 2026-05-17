@@ -54,7 +54,6 @@ async def graph_reasoning_node(state: State) -> dict:
         "results_sample": results_sample,
         "row_count": len(kg_rows),
         "tribal_facts": tribal_str,
-        "feedback_context": state.get("feedback_context") or "None.",
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

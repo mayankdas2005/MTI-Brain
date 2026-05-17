@@ -28,7 +28,6 @@ async def domain_specialist_node(state: State) -> dict:
         "persona": persona,
         "complexity": complexity,
         "conversation_context": conversation_context,
-        "feedback_context": state.get("feedback_context") or "None.",
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

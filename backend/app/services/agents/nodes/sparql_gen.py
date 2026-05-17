@@ -66,8 +66,8 @@ async def sparql_gen_node(state: State) -> dict:
             "intent": intent,
             "sparql": existing_sparql,
             "error": sparql_error,
-            "ontology_summary": get_ontology_summary(),
             "ontology_terms": _format_ontology_terms(ontology_terms),
+            "feedback_context": state.get("feedback_context") or "None.",
             "reasoning_directive": reasoning_directive,
         })
     else:

@@ -50,7 +50,6 @@ async def plan_node(state: State) -> dict:
         "ontology_summary": get_ontology_summary(),
         "prior_context": prior_context,
         "conversation_context": conversation_context,
-        "feedback_context": state.get("feedback_context") or "None.",
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

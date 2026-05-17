@@ -34,7 +34,6 @@ async def final_reflector_node(state: State) -> dict:
         "question": question,
         "persona": persona,
         "scratchpad_summary": _summarize_scratchpad(scratchpad),
-        "feedback_context": state.get("feedback_context") or "None.",
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

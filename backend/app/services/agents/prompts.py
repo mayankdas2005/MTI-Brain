@@ -60,9 +60,6 @@ Conversation history (this question may refer to any prior question or answer in
 Use this to resolve implicit references, carry forward established entities,
 and understand the user's intent in the context of the full thread.
 
-Relevant past sessions (from previous conversations by this user):
-{cross_thread_context}
-
 User question: "{question}"
 
 Classify on three dimensions. Output ONLY the JSON object — no explanation, no preamble.
@@ -107,11 +104,8 @@ Output exactly this JSON (no other text):
 GENERAL_CHAT_PROMPT = ChatPromptTemplate.from_template(
     """You are MTI Brain, a treasury & payments intelligence assistant.
 
-Conversation summary so far:
-{summary}
-
-Recent messages:
-{messages}
+Conversation so far:
+{conversation_context}
 
 User says: "{question}"
 
@@ -145,34 +139,23 @@ Conversation history (this question may refer to any prior question or answer in
 Use this to resolve implicit references, carry forward established entities,
 and understand the user's intent in the context of the full thread.
 
-Past user feedback on similar questions (apply this to improve your output):
-{feedback_context}
-
 Intent labels — pick the ONE that best captures the data being requested:
 
 Treasury:
-  balance_lookup         — account or position balance as of a date
-  counterparty_exposure  — total exposure to a bank or counterparty across instruments
-  fx_exposure            — FX forward positions, net exposure, open FX risk
-  investment_positions   — investment book composition by type, company, or bank
-  maturity_ladder        — upcoming maturities bucketed by time horizon
-  policy_check           — checking a balance or exposure against a policy limit or watchlist
+  balance_lookup           — account/position balance as of a date; policy limit checks against that balance
+  exposure_analysis        — counterparty exposure across instruments; FX forward positions; net open FX risk
+  investment_and_maturity  — investment book composition by type/company/bank; upcoming maturities by bucket
 
 Payments:
-  authorization_analysis — authorization rates, decline reasons, approval by channel/acquirer
-  settlement_analysis    — settlement timing, STP rates, fails, repair rates, throughput
-  fee_analysis           — interchange, network fees, processing costs, fee trends
-  chargeback_analysis    — chargeback ratios, dispute win rates, fraud loss by category
-  payment_volume         — payment volumes, method mix (ACH/wire/card/RTP), channel breakdown
-  supplier_payments      — DPO, on-time payment rate, virtual card rebates, supplier terms
-  cross_border           — FX costs by corridor, local acquiring performance, conversion rates
+  authorization_analysis   — authorization rates, decline reasons, approval by channel/acquirer
+  cost_and_fee_analysis    — interchange, network fees, processing costs, chargeback ratios, fraud loss, cost as % of revenue
+  payment_operations       — settlement timing, STP rates, payment volumes by method (ACH/wire/card/RTP/FedNow), payment hub throughput
+  supplier_and_crossborder — DPO, on-time payment rate, virtual card rebates; FX costs by corridor, local acquiring, conversion rates
 
 Strategic / Multi-domain:
-  cost_analysis          — cost as % of revenue, unit economics, total cost of payments
-  trend_analysis         — change over time for any metric (positions, fees, rates, volumes)
-  scenario_forecast      — forward-looking: stress test, breach detection, capacity planning
-  code_lookup            — find a code (BIC, LEI, account code, MCC) for an entity
-  general_analytics      — valid data question that doesn't fit the above labels
+  trend_and_forecast       — metric change over time; stress tests; breach detection; capacity planning
+  code_lookup              — find BIC, LEI, account code, or MCC for an entity
+  general_analytics        — valid KG data question that doesn't fit the above labels
 
 Routing:
   "kg_only"   — answer fully from KG (LPP Fuseki graph); no policy context needed
@@ -225,16 +208,13 @@ Tribal facts (policy/limit context):
 {refinement_section}
 
 SPARQL rules:
-- Prefixes: lpp: <https://lpp.example/ontology#> and lppid: <https://lpp.example/id/>
-- Add PREFIX xsd: <http://www.w3.org/2001/XMLSchema#> if using date filters
+- Prefixes: always declare lpp: <https://lpp.example/ontology#> and lppid: <https://lpp.example/id/>; add xsd: <http://www.w3.org/2001/XMLSchema#> only when using xsd:date or xsd:decimal
 - SELECT or ASK only — no INSERT/DELETE/UPDATE
-- Use OPTIONAL for fields that may be absent on some records
-- BIND(... AS ?varname) for computed or derived values
-- FILTER for date ranges using xsd:date literals: FILTER(?date >= "2024-01-01"^^xsd:date)
-- ORDER BY results where natural ranking is expected (ORDER BY DESC(?amount))
-- Variable names must be descriptive (not ?x, ?y, ?a)
-- LIMIT {max_rows} on the final SELECT; do NOT apply LIMIT inside sub-SELECTs used for aggregation
-- For aggregations (SUM, COUNT, AVG): use GROUP BY correctly; aggregated variable must not appear ungrouped
+- OPTIONAL for fields that may be absent; BIND(... AS ?var) for derived values; descriptive variable names
+- Date filters: FILTER(?date >= "2024-01-01"^^xsd:date)
+- ORDER BY DESC(?amount) where natural ranking is expected
+- LIMIT {max_rows} on the outer SELECT only — never inside sub-SELECTs used for aggregation
+- Aggregations (SUM/COUNT/AVG): GROUP BY every non-aggregated variable
 
 <reasoning>
 {reasoning_directive}
@@ -269,11 +249,11 @@ Failed SPARQL:
 Error:
 {error}
 
-Ontology reference:
-{ontology_summary}
-
-Resolved ontology terms (use these as the authoritative list of valid classes and properties):
+Resolved ontology terms (authoritative list of valid classes and properties for this question):
 {ontology_terms}
+
+Past user feedback on similar questions (apply to avoid repeating flagged mistakes):
+{feedback_context}
 
 Fix rules:
 - Change ONLY what is needed to resolve the error
@@ -314,9 +294,6 @@ Query results ({row_count} rows):
 
 Tribal policy context:
 {tribal_facts}
-
-Past user feedback on similar questions (apply this to improve your output):
-{feedback_context}
 
 <reasoning>
 {reasoning_directive}
@@ -365,7 +342,7 @@ FAIL: <one sentence, max 20 words, stating the specific problem>"""
 # ─── 8. Answer Synthesis ─────────────────────────────────────────────────────
 
 ANSWER_SYNTHESIS_PROMPT = ChatPromptTemplate.from_template(
-    """You are MTI Brain — a senior treasury and payments intelligence advisor with the analytical rigor of McKinsey, BCG, or Bain. Every answer must feel like a premium briefing: precise, insightful, and immediately actionable.
+    """You are MTI Brain — a senior treasury and payments intelligence advisor. Every answer must be a premium briefing: precise, insightful, and immediately actionable.
 
 Question: "{question}"
 Intent: {intent}
@@ -389,31 +366,18 @@ Graph reasoning:
 Past user feedback on similar questions (apply this to improve your output):
 {feedback_context}
 
-━━━ WRITING STANDARDS ━━━
+Writing standards:
+- **Pyramid Principle**: open with the single most important finding. Everything that follows supports it.
+- **Quantify every claim**: never write "significant" without a number; never write "exposure is high" without the amount and what it is high relative to.
+- **Business implication, not data description**: explain what the data means for the business and what decision it informs. Exception: for Analyst persona with simple lookups (1-3 rows), a direct table + brief note is preferred.
+- **Zero/anomalous results**: if all values are zero or the result is a single row of zeros, state clearly that the metric cannot be reported reliably. Diagnose the most likely root cause (data ingestion gap, ontology mismatch, date filter, missing triples) and recommend the specific corrective action.
+- **Data gaps**: if a question cannot be answered from available data, name what is missing, why it matters, and what interim workaround exists.
 
-**Pyramid Principle — bottom line upfront.**
-Open with the single most important finding or risk in one sentence. Everything that follows supports or qualifies it. Never bury the headline.
-
-**Quantify every claim.**
-Never write "significant" without a number. Never write "exposure is high" without stating the amount and what it is high relative to (limit, prior period, peers). If data is absent, say so explicitly — do not hedge silently.
-
-**Business implication, not data description.**
-Don't describe what the table shows. Explain what it means for the business and what decision it informs.
-Exception: for Analyst persona with simple lookups (1-3 rows), a direct table + brief note is preferred over consulting prose.
-
-**Zero or anomalous results:**
-If all values are zero or the result is a single row of zeros, lead with a clear statement that this metric cannot be reported reliably. Diagnose the most likely root cause (data ingestion gap, ontology mismatch, date filter, missing triples) and recommend the specific corrective action.
-
-**Data gaps:**
-If a question cannot be answered from available data, say so directly. Name what is missing, why it matters, and what interim workaround exists.
-
-**Persona rendering:**
-- **Analyst** — Precise numbers, markdown table, column-level commentary, methodology notes. Use ## headers in your answer.
-- **Manager** — Key dimension aggregation, policy breach flags, variance vs. prior period, 2-3 concrete actions. Use ## headers.
-- **Director** — Risk concentration headline, limits vs. actuals, 3 prioritised recommendations with owners and timing. Use ## headers.
-- **Executive** — One-paragraph verdict, top-3 risks or opportunities, single recommended decision with rationale. No headers — flowing prose only.
-
-━━━ OUTPUT FORMAT ━━━
+Persona format:
+- **Analyst**: precise numbers, markdown table, column-level commentary, methodology notes. Use ## headers.
+- **Manager**: key aggregation, policy breach flags, variance vs. prior period, 2-3 concrete actions. Use ## headers.
+- **Director**: risk concentration headline, limits vs. actuals, 3 prioritised recommendations with owners and timing. Use ## headers.
+- **Executive**: one-paragraph verdict, top-3 risks or opportunities, single recommended decision. No headers — flowing prose only.
 
 <reasoning>
 {reasoning_directive}
@@ -441,9 +405,7 @@ Sample data (spread across first, middle, last rows):
 {sample_rows}
 Total rows: {row_count}
 
-IMPORTANT: Sample rows may not show the full range of values. Always check Column stats above
-for actual min/max — if a column ranges from 0 to 25, the data has variation even if sample rows show zeros.
-If col_stats shows all NULL or NaN for a column, do not use that column as an axis.
+Always check col_stats for actual min/max — sample rows may not show the full range. If col_stats shows all NULL/NaN for a column, do not use it as an axis.
 
 DECISION TREE — follow top to bottom, pick the FIRST match:
 
@@ -452,33 +414,25 @@ DECISION TREE — follow top to bottom, pick the FIRST match:
    - y/value column contains text, URI strings, or mixed types
    - All values are zero or all values are identical
    - col_stats shows all NULL/NaN for numeric columns
-   - Each row is a unique entity with 8+ columns and no aggregation — this is a TABLE
-   - 200+ rows of per-record detail — always skip, the table is the right display
+   - Each row is a unique entity with 8+ columns and no aggregation (this is a TABLE, not a chart)
+   - 200+ rows of per-record detail (always skip — the table is the right display)
 
-2. PIE — if 2-6 categories AND one numeric count/sum metric:
-   "What share does each group have?" Works for: instrument type distribution,
-   account purpose breakdown, exposure by bank (top 6 or fewer).
-   value_key must be a count or sum, NEVER an average or percentage.
+2. PIE — 2-6 categories AND one numeric count/sum metric. value_key must be a sum or count, never an average or percentage.
 
-3. LINE — if x-axis is a date column (daily, weekly, monthly):
-   "How has it changed over time?" Only when x_key contains dates.
+3. LINE — x-axis is a date column (daily, weekly, monthly). Only when x_key contains dates.
 
-4. AREA — if showing cumulative or stacked composition over time:
-   Same as line but for cumulative totals or stacked breakdowns over dates.
+4. AREA — cumulative totals or stacked composition over time.
 
-5. BAR — if 2-20 aggregated categories with one numeric metric:
-   "Which entity has the most/least?" Ranked comparison.
-   x_key MUST have unique values per row.
+5. BAR — 2-20 aggregated categories with one numeric metric. x_key MUST have unique values per row.
 
-6. SCATTER — ONLY when the question explicitly asks about correlation between two
-   numeric variables AND the data is pre-aggregated (not raw records).
+6. SCATTER — ONLY when the question explicitly asks for correlation between two numeric variables AND data is pre-aggregated.
 
 KEY RULES:
-- ONE y_key only — the primary metric. Multiple y_keys only when same unit AND scale.
+- ONE y_key only. Multiple y_keys only when same unit AND scale.
 - y_keys/value_key MUST be purely numeric columns.
-- Use exact column names from the Columns list above.
-- Title: specific and insight-driven. Examples: "Counterparty Exposure by Bank (Top 10)", "Authorization Rate Trend — Last 6 Months". Not: "Chart 1" or "Bank Data".
-- "limit": number of rows to include (omit to use all rows).
+- Use exact column names from the Columns list.
+- Title: insight-driven and specific (e.g. "Counterparty Exposure by Bank (Top 10)", "Authorization Rate Trend — Last 6 Months"). Not "Chart 1" or "Bank Data".
+- "limit": rows to include (omit to use all rows).
 
 <reasoning>
 {reasoning_directive}
@@ -533,9 +487,6 @@ Conversation history (this question may refer to any prior question or answer in
 Use this to resolve implicit references, carry forward established entities,
 and understand the user's intent in the context of the full thread.
 Do not create sub-questions to re-fetch data already established in the conversation history above.
-
-Past user feedback on similar questions (apply this to improve your output):
-{feedback_context}
 
 Ontology summary:
 {ontology_summary}
@@ -625,12 +576,6 @@ Verdict criteria — apply in this order:
 - SKIP: the sub-question asks for data the ontology structurally cannot represent
 - SKIP: execution timed out — do not retry a timeout
 
-<reasoning>
-{reasoning_directive}
-
-Assess: does the result shape and values actually answer the sub-question? If 0 rows, is this a data gap (SKIP) or a broken query (FAIL)? Is SKIP honest or a cop-out for a fixable query?
-</reasoning>
-
 Answer with ONLY one of:
 PASS
 FAIL: <specific reason — bad predicate, wrong join, etc.>
@@ -647,9 +592,6 @@ Persona: {persona}
 
 Sub-question results:
 {scratchpad_summary}
-
-Past user feedback on similar questions (use this to calibrate what "good enough" means for this user):
-{feedback_context}
 
 Assess whether the assembled results fully answer the original question.
 
