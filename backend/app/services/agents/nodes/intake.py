@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_tag, parse_json_from_response, _format_recent_messages
+from app.services.agents.ontology_loader import get_class_names_summary
 from app.services.agents.prompts import INTAKE_CLASSIFY_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
@@ -53,12 +54,14 @@ async def intake_classify_node(state: State) -> dict:
 
     preset = state.get("persona", "")
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
+    ontology_context = get_class_names_summary() or "Not available."
     chain = INTAKE_CLASSIFY_PROMPT | get_llm("fast")
     raw = await chain.ainvoke({
         "question": question,
         "conversation_context": conversation_context,
         "persona_preset": f"{preset} (use this — do not infer)" if preset else "not set — infer from question phrasing",
         "reasoning_directive": reasoning_directive,
+        "ontology_context": ontology_context,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)
 

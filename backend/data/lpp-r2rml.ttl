@@ -1,0 +1,3012 @@
+@prefix rr:    <http://www.w3.org/ns/r2rml#> .
+@prefix lpp:   <https://lpp.example/ontology#> .
+@prefix brain: <https://lpp.example/ontology/brain#> .
+@prefix prov:  <http://www.w3.org/ns/prov#> .
+@prefix lppid: <https://lpp.example/id/> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+
+# =============================================================================
+# R2RML mapping — LPP treasury + Brain layer
+#
+# Tested target: Apache Jena via the r2rml-loader CLI, with Ontop 5.x as an
+# alternative for virtual SPARQL endpoints.
+#
+# Database dialect: Amazon Redshift (schema `lpp`, lowercase identifiers).
+#   - All `rr:tableName` references use unquoted lowercase (`lpp.currency`).
+#   - All `rr:column` references use uppercase per R2RML default; Redshift
+#     returns column names case-insensitively so this works without quoting.
+#   - SUPER columns (semi-structured) are not materialized as triples here;
+#     project specific JSON paths via rr:sqlQuery when needed.
+#
+# Convention:
+#   Subject IRI template uses the *business key* column (`code` or composite).
+#   Object property targets reference the same business-key IRIs, so FK joins
+#   line up without any explicit rr:joinCondition.
+#
+# Named graphs (loaded into Apache Jena):
+#   - Triples from sections below default to <graph:treasury>.
+#   - Brain-layer TriplesMaps explicitly target <graph:treasury:brain>
+#     via rr:graph.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CURRENCY
+# -----------------------------------------------------------------------------
+<#CurrencyMap>
+    rr:logicalTable [ rr:tableName "LPP.CURRENCY" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/currency/{CODE}" ;
+        rr:class    lpp:Currency
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code        ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name        ; rr:objectMap [ rr:column "DESCRIPTION" ] ] .
+
+# -----------------------------------------------------------------------------
+# BANK
+# -----------------------------------------------------------------------------
+<#BankMap>
+    rr:logicalTable [ rr:tableName "LPP.BANK" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/bank/{CODE}" ;
+        rr:class    lpp:Bank
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "DESCRIPTION1" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:bic  ; rr:objectMap [ rr:column "BIC" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:lei  ; rr:objectMap [ rr:column "LEI" ] ] .
+
+# -----------------------------------------------------------------------------
+# COMPANY
+# -----------------------------------------------------------------------------
+<#CompanyMap>
+    rr:logicalTable [ rr:tableName "LPP.COMPANY" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/company/{CODE}" ;
+        rr:class    lpp:Company
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code        ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name        ; rr:objectMap [ rr:column "NAME" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:countryCode ; rr:objectMap [ rr:column "COUNTRY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:lei         ; rr:objectMap [ rr:column "LEI" ] ] .
+
+# -----------------------------------------------------------------------------
+# BANK_BRANCH (so BankAccount → Bank can be derived)
+# -----------------------------------------------------------------------------
+<#BankBranchMap>
+    rr:logicalTable [ rr:tableName "LPP.BANK_BRANCH" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/branch/{CODE}" ;
+        rr:class    lpp:BankBranch
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:branchOf ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:countryCode ; rr:objectMap [ rr:column "COUNTRY_CODE" ] ] .
+
+# -----------------------------------------------------------------------------
+# BANK_ACCOUNT — typed by ACCOUNT_PURPOSE so OperatingAccount, ConcentrationAccount,
+# etc. become RDF classes via separate purpose-specific TriplesMaps.
+# -----------------------------------------------------------------------------
+<#BankAccountMap>
+    rr:logicalTable [ rr:tableName "LPP.BANK_ACCOUNT" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/bank-account/{CODE}" ;
+        rr:class    lpp:BankAccount
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:ownedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:atBranch ;
+        rr:objectMap [ rr:template "https://lpp.example/id/branch/{BRANCH_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:hasCurrency ;
+        rr:objectMap [ rr:template "https://lpp.example/id/currency/{CURRENCY_REF}" ]
+    ] .
+
+# Materialize the BankAccount → Bank shortcut (lpp:heldAt) by joining through branch.
+<#BankAccountHeldAtMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT a.CODE AS ACCOUNT_CODE, b.BANK_REF
+        FROM LPP.BANK_ACCOUNT a
+        JOIN LPP.BANK_BRANCH  b ON a.BRANCH_REF = b.CODE
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/bank-account/{ACCOUNT_CODE}" ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:heldAt ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{BANK_REF}" ]
+    ] .
+
+# Purpose subclasses — ConcentrationAccount, OperatingAccount, etc.
+<#ConcentrationAccountMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT CODE FROM LPP.BANK_ACCOUNT WHERE ACCOUNT_PURPOSE = 'CONCENTRATION'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/bank-account/{CODE}" ;
+        rr:class    lpp:ConcentrationAccount
+    ] .
+
+<#OperatingAccountMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT CODE FROM LPP.BANK_ACCOUNT WHERE ACCOUNT_PURPOSE = 'OPERATING'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/bank-account/{CODE}" ;
+        rr:class    lpp:OperatingAccount
+    ] .
+
+# -----------------------------------------------------------------------------
+# INVESTMENT_INSTRUMENT
+# -----------------------------------------------------------------------------
+<#InvestmentInstrumentMap>
+    rr:logicalTable [ rr:tableName "LPP.INVESTMENT_INSTRUMENT" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/instrument/{CODE}" ;
+        rr:class    lpp:InvestmentInstrument
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code         ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:rating       ; rr:objectMap [ rr:column "RATING" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:maturityDate ;
+        rr:objectMap [ rr:column "MATURITY_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:issuerBank ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{ISSUER_BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:hasCurrency ;
+        rr:objectMap [ rr:template "https://lpp.example/id/currency/{CURRENCY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:instrumentType ;
+        rr:objectMap [ rr:template "https://lpp.example/id/instrument-type/{INSTRUMENT_TYPE}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# INVESTMENT_POSITION
+# -----------------------------------------------------------------------------
+<#InvestmentPositionMap>
+    rr:logicalTable [ rr:tableName "LPP.INVESTMENT_POSITION" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/position/{UUID}" ;
+        rr:class    lpp:InvestmentPosition
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "AS_OF_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:faceAmount ;
+        rr:objectMap [ rr:column "FACE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:marketValue ;
+        rr:objectMap [ rr:column "MARKET_VALUE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:bookValue ;
+        rr:objectMap [ rr:column "BOOK_VALUE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:yieldToMaturity ;
+        rr:objectMap [ rr:column "YIELD_TO_MATURITY" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:durationDays ;
+        rr:objectMap [ rr:column "DURATION_DAYS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:hasInstrument ;
+        rr:objectMap [ rr:template "https://lpp.example/id/instrument/{INSTRUMENT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:heldBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:fundedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{BANK_ACCOUNT_REF}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# FX_FORWARD
+# -----------------------------------------------------------------------------
+<#FxForwardMap>
+    rr:logicalTable [ rr:tableName "LPP.FX_FORWARD" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/fx-forward/{DEAL_ID}" ;
+        rr:class    lpp:FxForward
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code      ; rr:objectMap [ rr:column "DEAL_ID" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tradeDate ;
+        rr:objectMap [ rr:column "TRADE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:valueDate ;
+        rr:objectMap [ rr:column "VALUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status    ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:tradedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:counterparty ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{COUNTERPARTY_BANK_REF}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# DERIVATIVE_MTM — links to the FxForward (or other derivative) it values
+# -----------------------------------------------------------------------------
+<#DerivativeMtmMap>
+    rr:logicalTable [ rr:tableName "LPP.DERIVATIVE_MTM" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/mtm/{INSTRUMENT_REF}-{VALUATION_DATE}" ;
+        rr:class    lpp:DerivativeMtm
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "VALUATION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:mtmAmount ;
+        rr:objectMap [ rr:column "MTM_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "MTM_CURRENCY" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:counterparty ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{COUNTERPARTY_BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:valuesInstrument ;
+        rr:objectMap [ rr:template "https://lpp.example/id/fx-forward/{INSTRUMENT_REF}" ]
+    ] .
+
+# =============================================================================
+# BRAIN LAYER — Tribal knowledge, SME-taught KG edges, SME feedback sessions,
+# brain evaluations. All triples below land in named graph <graph:treasury:brain>.
+#
+# IRI conventions:
+#   brain:fact/{uuid}        — tribal facts
+#   brain:edge/{uuid}        — SME-taught typed edges
+#   brain:session/{uuid}     — SME feedback sessions (prov:Activity)
+#   brain:eval/{uuid}        — per-query Brain evaluations
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# TRIBAL_KNOWLEDGE_FACT — base mapping. Per-type subclasses follow.
+# -----------------------------------------------------------------------------
+<#TribalKnowledgeFactMap>
+    rr:logicalTable [ rr:tableName "lpp.tribal_knowledge_fact" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{UUID}" ;
+        rr:class    brain:TribalFact ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [ rr:predicate brain:factType         ; rr:objectMap [ rr:column "FACT_TYPE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:narrative        ; rr:objectMap [ rr:column "NARRATIVE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:title            ; rr:objectMap [ rr:column "TITLE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:triggerCondition ; rr:objectMap [ rr:column "TRIGGER_CONDITION" ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:confidence       ; rr:objectMap [ rr:column "CONFIDENCE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:status           ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:effectiveFrom ;
+        rr:objectMap [ rr:column "EFFECTIVE_FROM" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:effectiveTo ;
+        rr:objectMap [ rr:column "EFFECTIVE_TO" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate prov:wasGeneratedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/brain/session/{SOURCE_SESSION}" ]
+    ] ;
+    rr:predicateObjectMap [ 
+        rr:predicate prov:wasAttributedTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/user/{CAPTURED_BY_USER}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate prov:generatedAtTime ;
+        rr:objectMap [ rr:column "CAPTURED_AT" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:supersededBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/brain/fact/{SUPERSEDED_BY}" ]
+    ] .
+
+# Per-fact-type RDF subclasses (VerbalCommitment, SideAgreement, etc.).
+# One TriplesMap per type so SPARQL can filter by class without scanning FACT_TYPE.
+<#VerbalCommitmentMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT uuid FROM lpp.tribal_knowledge_fact WHERE fact_type = 'VERBAL_COMMITMENT'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{UUID}" ;
+        rr:class    brain:VerbalCommitment ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] .
+
+<#SideAgreementMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT uuid FROM lpp.tribal_knowledge_fact WHERE fact_type = 'SIDE_AGREEMENT'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{UUID}" ;
+        rr:class    brain:SideAgreement ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] .
+
+<#BehavioralPatternMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT uuid FROM lpp.tribal_knowledge_fact WHERE fact_type = 'BEHAVIORAL_PATTERN'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{UUID}" ;
+        rr:class    brain:BehavioralPattern ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] .
+
+<#RMSignalMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT uuid FROM lpp.tribal_knowledge_fact WHERE fact_type = 'RM_SIGNAL'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{UUID}" ;
+        rr:class    brain:RMSignal ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] .
+
+<#StrategicPreferenceMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT uuid FROM lpp.tribal_knowledge_fact WHERE fact_type = 'STRATEGIC_PREFERENCE'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{UUID}" ;
+        rr:class    brain:StrategicPreference ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] .
+
+<#UndocumentedConstraintMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT uuid FROM lpp.tribal_knowledge_fact WHERE fact_type = 'UNDOCUMENTED_CONSTRAINT'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{UUID}" ;
+        rr:class    brain:UndocumentedConstraint ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] .
+
+# -----------------------------------------------------------------------------
+# TRIBAL_KNOWLEDGE_ENTITY_LINK — brain:appliesTo edges from fact to domain entity.
+# One TriplesMap per ENTITY_TYPE so the IRI template can resolve to the right
+# treasury IRI namespace (company, bank, third-party, facility, account, user).
+# -----------------------------------------------------------------------------
+<#FactAppliesToCompanyMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT fact_uuid, entity_code FROM lpp.tribal_knowledge_entity_link WHERE entity_type = 'COMPANY'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{FACT_UUID}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:appliesTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{ENTITY_CODE}" ]
+    ] .
+
+<#FactAppliesToBankMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT fact_uuid, entity_code FROM lpp.tribal_knowledge_entity_link WHERE entity_type = 'BANK'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{FACT_UUID}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:appliesTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{ENTITY_CODE}" ]
+    ] .
+
+<#FactAppliesToThirdPartyMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT fact_uuid, entity_code FROM lpp.tribal_knowledge_entity_link WHERE entity_type = 'THIRD_PARTY'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{FACT_UUID}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:appliesTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/third-party/{ENTITY_CODE}" ]
+    ] .
+
+<#FactAppliesToCreditFacilityMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT fact_uuid, entity_code FROM lpp.tribal_knowledge_entity_link WHERE entity_type = 'CREDIT_FACILITY'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{FACT_UUID}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:appliesTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/credit-facility/{ENTITY_CODE}" ]
+    ] .
+
+<#FactAppliesToHedgeMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT fact_uuid, entity_code FROM lpp.tribal_knowledge_entity_link WHERE entity_type = 'HEDGE_RELATIONSHIP'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{FACT_UUID}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:appliesTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/hedge/{ENTITY_CODE}" ]
+    ] .
+
+<#FactAppliesToBankAccountMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT fact_uuid, entity_code FROM lpp.tribal_knowledge_entity_link WHERE entity_type = 'BANK_ACCOUNT'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{FACT_UUID}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:appliesTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{ENTITY_CODE}" ]
+    ] .
+
+<#FactAppliesToUserMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT fact_uuid, entity_code FROM lpp.tribal_knowledge_entity_link WHERE entity_type = 'APP_USER'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{FACT_UUID}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:appliesTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/user/{ENTITY_CODE}" ]
+    ] .
+
+<#FactAppliesToFxForwardMap>
+    rr:logicalTable [ rr:sqlQuery
+        "SELECT fact_uuid, entity_code FROM lpp.tribal_knowledge_entity_link WHERE entity_type = 'FX_FORWARD'" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/fact/{FACT_UUID}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:appliesTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/fx-forward/{ENTITY_CODE}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# KG_RELATIONSHIP — SME-taught typed edges. One TriplesMap per relationship_type
+# so each row becomes a triple using the matching object property. From/to IRI
+# resolution branches by from_entity_type and to_entity_type — see the per-type
+# SQL filters below.
+# -----------------------------------------------------------------------------
+
+# SHARED_PARENT_INSTITUTION: Bank ↔ Bank or Bank ↔ ThirdParty (counterparty).
+<#KgSharedParentBankToBankMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'SHARED_PARENT_INSTITUTION'
+          AND status = 'ACTIVE'
+          AND from_entity_type = 'BANK' AND to_entity_type = 'BANK'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/bank/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:sharedParentInstitution ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{TO_ENTITY_CODE}" ]
+    ] .
+
+<#KgSharedParentBankToCpMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'SHARED_PARENT_INSTITUTION'
+          AND status = 'ACTIVE'
+          AND from_entity_type = 'BANK' AND to_entity_type = 'THIRD_PARTY'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/bank/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:sharedParentInstitution ;
+        rr:objectMap [ rr:template "https://lpp.example/id/third-party/{TO_ENTITY_CODE}" ]
+    ] .
+
+# BOARD_MEMBER_OVERLAP: Bank ↔ Bank (symmetric, materialize both directions or
+# rely on owl:SymmetricProperty inference in Jena).
+<#KgBoardMemberOverlapMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'BOARD_MEMBER_OVERLAP' AND status = 'ACTIVE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/bank/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:boardMemberOverlap ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{TO_ENTITY_CODE}" ]
+    ] .
+
+# STRATEGIC_VENDOR_TIER: Company → ThirdParty (vendor).
+<#KgStrategicVendorTierMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'STRATEGIC_VENDOR_TIER' AND status = 'ACTIVE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/company/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:strategicVendorTier ;
+        rr:objectMap [ rr:template "https://lpp.example/id/third-party/{TO_ENTITY_CODE}" ]
+    ] .
+
+# KNOWLEDGE_OWNER_OF: User → Hedge/Facility/FxForward (person owns the context).
+<#KgKnowledgeOwnerHedgeMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'KNOWLEDGE_OWNER_OF'
+          AND from_entity_type = 'APP_USER' AND to_entity_type = 'HEDGE_RELATIONSHIP'
+          AND status = 'ACTIVE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/user/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:knowledgeOwnerOf ;
+        rr:objectMap [ rr:template "https://lpp.example/id/hedge/{TO_ENTITY_CODE}" ]
+    ] .
+
+<#KgKnowledgeOwnerFacilityMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'KNOWLEDGE_OWNER_OF'
+          AND from_entity_type = 'APP_USER' AND to_entity_type = 'CREDIT_FACILITY'
+          AND status = 'ACTIVE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/user/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:knowledgeOwnerOf ;
+        rr:objectMap [ rr:template "https://lpp.example/id/credit-facility/{TO_ENTITY_CODE}" ]
+    ] .
+
+# INFORMAL_DEPENDENCY: arbitrary entity → entity. Use a generic IRI namespace
+# qualified by entity_type so it resolves into the correct treasury IRI later
+# via a downstream CONSTRUCT, if needed.
+<#KgInformalDependencyMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_type, from_entity_code, to_entity_type, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'INFORMAL_DEPENDENCY' AND status = 'ACTIVE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/entity/{FROM_ENTITY_TYPE}/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:informalDependency ;
+        rr:objectMap [ rr:template "https://lpp.example/id/entity/{TO_ENTITY_TYPE}/{TO_ENTITY_CODE}" ]
+    ] .
+
+# NEGOTIATING_HISTORY: Company → Bank.
+<#KgNegotiatingHistoryMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'NEGOTIATING_HISTORY' AND status = 'ACTIVE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/company/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:negotiatingHistory ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{TO_ENTITY_CODE}" ]
+    ] .
+
+# RM_RELATIONSHIP: User (analyst/treasurer) ↔ Bank.
+<#KgRmRelationshipMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'RM_RELATIONSHIP' AND status = 'ACTIVE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/user/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:rmRelationship ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{TO_ENTITY_CODE}" ]
+    ] .
+
+# SUPPLIER_SUBSTITUTION_RISK: ThirdParty → ThirdParty (no easy substitute).
+<#KgSupplierSubstitutionRiskMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT from_entity_code, to_entity_code
+        FROM lpp.kg_relationship
+        WHERE relationship_type = 'SUPPLIER_SUBSTITUTION_RISK' AND status = 'ACTIVE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/third-party/{FROM_ENTITY_CODE}" ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate brain:supplierSubstitutionRisk ;
+        rr:objectMap [ rr:template "https://lpp.example/id/third-party/{TO_ENTITY_CODE}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# SME_FEEDBACK_SESSION — PROV-O activity describing when/who taught what.
+# -----------------------------------------------------------------------------
+<#SmeFeedbackSessionMap>
+    rr:logicalTable [ rr:tableName "lpp.sme_feedback_session" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/session/{UUID}" ;
+        rr:class    prov:Activity ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate prov:wasAssociatedWith ;
+        rr:objectMap [ rr:template "https://lpp.example/id/user/{SME_USER}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate prov:startedAtTime ;
+        rr:objectMap [ rr:column "STARTED_AT" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate prov:endedAtTime ;
+        rr:objectMap [ rr:column "ENDED_AT" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:topic ;
+        rr:objectMap [ rr:column "TOPIC" ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:transcriptUri ;
+        rr:objectMap [ rr:column "TRANSCRIPT_URI" ; rr:termType rr:IRI ] ] .
+
+# -----------------------------------------------------------------------------
+# BRAIN_EVALUATION — observability surface. Per-query record of which tribal
+# facts the Brain Retrieval agent surfaced and which edges it traversed.
+# Materialize only the scalar fields; SUPER arrays (facts_applied, edges_traversed)
+# are exposed through CONSTRUCT against the eval table when needed.
+# -----------------------------------------------------------------------------
+<#BrainEvaluationMap>
+    rr:logicalTable [ rr:tableName "lpp.brain_evaluation" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/brain/eval/{UUID}" ;
+        rr:class    brain:Evaluation ;
+        rr:graph    <https://lpp.example/graph/treasury/brain>
+    ] ;
+    rr:predicateObjectMap [ rr:predicate brain:queryText ;
+        rr:objectMap [ rr:column "QUERY_TEXT" ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:evaluatedAt ;
+        rr:objectMap [ rr:column "EVALUATED_AT" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:expansionHops ;
+        rr:objectMap [ rr:column "EXPANSION_HOPS" ; rr:datatype xsd:integer ] ] ;
+    rr:predicateObjectMap [ rr:predicate brain:answerSummary ;
+        rr:objectMap [ rr:column "ANSWER_SUMMARY" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate prov:wasAssociatedWith ;
+        rr:objectMap [ rr:template "https://lpp.example/id/user/{USER_CODE}" ]
+    ] .
+
+# =============================================================================
+# EXTENSIONS #2 — Card acquiring, corporate finance, LCs, pension,
+# peer benchmarks, signatory normalization. Backs lpp-schema-extensions-2-redshift.sql
+# and unlocks the payments + senior-finance prompts in Prompts_Retail_v_0.1.
+# All triples below land in <graph:treasury> unless explicitly graphed elsewhere.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# ACQUIRER & CARD NETWORK
+# -----------------------------------------------------------------------------
+<#AcquirerMap>
+    rr:logicalTable [ rr:tableName "lpp.acquirer" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/acquirer/{CODE}" ;
+        rr:class    lpp:Acquirer
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "NAME" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:region ; rr:objectMap [ rr:column "REGION" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:settlementAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{SETTLEMENT_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:affiliatedBank ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{BANK_REF}" ]
+    ] .
+
+<#AcquirerContractMap>
+    rr:logicalTable [ rr:tableName "lpp.acquirer_contract" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/acquirer-contract/{UUID}" ;
+        rr:class    lpp:AcquirerContract
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:withAcquirer ;
+        rr:objectMap [ rr:template "https://lpp.example/id/acquirer/{ACQUIRER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:effectiveFrom ;
+        rr:objectMap [ rr:column "EFFECTIVE_FROM" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:effectiveTo ;
+        rr:objectMap [ rr:column "EFFECTIVE_TO" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "CONTRACT_STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:processorMarginBps ;
+        rr:objectMap [ rr:column "PROCESSOR_MARGIN_BPS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:settlementLagDays ;
+        rr:objectMap [ rr:column "SETTLEMENT_LAG_BUSINESS_DAYS" ; rr:datatype xsd:integer ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:uptimeSlaPct ;
+        rr:objectMap [ rr:column "UPTIME_SLA_PCT" ; rr:datatype xsd:decimal ] ] .
+
+<#CardNetworkMap>
+    rr:logicalTable [ rr:tableName "lpp.card_network" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/card-network/{CODE}" ;
+        rr:class    lpp:CardNetwork
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "NAME" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:networkType ; rr:objectMap [ rr:column "NETWORK_TYPE" ] ] .
+
+# -----------------------------------------------------------------------------
+# POS TRANSACTION & CARD AUTHORIZATION
+# -----------------------------------------------------------------------------
+<#PosTransactionMap>
+    rr:logicalTable [ rr:tableName "lpp.pos_transaction" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/pos-txn/{UUID}" ;
+        rr:class    lpp:PosTransaction
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:soldBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:channel ; rr:objectMap [ rr:column "CHANNEL" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:locationCode ; rr:objectMap [ rr:column "LOCATION_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:transactionTimestamp ;
+        rr:objectMap [ rr:column "TRANSACTION_TS" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:paymentMethod ; rr:objectMap [ rr:column "PAYMENT_METHOD" ] ] .
+
+<#CardAuthorizationMap>
+    rr:logicalTable [ rr:tableName "lpp.card_authorization" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/card-auth/{UUID}" ;
+        rr:class    lpp:CardAuthorization
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:authForPos ;
+        rr:objectMap [ rr:template "https://lpp.example/id/pos-txn/{POS_TRANSACTION_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:viaAcquirer ;
+        rr:objectMap [ rr:template "https://lpp.example/id/acquirer/{ACQUIRER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:onNetwork ;
+        rr:objectMap [ rr:template "https://lpp.example/id/card-network/{NETWORK_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:authRequestTimestamp ;
+        rr:objectMap [ rr:column "AUTH_REQUEST_TS" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:authResponseTimestamp ;
+        rr:objectMap [ rr:column "AUTH_RESPONSE_TS" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:responseTimeMs ;
+        rr:objectMap [ rr:column "RESPONSE_TIME_MS" ; rr:datatype xsd:integer ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:authDecision ; rr:objectMap [ rr:column "DECISION" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:declineReasonCode ;
+        rr:objectMap [ rr:column "DECLINE_REASON_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:transactionSizeBand ;
+        rr:objectMap [ rr:column "TRANSACTION_SIZE_BAND" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:auth3dsStatus ;
+        rr:objectMap [ rr:column "AUTH_3DS_STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:cnpIndicator ;
+        rr:objectMap [ rr:column "CNP_INDICATOR" ; rr:datatype xsd:boolean ] ] .
+
+# -----------------------------------------------------------------------------
+# CARD SETTLEMENT BATCH & LINE
+# -----------------------------------------------------------------------------
+<#CardSettlementBatchMap>
+    rr:logicalTable [ rr:tableName "lpp.card_settlement_batch" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/settle-batch/{UUID}" ;
+        rr:class    lpp:CardSettlementBatch
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:viaAcquirer ;
+        rr:objectMap [ rr:template "https://lpp.example/id/acquirer/{ACQUIRER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:onNetwork ;
+        rr:objectMap [ rr:template "https://lpp.example/id/card-network/{NETWORK_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:settledTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{BANK_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:batchCloseTimestamp ;
+        rr:objectMap [ rr:column "BATCH_CLOSE_TS" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:processorSettleTimestamp ;
+        rr:objectMap [ rr:column "PROCESSOR_SETTLE_TS" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:bankDepositTimestamp ;
+        rr:objectMap [ rr:column "BANK_DEPOSIT_TS" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:grossSalesAmount ;
+        rr:objectMap [ rr:column "GROSS_SALES_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:interchangeAmount ;
+        rr:objectMap [ rr:column "INTERCHANGE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:networkAssessmentAmount ;
+        rr:objectMap [ rr:column "NETWORK_ASSESSMENT_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:processorMarginAmount ;
+        rr:objectMap [ rr:column "PROCESSOR_MARGIN_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:netSettlementAmount ;
+        rr:objectMap [ rr:column "NET_SETTLEMENT_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:slaMet ;
+        rr:objectMap [ rr:column "SLA_MET" ; rr:datatype xsd:boolean ] ] .
+
+<#CardSettlementLineMap>
+    rr:logicalTable [ rr:tableName "lpp.card_settlement_line" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/settle-line/{UUID}" ;
+        rr:class    lpp:CardSettlementLine
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:inBatch ;
+        rr:objectMap [ rr:template "https://lpp.example/id/settle-batch/{BATCH_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:settlesAuth ;
+        rr:objectMap [ rr:template "https://lpp.example/id/card-auth/{AUTHORIZATION_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:grossAmount ;
+        rr:objectMap [ rr:column "GROSS_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:interchangeBps ;
+        rr:objectMap [ rr:column "INTERCHANGE_BPS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:crossBorder ;
+        rr:objectMap [ rr:column "CROSS_BORDER" ; rr:datatype xsd:boolean ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:issuerCountry ;
+        rr:objectMap [ rr:column "ISSUER_COUNTRY" ] ] .
+
+# -----------------------------------------------------------------------------
+# CHARGEBACK & DISPUTE
+# -----------------------------------------------------------------------------
+<#ChargebackMap>
+    rr:logicalTable [ rr:tableName "lpp.chargeback" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/chargeback/{UUID}" ;
+        rr:class    lpp:Chargeback
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:disputesAuth ;
+        rr:objectMap [ rr:template "https://lpp.example/id/card-auth/{AUTHORIZATION_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:viaAcquirer ;
+        rr:objectMap [ rr:template "https://lpp.example/id/acquirer/{ACQUIRER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:onNetwork ;
+        rr:objectMap [ rr:template "https://lpp.example/id/card-network/{NETWORK_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reasonCode ; rr:objectMap [ rr:column "REASON_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reasonCategory ; rr:objectMap [ rr:column "REASON_CATEGORY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:initiatedDate ;
+        rr:objectMap [ rr:column "INITIATED_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:resolvedDate ;
+        rr:objectMap [ rr:column "RESOLVED_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:classification ; rr:objectMap [ rr:column "CLASSIFICATION" ] ] .
+
+# -----------------------------------------------------------------------------
+# ACH RETURN
+# -----------------------------------------------------------------------------
+<#AchReturnMap>
+    rr:logicalTable [ rr:tableName "lpp.ach_return" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/ach-return/{UUID}" ;
+        rr:class    lpp:AchReturn
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:originalTransfer ;
+        rr:objectMap [ rr:template "https://lpp.example/id/transfer/{ORIGINAL_TRANSFER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:returnReasonCode ;
+        rr:objectMap [ rr:column "RETURN_REASON_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:returnCategory ;
+        rr:objectMap [ rr:column "RETURN_CATEGORY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:returnDate ;
+        rr:objectMap [ rr:column "RETURN_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:originatedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# CARD REBATE PROGRAM & EARNING
+# -----------------------------------------------------------------------------
+<#CardRebateProgramMap>
+    rr:logicalTable [ rr:tableName "lpp.card_rebate_program" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/card-rebate-program/{CODE}" ;
+        rr:class    lpp:CardRebateProgram
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:programType ;
+        rr:objectMap [ rr:column "PROGRAM_TYPE" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:issuerBank ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{ISSUER_BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:rebateBpsAtTarget ;
+        rr:objectMap [ rr:column "REBATE_BPS_AT_TARGET" ; rr:datatype xsd:decimal ] ] .
+
+<#CardRebateEarningMap>
+    rr:logicalTable [ rr:tableName "lpp.card_rebate_earning" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/card-rebate-earning/{UUID}" ;
+        rr:class    lpp:CardRebateEarning
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:underProgram ;
+        rr:objectMap [ rr:template "https://lpp.example/id/card-rebate-program/{PROGRAM_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:periodDate ;
+        rr:objectMap [ rr:column "PERIOD_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:eligibleSpend ;
+        rr:objectMap [ rr:column "ELIGIBLE_SPEND" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:rebateEarned ;
+        rr:objectMap [ rr:column "REBATE_EARNED" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:spendCategory ;
+        rr:objectMap [ rr:column "SPEND_CATEGORY" ] ] .
+
+# -----------------------------------------------------------------------------
+# MEMBERSHIP FEE
+# -----------------------------------------------------------------------------
+<#MembershipFeeMap>
+    rr:logicalTable [ rr:tableName "lpp.membership_fee" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/membership-fee/{UUID}" ;
+        rr:class    lpp:MembershipFee
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:collectedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:channel ; rr:objectMap [ rr:column "CHANNEL" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tier ; rr:objectMap [ rr:column "MEMBERSHIP_TIER" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:issuedDate ;
+        rr:objectMap [ rr:column "ISSUED_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:feeAmount ;
+        rr:objectMap [ rr:column "FEE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] .
+
+# -----------------------------------------------------------------------------
+# PAYMENT EXCEPTION & CROSS-BORDER LEG
+# -----------------------------------------------------------------------------
+<#PaymentExceptionMap>
+    rr:logicalTable [ rr:tableName "lpp.payment_exception" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/payment-exception/{UUID}" ;
+        rr:class    lpp:PaymentException
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:exceptionType ;
+        rr:objectMap [ rr:column "EXCEPTION_TYPE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:detectedAt ;
+        rr:objectMap [ rr:column "DETECTED_AT" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:resolvedAt ;
+        rr:objectMap [ rr:column "RESOLVED_AT" ; rr:datatype xsd:dateTime ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:resolutionTimeMinutes ;
+        rr:objectMap [ rr:column "RESOLUTION_TIME_MINUTES" ; rr:datatype xsd:integer ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:onFile ;
+        rr:objectMap [ rr:template "https://lpp.example/id/payment-file/{FILE_UUID}" ]
+    ] .
+
+<#CrossBorderPaymentLegMap>
+    rr:logicalTable [ rr:tableName "lpp.cross_border_payment_leg" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/cb-leg/{UUID}" ;
+        rr:class    lpp:CrossBorderPaymentLeg
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:originationCountry ;
+        rr:objectMap [ rr:column "ORIGINATION_COUNTRY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:destinationCountry ;
+        rr:objectMap [ rr:column "DESTINATION_COUNTRY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:corridor ; rr:objectMap [ rr:column "CORRIDOR" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:fxSpreadBps ;
+        rr:objectMap [ rr:column "FX_SPREAD_BPS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:liftingFees ;
+        rr:objectMap [ rr:column "LIFTING_FEES" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# FRAUD LOSS & ACQUIRER SLA & PAYMENT HUB THROUGHPUT
+# -----------------------------------------------------------------------------
+<#FraudLossMap>
+    rr:logicalTable [ rr:tableName "lpp.fraud_loss" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/fraud-loss/{UUID}" ;
+        rr:class    lpp:FraudLoss
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:channel ; rr:objectMap [ rr:column "CHANNEL" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:lossDate ;
+        rr:objectMap [ rr:column "LOSS_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:lossAmount ;
+        rr:objectMap [ rr:column "LOSS_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:lossCategory ; rr:objectMap [ rr:column "LOSS_CATEGORY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:fraudVector ; rr:objectMap [ rr:column "FRAUD_VECTOR" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:authMethod ; rr:objectMap [ rr:column "AUTH_METHOD" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:fromDetectionEvent ;
+        rr:objectMap [ rr:template "https://lpp.example/id/fraud-event/{DETECTION_EVENT_UUID}" ]
+    ] .
+
+<#AcquirerSlaMetricMap>
+    rr:logicalTable [ rr:tableName "lpp.acquirer_sla_metric" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/acquirer-sla/{ACQUIRER_REF}-{MEASUREMENT_DATE}" ;
+        rr:class    lpp:AcquirerSlaMetric
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forAcquirer ;
+        rr:objectMap [ rr:template "https://lpp.example/id/acquirer/{ACQUIRER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:measurementDate ;
+        rr:objectMap [ rr:column "MEASUREMENT_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:authRatePct ;
+        rr:objectMap [ rr:column "AUTH_RATE_PCT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:uptimePct ;
+        rr:objectMap [ rr:column "UPTIME_PCT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:settlementOnTimePct ;
+        rr:objectMap [ rr:column "SETTLEMENT_ON_TIME_PCT" ; rr:datatype xsd:decimal ] ] .
+
+<#PaymentHubThroughputMap>
+    rr:logicalTable [ rr:tableName "lpp.payment_hub_throughput" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/phub-throughput/{UUID}" ;
+        rr:class    lpp:PaymentHubThroughput
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:metricDate ;
+        rr:objectMap [ rr:column "METRIC_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:paymentRail ; rr:objectMap [ rr:column "PAYMENT_RAIL" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:stpRatePct ;
+        rr:objectMap [ rr:column "STP_RATE_PCT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:volumeCount ;
+        rr:objectMap [ rr:column "VOLUME_COUNT" ; rr:datatype xsd:integer ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:valueAmount ;
+        rr:objectMap [ rr:column "VALUE_AMOUNT" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# CORPORATE FINANCIAL METRIC / CREDIT RATING / EQUITY ACTION / CAP ALLOC
+# -----------------------------------------------------------------------------
+<#CompanyFinancialMetricMap>
+    rr:logicalTable [ rr:tableName "lpp.company_financial_metric" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/co-finmetric/{COMPANY_REF}-{PERIOD_DATE}-{PERIOD_TYPE}" ;
+        rr:class    lpp:CompanyFinancialMetric
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forCompany ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:periodDate ;
+        rr:objectMap [ rr:column "PERIOD_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:periodType ; rr:objectMap [ rr:column "PERIOD_TYPE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:revenue ;
+        rr:objectMap [ rr:column "REVENUE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:ebitda ;
+        rr:objectMap [ rr:column "EBITDA" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:freeCashFlow ;
+        rr:objectMap [ rr:column "FREE_CASH_FLOW" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:netDebt ;
+        rr:objectMap [ rr:column "NET_DEBT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:debtToEbitda ;
+        rr:objectMap [ rr:column "DEBT_TO_EBITDA" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:waccPct ;
+        rr:objectMap [ rr:column "WACC_PCT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dilutedEps ;
+        rr:objectMap [ rr:column "DILUTED_EPS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dilutedSharesOutstanding ;
+        rr:objectMap [ rr:column "DILUTED_SHARES_OUTSTANDING" ; rr:datatype xsd:decimal ] ] .
+
+<#CreditRatingMap>
+    rr:logicalTable [ rr:tableName "lpp.credit_rating" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/credit-rating/{UUID}" ;
+        rr:class    lpp:CreditRating
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forCompany ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:agency ; rr:objectMap [ rr:column "AGENCY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:ratingGrade ; rr:objectMap [ rr:column "RATING_GRADE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:outlook ; rr:objectMap [ rr:column "OUTLOOK" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "AS_OF_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:isCurrent ;
+        rr:objectMap [ rr:column "IS_CURRENT" ; rr:datatype xsd:boolean ] ] .
+
+<#EquityActionMap>
+    rr:logicalTable [ rr:tableName "lpp.equity_action" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/equity-action/{UUID}" ;
+        rr:class    lpp:EquityAction
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forCompany ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:actionType ; rr:objectMap [ rr:column "ACTION_TYPE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:actionDate ;
+        rr:objectMap [ rr:column "ACTION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:shares ;
+        rr:objectMap [ rr:column "SHARES" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:totalAmount ;
+        rr:objectMap [ rr:column "TOTAL_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:pricePerShare ;
+        rr:objectMap [ rr:column "PRICE_PER_SHARE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dividendPerShare ;
+        rr:objectMap [ rr:column "DIVIDEND_PER_SHARE" ; rr:datatype xsd:decimal ] ] .
+
+<#CapitalAllocationActualMap>
+    rr:logicalTable [ rr:tableName "lpp.capital_allocation_actual" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/cap-alloc/{COMPANY_REF}-{PERIOD_DATE}-{BUCKET}" ;
+        rr:class    lpp:CapitalAllocationActual
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forCompany ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:periodDate ;
+        rr:objectMap [ rr:column "PERIOD_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:bucket ; rr:objectMap [ rr:column "BUCKET" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:frameworkTargetPct ;
+        rr:objectMap [ rr:column "FRAMEWORK_TARGET_PCT" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# LETTER OF CREDIT
+# -----------------------------------------------------------------------------
+<#LetterOfCreditMap>
+    rr:logicalTable [ rr:tableName "lpp.letter_of_credit" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/lc/{LC_NUMBER}" ;
+        rr:class    lpp:LetterOfCredit
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:lcNumber ; rr:objectMap [ rr:column "LC_NUMBER" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:issuedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{ISSUING_BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:appliedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{APPLICANT_COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:consumesFacility ;
+        rr:objectMap [ rr:template "https://lpp.example/id/credit-facility/{CREDIT_FACILITY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:lcType ; rr:objectMap [ rr:column "LC_TYPE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:issueDate ;
+        rr:objectMap [ rr:column "ISSUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:expirationDate ;
+        rr:objectMap [ rr:column "EXPIRATION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:faceAmount ;
+        rr:objectMap [ rr:column "FACE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:drawnAmount ;
+        rr:objectMap [ rr:column "DRAWN_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] .
+
+# -----------------------------------------------------------------------------
+# PENSION PLAN & VALUATION
+# -----------------------------------------------------------------------------
+<#PensionPlanMap>
+    rr:logicalTable [ rr:tableName "lpp.pension_plan" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/pension-plan/{CODE}" ;
+        rr:class    lpp:PensionPlan
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:sponsoredBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:planType ; rr:objectMap [ rr:column "PLAN_TYPE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:countryCode ; rr:objectMap [ rr:column "COUNTRY" ] ] .
+
+<#PensionValuationMap>
+    rr:logicalTable [ rr:tableName "lpp.pension_valuation" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/pension-val/{PLAN_REF}-{AS_OF_DATE}" ;
+        rr:class    lpp:PensionValuation
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forPlan ;
+        rr:objectMap [ rr:template "https://lpp.example/id/pension-plan/{PLAN_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "AS_OF_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:pbo ;
+        rr:objectMap [ rr:column "PROJECTED_BENEFIT_OBLIGATION" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:planAssetsFairValue ;
+        rr:objectMap [ rr:column "PLAN_ASSETS_FAIR_VALUE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:fundedStatus ;
+        rr:objectMap [ rr:column "FUNDED_STATUS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:discountRatePct ;
+        rr:objectMap [ rr:column "DISCOUNT_RATE_PCT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:ociImpact ;
+        rr:objectMap [ rr:column "OCI_IMPACT" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# PEER COMPANY & METRIC, MACRO INDICATOR
+# -----------------------------------------------------------------------------
+<#PeerCompanyMap>
+    rr:logicalTable [ rr:tableName "lpp.peer_company" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/peer/{CODE}" ;
+        rr:class    lpp:PeerCompany
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "NAME" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:ticker ; rr:objectMap [ rr:column "TICKER" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:peerGroup ; rr:objectMap [ rr:column "PEER_GROUP" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:sector ; rr:objectMap [ rr:column "SECTOR" ] ] .
+
+<#PeerCompanyMetricMap>
+    rr:logicalTable [ rr:tableName "lpp.peer_company_metric" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/peer-metric/{PEER_CODE}-{PERIOD_DATE}-{PERIOD_TYPE}" ;
+        rr:class    lpp:PeerCompanyMetric
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forPeer ;
+        rr:objectMap [ rr:template "https://lpp.example/id/peer/{PEER_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:periodDate ;
+        rr:objectMap [ rr:column "PERIOD_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:revenue ;
+        rr:objectMap [ rr:column "REVENUE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:ebitda ;
+        rr:objectMap [ rr:column "EBITDA" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:freeCashFlow ;
+        rr:objectMap [ rr:column "FREE_CASH_FLOW" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:netDebt ;
+        rr:objectMap [ rr:column "NET_DEBT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:debtToEbitda ;
+        rr:objectMap [ rr:column "DEBT_TO_EBITDA" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dividendYieldPct ;
+        rr:objectMap [ rr:column "DIVIDEND_YIELD_PCT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:buybackYieldPct ;
+        rr:objectMap [ rr:column "BUYBACK_YIELD_PCT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:paymentsCostPctRevenue ;
+        rr:objectMap [ rr:column "PAYMENTS_COST_PCT_REVENUE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:fraudLossBps ;
+        rr:objectMap [ rr:column "FRAUD_LOSS_BPS" ; rr:datatype xsd:decimal ] ] .
+
+<#MacroIndicatorMap>
+    rr:logicalTable [ rr:tableName "lpp.macro_indicator" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/macro/{INDICATOR_CODE}-{REGION}-{AS_OF_DATE}" ;
+        rr:class    lpp:MacroIndicator
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:indicatorCode ; rr:objectMap [ rr:column "INDICATOR_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:region ; rr:objectMap [ rr:column "REGION" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "AS_OF_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:value ;
+        rr:objectMap [ rr:column "VALUE" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# BANK ACCOUNT SIGNATORY (relational projection of BANK_ACCOUNT.signatory_users)
+# -----------------------------------------------------------------------------
+<#BankAccountSignatoryMap>
+    rr:logicalTable [ rr:tableName "lpp.bank_account_signatory" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/account-signatory/{UUID}" ;
+        rr:class    lpp:BankAccountSignatory
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:onBankAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{BANK_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:signatoryUser ;
+        rr:objectMap [ rr:template "https://lpp.example/id/user/{USER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:role ; rr:objectMap [ rr:column "ROLE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:authorityLimitAmount ;
+        rr:objectMap [ rr:column "AUTHORITY_LIMIT_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:nextRecertifyDueDate ;
+        rr:objectMap [ rr:column "NEXT_RECERTIFY_DUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] .
+
+# =============================================================================
+# v0.2 EXTENSIONS — mappings for treasury + payments ontology expansion
+#
+# Adds mappings for ontology sections A–S that have backing Redshift tables.
+# Conventions match the rest of this file:
+#   - rr:tableName "LPP.TABLE_NAME" (uppercase) for plain table mappings
+#   - rr:sqlQuery """ ... """ (multiline) for filtered subclass mappings
+#   - Subject IRIs follow https://lpp.example/id/{kind}/{CODE} (or composite)
+#   - Object references use rr:template, not rr:joinCondition
+#   - xsd:decimal / xsd:date / xsd:integer / xsd:boolean datatypes applied
+# =============================================================================
+
+# =============================================================================
+# A. Geography & organization
+#
+# No standalone region/country/business_unit/department tables exist; the
+# country/region attributes are denormalized on BANK_BRANCH and COMPANY. We
+# emit lpp:inCountry / lpp:inRegion edges directly from those rows, and
+# materialize Region / Country as IRIs derived from the literal codes so
+# downstream SPARQL can pivot on them.
+#
+# LegalEntity is treated as a subclass of Company applied to every row in
+# LPP.COMPANY (the schema does not distinguish operating from legal entities).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# COMPANY → inCountry (additive: extends existing CompanyMap)
+# -----------------------------------------------------------------------------
+<#CompanyGeographyMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT CODE, COUNTRY FROM LPP.COMPANY WHERE COUNTRY IS NOT NULL
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/company/{CODE}" ;
+        rr:class    lpp:LegalEntity
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:inCountry ;
+        rr:objectMap [ rr:template "https://lpp.example/id/country/{COUNTRY}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# BANK_BRANCH → inCountry + inRegion (extends existing BankBranchMap)
+# -----------------------------------------------------------------------------
+<#BankBranchGeographyMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT CODE, COUNTRY_CODE, REGION FROM LPP.BANK_BRANCH
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/branch/{CODE}" ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:inCountry ;
+        rr:objectMap [ rr:template "https://lpp.example/id/country/{COUNTRY_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:inRegion ;
+        rr:objectMap [ rr:template "https://lpp.example/id/region/{REGION}" ]
+    ] .
+
+# Region IRIs (materialized from distinct branch regions).
+<#RegionMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT DISTINCT REGION FROM LPP.BANK_BRANCH WHERE REGION IS NOT NULL
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/region/{REGION}" ;
+        rr:class    lpp:Region
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "REGION" ] ] .
+
+# Country IRIs (materialized from distinct country codes seen on companies + branches).
+<#CountryMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT DISTINCT COUNTRY AS COUNTRY_CODE FROM LPP.COMPANY
+        WHERE COUNTRY IS NOT NULL
+        UNION
+        SELECT DISTINCT COUNTRY_CODE FROM LPP.BANK_BRANCH
+        WHERE COUNTRY_CODE IS NOT NULL
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/country/{COUNTRY_CODE}" ;
+        rr:class    lpp:Country
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:countryCode ; rr:objectMap [ rr:column "COUNTRY_CODE" ] ] .
+
+# =============================================================================
+# B. Cash balances, positions, sweeps
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# BANK_STATEMENT_BALANCE → BalanceSnapshot
+# -----------------------------------------------------------------------------
+<#BankStatementBalanceMap>
+    rr:logicalTable [ rr:tableName "LPP.BANK_STATEMENT_BALANCE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}" ;
+        rr:class    lpp:BalanceSnapshot
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "STATEMENT_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "QUALITY_STATUS" ] ] .
+
+# Closing / opening / average / available balance subtypes — emitted as the same
+# subject so downstream queries can pivot on balance_type or pick the matching
+# datatype property directly.
+<#ClosingBalanceMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT ACCOUNT_REF, STATEMENT_DATE, BALANCE_TYPE, AMOUNT
+        FROM LPP.BANK_STATEMENT_BALANCE WHERE BALANCE_TYPE = 'CLOSING'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:closingBalance ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] .
+
+<#OpeningBalanceMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT ACCOUNT_REF, STATEMENT_DATE, BALANCE_TYPE, AMOUNT
+        FROM LPP.BANK_STATEMENT_BALANCE WHERE BALANCE_TYPE = 'OPENING'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:openingBalance ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] .
+
+<#AvailableBalanceMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT ACCOUNT_REF, STATEMENT_DATE, BALANCE_TYPE, AMOUNT
+        FROM LPP.BANK_STATEMENT_BALANCE WHERE BALANCE_TYPE = 'AVAILABLE'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:availableBalance ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# CASH_BALANCE → BalanceSnapshot (rollup view; composite key)
+# -----------------------------------------------------------------------------
+<#CashBalanceMap>
+    rr:logicalTable [ rr:tableName "LPP.CASH_BALANCE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/cash-balance/{ACCOUNT_REF}-{BALANCE_DATE}-{DATE_BASIS}" ;
+        rr:class    lpp:BalanceSnapshot
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "BALANCE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "CURRENCY_CODE" ] ] .
+
+# -----------------------------------------------------------------------------
+# SWEEP_INSTRUCTION → SweepRule
+# -----------------------------------------------------------------------------
+<#SweepInstructionMap>
+    rr:logicalTable [ rr:tableName "LPP.SWEEP_INSTRUCTION" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/sweep-rule/{CODE}" ;
+        rr:class    lpp:SweepRule
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:sourceAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{SOURCE_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:destinationAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{TARGET_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:TargetBalance ;
+        rr:objectMap [ rr:column "TARGET_BALANCE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:minimumThreshold ;
+        rr:objectMap [ rr:column "THRESHOLD_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "TARGET_BALANCE_CCY" ] ] .
+
+# -----------------------------------------------------------------------------
+# SWEEP_EXECUTION → SweepEvent
+# -----------------------------------------------------------------------------
+<#SweepExecutionMap>
+    rr:logicalTable [ rr:tableName "LPP.SWEEP_EXECUTION" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/sweep-event/{UUID}" ;
+        rr:class    lpp:SweepEvent
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "EXECUTION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "SWEPT_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:sourceAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{SOURCE_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:destinationAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{TARGET_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:appliesRule ;
+        rr:objectMap [ rr:template "https://lpp.example/id/sweep-rule/{INSTRUCTION_REF}" ]
+    ] .
+
+# =============================================================================
+# C. Transactions — payments, receipts, intercompany
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CASH_FLOW → Transaction (Receipt / Disbursement subclass from signed_amount sign
+# is materialized in two filtered TriplesMaps below)
+# -----------------------------------------------------------------------------
+<#CashFlowMap>
+    rr:logicalTable [ rr:tableName "LPP.CASH_FLOW" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/cash-flow/{UUID}" ;
+        rr:class    lpp:Transaction
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "FLOW_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "FLOW_CURRENCY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:valueDate ;
+        rr:objectMap [ rr:column "VALUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tradeDate ;
+        rr:objectMap [ rr:column "TRANSACTION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reference ; rr:objectMap [ rr:column "REFERENCE" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:fromAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{ACCOUNT_REF}" ]
+    ] .
+
+# Receipt — signed positive
+<#ReceiptMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID FROM LPP.CASH_FLOW WHERE SIGNED_AMOUNT > 0
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/cash-flow/{UUID}" ;
+        rr:class    lpp:Receipt
+    ] .
+
+# Disbursement — signed negative
+<#DisbursementMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID FROM LPP.CASH_FLOW WHERE SIGNED_AMOUNT < 0
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/cash-flow/{UUID}" ;
+        rr:class    lpp:Disbursement
+    ] .
+
+# -----------------------------------------------------------------------------
+# PAYMENT_FILE → PaymentFile
+# -----------------------------------------------------------------------------
+<#PaymentFileMap>
+    rr:logicalTable [ rr:tableName "LPP.PAYMENT_FILE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/payment-file/{FILE_UUID}" ;
+        rr:class    lpp:PaymentFile
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:throughputCount ;
+        rr:objectMap [ rr:column "TOTAL_COUNT" ; rr:datatype xsd:integer ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:throughputValue ;
+        rr:objectMap [ rr:column "TOTAL_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "TOTAL_CURRENCY" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:originator ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# TRANSFER → PaymentTransaction (one row per outbound transfer in a file)
+# -----------------------------------------------------------------------------
+<#TransferMap>
+    rr:logicalTable [ rr:tableName "LPP.TRANSFER" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/transfer/{UUID}" ;
+        rr:class    lpp:PaymentTransaction
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reference ; rr:objectMap [ rr:column "REFERENCE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:valueDate ;
+        rr:objectMap [ rr:column "VALUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:paymentMethod ;
+        rr:objectMap [ rr:template "https://lpp.example/id/payment-method/{PAYMENT_RAIL}" ]
+    ] .
+
+# Payment-rail subclass discrimination on TRANSFER.payment_rail
+<#TransferWireMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID FROM LPP.TRANSFER WHERE PAYMENT_RAIL = 'WIRE'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/transfer/{UUID}" ;
+        rr:class    lpp:WireTransfer
+    ] .
+
+<#TransferAchMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID FROM LPP.TRANSFER WHERE PAYMENT_RAIL IN ('ACH','SEPA_CT','SEPA_DD')
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/transfer/{UUID}" ;
+        rr:class    lpp:AchTransaction
+    ] .
+
+<#TransferRtpMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID FROM LPP.TRANSFER WHERE PAYMENT_RAIL = 'RTP'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/transfer/{UUID}" ;
+        rr:class    lpp:RtpTransaction
+    ] .
+
+<#TransferFedNowMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID FROM LPP.TRANSFER WHERE PAYMENT_RAIL = 'FEDNOW'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/transfer/{UUID}" ;
+        rr:class    lpp:FedNowTransaction
+    ] .
+
+<#TransferCheckMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID FROM LPP.TRANSFER WHERE PAYMENT_RAIL = 'CHECK'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/transfer/{UUID}" ;
+        rr:class    lpp:CheckPayment
+    ] .
+
+# -----------------------------------------------------------------------------
+# PAYMENT_TRANSACTION → PaymentTransaction (item-level inside a payment file)
+# -----------------------------------------------------------------------------
+<#PaymentTransactionMap>
+    rr:logicalTable [ rr:tableName "LPP.PAYMENT_TRANSACTION" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/payment-txn/{UUID}" ;
+        rr:class    lpp:PaymentTransaction
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reference ; rr:objectMap [ rr:column "END_TO_END_ID" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tradeDate ;
+        rr:objectMap [ rr:column "TRANSACTION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:valueDate ;
+        rr:objectMap [ rr:column "EXECUTION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:rejectionReason ; rr:objectMap [ rr:column "REASON_CODE" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:paymentMethod ;
+        rr:objectMap [ rr:template "https://lpp.example/id/payment-method/{PAYMENT_RAIL}" ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# INTERCOMPANY_TRANSACTION → IntercompanyTransfer
+# -----------------------------------------------------------------------------
+<#IntercompanyTransactionMap>
+    rr:logicalTable [ rr:tableName "LPP.INTERCOMPANY_TRANSACTION" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/intercompany/{UUID}" ;
+        rr:class    lpp:IntercompanyTransfer
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reference ; rr:objectMap [ rr:column "REFERENCE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tradeDate ;
+        rr:objectMap [ rr:column "TRANSACTION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:valueDate ;
+        rr:objectMap [ rr:column "VALUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:originator ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{SOURCE_COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:beneficiary ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{TARGET_COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:fromAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{SOURCE_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:toAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{TARGET_ACCOUNT_REF}" ]
+    ] .
+
+# =============================================================================
+# D. Forecasts, variance, scenarios, stress tests
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# FORECAST_SNAPSHOT → CashForecast
+# -----------------------------------------------------------------------------
+<#ForecastSnapshotMap>
+    rr:logicalTable [ rr:tableName "LPP.FORECAST_SNAPSHOT" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/forecast/{SNAPSHOT_ID}" ;
+        rr:class    lpp:CashForecast
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "SNAPSHOT_ID" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "SNAPSHOT_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "DESCRIPTION" ] ] .
+
+# -----------------------------------------------------------------------------
+# FORECAST_CASH_FLOW → ForecastLine
+# -----------------------------------------------------------------------------
+<#ForecastCashFlowMap>
+    rr:logicalTable [ rr:tableName "LPP.FORECAST_CASH_FLOW" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/forecast-line/{UUID}" ;
+        rr:class    lpp:ForecastLine
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forForecast ;
+        rr:objectMap [ rr:template "https://lpp.example/id/forecast/{SNAPSHOT_ID}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forEntity ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "FORECAST_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:driverCategory ; rr:objectMap [ rr:column "FLOW_CATEGORY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] .
+
+# ForecastLine — inflow side
+<#ForecastInflowMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID, FORECAST_AMOUNT FROM LPP.FORECAST_CASH_FLOW WHERE DIRECTION = 'IN'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/forecast-line/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:forecastedInflow ;
+        rr:objectMap [ rr:column "FORECAST_AMOUNT" ; rr:datatype xsd:decimal ] ] .
+
+# ForecastLine — outflow side
+<#ForecastOutflowMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT UUID, FORECAST_AMOUNT FROM LPP.FORECAST_CASH_FLOW WHERE DIRECTION = 'OUT'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/forecast-line/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:forecastedOutflow ;
+        rr:objectMap [ rr:column "FORECAST_AMOUNT" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# FORECAST_VS_ACTUAL → ForecastActual
+# -----------------------------------------------------------------------------
+<#ForecastVsActualMap>
+    rr:logicalTable [ rr:tableName "LPP.FORECAST_VS_ACTUAL" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/forecast-actual/{COMPANY_REF}-{PERIOD_DATE}-{FLOW_CATEGORY}" ;
+        rr:class    lpp:ForecastActual
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forEntity ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "PERIOD_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:driverCategory ; rr:objectMap [ rr:column "FLOW_CATEGORY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:forecastedOutflow ;
+        rr:objectMap [ rr:column "FORECAST_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:actualOutflow ;
+        rr:objectMap [ rr:column "ACTUAL_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:varianceAmount ;
+        rr:objectMap [ rr:column "VARIANCE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:variancePct ;
+        rr:objectMap [ rr:column "VARIANCE_PCT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "CURRENCY_CODE" ] ] .
+
+# -----------------------------------------------------------------------------
+# STRESS_SCENARIO → StressTest
+# -----------------------------------------------------------------------------
+<#StressScenarioMap>
+    rr:logicalTable [ rr:tableName "LPP.STRESS_SCENARIO" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/scenario/{CODE}" ;
+        rr:class    lpp:StressTest
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "DESCRIPTION" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:scenarioType ; rr:objectMap [ rr:column "SCENARIO_TYPE" ] ] .
+
+# -----------------------------------------------------------------------------
+# STRESS_RUN_RESULT → ScenarioAssumption (run output rather than assumption,
+# but conceptually closest match in ontology)
+# -----------------------------------------------------------------------------
+<#StressRunResultMap>
+    rr:logicalTable [ rr:tableName "LPP.STRESS_RUN_RESULT" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/stress-run/{UUID}" ;
+        rr:class    lpp:ScenarioAssumption
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:underScenario ;
+        rr:objectMap [ rr:template "https://lpp.example/id/scenario/{SCENARIO_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forEntity ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "BREACH_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:cashFlowImpact ;
+        rr:objectMap [ rr:column "MIN_PROJECTED_CASH" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "BREACH_SEVERITY" ] ] .
+
+# =============================================================================
+# E. Debt, facilities, covenants, commercial paper
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CREDIT_FACILITY → CreditFacility (parent class)
+# -----------------------------------------------------------------------------
+<#CreditFacilityMap>
+    rr:logicalTable [ rr:tableName "LPP.CREDIT_FACILITY" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/facility/{CODE}" ;
+        rr:class    lpp:CreditFacility
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:tradedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:lender ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{LENDER_BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:hasCurrency ;
+        rr:objectMap [ rr:template "https://lpp.example/id/currency/{CURRENCY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:principalAmount ;
+        rr:objectMap [ rr:column "COMMITMENT_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tradeDate ;
+        rr:objectMap [ rr:column "START_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:maturityDate ;
+        rr:objectMap [ rr:column "MATURITY_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:expirationDate ;
+        rr:objectMap [ rr:column "MATURITY_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:rateBenchmark ;
+        rr:objectMap [ rr:column "BENCHMARK_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:rateSpread ;
+        rr:objectMap [ rr:column "SPREAD_BPS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] .
+
+# Facility subclass discrimination on FACILITY_TYPE
+<#RevolvingCreditFacilityMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT CODE FROM LPP.CREDIT_FACILITY WHERE FACILITY_TYPE = 'REVOLVER'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/facility/{CODE}" ;
+        rr:class    lpp:RevolvingCreditFacility
+    ] .
+
+<#TermLoanMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT CODE FROM LPP.CREDIT_FACILITY WHERE FACILITY_TYPE = 'TERM_LOAN'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/facility/{CODE}" ;
+        rr:class    lpp:TermLoan
+    ] .
+
+<#BondMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT CODE FROM LPP.CREDIT_FACILITY WHERE FACILITY_TYPE = 'BOND'
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/facility/{CODE}" ;
+        rr:class    lpp:Bond
+    ] .
+
+<#CommercialPaperProgramMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT CODE FROM LPP.CREDIT_FACILITY WHERE FACILITY_TYPE IN ('CP_PROGRAM','COMMERCIAL_PAPER')
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/facility/{CODE}" ;
+        rr:class    lpp:CommercialPaperProgram
+    ] .
+
+# -----------------------------------------------------------------------------
+# BORROWING → DebtMaturity (each drawdown is a maturity-bearing leg)
+# -----------------------------------------------------------------------------
+<#BorrowingMap>
+    rr:logicalTable [ rr:tableName "LPP.BORROWING" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/borrowing/{UUID}" ;
+        rr:class    lpp:DebtMaturity
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:scheduledOn ;
+        rr:objectMap [ rr:template "https://lpp.example/id/facility/{FACILITY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:tradedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tradeDate ;
+        rr:objectMap [ rr:column "DRAWDOWN_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:maturityDate ;
+        rr:objectMap [ rr:column "REPAYMENT_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:principalAmount ;
+        rr:objectMap [ rr:column "PRINCIPAL_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:drawnAmount ;
+        rr:objectMap [ rr:column "PRINCIPAL_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:allInCost ;
+        rr:objectMap [ rr:column "ALL_IN_RATE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] .
+
+# -----------------------------------------------------------------------------
+# INTEREST_ACCRUAL — no direct ontology class; surfaced as a debt-instrument
+# attribute via the lpp:interestRate / amount properties on the parent borrowing.
+# Emitted as a generic resource so downstream queries can correlate.
+# -----------------------------------------------------------------------------
+<#InterestAccrualMap>
+    rr:logicalTable [ rr:tableName "LPP.INTEREST_ACCRUAL" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/interest-accrual/{UUID}"
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "ACCRUAL_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] .
+
+# =============================================================================
+# F. Hedging, FX rates & exposures
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# FX_RATE → FxRate (composite key)
+# -----------------------------------------------------------------------------
+<#FxRateMap>
+    rr:logicalTable [ rr:tableName "LPP.FX_RATE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/fx-rate/{BASE_CURRENCY}-{QUOTE_CURRENCY}-{RATE_DATE}-{RATE_TYPE}" ;
+        rr:class    lpp:FxRate
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:fxRateFrom ;
+        rr:objectMap [ rr:template "https://lpp.example/id/currency/{BASE_CURRENCY}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:fxRateTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/currency/{QUOTE_CURRENCY}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "RATE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:fxRate ;
+        rr:objectMap [ rr:column "RATE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:rateType ; rr:objectMap [ rr:column "RATE_TYPE" ] ] .
+
+# -----------------------------------------------------------------------------
+# BENCHMARK_RATE → InterestRateBenchmark (skos-style concept, but valued)
+# -----------------------------------------------------------------------------
+<#BenchmarkRateMap>
+    rr:logicalTable [ rr:tableName "LPP.BENCHMARK_RATE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/benchmark/{BENCHMARK_CODE}-{RATE_DATE}-{TENOR}" ;
+        rr:class    lpp:InterestRateBenchmark
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "BENCHMARK_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "RATE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tenor ; rr:objectMap [ rr:column "TENOR" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:interestRate ;
+        rr:objectMap [ rr:column "RATE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] .
+
+# -----------------------------------------------------------------------------
+# HEDGE_RELATIONSHIP → HedgePosition
+# -----------------------------------------------------------------------------
+<#HedgeRelationshipMap>
+    rr:logicalTable [ rr:tableName "LPP.HEDGE_RELATIONSHIP" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/hedge/{CODE}" ;
+        rr:class    lpp:HedgePosition
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:tradedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tradeDate ;
+        rr:objectMap [ rr:column "DESIGNATION_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:notionalAmount ;
+        rr:objectMap [ rr:column "NOTIONAL_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "NOTIONAL_CURRENCY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] .
+
+# -----------------------------------------------------------------------------
+# FX_EXPOSURE_FORECAST → FxExposure
+# -----------------------------------------------------------------------------
+<#FxExposureForecastMap>
+    rr:logicalTable [ rr:tableName "LPP.FX_EXPOSURE_FORECAST" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/fx-exposure/{UUID}" ;
+        rr:class    lpp:FxExposure
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:tradedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:exposureCurrency ;
+        rr:objectMap [ rr:template "https://lpp.example/id/currency/{EXPOSURE_CURRENCY}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "FORECAST_PERIOD" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:tenor ; rr:objectMap [ rr:column "TENOR_BUCKET" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:grossExposure ;
+        rr:objectMap [ rr:column "GROSS_EXPOSURE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:exposureType ; rr:objectMap [ rr:column "DIRECTION" ] ] .
+
+# -----------------------------------------------------------------------------
+# COUNTERPARTY_EXPOSURE → CounterpartyExposure
+# -----------------------------------------------------------------------------
+<#CounterpartyExposureMap>
+    rr:logicalTable [ rr:tableName "LPP.COUNTERPARTY_EXPOSURE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/cp-exposure/{COUNTERPARTY_BANK_REF}-{AS_OF_DATE}" ;
+        rr:class    lpp:CounterpartyExposure
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:counterparty ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{COUNTERPARTY_BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "AS_OF_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "TOTAL_EXPOSURE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "REPORTING_CURRENCY" ] ] .
+
+# =============================================================================
+# G. ERP / ledger reconciliation
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# GL_ACCOUNT → (no direct class; emit as ledger node) — minimal IRI mint
+# -----------------------------------------------------------------------------
+<#GlAccountMap>
+    rr:logicalTable [ rr:tableName "LPP.GL_ACCOUNT" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/gl-account/{CODE}"
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "DESCRIPTION" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:ledgerAccount ; rr:objectMap [ rr:column "CODE" ] ] .
+
+# -----------------------------------------------------------------------------
+# GL_BALANCE → LedgerEntry (composite key)
+# -----------------------------------------------------------------------------
+<#GlBalanceMap>
+    rr:logicalTable [ rr:tableName "LPP.GL_BALANCE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/ledger-entry/{GL_ACCOUNT_REF}-{BALANCE_DATE}-{BALANCE_TYPE}" ;
+        rr:class    lpp:LedgerEntry
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:ledgerAccount ;
+        rr:objectMap [ rr:column "GL_ACCOUNT_REF" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "BALANCE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:amount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] .
+
+# -----------------------------------------------------------------------------
+# GL_RECONCILIATION → ReconciliationItem
+# -----------------------------------------------------------------------------
+<#GlReconciliationMap>
+    rr:logicalTable [ rr:tableName "LPP.GL_RECONCILIATION" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/recon-item/{UUID}" ;
+        rr:class    lpp:ReconciliationItem
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "AS_OF_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:discrepancyAmount ;
+        rr:objectMap [ rr:column "VARIANCE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "VARIANCE_CURRENCY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reconciliationStatus ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:ledgerAccount ;
+        rr:objectMap [ rr:column "GL_ACCOUNT_REF" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{BANK_ACCOUNT_REF}" ]
+    ] .
+
+# =============================================================================
+# H. Working capital, invoices, vendors, customers
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# THIRD_PARTY → Counterparty (with Vendor/Customer subclasses from boolean flags)
+# -----------------------------------------------------------------------------
+<#ThirdPartyMap>
+    rr:logicalTable [ rr:tableName "LPP.THIRD_PARTY" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/third-party/{CODE}" ;
+        rr:class    lpp:Counterparty
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "NAME" ] ] .
+
+# Vendor — third_party.creditor = TRUE (we pay them)
+<#VendorMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT CODE FROM LPP.THIRD_PARTY WHERE CREDITOR = TRUE
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/third-party/{CODE}" ;
+        rr:class    lpp:Vendor
+    ] .
+
+# Customer — third_party.debtor = TRUE (they pay us)
+<#CustomerMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT CODE FROM LPP.THIRD_PARTY WHERE DEBTOR = TRUE
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/third-party/{CODE}" ;
+        rr:class    lpp:Customer
+    ] .
+
+# -----------------------------------------------------------------------------
+# AR_INVOICE → Receivable
+# -----------------------------------------------------------------------------
+<#ArInvoiceMap>
+    rr:logicalTable [ rr:tableName "LPP.AR_INVOICE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/ar-invoice/{UUID}" ;
+        rr:class    lpp:Receivable
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reference ; rr:objectMap [ rr:column "INVOICE_NUMBER" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:tradedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:billedTo ;
+        rr:objectMap [ rr:template "https://lpp.example/id/third-party/{CUSTOMER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:invoiceDate ;
+        rr:objectMap [ rr:column "ISSUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dueDate ;
+        rr:objectMap [ rr:column "DUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:paidDate ;
+        rr:objectMap [ rr:column "PAID_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:invoiceAmount ;
+        rr:objectMap [ rr:column "INVOICE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:paymentTerms ; rr:objectMap [ rr:column "PAYMENT_TERMS" ] ] .
+
+# -----------------------------------------------------------------------------
+# AP_INVOICE → Payable
+# -----------------------------------------------------------------------------
+<#ApInvoiceMap>
+    rr:logicalTable [ rr:tableName "LPP.AP_INVOICE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/ap-invoice/{UUID}" ;
+        rr:class    lpp:Payable
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reference ; rr:objectMap [ rr:column "INVOICE_NUMBER" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:tradedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:billedFrom ;
+        rr:objectMap [ rr:template "https://lpp.example/id/third-party/{VENDOR_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:invoiceDate ;
+        rr:objectMap [ rr:column "ISSUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dueDate ;
+        rr:objectMap [ rr:column "DUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:paidDate ;
+        rr:objectMap [ rr:column "PAID_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:invoiceAmount ;
+        rr:objectMap [ rr:column "INVOICE_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:paymentTerms ; rr:objectMap [ rr:column "PAYMENT_TERMS" ] ] .
+
+# -----------------------------------------------------------------------------
+# WCF_DOCUMENT → Invoice (working-capital-finance ingested document, e.g.
+# supply-chain finance program input)
+# -----------------------------------------------------------------------------
+<#WcfDocumentMap>
+    rr:logicalTable [ rr:tableName "LPP.WCF_DOCUMENT" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/wcf-doc/{UUID}" ;
+        rr:class    lpp:Invoice
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:reference ; rr:objectMap [ rr:column "DOCUMENT_NUMBER" ] ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:billedFrom ;
+        rr:objectMap [ rr:template "https://lpp.example/id/third-party/{SUPPLIER_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:tradedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{BUYER_COMPANY}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:invoiceDate ;
+        rr:objectMap [ rr:column "ISSUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dueDate ;
+        rr:objectMap [ rr:column "DUE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:invoiceAmount ;
+        rr:objectMap [ rr:column "AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "STATUS" ] ] .
+
+# -----------------------------------------------------------------------------
+# WORKING_CAPITAL_METRIC → WorkingCapitalMetric
+# -----------------------------------------------------------------------------
+<#WorkingCapitalMetricMap>
+    rr:logicalTable [ rr:tableName "LPP.WORKING_CAPITAL_METRIC" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/wcm/{COMPANY_REF}-{PERIOD_DATE}" ;
+        rr:class    lpp:WorkingCapitalMetric
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forEntity ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{COMPANY_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "PERIOD_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dsoDays ;
+        rr:objectMap [ rr:column "DSO_DAYS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dpoDays ;
+        rr:objectMap [ rr:column "DPO_DAYS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:dioDays ;
+        rr:objectMap [ rr:column "DIO_DAYS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] .
+
+# =============================================================================
+# I. Bank fees, rate cards
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# BANK_SERVICE_TYPE → FeeServiceType
+# -----------------------------------------------------------------------------
+<#BankServiceTypeMap>
+    rr:logicalTable [ rr:tableName "LPP.BANK_SERVICE_TYPE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/fee-service/{CODE}" ;
+        rr:class    lpp:FeeServiceType
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "DESCRIPTION" ] ] .
+
+# -----------------------------------------------------------------------------
+# FEE_RATE_CARD → RateCardLine (one row = one negotiated rate within a card)
+# -----------------------------------------------------------------------------
+<#FeeRateCardMap>
+    rr:logicalTable [ rr:tableName "LPP.FEE_RATE_CARD" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/rate-card-line/{UUID}" ;
+        rr:class    lpp:RateCardLine
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:chargedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:feeServiceType ;
+        rr:objectMap [ rr:template "https://lpp.example/id/fee-service/{SERVICE_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:negotiatedRate ;
+        rr:objectMap [ rr:column "NEGOTIATED_RATE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] .
+
+# -----------------------------------------------------------------------------
+# BANK_FEE → BankFee
+# -----------------------------------------------------------------------------
+<#BankFeeMap>
+    rr:logicalTable [ rr:tableName "LPP.BANK_FEE" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/bank-fee/{UUID}" ;
+        rr:class    lpp:BankFee
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:chargedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank/{BANK_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:feeServiceType ;
+        rr:objectMap [ rr:template "https://lpp.example/id/fee-service/{SERVICE_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:governedBy ;
+        rr:objectMap [ rr:template "https://lpp.example/id/rate-card-line/{RATE_CARD_REF}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forAccount ;
+        rr:objectMap [ rr:template "https://lpp.example/id/bank-account/{BANK_ACCOUNT_REF}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "CHARGE_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:feeAmount ;
+        rr:objectMap [ rr:column "CHARGED_AMOUNT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ; rr:objectMap [ rr:column "CURRENCY_CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:exceedsRateCard ;
+        rr:objectMap [ rr:column "FLAGGED" ; rr:datatype xsd:boolean ] ] .
+
+# =============================================================================
+# J. Payments hub, exceptions — FRAUD_DETECTION_EVENT (the base extension's
+# fraud signal, distinct from M.10 FRAUD_LOSS).
+# =============================================================================
+
+<#FraudDetectionEventMap>
+    rr:logicalTable [ rr:tableName "LPP.FRAUD_DETECTION_EVENT" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/fraud-detection/{UUID}" ;
+        rr:class    lpp:FraudLossEvent
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:relatedToTransaction ;
+        rr:objectMap [ rr:template "https://lpp.example/id/transfer/{TRANSFER_UUID}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:status ; rr:objectMap [ rr:column "DECISION" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:fraudCategoryLabel ; rr:objectMap [ rr:column "DECISION" ] ] .
+
+# =============================================================================
+# M. Signatories (Person via APP_USER — base BankAccountSignatoryMap already
+# emits signer edges; this map mints the Person resources they reference).
+# =============================================================================
+
+<#PersonMap>
+    rr:logicalTable [ rr:tableName "LPP.APP_USER" ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/user/{CODE}" ;
+        rr:class    lpp:Person
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:code ; rr:objectMap [ rr:column "CODE" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:name ; rr:objectMap [ rr:column "FIRST_NAME" ] ] .
+
+# =============================================================================
+# UNMAPPED ONTOLOGY CLASSES (no backing table in current schema)
+#
+# The following ontology classes from v0.2 have no corresponding Redshift table
+# in lpp-schema-redshift.sql, lpp-schema-extensions-redshift.sql, or
+# lpp-schema-extensions-2-redshift.sql. Leaving them unmapped is intentional —
+# extend the schema first, then add TriplesMaps here.
+#
+# Section A — Geography & organization
+#   lpp:BusinessUnit            no table (region/BU lives only as denormalized
+#                               columns on BANK_BRANCH and ACQUIRER)
+#   lpp:Department              no table
+#   lpp:Channel                 no table (channel is a string column on
+#                               POS_TRANSACTION/FRAUD_LOSS/MEMBERSHIP_FEE)
+#
+# Section B — Cash balances, positions, sweeps
+#   lpp:CashPosition            no aggregated cash-position table (would need a
+#                               new entity_or_region × date materialization)
+#
+# Section D — Forecasts, variance, scenarios
+#   lpp:Scenario (root)         StressTest covered; no generic Scenario table
+#   lpp:MacroScenario           covered partly by stress_scenario.scenario_type
+#                               but no first-class macro-scenario entity
+#
+# Section E — Debt
+#   lpp:Covenant                no table (covenant terms are not modeled)
+#   lpp:CovenantTest            no table
+#
+# Section F — Hedging
+#   lpp:FxOption                no table
+#   lpp:InterestRateSwap        no table
+#   lpp:CrossCurrencySwap       no table
+#   lpp:CommodityHedge          no table
+#   lpp:HedgeEffectiveness      no table (only effectiveness_method on
+#                               HEDGE_RELATIONSHIP; per-test results not stored)
+#   lpp:InterestRateScenario    no table
+#
+# Section G — ERP reconciliation
+#   (all classes mapped: LedgerEntry, ReconciliationItem)
+#
+# Section H — Working capital
+#   lpp:CashApplication         no table
+#   lpp:EarlyPaymentDiscount    no table (WCF_DOCUMENT.early_payment_terms_ref
+#                               references a non-existent table)
+#   lpp:SupplyChainFinanceProgram no table
+#   lpp:DynamicDiscountingProgram no table
+#   lpp:RebateAgreement         partial: CARD_REBATE_PROGRAM is card-only
+#
+# Section I — Bank fees
+#   lpp:RateCard (header)       only RateCardLine rows exist in FEE_RATE_CARD;
+#                               no separate rate-card header
+#
+# Section J — Payments hub
+#   lpp:PaymentBatch            no table (batch concept exists for cards only,
+#                               via CARD_SETTLEMENT_BATCH)
+#   lpp:PaymentHubEvent         no table
+#   lpp:StpMetric               PAYMENT_HUB_THROUGHPUT covers the metric, but
+#                               no dedicated StpMetric resource
+#
+# Section L — Fraud / incidents
+#   lpp:OperationalLossEvent    no table
+#   lpp:PaymentIncident         no table
+#
+# Section M — Signatories
+#   lpp:Recertification         no table (recert is implicit in
+#                               BANK_ACCOUNT_SIGNATORY.last_recertified_date)
+#   lpp:AccessControlEvent      no table (audit_trail is generic, not modeled)
+#
+# Section N — Capital allocation
+#   lpp:CapexProgram            no dedicated table (capex flows via
+#                               CAPITAL_ALLOCATION_ACTUAL.bucket = 'CAPEX')
+#   lpp:Acquisition             no table
+#   lpp:ShareRepurchaseProgram  no table (only individual buyback transactions
+#                               in EQUITY_ACTION)
+#   lpp:DebtPaydown             no dedicated table (paydown rows live in
+#                               CAPITAL_ALLOCATION_ACTUAL.bucket='DEBT_PAYDOWN')
+#
+# Section P — Pension
+#   (all classes mapped: PensionPlan, PensionValuation)
+#
+# Section Q — Peers
+#   lpp:Benchmark               no table (PEER_COMPANY_METRIC is metric-row level)
+#   lpp:BenchmarkMetric         covered by PEER_COMPANY_METRIC
+#   lpp:IndustrySector          no table (sector is a string column on
+#                               PEER_COMPANY)
+#
+# Section R — Macro / risk
+#   lpp:VaRMetric               no table
+#   lpp:RiskCategory            no table (only fixed SKOS concepts in ontology)
+#
+# Section S — ESG
+#   lpp:SustainabilityLinkedInstrument no table
+#   lpp:GreenBond                       no table
+#   lpp:SustainabilityLinkedLoan        no table
+#   lpp:EsgTarget                       no table
+# =============================================================================
+
+# =============================================================================
+# v0.3 ROLLUPS — pre-aggregated triples to eliminate query-time scans
+#
+# These TriplesMaps are *additive*. They do not modify any earlier map; they
+# emit new subjects (one per rollup row) plus boolean flag triples on existing
+# subjects (sections A.5 and A.6).
+#
+# Dialect note: Redshift dates use `DATE_TRUNC('month', d)` and `INTERVAL '7
+# days'`. All `rr:tableName` values stay uppercase-but-unquoted to match the
+# convention; raw `rr:sqlQuery` blocks use lowercase identifiers (Redshift is
+# case-insensitive on unquoted identifiers).
+#
+# Recency window anchor: every "last N days" CTE uses
+#   (SELECT MAX(<date_col>) FROM <table>)
+# rather than CURRENT_DATE, because the synthetic dataset ends at a fixed
+# point (currently 2026-05-04).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# A.1 CARD PAYMENT ROLLUP — (acquirer × network × deposit-date)
+#      Source: lpp.card_settlement_batch
+# -----------------------------------------------------------------------------
+<#CardPaymentRollupMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT
+            acquirer_ref                                AS ACQ_CODE,
+            network_code                                AS NET_CODE,
+            CAST(bank_deposit_ts AS DATE)               AS ROLLUP_DATE,
+            SUM(gross_sales_amount)                     AS GROSS_SALES,
+            SUM(net_settlement_amount)                  AS NET_SETTLEMENT,
+            SUM(interchange_amount)                     AS INTERCHANGE,
+            SUM(network_assessment_amount)              AS NETWORK_ASSESS,
+            SUM(processor_margin_amount)                AS PROCESSOR_MARGIN,
+            COUNT(*)                                    AS BATCH_COUNT
+        FROM lpp.card_settlement_batch
+        WHERE bank_deposit_ts IS NOT NULL
+        GROUP BY 1, 2, 3
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/rollup/card/{ACQ_CODE}-{NET_CODE}-{ROLLUP_DATE}" ;
+        rr:class    lpp:CardPaymentRollup
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:viaAcquirer ;
+        rr:objectMap [ rr:template "https://lpp.example/id/acquirer/{ACQ_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:onNetwork ;
+        rr:objectMap [ rr:template "https://lpp.example/id/card-network/{NET_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "ROLLUP_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:grossSalesAmount ;
+        rr:objectMap [ rr:column "GROSS_SALES" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:netSettlementAmount ;
+        rr:objectMap [ rr:column "NET_SETTLEMENT" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:interchangeAmount ;
+        rr:objectMap [ rr:column "INTERCHANGE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:networkAssessmentAmount ;
+        rr:objectMap [ rr:column "NETWORK_ASSESS" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:processorMarginAmount ;
+        rr:objectMap [ rr:column "PROCESSOR_MARGIN" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:batchCount ;
+        rr:objectMap [ rr:column "BATCH_COUNT" ; rr:datatype xsd:integer ] ] .
+
+# -----------------------------------------------------------------------------
+# A.2 PAYMENT METHOD ROLLUP — (payment_rail × value-date)
+#      Source: lpp.transfer (file-level outbound payments; carries
+#      payment_rail + value_date + status). PAYMENT_TRANSACTION lacks
+#      value_date and rail in a uniform way, so transfer is the canonical
+#      throughput source per the existing TransferMap convention.
+#      success = status IN ('SETTLED','COMPLETED','ACK')
+#      repair  = status IN ('REPAIR','REPAIRED','MANUAL_REPAIR')
+# -----------------------------------------------------------------------------
+<#PaymentMethodRollupMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT
+            payment_rail                                                AS METHOD,
+            value_date                                                  AS ROLLUP_DATE,
+            COUNT(*)                                                    AS TXN_COUNT,
+            SUM(amount)                                                 AS TXN_VALUE,
+            1.0 * SUM(CASE WHEN status IN ('SETTLED','COMPLETED','ACK')
+                           THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0)      AS SUCCESS_RATE,
+            1.0 * SUM(CASE WHEN status IN ('REPAIR','REPAIRED','MANUAL_REPAIR')
+                           THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0)      AS REPAIR_RATE
+        FROM lpp.transfer
+        WHERE payment_rail IS NOT NULL AND value_date IS NOT NULL
+        GROUP BY 1, 2
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/rollup/method/{METHOD}-{ROLLUP_DATE}" ;
+        rr:class    lpp:PaymentMethodRollup
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:paymentMethod ;
+        rr:objectMap [ rr:template "https://lpp.example/id/payment-method/{METHOD}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "ROLLUP_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:txnCount ;
+        rr:objectMap [ rr:column "TXN_COUNT" ; rr:datatype xsd:integer ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:txnValue ;
+        rr:objectMap [ rr:column "TXN_VALUE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:successRate ;
+        rr:objectMap [ rr:column "SUCCESS_RATE" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:repairRate ;
+        rr:objectMap [ rr:column "REPAIR_RATE" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# A.3 VENDOR PAYMENT ROLLUP — (vendor × invoice-month)
+#      Source: lpp.ap_invoice (already mapped to lpp:Payable, vendor_ref →
+#      billedFrom). period_month is rendered as a literal "YYYY-MM" string.
+#      on_time = paid_date IS NOT NULL AND paid_date <= due_date
+# -----------------------------------------------------------------------------
+<#VendorPaymentRollupMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT
+            vendor_ref                                              AS VENDOR_CODE,
+            TO_CHAR(DATE_TRUNC('month', issue_date), 'YYYY-MM')     AS YEAR_MONTH,
+            SUM(invoice_amount)                                     AS TOTAL_BILLED,
+            SUM(COALESCE(paid_amount, 0))                           AS TOTAL_PAID,
+            1.0 * SUM(CASE WHEN paid_date IS NOT NULL
+                            AND paid_date <= due_date THEN 1 ELSE 0 END)
+                  / NULLIF(COUNT(*), 0)                             AS ON_TIME_RATE
+        FROM lpp.ap_invoice
+        WHERE vendor_ref IS NOT NULL AND issue_date IS NOT NULL
+        GROUP BY 1, 2
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/rollup/vendor/{VENDOR_CODE}-{YEAR_MONTH}" ;
+        rr:class    lpp:VendorPaymentRollup
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:vendor ;
+        rr:objectMap [ rr:template "https://lpp.example/id/third-party/{VENDOR_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:periodMonth ;
+        rr:objectMap [ rr:column "YEAR_MONTH" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:totalBilled ;
+        rr:objectMap [ rr:column "TOTAL_BILLED" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:totalPaid ;
+        rr:objectMap [ rr:column "TOTAL_PAID" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:onTimeRate ;
+        rr:objectMap [ rr:column "ON_TIME_RATE" ; rr:datatype xsd:decimal ] ] .
+
+# -----------------------------------------------------------------------------
+# A.4 CASH ROLLUP — (entity × currency × statement-date)
+#      Source: bank_statement_balance b JOIN bank_account a (company_ref) →
+#      company. Filter to BALANCE_TYPE='CLOSING' so we don't double-count
+#      opening/available rows. "Entity" here is the bank-account-owning
+#      Company (the LPP graph treats Company as the legal-entity stand-in).
+#      NOTE: bank_statement_balance.statement_date is the recognised
+#      as-of column (the spec used the alias "as_of_date").
+# -----------------------------------------------------------------------------
+<#CashRollupMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT
+            a.company_ref           AS ENTITY_CODE,
+            b.currency_code         AS CURRENCY,
+            b.statement_date        AS ROLLUP_DATE,
+            SUM(b.amount)           AS TOTAL_CASH,
+            COUNT(DISTINCT b.account_ref) AS N_ACCOUNTS
+        FROM lpp.bank_statement_balance b
+        JOIN lpp.bank_account a ON b.account_ref = a.code
+        WHERE b.balance_type = 'CLOSING'
+        GROUP BY 1, 2, 3
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/rollup/cash/{ENTITY_CODE}-{CURRENCY}-{ROLLUP_DATE}" ;
+        rr:class    lpp:CashRollup
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:forEntity ;
+        rr:objectMap [ rr:template "https://lpp.example/id/company/{ENTITY_CODE}" ]
+    ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:currencyCode ;
+        rr:objectMap [ rr:column "CURRENCY" ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:asOfDate ;
+        rr:objectMap [ rr:column "ROLLUP_DATE" ; rr:datatype xsd:date ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:totalCash ;
+        rr:objectMap [ rr:column "TOTAL_CASH" ; rr:datatype xsd:decimal ] ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:nAccounts ;
+        rr:objectMap [ rr:column "N_ACCOUNTS" ; rr:datatype xsd:integer ] ] .
+
+# -----------------------------------------------------------------------------
+# A.5 isLatestSnapshot flag — tag the most recent BalanceSnapshot per account
+#      Reuses the existing BankStatementBalance subject IRI so no new resource
+#      is minted. One row per (account_ref, balance_type) at max date.
+# -----------------------------------------------------------------------------
+<#BalanceLatestFlagMap>
+    rr:logicalTable [ rr:sqlQuery """
+        SELECT b.account_ref, b.statement_date, b.balance_type
+        FROM lpp.bank_statement_balance b
+        JOIN (
+            SELECT account_ref, balance_type, MAX(statement_date) AS maxd
+            FROM lpp.bank_statement_balance
+            GROUP BY 1, 2
+        ) m
+          ON  b.account_ref  = m.account_ref
+          AND b.balance_type = m.balance_type
+          AND b.statement_date = m.maxd
+    """ ] ;
+    rr:subjectMap [
+        rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}"
+    ] ;
+    rr:predicateObjectMap [
+        rr:predicate lpp:isLatestSnapshot ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ]
+    ] .
+
+# -----------------------------------------------------------------------------
+# A.6 RECENCY FLAGS — inLast7Days / inLast30Days / inLast90Days / inLastYear
+#      Booleans (constant true) emitted only on rows whose dated column falls
+#      within the window measured from MAX(date) in the same table.
+#      Applied per-table: bank_statement_balance, transfer, payment_transaction,
+#      cash_flow, card_settlement_batch, sweep_execution, ar_invoice, ap_invoice.
+# -----------------------------------------------------------------------------
+
+# A.6.1 BalanceSnapshot recency
+<#BalanceInLast7Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(statement_date) AS d FROM lpp.bank_statement_balance)
+        SELECT b.account_ref, b.statement_date, b.balance_type
+        FROM lpp.bank_statement_balance b, maxd
+        WHERE b.statement_date >= maxd.d - INTERVAL '7 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast7Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#BalanceInLast30Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(statement_date) AS d FROM lpp.bank_statement_balance)
+        SELECT b.account_ref, b.statement_date, b.balance_type
+        FROM lpp.bank_statement_balance b, maxd
+        WHERE b.statement_date >= maxd.d - INTERVAL '30 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast30Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#BalanceInLast90Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(statement_date) AS d FROM lpp.bank_statement_balance)
+        SELECT b.account_ref, b.statement_date, b.balance_type
+        FROM lpp.bank_statement_balance b, maxd
+        WHERE b.statement_date >= maxd.d - INTERVAL '90 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast90Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#BalanceInLastYearMap>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(statement_date) AS d FROM lpp.bank_statement_balance)
+        SELECT b.account_ref, b.statement_date, b.balance_type
+        FROM lpp.bank_statement_balance b, maxd
+        WHERE b.statement_date >= maxd.d - INTERVAL '365 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/balance/{ACCOUNT_REF}-{STATEMENT_DATE}-{BALANCE_TYPE}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLastYear ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+# A.6.2 Transfer recency (subject IRI: https://lpp.example/id/transfer/{UUID})
+<#TransferInLast7Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(value_date) AS d FROM lpp.transfer)
+        SELECT t.uuid FROM lpp.transfer t, maxd
+        WHERE t.value_date >= maxd.d - INTERVAL '7 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/transfer/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast7Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#TransferInLast30Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(value_date) AS d FROM lpp.transfer)
+        SELECT t.uuid FROM lpp.transfer t, maxd
+        WHERE t.value_date >= maxd.d - INTERVAL '30 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/transfer/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast30Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#TransferInLast90Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(value_date) AS d FROM lpp.transfer)
+        SELECT t.uuid FROM lpp.transfer t, maxd
+        WHERE t.value_date >= maxd.d - INTERVAL '90 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/transfer/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast90Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#TransferInLastYearMap>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(value_date) AS d FROM lpp.transfer)
+        SELECT t.uuid FROM lpp.transfer t, maxd
+        WHERE t.value_date >= maxd.d - INTERVAL '365 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/transfer/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLastYear ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+# A.6.3 PaymentTransaction recency (uses EXECUTION_DATE as the value-date analogue)
+<#PaymentTxnInLast7Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(execution_date) AS d FROM lpp.payment_transaction)
+        SELECT p.uuid FROM lpp.payment_transaction p, maxd
+        WHERE p.execution_date >= maxd.d - INTERVAL '7 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/payment-txn/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast7Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#PaymentTxnInLast30Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(execution_date) AS d FROM lpp.payment_transaction)
+        SELECT p.uuid FROM lpp.payment_transaction p, maxd
+        WHERE p.execution_date >= maxd.d - INTERVAL '30 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/payment-txn/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast30Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#PaymentTxnInLast90Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(execution_date) AS d FROM lpp.payment_transaction)
+        SELECT p.uuid FROM lpp.payment_transaction p, maxd
+        WHERE p.execution_date >= maxd.d - INTERVAL '90 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/payment-txn/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast90Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#PaymentTxnInLastYearMap>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(execution_date) AS d FROM lpp.payment_transaction)
+        SELECT p.uuid FROM lpp.payment_transaction p, maxd
+        WHERE p.execution_date >= maxd.d - INTERVAL '365 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/payment-txn/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLastYear ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+# A.6.4 CashFlow recency (subject: https://lpp.example/id/cash-flow/{UUID})
+<#CashFlowInLast7Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(value_date) AS d FROM lpp.cash_flow)
+        SELECT c.uuid FROM lpp.cash_flow c, maxd
+        WHERE c.value_date >= maxd.d - INTERVAL '7 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/cash-flow/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast7Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#CashFlowInLast30Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(value_date) AS d FROM lpp.cash_flow)
+        SELECT c.uuid FROM lpp.cash_flow c, maxd
+        WHERE c.value_date >= maxd.d - INTERVAL '30 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/cash-flow/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast30Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#CashFlowInLast90Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(value_date) AS d FROM lpp.cash_flow)
+        SELECT c.uuid FROM lpp.cash_flow c, maxd
+        WHERE c.value_date >= maxd.d - INTERVAL '90 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/cash-flow/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast90Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#CashFlowInLastYearMap>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(value_date) AS d FROM lpp.cash_flow)
+        SELECT c.uuid FROM lpp.cash_flow c, maxd
+        WHERE c.value_date >= maxd.d - INTERVAL '365 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/cash-flow/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLastYear ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+# A.6.5 CardSettlementBatch recency (uses bank_deposit_ts cast to date)
+<#CardBatchInLast7Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(CAST(bank_deposit_ts AS DATE)) AS d FROM lpp.card_settlement_batch)
+        SELECT b.uuid FROM lpp.card_settlement_batch b, maxd
+        WHERE CAST(b.bank_deposit_ts AS DATE) >= maxd.d - INTERVAL '7 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/settle-batch/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast7Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#CardBatchInLast30Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(CAST(bank_deposit_ts AS DATE)) AS d FROM lpp.card_settlement_batch)
+        SELECT b.uuid FROM lpp.card_settlement_batch b, maxd
+        WHERE CAST(b.bank_deposit_ts AS DATE) >= maxd.d - INTERVAL '30 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/settle-batch/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast30Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#CardBatchInLast90Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(CAST(bank_deposit_ts AS DATE)) AS d FROM lpp.card_settlement_batch)
+        SELECT b.uuid FROM lpp.card_settlement_batch b, maxd
+        WHERE CAST(b.bank_deposit_ts AS DATE) >= maxd.d - INTERVAL '90 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/settle-batch/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast90Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#CardBatchInLastYearMap>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(CAST(bank_deposit_ts AS DATE)) AS d FROM lpp.card_settlement_batch)
+        SELECT b.uuid FROM lpp.card_settlement_batch b, maxd
+        WHERE CAST(b.bank_deposit_ts AS DATE) >= maxd.d - INTERVAL '365 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/settle-batch/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLastYear ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+# A.6.6 SweepEvent recency (sweep_execution.execution_date)
+<#SweepInLast7Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(execution_date) AS d FROM lpp.sweep_execution)
+        SELECT s.uuid FROM lpp.sweep_execution s, maxd
+        WHERE s.execution_date >= maxd.d - INTERVAL '7 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/sweep-event/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast7Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#SweepInLast30Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(execution_date) AS d FROM lpp.sweep_execution)
+        SELECT s.uuid FROM lpp.sweep_execution s, maxd
+        WHERE s.execution_date >= maxd.d - INTERVAL '30 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/sweep-event/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast30Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#SweepInLast90Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(execution_date) AS d FROM lpp.sweep_execution)
+        SELECT s.uuid FROM lpp.sweep_execution s, maxd
+        WHERE s.execution_date >= maxd.d - INTERVAL '90 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/sweep-event/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast90Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#SweepInLastYearMap>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(execution_date) AS d FROM lpp.sweep_execution)
+        SELECT s.uuid FROM lpp.sweep_execution s, maxd
+        WHERE s.execution_date >= maxd.d - INTERVAL '365 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/sweep-event/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLastYear ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+# A.6.7 AR_INVOICE recency (issue_date is the valueDate analogue)
+<#ArInvoiceInLast30Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(issue_date) AS d FROM lpp.ar_invoice)
+        SELECT i.uuid FROM lpp.ar_invoice i, maxd
+        WHERE i.issue_date >= maxd.d - INTERVAL '30 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/ar-invoice/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast30Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#ArInvoiceInLast90Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(issue_date) AS d FROM lpp.ar_invoice)
+        SELECT i.uuid FROM lpp.ar_invoice i, maxd
+        WHERE i.issue_date >= maxd.d - INTERVAL '90 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/ar-invoice/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast90Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#ArInvoiceInLastYearMap>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(issue_date) AS d FROM lpp.ar_invoice)
+        SELECT i.uuid FROM lpp.ar_invoice i, maxd
+        WHERE i.issue_date >= maxd.d - INTERVAL '365 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/ar-invoice/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLastYear ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+# A.6.8 AP_INVOICE recency (issue_date)
+<#ApInvoiceInLast30Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(issue_date) AS d FROM lpp.ap_invoice)
+        SELECT i.uuid FROM lpp.ap_invoice i, maxd
+        WHERE i.issue_date >= maxd.d - INTERVAL '30 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/ap-invoice/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast30Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#ApInvoiceInLast90Map>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(issue_date) AS d FROM lpp.ap_invoice)
+        SELECT i.uuid FROM lpp.ap_invoice i, maxd
+        WHERE i.issue_date >= maxd.d - INTERVAL '90 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/ap-invoice/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLast90Days ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+
+<#ApInvoiceInLastYearMap>
+    rr:logicalTable [ rr:sqlQuery """
+        WITH maxd AS (SELECT MAX(issue_date) AS d FROM lpp.ap_invoice)
+        SELECT i.uuid FROM lpp.ap_invoice i, maxd
+        WHERE i.issue_date >= maxd.d - INTERVAL '365 days'
+    """ ] ;
+    rr:subjectMap [ rr:template "https://lpp.example/id/ap-invoice/{UUID}" ] ;
+    rr:predicateObjectMap [ rr:predicate lpp:inLastYear ;
+        rr:objectMap [ rr:constant "true" ; rr:datatype xsd:boolean ] ] .
+

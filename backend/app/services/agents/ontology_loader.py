@@ -14,9 +14,11 @@ from pathlib import Path
 from app.core.logger import logger
 
 _ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "lpp-ontology.ttl"
+_R2RML_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "lpp-r2rml.ttl"
 
 _ontology_dict: dict = {}
 _ontology_summary: str = ""
+_r2rml_summary: str = ""
 
 
 def _load_ontology() -> dict:
@@ -115,19 +117,59 @@ def _build_summary(d: dict) -> str:
     return "\n".join(lines)
 
 
+def _load_r2rml_summary() -> str:
+    """Extract a compact table→class mapping from the R2RML file."""
+    if not _R2RML_PATH.exists():
+        return ""
+    try:
+        from rdflib import Graph, Namespace, RDF
+        RR = Namespace("http://www.w3.org/ns/r2rml#")
+        g = Graph()
+        g.parse(str(_R2RML_PATH), format="turtle")
+
+        rows: list[str] = []
+        seen: set[str] = set()
+        for subj in set(g.subjects()):
+            for lt in g.objects(subj, RR.logicalTable):
+                table_val = g.value(lt, RR.tableName) or g.value(lt, RR.sqlQuery)
+                if not table_val:
+                    continue
+                table_str = str(table_val).split("\n")[0][:60]
+                if table_str in seen:
+                    continue
+                seen.add(table_str)
+                classes: list[str] = []
+                for sm in g.objects(subj, RR.subjectMap):
+                    for cls in g.objects(sm, RR["class"]):
+                        local = str(cls).split("#")[-1] if "#" in str(cls) else str(cls).split("/")[-1]
+                        classes.append(local)
+                rows.append(f"  {table_str} → {', '.join(classes)}" if classes else f"  {table_str}")
+
+        if not rows:
+            return ""
+        return "MAPPED TABLES (source → KG class):\n" + "\n".join(sorted(rows))
+    except Exception as e:
+        logger.warning(f"R2RML summary load failed: {e}")
+        return ""
+
+
 def init_ontology() -> None:
     """Load and cache the ontology. Call once at startup."""
-    global _ontology_dict, _ontology_summary
+    global _ontology_dict, _ontology_summary, _r2rml_summary
     try:
         _ontology_dict = _load_ontology()
         _ontology_summary = _build_summary(_ontology_dict)
+        _r2rml_summary = _load_r2rml_summary()
         cls_count = len(_ontology_dict.get("classes", []))
         prop_count = len(_ontology_dict.get("object_properties", [])) + len(_ontology_dict.get("datatype_properties", []))
         logger.info(f"Ontology loaded: {cls_count} classes, {prop_count} properties")
+        if _r2rml_summary:
+            logger.info(f"R2RML mapping loaded: {_r2rml_summary.count(chr(10))} table entries")
     except Exception as e:
         logger.error(f"Ontology load failed: {e}")
         _ontology_dict = {}
         _ontology_summary = ""
+        _r2rml_summary = ""
 
 
 def get_ontology_summary() -> str:
@@ -135,9 +177,22 @@ def get_ontology_summary() -> str:
     return _ontology_summary
 
 
+def get_class_names_summary() -> str:
+    """Return a single-line class label list — minimal context for classification nodes."""
+    classes = _ontology_dict.get("classes", [])
+    if not classes:
+        return ""
+    return "KG classes: " + ", ".join(c["label"] for c in classes)
+
+
 def get_ontology_dict() -> dict:
     """Return the full structured ontology dict."""
     return _ontology_dict
+
+
+def get_r2rml_summary() -> str:
+    """Return the compact R2RML table→class mapping for prompt injection."""
+    return _r2rml_summary
 
 
 def resolve_term(label: str) -> list[dict]:

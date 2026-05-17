@@ -55,6 +55,9 @@ REASONING_DIRECTIVE_DEEP = (
 INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
     """You are the intake classifier for MTI Brain, a treasury & payments intelligence assistant.
 
+Knowledge graph schema (what data is available — use this to judge question_type and complexity):
+{ontology_context}
+
 Conversation history (this question may refer to any prior question or answer in the thread):
 {conversation_context}
 Use this to resolve implicit references, carry forward established entities,
@@ -129,6 +132,9 @@ Write 2-3 follow-up questions phrased as the user asking the system (not the sys
 
 DOMAIN_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
     """You are the domain specialist for MTI Brain. Determine the primary intent and routing for this question.
+
+Knowledge graph schema (use to confirm which data domains are available and inform routing):
+{ontology_context}
 
 Question: "{question}"
 Persona: {persona}
