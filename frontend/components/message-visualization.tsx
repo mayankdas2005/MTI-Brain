@@ -562,7 +562,7 @@ export function MessageVisualization({
     try {
       const canvas = await exportChartAsCanvas(chartRef.current, spec?.title);
       const a = document.createElement('a');
-      a.download = `chart-${Date.now()}.png`;
+      a.download = `chart-${(conversationId ?? '').slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.png`;
       a.href = canvas.toDataURL('image/png');
       a.click();
       toast.success('Chart downloaded');

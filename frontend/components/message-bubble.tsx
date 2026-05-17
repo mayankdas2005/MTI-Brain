@@ -375,6 +375,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const columns = message.metadata_?.columns;
   const rows = message.metadata_?.rows;
   const rowCount = message.metadata_?.row_count;
+  const exportFilename = `query-results-${(message.conversation_id ?? '').slice(0, 8)}-${new Date().toISOString().slice(0, 10)}`;
   const followUps = message.metadata_?.follow_ups;
   const hasTableData = !!(columns && columns.length > 0 && rows && rows.length > 0);
 
@@ -492,7 +493,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           )}
 
           {dataView === 'table' && hasTableData && (
-            <DataTable columns={columns!} rows={rows!} rowCount={rowCount} />
+            <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} />
           )}
         </div>
       )}
