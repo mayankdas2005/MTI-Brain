@@ -55,8 +55,13 @@ REASONING_DIRECTIVE_DEEP = (
 INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
     """You are the intake classifier for MTI Brain, a treasury & payments intelligence assistant.
 
-Conversation history (for context):
-{summary}
+Conversation history (this question may refer to any prior question or answer in the thread):
+{conversation_context}
+Use this to resolve implicit references, carry forward established entities,
+and understand the user's intent in the context of the full thread.
+
+Relevant past sessions (from previous conversations by this user):
+{cross_thread_context}
 
 User question: "{question}"
 
@@ -135,6 +140,14 @@ Question: "{question}"
 Persona: {persona}
 Complexity: {complexity}
 
+Conversation history (this question may refer to any prior question or answer in the thread):
+{conversation_context}
+Use this to resolve implicit references, carry forward established entities,
+and understand the user's intent in the context of the full thread.
+
+Past user feedback on similar questions (apply this to improve your output):
+{feedback_context}
+
 Intent labels — pick the ONE that best captures the data being requested:
 
 Treasury:
@@ -187,6 +200,17 @@ Question: "{question}"
 Intent: {intent}
 Persona: {persona}
 
+Conversation history (this question may refer to any prior question or answer in the thread):
+{conversation_context}
+Use this to resolve implicit references, carry forward established entities,
+and understand the user's intent in the context of the full thread.
+
+Relevant past sessions (reuse SPARQL patterns and ontology terms from these if applicable):
+{cross_thread_context}
+
+Past user feedback on similar questions (apply this to improve your output):
+{feedback_context}
+
 Ontology reference:
 {ontology_summary}
 
@@ -197,6 +221,8 @@ Tribal facts (policy/limit context):
 {tribal_facts}
 
 {prior_error_section}
+
+{refinement_section}
 
 SPARQL rules:
 - Prefixes: lpp: <https://lpp.example/ontology#> and lppid: <https://lpp.example/id/>
@@ -289,6 +315,9 @@ Query results ({row_count} rows):
 Tribal policy context:
 {tribal_facts}
 
+Past user feedback on similar questions (apply this to improve your output):
+{feedback_context}
+
 <reasoning>
 {reasoning_directive}
 
@@ -356,6 +385,9 @@ Evidence citations:
 
 Graph reasoning:
 {reasoning}
+
+Past user feedback on similar questions (apply this to improve your output):
+{feedback_context}
 
 ━━━ WRITING STANDARDS ━━━
 
@@ -496,6 +528,15 @@ PLAN_PROMPT = ChatPromptTemplate.from_template(
 Advanced question: "{question}"
 Persona: {persona}
 
+Conversation history (this question may refer to any prior question or answer in the thread):
+{conversation_context}
+Use this to resolve implicit references, carry forward established entities,
+and understand the user's intent in the context of the full thread.
+Do not create sub-questions to re-fetch data already established in the conversation history above.
+
+Past user feedback on similar questions (apply this to improve your output):
+{feedback_context}
+
 Ontology summary:
 {ontology_summary}
 
@@ -606,6 +647,9 @@ Persona: {persona}
 
 Sub-question results:
 {scratchpad_summary}
+
+Past user feedback on similar questions (use this to calibrate what "good enough" means for this user):
+{feedback_context}
 
 Assess whether the assembled results fully answer the original question.
 

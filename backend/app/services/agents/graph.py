@@ -54,12 +54,14 @@ from app.services.agents.ontology_loader import init_ontology
 from app.services.agents.state import State
 
 MAX_SPARQL_RETRIES = 2
-SUMMARIZE_THRESHOLD = 20
+SUMMARIZE_THRESHOLD = 6
 LLM_RETRY = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor=2.0)
 
 _checkpoint_pool: AsyncConnectionPool | None = None
 _main_graph = None
 _inner_graph = None
+_memory_store = None
+_memory_store_exit = None   # holds ExitStack to keep PostgresStore context alive
 
 _active_streams: dict[str, asyncio.Event] = {}
 
@@ -344,8 +346,8 @@ def _build_main_graph() -> StateGraph:
 # ─── Lifecycle ────────────────────────────────────────────────────────────────
 
 async def init_pipeline() -> None:
-    """Initialize LLMs, data pool, ontology, checkpoint store, and compile graphs."""
-    global _checkpoint_pool, _main_graph, _inner_graph
+    """Initialize LLMs, data pool, ontology, checkpoint store, memory store, and compile graphs."""
+    global _checkpoint_pool, _main_graph, _inner_graph, _memory_store, _memory_store_exit
 
     init_llms()
     init_ontology()
@@ -374,16 +376,46 @@ async def init_pipeline() -> None:
     )
     await _checkpoint_pool.open()
 
+    # ── Long-term memory store (cross-thread episodic memory) ──
+    # PostgresStore.from_conn_string() returns a context manager — enter it and
+    # keep the connection alive for the app lifetime via ExitStack.
+    try:
+        from contextlib import ExitStack
+        from langgraph.store.postgres import PostgresStore
+        from langgraph.store.base import IndexConfig
+        from app.services.embeddings import embed_texts_sync
+        _memory_store_exit = ExitStack()
+        _memory_store = _memory_store_exit.enter_context(
+            PostgresStore.from_conn_string(
+                conninfo,
+                index=IndexConfig(embed=embed_texts_sync, dims=1536),
+            )
+        )
+        _memory_store.setup()
+        logger.info("Memory store initialized")
+    except Exception as e:
+        logger.warning(f"Memory store initialization failed (continuing without it): {e}")
+        _memory_store = None
+        if _memory_store_exit:
+            _memory_store_exit.close()
+            _memory_store_exit = None
+
     checkpointer = AsyncPostgresSaver(_checkpoint_pool)
-    _main_graph = _build_main_graph().compile(checkpointer=checkpointer)
-    _inner_graph = _build_inner_graph().compile()
+    _main_graph = _build_main_graph().compile(checkpointer=checkpointer, store=_memory_store)
+    _inner_graph = _build_inner_graph().compile(store=_memory_store)
 
     logger.info("MTI Brain pipeline initialized")
 
 
 async def shutdown_pipeline() -> None:
-    """Close data pool and checkpoint pool. Caller enforces the hard timeout."""
-    global _checkpoint_pool
+    """Close data pool, checkpoint pool, and memory store. Caller enforces the hard timeout."""
+    global _checkpoint_pool, _memory_store_exit
+    if _memory_store_exit:
+        try:
+            _memory_store_exit.close()
+        except Exception:
+            pass
+        _memory_store_exit = None
     try:
         await dp.close_data_pool()
     except Exception:
@@ -490,6 +522,8 @@ async def stream_pipeline(
     max_rows: int = 100,
     deep_analysis: bool = False,
     cancel_event: asyncio.Event | None = None,
+    feedback_context: str = "",
+    prior_sql: str = "",
 ):
     """Run the pipeline and yield SSE event dicts as processing progresses."""
     if _main_graph is None:
@@ -513,6 +547,7 @@ async def stream_pipeline(
         "intent": "",
         "routing": "",
         "ontology_terms": [],
+        "prior_sql": prior_sql,
         "sparql": "",
         "sparql_error": "",
         "sparql_retries": 0,
@@ -532,7 +567,11 @@ async def stream_pipeline(
         "governance_halt": None,
         "pipeline_steps": [],
         "messages": [],
-        "summary": "",
+        # NOTE: "summary" is intentionally absent — LangGraph restores the
+        # checkpointed value so compress_node output survives across questions
+        # in the same thread. Setting it here would wipe thread memory every turn.
+        "cross_thread_context": "",
+        "feedback_context": feedback_context,
         "stopped": False,
         "max_rows": max_rows,
         "deep_analysis": deep_analysis,
@@ -935,6 +974,38 @@ async def stream_pipeline(
             raise
         except Exception as e:
             logger.warning(f"[{run_id}] Client disconnect before done: {e}")
+
+        # ── Save episodic memory (cross-thread) ──────────────────────────────
+        # Only save high-confidence memories: real data found, clean execution, not stopped.
+        _should_save_memory = (
+            not stopped
+            and _memory_store is not None
+            and user_id
+            and state.get("question_type") == "kg_query"
+            and (state.get("kg_row_count") or 0) > 0
+            and not state.get("sparql_error")
+            and bool(state.get("answer"))
+        )
+        if _should_save_memory:
+            try:
+                _mem_payload = {
+                    "question": question,
+                    "answer_summary": (state.get("answer") or "")[:500],
+                    "sparql": (state.get("sparql") or "")[:1000],
+                    "intent": state.get("intent") or "",
+                    "ontology_terms": state.get("ontology_terms") or [],
+                    "row_count": state.get("kg_row_count") or 0,
+                }
+                # Run in thread pool — embed_texts_sync makes blocking HTTP calls
+                await asyncio.to_thread(
+                    _memory_store.put,
+                    (str(user_id), "mti_queries"),
+                    str(thread_id),
+                    _mem_payload,
+                )
+                logger.info(f"[{run_id}] Episodic memory saved: user={user_id} thread={thread_id} intent={state.get('intent', '')} rows={state.get('kg_row_count', 0)}")
+            except Exception as e:
+                logger.warning(f"[{run_id}] Memory save failed (non-fatal): {e}")
 
     except Exception as e:
         logger.error(f"[{run_id}] Pipeline error: {e}")

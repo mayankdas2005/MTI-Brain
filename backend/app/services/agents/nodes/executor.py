@@ -51,7 +51,12 @@ async def _run_sub_question(sq: dict, state: State, inner_graph, writer=None) ->
         "governance_halt": None,
         "pipeline_steps": [],
         "messages": [],
-        "summary": dep_context,
+        # Merge outer conversation summary with sub-question dependency context.
+        # Inner domain_specialist and sparql_gen need outer context to resolve entity references.
+        "summary": "\n\n".join(filter(None, [state.get("summary", ""), dep_context])),
+        "feedback_context": state.get("feedback_context", ""),
+        "cross_thread_context": state.get("cross_thread_context", ""),
+        "prior_sql": state.get("prior_sql", ""),
     }
 
     # Use ainvoke (not astream_events) so inner sub-graph events don't bubble

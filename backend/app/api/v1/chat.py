@@ -76,6 +76,7 @@ def _build_sse_generator(
     max_rows: int = 100,
     deep_analysis: bool = False,
     cancel_event: asyncio.Event | None = None,
+    prior_sql: str = "",
 ):
     async def _save_assistant_message(save_data: dict) -> None:
         from app.db import async_session_factory
@@ -119,10 +120,40 @@ def _build_sse_generator(
 
     async def event_generator():
         from app.services.agents.graph import stream_pipeline
+        from app.services.chat.feedback import (
+            build_feedback_context,
+            find_similar_feedback,
+            find_thread_feedback,
+        )
 
         _stream_start = request_time or time.perf_counter()
         _cancel = cancel_event if cancel_event is not None else asyncio.Event()
         _active_streams[str(thread_id)] = _cancel
+
+        # ── Fetch feedback context (non-blocking, 1.5s timeout) ──────────────
+        feedback_context = ""
+        try:
+            from app.db import async_session_factory
+            async with async_session_factory() as _fb_db:
+                _tf, _sf = await asyncio.gather(
+                    asyncio.wait_for(
+                        find_thread_feedback(_fb_db, thread_id, limit=5), timeout=1.5
+                    ),
+                    asyncio.wait_for(
+                        find_similar_feedback(_fb_db, question, current_thread_id=thread_id, limit=5), timeout=1.5
+                    ),
+                    return_exceptions=True,
+                )
+                thread_fb = _tf if not isinstance(_tf, Exception) else []
+                similar_fb = _sf if not isinstance(_sf, Exception) else []
+                feedback_context = build_feedback_context(thread_fb, similar_fb)
+                if feedback_context:
+                    logger.info(
+                        f"[sse] feedback context injected for thread={thread_id}: "
+                        f"thread={len(thread_fb)} entries, similar={len(similar_fb)} entries"
+                    )
+        except Exception:
+            pass  # pipeline runs without feedback — never block on this
 
         try:
             _elapsed = int((time.perf_counter() - _stream_start) * 1000)
@@ -151,6 +182,8 @@ def _build_sse_generator(
                 max_rows=max_rows,
                 deep_analysis=deep_analysis,
                 cancel_event=_cancel,
+                feedback_context=feedback_context,
+                prior_sql=prior_sql,
             ):
                 event_name = sse_ev["event"]
                 data = sse_ev["data"]
@@ -493,6 +526,7 @@ async def ask_question(
         max_rows=body.max_rows,
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
+        prior_sql=body.prior_sql or "",
     )
     return EventSourceResponse(generator(), ping=15)
 

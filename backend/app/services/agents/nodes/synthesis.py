@@ -82,6 +82,7 @@ async def answer_synthesis_node(state: State) -> dict:
         "tribal_facts": _format_tribal_facts(tribal_facts),
         "evidence": ", ".join(evidence) if evidence else "None.",
         "reasoning": reasoning or "None.",
+        "feedback_context": state.get("feedback_context") or "None.",
         "reasoning_directive": reasoning_directive,
     })
 

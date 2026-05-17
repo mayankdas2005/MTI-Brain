@@ -36,6 +36,7 @@ class State(MessagesState):
     ontology_terms: list[dict]  # [{uri, label, type, property_type}]
 
     # ── SPARQL Generation / Validation / Execution ──────────────────────────
+    prior_sql: str        # SPARQL from the answer the user wants to refine ("Refine this query" UI)
     sparql: str
     sparql_error: str
     sparql_retries: int
@@ -64,6 +65,8 @@ class State(MessagesState):
 
     # ── Conversation History ─────────────────────────────────────────────────
     summary: str
+    cross_thread_context: str    # relevant past threads from long-term memory store
+    feedback_context: str        # past user likes/dislikes injected before pipeline
 
     # ── Pipeline Metadata ────────────────────────────────────────────────────
     pipeline_steps: list[dict]

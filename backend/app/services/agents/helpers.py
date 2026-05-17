@@ -46,6 +46,17 @@ def parse_tag(text: str, tag: str) -> str:
     return ""
 
 
+def _format_recent_messages(messages: list, n: int = 6, max_chars: int = 400) -> str:
+    """Format the last N messages as readable conversation history for LLM context."""
+    from langchain_core.messages import HumanMessage
+    lines = []
+    for m in messages[-n:]:
+        role = "User" if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human" else "Assistant"
+        content = (m.content or "")[:max_chars]
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
 def _format_scratchpad_context(scratchpad: dict, dep_ids: list[str]) -> str:
     """Format completed dependency results as context for a sub-question."""
     if not dep_ids or not scratchpad:

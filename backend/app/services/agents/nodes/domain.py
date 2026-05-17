@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from app.services.agents.bedrock import get_llm
-from app.services.agents.helpers import parse_json_from_response
+from app.services.agents.helpers import parse_json_from_response, _format_recent_messages
 from app.services.agents.prompts import DOMAIN_SPECIALIST_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
@@ -14,7 +14,12 @@ async def domain_specialist_node(state: State) -> dict:
     question = state.get("question", "")
     persona = state.get("persona", "Analyst")
     complexity = state.get("complexity", "simple")
+    summary = state.get("summary", "")
+    messages = state.get("messages", [])
     t0 = time.perf_counter()
+
+    recent = _format_recent_messages(messages, n=4)
+    conversation_context = "\n\n".join(filter(None, [summary, recent])) or "None."
 
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
     chain = DOMAIN_SPECIALIST_PROMPT | get_llm("balanced")
@@ -22,6 +27,8 @@ async def domain_specialist_node(state: State) -> dict:
         "question": question,
         "persona": persona,
         "complexity": complexity,
+        "conversation_context": conversation_context,
+        "feedback_context": state.get("feedback_context") or "None.",
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

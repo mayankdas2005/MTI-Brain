@@ -6,7 +6,7 @@ import json
 import time
 
 from app.services.agents.bedrock import get_llm
-from app.services.agents.helpers import parse_tag
+from app.services.agents.helpers import parse_tag, _format_recent_messages
 from app.services.agents.ontology_loader import get_ontology_summary
 from app.services.agents.prompts import PLAN_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
@@ -29,12 +29,17 @@ async def plan_node(state: State) -> dict:
     persona = state.get("persona", "Executive")
     plan_attempts = state.get("plan_attempts", 0)
     halt_reason = state.get("halt_reason", "")
+    summary = state.get("summary", "")
+    messages = state.get("messages", [])
     t0 = time.perf_counter()
 
     prior_context = (
         f"Note: prior decomposition failed — {halt_reason}. Re-decompose avoiding that issue."
         if plan_attempts > 0 and halt_reason else ""
     )
+
+    recent = _format_recent_messages(messages, n=4)
+    conversation_context = "\n\n".join(filter(None, [summary, recent])) or "None."
 
     tier = "deep" if state.get("deep_analysis") else "balanced"
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
@@ -44,6 +49,8 @@ async def plan_node(state: State) -> dict:
         "persona": persona,
         "ontology_summary": get_ontology_summary(),
         "prior_context": prior_context,
+        "conversation_context": conversation_context,
+        "feedback_context": state.get("feedback_context") or "None.",
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

@@ -42,10 +42,21 @@ async def sparql_gen_node(state: State) -> dict:
     sparql_error = state.get("sparql_error", "")
     sparql_retries = state.get("sparql_retries", 0)
     existing_sparql = state.get("sparql", "")
+    prior_sql = state.get("prior_sql", "")
     max_rows = state.get("max_rows", 100)
     t0 = time.perf_counter()
 
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
+
+    # Build refinement context from prior_sql — only on the FIRST generation (no error yet)
+    refinement_section = ""
+    if prior_sql and not sparql_error:
+        refinement_section = (
+            "The user is refining a previous answer. "
+            "Modify the SPARQL below to satisfy the user's instruction. "
+            "Preserve the original query's structure and intent — only change what is needed.\n\n"
+            f"Previous SPARQL to modify:\n```sparql\n{prior_sql}\n```"
+        )
 
     if sparql_error and existing_sparql:
         prompt = SPARQL_FIX_PROMPT
@@ -70,6 +81,10 @@ async def sparql_gen_node(state: State) -> dict:
             "ontology_terms": _format_ontology_terms(ontology_terms),
             "tribal_facts": _format_tribal_facts(tribal_facts),
             "prior_error_section": f"Prior error (fix this):\n{sparql_error}" if sparql_error else "",
+            "refinement_section": refinement_section,
+            "conversation_context": state.get("summary") or "None.",
+            "cross_thread_context": state.get("cross_thread_context") or "None.",
+            "feedback_context": state.get("feedback_context") or "None.",
             "max_rows": max_rows,
             "reasoning_directive": reasoning_directive,
         })
