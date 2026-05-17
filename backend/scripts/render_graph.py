@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services.agents.graph import _build_inner_graph, _build_main_graph
 
-OUT_DIR = Path(__file__).resolve().parent.parent / "data"
+OUT_DIR = Path(__file__).resolve().parent.parent.parent / "assets"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
