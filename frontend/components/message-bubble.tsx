@@ -3,7 +3,7 @@
 import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, MoreHorizontal, Pin, LayoutDashboard } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, MoreHorizontal, Pin, LayoutDashboard, Loader2 } from 'lucide-react';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import {
   Dialog,
@@ -54,7 +54,8 @@ const sparqlLight: Record<string, React.CSSProperties> = {
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
-import { generateDashboard } from '@/lib/api/dashboard';
+import { generateDashboard, getDashboard, downloadDashboard } from '@/lib/api/dashboard';
+import { useDashboardStore, DASHBOARD_TIMEOUT_MS } from '@/lib/store/dashboard';
 import { MarkdownRenderer } from './markdown-renderer';
 import { FeedbackWidget } from './feedback-widget';
 import { FollowUpChips } from './follow-up-chips';
@@ -121,8 +122,13 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const [editText, setEditText] = useState(message.content);
   const [dataView, setDataView] = useState<'sql' | 'table'>(() => {
     const pref = usePreferencesStore.getState();
-    // If SQL is hidden, always default to table
-    return pref.showSQL ? pref.defaultDataView : 'table';
+    if (!pref.showSQL) return 'table';
+    // Default to SPARQL view when there's no table data (0 rows) — shows the
+    // query so the user can verify what ran and why nothing was returned.
+    const md = message.metadata_;
+    const hasRows = !!(md?.rows && (md.rows as unknown[]).length > 0);
+    if (!hasRows && md?.sql) return 'sql';
+    return pref.defaultDataView;
   });
   const [aboutOpen, setAboutOpen] = useState(false);
   const [aboutQuestion, setAboutQuestion] = useState<string | null>(null);
@@ -379,17 +385,62 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const followUps = message.metadata_?.follow_ups;
   const hasTableData = !!(columns && columns.length > 0 && rows && rows.length > 0);
 
+  // Dashboard state — persisted in Zustand across page navigations
+  const convId = message.conversation_id ?? '';
+  const dashEntry  = useDashboardStore((s) => s.get(convId));
+  const setDash    = useDashboardStore((s) => s.set);
+  const dashStatus = dashEntry?.status ?? 'idle';
+  // Treat as timed-out if pending for >5 min — shows Retry instead of forever spinner
+  const dashTimedOut = dashStatus === 'pending' && !!dashEntry && (Date.now() - dashEntry.queuedAt) > DASHBOARD_TIMEOUT_MS;
+  // Only assistant messages can have dashboards; user messages never do.
+  const showDashButton = !!convId && message.role === 'assistant' && !!message.content && (rowCount ?? 0) >= 2;
+
+  // On mount: sync dashboard state with server.
+  // Runs for both 'idle' (restore) and 'ready'/'failed' (verify still exists).
+  // Clears stale localStorage entries when DB record is gone (404).
+  const removeDash = useDashboardStore((s) => s.remove);
+  const dashCheckFiredRef = useRef(false);
+  useEffect(() => {
+    if (!convId || !showDashButton) return;
+    if (dashStatus === 'pending' && !dashTimedOut) return;
+    // Deduplicate: React StrictMode fires effects twice in dev; ref prevents the double GET
+    if (dashCheckFiredRef.current) return;
+    dashCheckFiredRef.current = true;
+    getDashboard(convId)
+      .then((res) => {
+        if (res.status === 'ready') {
+          setDash(convId, { status: 'ready',   url: res.url ?? null, queuedAt: Date.now() });
+        } else if (res.status === 'pending') {
+          setDash(convId, { status: 'pending', url: null,            queuedAt: Date.now() });
+        } else if (res.status === 'failed') {
+          setDash(convId, { status: 'failed',  url: null,            queuedAt: Date.now() });
+        }
+      })
+      .catch(() => {
+        // 404 = DB record deleted or never created → clear stale localStorage
+        if (dashStatus !== 'idle') removeDash(convId);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convId, showDashButton]);
+
   // User preferences
   const prefShowSQL = usePreferencesStore((s) => s.showSQL);
   const prefAutoCharts = usePreferencesStore((s) => s.autoShowCharts);
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
 
-  // Always show SPARQL when generated — independent of row count and prefShowSQL
-  const hasSparql = !!(message.dataReady ?? !message.isStreaming) && !!sql;
+  const showSQLTab  = !!(prefShowSQL && sql);
+  // hasColumns: columns were returned even if rows is empty — show for trust
+  const hasColumns  = !!(columns && columns.length > 0);
+  const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasColumns);
   // Show data skeleton once SQL generation step has begun but data hasn't arrived yet
   const sqlStepStarted = message.isStreaming && !message.dataReady &&
     (message.streamingSteps?.some((s) => ['generate_sql', 'execute', 'respond'].includes(s.node)) ?? false);
+  // Chart skeleton only shows after answer_synthesis is done — visualization runs right after and is nearly instant.
+  // Without this gate the skeleton would show for the entire answer_synthesis duration (often 20+ seconds).
+  const answerSynthesisDone = message.streamingSteps?.some(
+    (s) => s.node === 'answer_synthesis' && s.status === 'done'
+  ) ?? false;
 
   return (
     <div
@@ -430,71 +481,34 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         </div>
       )}
 
-      {/* SPARQL Query — always shown when generated, regardless of row count */}
-      {hasSparql && !hasTableData && (
-        <div className="mb-2">
-          <div className="rounded-lg border border-border bg-muted/50 overflow-hidden max-h-96 flex flex-col">
-            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-muted/30">
-              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Code2 className="w-3 h-3" />
-                SPARQL
-                {typeof rowCount === 'number' && (
-                  <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${rowCount === 0 ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400' : 'bg-muted text-muted-foreground'}`}>
-                    {rowCount} {rowCount === 1 ? 'row' : 'rows'}
-                  </span>
-                )}
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0 text-muted-foreground"
-                onClick={async () => {
-                  const ok = await copyText(sql!);
-                  if (ok) toast.success('SPARQL copied');
-                  else toast.error('Copy failed');
-                }}
-              >
-                <Copy className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              <SyntaxHighlighter
-                language="sparql"
-                style={resolvedTheme === 'dark' ? sparqlDark : sparqlLight}
-                customStyle={{ margin: 0, padding: '12px', fontSize: '12px', lineHeight: '1.6', background: 'transparent' }}
-                wrapLongLines
-              >
-                {sql ?? ''}
-              </SyntaxHighlighter>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SQL / Data Table toggle — only shown when both are available */}
-      {hasSparql && hasTableData && (
+      {/* SPARQL / Data toggle */}
+      {hasDataView && (
         <div className="mb-2 space-y-2">
           <div className="flex items-center gap-1">
-            <Button
-              variant={dataView === 'sql' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 px-2.5 text-xs gap-1.5"
-              onClick={() => setDataView('sql')}
-            >
-              <Code2 className="w-3.5 h-3.5" />
-              SPARQL
-            </Button>
-            <Button
-              variant={dataView === 'table' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 px-2.5 text-xs gap-1.5"
-              onClick={() => setDataView('table')}
-            >
-              <TableIcon className="w-3.5 h-3.5" />
-              Data Table
-            </Button>
+            {showSQLTab && (
+              <Button
+                variant={dataView === 'sql' ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-7 px-2.5 text-xs gap-1.5"
+                onClick={() => setDataView('sql')}
+              >
+                <Code2 className="w-3.5 h-3.5" />
+                SPARQL
+              </Button>
+            )}
+            {hasColumns && (
+              <Button
+                variant={dataView === 'table' ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-7 px-2.5 text-xs gap-1.5"
+                onClick={() => setDataView('table')}
+              >
+                <TableIcon className="w-3.5 h-3.5" />
+                Data
+              </Button>
+            )}
           </div>
-          {dataView === 'sql' && (
+          {dataView === 'sql' && showSQLTab && (
             <div className="rounded-lg border border-border bg-muted/50 overflow-hidden max-h-96 flex flex-col">
               <div className="flex items-center justify-end px-3 py-1.5 border-b border-border bg-muted/30">
                 <Button
@@ -522,16 +536,11 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               </div>
             </div>
           )}
-          {dataView === 'table' && (
-            <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} />
+          {dataView === 'table' && hasColumns && (
+            hasTableData
+              ? <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} />
+              : <DataTable columns={columns!} rows={[]} rowCount={0} filename={exportFilename} />
           )}
-        </div>
-      )}
-
-      {/* Data Table only — when no SQL was generated but results exist */}
-      {!hasSparql && hasTableData && (
-        <div className="mb-2">
-          <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} />
         </div>
       )}
 
@@ -542,8 +551,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         </StreamingContent>
       )}
 
-      {/* Chart skeleton — shown after data arrives but before chart spec fires */}
-      {message.isStreaming && message.dataReady && !message.chartReady && prefAutoCharts && hasTableData && (
+      {/* Chart skeleton — only shown after answer_synthesis is done, right before visualization fires */}
+      {message.isStreaming && answerSynthesisDone && !message.chartReady && prefAutoCharts && hasTableData && (
         <div className="mt-3 rounded-xl border border-border bg-sidebar px-4 pt-4 pb-3 animate-fade-in">
           <Skeleton className="h-3 w-40 rounded mb-4" />
           <div className="flex items-end gap-2 h-24">
@@ -674,20 +683,59 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                       Pin to home
                     </DropdownMenuItem>
                   )}
-                  {message.conversation_id && !!message.content && (message.metadata_?.row_count ?? 0) >= 2 && (
+                  {showDashButton && (
                     <DropdownMenuItem
+                      disabled={dashStatus === 'pending' && !dashTimedOut}
                       onClick={() => {
-                        toast.info('Dashboard generation started.');
-                        void generateDashboard(message.conversation_id).catch((err: unknown) => {
-                          const msg =
-                            err instanceof Error ? err.message : 'Failed to generate dashboard.';
-                          toast.error(msg);
+                        if (dashStatus === 'ready') {
+                          // Always fetch a fresh presigned URL — cached URL expires after 7 days
+                          void getDashboard(convId).then((res) => {
+                            if (res.url) {
+                              // Open to display in new tab
+                              window.open(res.url, '_blank', 'noopener');
+                              // Download via backend (includes auth, avoids S3 CORS)
+                              void downloadDashboard(convId).then(({ blob, filename }) => {
+                                const blobUrl = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = blobUrl;
+                                a.download = filename;
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                URL.revokeObjectURL(blobUrl);
+                              }).catch(() => {});
+                            } else {
+                              // DB record gone — clear stale state, let user regenerate
+                              removeDash(convId);
+                              toast.info('Dashboard no longer available. Click Generate to rebuild it.');
+                            }
+                          }).catch(() => {
+                            // 404 — DB record deleted, reset to idle
+                            removeDash(convId);
+                            toast.info('Dashboard no longer available. Click Generate to rebuild it.');
+                          });
+                          return;
+                        }
+                        setDash(convId, { status: 'pending', url: null, queuedAt: Date.now() });
+                        toast.info('Generating executive dashboard…', {
+                          id: `dash-${convId}`,
+                          description: 'This may take up to a minute. We\'ll notify you when ready.',
+                        });
+                        void generateDashboard(convId).catch((err: unknown) => {
+                          setDash(convId, { status: 'failed', url: null, queuedAt: Date.now() });
+                          toast.error(err instanceof Error ? err.message : 'Dashboard generation failed.', { id: `dash-${convId}` });
                         });
                       }}
                       className="gap-2"
                     >
-                      <LayoutDashboard className="w-4 h-4" />
-                      Generate Dashboard
+                      {dashStatus === 'pending' && !dashTimedOut
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <LayoutDashboard className="w-4 h-4" />
+                      }
+                      {dashStatus === 'ready'                     ? 'Open Dashboard'    :
+                       dashStatus === 'pending' && !dashTimedOut  ? 'Generating…'       :
+                       dashStatus === 'failed' || dashTimedOut    ? 'Retry Dashboard'   :
+                                                  'Generate Dashboard'}
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuSeparator />
@@ -766,9 +814,11 @@ function ReasoningPanel({
   const steps = message.streamingSteps;
   const hasSteps = !!steps && steps.length > 0;
 
-  // Closed until first step arrives from backend — avoids empty body flash.
-  // Auto-opens when steps land; auto-closes when streaming ends.
-  const [open, setOpen] = useState(hasSteps);
+  // Only open on initial render if the message is actively streaming.
+  // Historical messages (loaded on refresh) start collapsed — streaming
+  // never happened from this component's perspective so the close effect
+  // would never fire, leaving the panel permanently expanded.
+  const [open, setOpen] = useState(hasSteps && !!message.isStreaming);
   const prevHasStepsRef = useRef(hasSteps);
   const prevStreamingRef = useRef<boolean>(!!message.isStreaming);
   useEffect(() => {
@@ -796,6 +846,7 @@ function ReasoningPanel({
   // Legacy reasoning text (pre-pipeline_steps messages) used as a fallback
   // when the timeline can't be rendered.
   const legacyReasoning = (message.reasoning || '')
+    .replace(/^#{1,6}\s+/gm, '')
     .replace(/^\*\*[^*]+\*\*\s*$/gm, '')
     .replace(/\n---\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
@@ -867,6 +918,7 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
         const isSkipped = step.status === 'skipped';
 
         const cleanedReasoning = (step.reasoning || '')
+          .replace(/^#{1,6}\s+/gm, '')
           .replace(/^\*\*[^*]+\*\*\s*$/gm, '')
           .replace(/\n---\n/g, '\n')
           .replace(/\n{3,}/g, '\n\n')

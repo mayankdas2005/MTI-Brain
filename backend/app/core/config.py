@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_LOGIN_PER_MINUTE: int = Field(default=_rl.get("login_per_minute", 5))
     RATE_LIMIT_ASK_PER_MINUTE: int = Field(default=_rl.get("ask_per_minute", 30))
 
+    # ── AWS credentials (.env) ────────────────────────────────────────────────
+    AWS_ACCESS_KEY_ID: str = Field(default="")
+    AWS_SECRET_ACCESS_KEY: str = Field(default="", repr=False)
+    AWS_BOTO3_BUCKET_NAME: str = Field(default="")
+
     # ── AWS Bedrock config (.env) ─────────────────────────────────────────────
     AWS_BEARER_TOKEN_BEDROCK: str = Field(default="")
     AWS_REGION: str = Field(default="us-west-2")

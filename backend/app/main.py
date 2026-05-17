@@ -76,6 +76,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "X-Filename"],
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 

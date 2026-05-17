@@ -21,9 +21,9 @@ export default function NewPage() {
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* Scrollable welcome content — vertically centered when there's space */}
+      {/* Scrollable welcome content — vertically centered; CLS prevented by stable skeleton heights */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <div className="flex flex-col items-center justify-center min-h-full px-4 py-4">
+        <div className="flex flex-col items-center justify-center min-h-full px-4 py-10">
           <div className="w-full max-w-3xl lg:max-w-[900px]">
             <WelcomeState onSuggestion={(prompt) => setPendingSuggestion(prompt)} />
           </div>

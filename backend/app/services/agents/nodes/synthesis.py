@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 
 from langchain_core.messages import AIMessage
@@ -77,7 +78,7 @@ async def answer_synthesis_node(state: State) -> dict:
         "intent": intent,
         "persona": persona,
         "col_stats": col_stats,
-        "results_sample": _format_results_sample(kg_columns, kg_rows),
+        "results_sample": _format_results_sample(kg_columns, spread_sample),
         "row_count": len(kg_rows),
         "tribal_facts": _format_tribal_facts(tribal_facts),
         "evidence": ", ".join(evidence) if evidence else "None.",
@@ -103,6 +104,9 @@ async def answer_synthesis_node(state: State) -> dict:
     chart_text = chart_raw.content if hasattr(chart_raw, "content") else str(chart_raw)
 
     answer = parse_tag(narrative_text, "answer") or narrative_text
+    # Strip any trailing follow_ups JSON array that leaked into the answer block
+    answer = re.sub(r'\s*\[[\s\S]*?\]\s*$', '', answer).strip()
+
     follow_ups_raw = parse_tag(narrative_text, "follow_ups")
     try:
         follow_ups = json.loads(follow_ups_raw) if follow_ups_raw else []

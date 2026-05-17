@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from app.core.logger import logger
-from app.models.conversation import MTIBrainMessage, MTIBrainProject, MTIBrainThread
+from app.models.conversation import MTIBrainDashboard, MTIBrainMessage, MTIBrainProject, MTIBrainThread
 from sqlalchemy import delete, exists, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -200,6 +200,33 @@ async def get_thread(
     return thread, messages
 
 
+async def cleanup_thread_dashboards(thread_id: uuid.UUID) -> None:
+    """Delete all S3 dashboard objects for a thread before DB CASCADE removes the rows.
+
+    Called before delete_thread so the S3 objects are cleaned up first.
+    DB rows are removed automatically by the ON DELETE CASCADE on thread_id.
+    This is best-effort: S3 failures are logged but not re-raised.
+    """
+    import asyncio
+    from app.db.session import async_read_session_factory
+    from app.services.dashboard_builder import delete_from_s3
+
+    try:
+        async with async_read_session_factory() as session:
+            result = await session.execute(
+                select(MTIBrainDashboard.s3_key)
+                .where(MTIBrainDashboard.thread_id == thread_id)
+                .where(MTIBrainDashboard.s3_key != "")
+            )
+            keys = [row[0] for row in result.fetchall()]
+
+        if keys:
+            await asyncio.gather(*[delete_from_s3(k) for k in keys], return_exceptions=True)
+            logger.info("dashboard cleanup: deleted %d S3 objects for thread=%s", len(keys), thread_id)
+    except Exception as exc:
+        logger.warning("dashboard cleanup: failed for thread=%s: %s", thread_id, exc)
+
+
 async def delete_thread(
     db: AsyncSession,
     thread_id: uuid.UUID,
@@ -215,6 +242,7 @@ async def delete_thread(
     Returns:
         True if the thread was deleted, False if it did not exist.
     """
+    await cleanup_thread_dashboards(thread_id)
     stmt = delete(MTIBrainThread).where(MTIBrainThread.id == thread_id)
     if user_id:
         stmt = stmt.where(MTIBrainThread.user_id == user_id)

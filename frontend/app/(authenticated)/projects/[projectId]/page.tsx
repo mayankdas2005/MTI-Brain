@@ -241,7 +241,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         {showThreadSkeleton ? (
           <div className="space-y-[var(--density-list-gap)]">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="rounded-xl border border-border bg-background p-[var(--density-card-pad)]">
+              <div key={i} className="rounded-xl border border-border bg-background p-[var(--density-card-pad)] min-h-[3.5rem]">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Skeleton className="h-4 w-4 rounded" />

@@ -14,6 +14,39 @@
 
 const NOTIFICATION_TAG = 'mti-brain-completion';
 
+// ─── Ping audio ───────────────────────────────────────────────────────────────
+// Shared singleton so every hook that needs to play the ping reuses the same
+// Audio element that was already primed by use-stream-completion-notice.
+
+const PING_SRC = '/notify.mp3';
+let _pingAudio: HTMLAudioElement | null = null;
+
+function _ensurePingAudio(): HTMLAudioElement | null {
+  if (typeof window === 'undefined') return null;
+  if (!_pingAudio) {
+    _pingAudio = new Audio(PING_SRC);
+    _pingAudio.preload = 'auto';
+  }
+  return _pingAudio;
+}
+
+/**
+ * Play the in-app notification ping.
+ * Requires the audio element to have been primed via a prior user gesture
+ * (handled by use-stream-completion-notice's attachPrimeListeners).
+ * Silent-fails if the element isn't ready or playback is throttled.
+ */
+export function playPing(): void {
+  const a = _ensurePingAudio();
+  if (!a) return;
+  try {
+    a.currentTime = 0;
+    void a.play().catch(() => {});
+  } catch {
+    // older browsers / file missing
+  }
+}
+
 export type NotificationPermissionState =
   | 'default'
   | 'granted'

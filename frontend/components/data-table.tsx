@@ -28,15 +28,6 @@ function formatLabel(s: string) {
 
 type ColType = 'int' | 'float' | 'text' | 'bool' | 'date' | 'timestamp' | 'null';
 
-const TYPE_LABEL: Record<ColType, string> = {
-  int:       'integer',
-  float:     'decimal',
-  text:      'text',
-  bool:      'boolean',
-  date:      'date',
-  timestamp: 'timestamp',
-  null:      '',
-};
 
 /** Infer column type from sample values. */
 function inferColType(rows: unknown[][], colIndex: number): ColType {
@@ -136,8 +127,8 @@ export function DataTable({ columns, rows, rowCount, filename }: DataTableProps)
   }, [rows, sortCol, sortDir, colTypes]);
 
   // Outlier sets per column, keyed against sortedRows indices.
-  const outliersByCol = useMemo(() => {
-    if (!showAnomalies) return new Map<number, Set<number>>();
+  // Always detect outliers so the button stays visible even when display is toggled off
+  const allOutliersByCol = useMemo(() => {
     const map = new Map<number, Set<number>>();
     columns.forEach((_, ci) => {
       if (colTypes[ci] === 'int' || colTypes[ci] === 'float') {
@@ -146,9 +137,12 @@ export function DataTable({ columns, rows, rowCount, filename }: DataTableProps)
       }
     });
     return map;
-  }, [sortedRows, columns, colTypes, showAnomalies]);
+  }, [sortedRows, columns, colTypes]);
 
-  const hasAnyOutliers = outliersByCol.size > 0;
+  // When toggle is off, use empty map so no cells are highlighted
+  const outliersByCol = showAnomalies ? allOutliersByCol : new Map<number, Set<number>>();
+
+  const hasAnyOutliers = allOutliersByCol.size > 0;
 
   const totalPages = Math.ceil(sortedRows.length / ROWS_PER_PAGE);
   const start = page * ROWS_PER_PAGE;
@@ -200,6 +194,16 @@ export function DataTable({ columns, rows, rowCount, filename }: DataTableProps)
             </TableRow>
           </TableHeader>
           <TableBody>
+            {pagedRows.length === 0 && (
+              <TableRow>
+                <TableCell
+                  colSpan={columns.length}
+                  className="py-8 text-center text-xs text-muted-foreground"
+                >
+                  Query executed - 0 rows returned
+                </TableCell>
+              </TableRow>
+            )}
             {pagedRows.map((row, ri) => {
               const absoluteRowIdx = start + ri;
               return (
@@ -214,7 +218,7 @@ export function DataTable({ columns, rows, rowCount, filename }: DataTableProps)
                       <ContextMenu key={ci}>
                         <ContextMenuTrigger asChild>
                           <TableCell
-                            className={`text-xs whitespace-nowrap py-[var(--density-pad-y)] tabular-nums transition-colors ${isNumeric ? 'text-right font-medium' : ''} ${isFirst ? `sticky left-0 z-10 ${rowBg} md:static md:bg-transparent` : ''} ${isOutlier ? 'bg-warning-soft/50 text-warning-foreground' : ''}`}
+                            className={`text-xs whitespace-nowrap py-[var(--density-pad-y)] tabular-nums transition-colors ${isNumeric ? 'text-right font-medium' : ''} ${isFirst ? `sticky left-0 z-10 ${rowBg} md:static md:bg-transparent` : ''} ${isOutlier ? 'bg-warning-soft/50 text-foreground' : ''}`}
                           >
                             <span className="inline-flex items-center gap-1 justify-end">
                               {cell === null || cell === undefined ? (
@@ -275,7 +279,11 @@ export function DataTable({ columns, rows, rowCount, filename }: DataTableProps)
                   size="sm"
                   aria-pressed={showAnomalies}
                   onClick={() => setShowAnomalies((v) => !v)}
-                  className={`h-6 gap-1 px-2 text-[10px] font-medium ${showAnomalies ? 'text-warning bg-warning-soft/40' : ''}`}
+                  className={`h-6 gap-1 px-2 text-[10px] font-medium border transition-colors ${
+                    showAnomalies
+                      ? 'border-warning/40 bg-warning-soft/40 text-warning'
+                      : 'border-border text-muted-foreground hover:text-foreground'
+                  }`}
                 >
                   <AlertTriangle className="w-3 h-3" />
                   Anomalies

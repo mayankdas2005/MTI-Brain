@@ -78,14 +78,20 @@ class FusekiClient:
                     row.append(None)
                 else:
                     val = cell.get("value")
+                    ctype = cell.get("type", "")
                     dtype = cell.get("datatype", "")
-                    if "decimal" in dtype or "integer" in dtype or "double" in dtype or "float" in dtype:
+                    if ctype == "uri":
+                        # Strip URI prefix — keep only the local name after last / or #
+                        for sep in ("#", "/"):
+                            if sep in val:
+                                val = val.rsplit(sep, 1)[-1]
+                                break
+                        row.append(val)
+                    elif "decimal" in dtype or "integer" in dtype or "double" in dtype or "float" in dtype:
                         try:
                             row.append(float(val))
                         except (TypeError, ValueError):
                             row.append(val)
-                    elif "date" in dtype:
-                        row.append(val)
                     else:
                         row.append(val)
             rows.append(row)

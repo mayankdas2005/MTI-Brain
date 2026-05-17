@@ -224,7 +224,7 @@ export function SearchModal() {
                 <CommandGroup heading="Recent Chats">
                   <div className="px-2 py-1 space-y-2">
                     {[60, 75, 55, 80].slice(0, Math.min(useThreadStore.getState().threads.length, 4)).map((w, i) => (
-                      <div key={i} className="flex items-center gap-2 px-2 py-1.5">
+                      <div key={i} className="flex items-center gap-2 px-2 py-1.5 min-h-[2.25rem]">
                         <Skeleton className="h-4 w-4 rounded shrink-0" />
                         <Skeleton className="h-4" style={{ width: `${w}%` }} />
                       </div>
@@ -242,7 +242,7 @@ export function SearchModal() {
                 <CommandGroup heading="Conversations">
                   <div className="px-2 py-1 space-y-1">
                     {[0, 1, 2, 3].map((i) => (
-                      <div key={i} className="flex items-center gap-2 px-2 py-1.5">
+                      <div key={i} className="flex items-center gap-2 px-2 py-1.5 min-h-[2.25rem]">
                         <Skeleton className="h-4 w-4 rounded shrink-0" />
                         <div className="flex-1 space-y-1.5">
                           <Skeleton className="h-3.5 w-3/5" />

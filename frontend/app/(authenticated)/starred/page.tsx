@@ -423,11 +423,11 @@ export default function StarredPage() {
  *  layout doesn't jump when results land. */
 function StarredSearchSkeleton() {
   return (
-    <div>
+    <div className="min-h-[12rem]">
       {[0, 1, 2, 3].map((i) => (
         <div key={i}>
           {i > 0 && <div className="border-t border-border mx-4" />}
-          <div className="flex items-center gap-3 px-4 py-[var(--density-pad-y-loose)]">
+          <div className="flex items-center gap-3 px-4 py-[var(--density-pad-y-loose)] rounded-lg min-h-[4rem]">
             <Skeleton className="h-4 w-4 rounded-sm shrink-0" />
             <div className="flex-1 space-y-1.5">
               <Skeleton className="h-3.5 w-3/5" />

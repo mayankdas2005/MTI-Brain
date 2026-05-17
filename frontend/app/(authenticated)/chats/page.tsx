@@ -470,7 +470,7 @@ export default function ChatsPage() {
         {/* Thread / Search List */}
         <div className="space-y-[var(--density-list-gap)]">
           {isSearching ? (
-            <>
+            <div className="min-h-[16rem]">
               {/* Search result count */}
               {!searchLoading && searchResults.length > 0 && (
                 <p className="text-xs text-muted-foreground mb-2 px-1">
@@ -545,7 +545,7 @@ export default function ChatsPage() {
                   </div>
                 </button>
               ))}
-            </>
+            </div>
           ) : threads.length === 0 && loading ? (
             null
           ) : threads.length === 0 ? (
@@ -683,7 +683,7 @@ function ThreadListSkeleton() {
   return (
     <div className="space-y-[var(--density-list-gap)]">
       {THREAD_WIDTHS.map((w, i) => (
-        <div key={i} className="rounded-lg px-4 py-[var(--density-pad-y-loose)]">
+        <div key={i} className="rounded-lg px-4 py-[var(--density-pad-y-loose)] min-h-[3.5rem]">
           <Skeleton className={`h-4 mb-2 ${w}`} />
           <Skeleton className="h-3 w-1/4" />
         </div>
@@ -696,7 +696,7 @@ function SearchResultSkeleton() {
   return (
     <div className="space-y-[var(--density-list-gap)]">
       {[0.6, 0.8, 0.7, 0.5].map((opacity, i) => (
-        <div key={i} className="rounded-lg px-4 py-3" style={{ opacity }}>
+        <div key={i} className="rounded-lg px-4 py-[var(--density-pad-y-loose)] min-h-[5rem]" style={{ opacity }}>
           <Skeleton className="h-4 w-3/5 mb-1.5" />
           <Skeleton className="h-3 w-full mb-1" />
           <Skeleton className="h-3 w-4/5 mb-1.5" />

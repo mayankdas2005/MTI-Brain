@@ -918,8 +918,8 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
       {/* Bulk action bar */}
       {isOpen && <BulkActionBar />}
 
-      {/* Footer - User menu */}
-      <div className={cn("border-t border-sidebar-border shrink-0", isOpen ? "px-3" : "flex justify-center")} style={{ paddingTop: 'var(--density-pad-y)', paddingBottom: 'var(--density-pad-y)' }}>
+      {/* Footer - User menu — min-h prevents sidebar from shifting when user data loads */}
+      <div className={cn("border-t border-sidebar-border shrink-0 min-h-[3.5rem] flex flex-col justify-center", isOpen ? "px-3" : "flex justify-center")} style={{ paddingTop: 'var(--density-pad-y)', paddingBottom: 'var(--density-pad-y)' }}>
         {!user ? (
           isOpen ? (
             <div className="flex items-center gap-2.5 px-2 py-[var(--density-pad-y-tight)]">

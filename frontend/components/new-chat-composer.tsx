@@ -5,7 +5,10 @@ import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import { useThreadStore, setThreadCreationGate } from '@/lib/store/threads';
 import { toast } from '@/lib/toast';
-import { ArrowUp, Loader2, BrainCircuit, BookOpen } from 'lucide-react';
+import { ArrowUp, Loader2, BrainCircuit, BookOpen, Bookmark } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
@@ -63,6 +66,22 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
   // ─── Playbook @ trigger ───
   const playbookQueries = usePlaybookStore((s) => s.queries);
   const fetchPlaybookQueries = usePlaybookStore((s) => s.fetchQueries);
+  const createPlaybookQuery = usePlaybookStore((s) => s.createQuery);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveQueryName, setSaveQueryName] = useState('');
+  const saveSubmittingRef = useRef(false);
+
+  const handleSavePlaybook = () => {
+    if (!saveQueryName.trim() || saveSubmittingRef.current) return;
+    const name = saveQueryName.trim();
+    const queryText = input.trim();
+    saveSubmittingRef.current = true;
+    setSaveDialogOpen(false);
+    void createPlaybookQuery(name, queryText)
+      .then(() => { toast.success(`"${name}" saved — type @ to use it`); })
+      .catch(() => toast.error('Failed to save.'))
+      .finally(() => { saveSubmittingRef.current = false; });
+  };
   const atMatches = useMemo(() => {
     if (!input.startsWith('@')) return [];
     const q = input.slice(1).toLowerCase();
@@ -303,18 +322,37 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
                   <span className="hidden sm:inline">Deep Analysis</span>
                 </button>
 
-                {/* Playbook */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setInput('@');
-                    setTimeout(() => textareaRef.current?.focus(), 0);
-                  }}
-                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors border border-transparent text-muted-foreground hover:text-foreground hover:bg-accent outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                >
-                  <BookOpen className="w-3.5 h-3.5 shrink-0" />
-                  <span className="hidden sm:inline">Playbook</span>
-                </button>
+                {/* Playbook — only shown when entries exist */}
+                {playbookQueries.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInput('@');
+                      setTimeout(() => textareaRef.current?.focus(), 0);
+                    }}
+                    className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors border border-transparent text-muted-foreground hover:text-foreground hover:bg-accent outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  >
+                    <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                    <span className="hidden sm:inline">Playbook</span>
+                  </button>
+                )}
+
+                {/* Save to Playbook — shown when text is typed */}
+                {input.trim() && !slashOpen && !atOpen && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => { setSaveQueryName(''); setSaveDialogOpen(true); }}
+                        className="flex items-center justify-center h-8 w-8 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="Save to Playbook"
+                      >
+                        <Bookmark className="w-3.5 h-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">Save to Playbook</TooltipContent>
+                  </Tooltip>
+                )}
               </div>
 
               <div className="relative h-9 w-9 flex items-center justify-center">
@@ -340,6 +378,30 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
           MTI Brain is AI and can make mistakes. Please double-check responses.
         </p>
       </div>
+
+      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+        <DialogContent className="sm:max-w-md p-6 gap-0">
+          <DialogTitle className="text-lg font-semibold text-foreground mb-1">
+            Save to Playbook
+          </DialogTitle>
+          <p className="text-sm text-muted-foreground mb-4">Give this query a name so you can reuse it later.</p>
+          <input
+            autoFocus
+            value={saveQueryName}
+            onChange={(e) => setSaveQueryName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); handleSavePlaybook(); }
+              if (e.key === 'Escape') setSaveDialogOpen(false);
+            }}
+            placeholder="Name this query…"
+            className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+          />
+          <DialogFooter className="mt-4">
+            <Button variant="ghost" onClick={() => setSaveDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleSavePlaybook}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

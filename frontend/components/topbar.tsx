@@ -159,40 +159,40 @@ export function Topbar() {
         )}
       </div>
 
-      {/* Center: Thread title */}
-      {showThreadChrome && currentThreadTitle ? (
-        <div className="flex items-center gap-2 min-w-0 max-w-[160px] sm:max-w-xs md:max-w-md">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={currentThreadStarred ? 'Unstar this conversation' : 'Star this conversation'}
-                aria-pressed={currentThreadStarred}
-                data-onboarding="star"
-                className="shrink-0 h-8 w-8 border border-transparent hover:border-[var(--header-control-border)] hover:bg-[var(--header-control-bg)] transition-spring active:scale-[0.82]"
-                onClick={handleStar}
-              >
-                <Star
-                  className={`w-4 h-4 transition-colors duration-200 ${starBurst ? 'star-burst' : ''} ${
-                    currentThreadStarred
-                      ? 'fill-[var(--color-star)] text-[var(--color-star)]'
-                      : 'text-[var(--header-foreground)]/60'
-                  }`}
-                />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">{currentThreadStarred ? 'Unstar' : 'Star'}</TooltipContent>
-          </Tooltip>
-          <span className="text-sm font-medium truncate text-[var(--header-foreground)]">
-            {currentThreadTitle}
-          </span>
-        </div>
-      ) : showThreadChrome ? (
-        <Skeleton className="h-4 w-40" />
-      ) : (
-        <div />
-      )}
+      {/* Center: Thread title — stable min-h so topbar chrome never shifts */}
+      <div className="min-h-5 flex items-center">
+        {showThreadChrome && currentThreadTitle ? (
+          <div className="flex items-center gap-2 min-w-0 max-w-[160px] sm:max-w-xs md:max-w-md">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={currentThreadStarred ? 'Unstar this conversation' : 'Star this conversation'}
+                  aria-pressed={currentThreadStarred}
+                  data-onboarding="star"
+                  className="shrink-0 h-8 w-8 border border-transparent hover:border-[var(--header-control-border)] hover:bg-[var(--header-control-bg)] transition-spring active:scale-[0.82]"
+                  onClick={handleStar}
+                >
+                  <Star
+                    className={`w-4 h-4 transition-colors duration-200 ${starBurst ? 'star-burst' : ''} ${
+                      currentThreadStarred
+                        ? 'fill-[var(--color-star)] text-[var(--color-star)]'
+                        : 'text-[var(--header-foreground)]/60'
+                    }`}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{currentThreadStarred ? 'Unstar' : 'Star'}</TooltipContent>
+            </Tooltip>
+            <span className="text-sm font-medium truncate text-[var(--header-foreground)]">
+              {currentThreadTitle}
+            </span>
+          </div>
+        ) : showThreadChrome ? (
+          <Skeleton className="h-4 w-40" />
+        ) : null}
+      </div>
 
       {/* Right: Export + Search */}
       <div className="flex items-center gap-1 sm:gap-2">

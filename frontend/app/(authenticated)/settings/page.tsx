@@ -435,8 +435,8 @@ export default function SettingsPage() {
 
                 {v('default data view sql table') && (
                   <SettingBlock
-                    label="Default result view"
-                    description="Which tab opens first when query results arrive."
+                    label="Default data view"
+                    description="Which tab opens first when query data arrives."
                   >
                     <div className="grid grid-cols-2 gap-2 max-w-sm">
                       {(['sql', 'table'] as DefaultDataView[]).map((view) => {
@@ -454,7 +454,7 @@ export default function SettingsPage() {
                                   : 'bg-muted/50 hover:bg-accent text-muted-foreground'
                               }`}
                             >
-                              {view === 'sql' ? 'SPARQL' : 'Data Table'}
+                              {view === 'sql' ? 'SPARQL' : 'Data'}
                             </button>
                             <DefaultTag visible={isDefault} />
                           </div>

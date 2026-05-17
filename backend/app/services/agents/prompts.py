@@ -413,10 +413,10 @@ Cover: the headline finding, which data points are load-bearing for {persona}'s 
 </reasoning>
 
 <answer>
-[Write here. Follow the pyramid principle. Open with the verdict. Support with evidence. Close with implications or actions. Match persona format above.]
+Output ONLY the formatted {persona} briefing — no reasoning, no planning notes, no deliberation, no follow-up questions. Start directly with the finding. Match the persona format above exactly.
 </answer>
 
-Write 3 follow-up questions that a {persona} would naturally ask next — phrased as the user querying the system, not as the system offering to help. Make them specific to the data returned, not generic.
+Now output exactly 3 follow-up questions a {persona} would naturally ask next. Phrased as the user querying the system, not as the system offering to help. Specific to the data returned, not generic. Output ONLY the JSON array — no other text before or after.
 <follow_ups>["...", "...", "..."]</follow_ups>"""
 )
 
