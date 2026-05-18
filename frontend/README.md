@@ -14,6 +14,7 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 | Streaming | POST-based SSE via fetch + ReadableStream |
 | Auth | Username/password → JWT in localStorage. **Okta OIDC planned** |
 | Markdown | react-markdown + remark-gfm + rehype-highlight |
+| Code highlighting | react-syntax-highlighter + highlight.js |
 | Charts | recharts |
 | Mobile drawers | vaul (bottom-sheet animations) |
 | Notifications | Sonner |
@@ -23,6 +24,11 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 | Animations | Framer Motion |
 | Virtualization | @tanstack/react-virtual |
 | Keyboard | react-hotkeys-hook (wrapped by `hooks/use-keyboard-shortcuts.ts`) |
+| Forms | react-hook-form + zod |
+| Command menu | cmdk |
+| Export | pptxgenjs (PowerPoint), xlsx (Excel) |
+| Date utilities | date-fns |
+| Carousel | embla-carousel-react |
 | PWA | Service worker (`public/sw.js`), install prompt, `display: standalone` manifest |
 | Containerization | Docker (multi-stage, non-root, standalone) |
 
@@ -255,7 +261,7 @@ npm install --legacy-peer-deps
 ### Setup
 
 ```bash
-cd quest/frontend
+cd mti-brain/frontend
 
 # Install dependencies
 npm install --legacy-peer-deps
@@ -316,5 +322,4 @@ The container: runs as non-root user (`nextjs`), health-checks port 3000 every 3
 | Backend (FastAPI) | [../backend/README.md](../backend/README.md) |
 | Database (PostgreSQL + PgBouncer) | [../database/README.md](../database/README.md) |
 | Deployment (AWS CodeDeploy) | [../deploy/README.md](../deploy/README.md) |
-Docker or behind an SSH tunnel. |
 

@@ -33,6 +33,10 @@ backend/
 │   │       ├── auth.py          # POST /auth/login, GET /auth/me
 │   │       ├── chat.py          # Thread management + SSE streaming
 │   │       ├── project.py       # Project CRUD
+│   │       ├── playbook.py      # Saved queries (Playbook) CRUD
+│   │       ├── pinned_metrics.py # Pinned metric cards CRUD
+│   │       ├── labels.py        # Thread label apply/remove
+│   │       ├── dashboard.py     # Per-conversation HTML dashboard (S3-backed)
 │   │       └── deps.py          # CurrentUser dependency (JWT validation)
 │   ├── core/
 │   │   ├── config.py            # Pydantic Settings (all env vars)
@@ -41,20 +45,62 @@ backend/
 │   │   ├── circuit_breaker.py   # pybreaker instances for external services
 │   │   └── rate_limit.py        # Shared rate limiter used by route handlers
 │   ├── db/
-│   │   ├── session.py           # SQLAlchemy async engine + session factory + pool warmup
+│   │   ├── session.py           # SQLAlchemy async engine + session factory + pool warmup + LangGraph DSN helper
 │   │   └── base.py              # Declarative ORM base
 │   ├── models/
-│   │   ├── conversation.py      # MTIBrainProject / MTIBrainThread / MTIBrainMessage / MTIBrainFeedback
+│   │   ├── conversation.py      # MTIBrainProject / MTIBrainThread / MTIBrainMessage / MTIBrainFeedback / MTIBrainDashboard
 │   │   ├── user.py              # MTIBrainUser
+│   │   ├── user_features.py     # UserSavedQuery / UserPinnedMetric / ThreadLabel
 │   │   └── execution_log.py     # MTIBrainExecutionLog (per-run telemetry, stores response_tone)
 │   ├── schemas/
 │   │   ├── chat.py              # Pydantic request/response schemas for chat
-│   │   └── project.py           # Pydantic schemas for projects
+│   │   ├── project.py           # Pydantic schemas for projects
+│   │   └── user_features.py     # Schemas for Playbook / PinnedMetrics / Labels
 │   └── services/
 │       ├── auth.py              # Credential validation + JWT issue/decode + user upsert
-│       ├── conversation.py      # Thread/message/project CRUD + 3-layer search
-│       ├── feedback.py          # Feedback storage + pgvector similarity
-│       ├── sql_analysis.py      # Trust-strip metadata: source tables / freshness via sqlglot
+│       ├── embeddings.py        # pgvector embedding helpers (Cohere Embed v4 via Bedrock)
+│       ├── dashboard_builder.py # HTML dashboard generation + S3 upload/presign/delete
+│       ├── dashboard_prompt.py  # Prompt templates for dashboard content
+│       ├── agents/              # LangGraph pipeline
+│       │   ├── graph.py         # Graph construction, SSE streaming, active-stream registry
+│       │   ├── state.py         # Shared pipeline State TypedDict
+│       │   ├── bedrock.py       # AWS Bedrock LLM client wrappers (Sonnet/Haiku/Opus)
+│       │   ├── data_pool.py     # asyncpg / psycopg pool for LangGraph checkpointer
+│       │   ├── ontology_loader.py # Fuseki ontology loading at startup
+│       │   ├── fuseki_client.py # Async SPARQL HTTP client
+│       │   ├── prompts.py       # LLM prompt templates
+│       │   ├── helpers.py       # SectionStreamer / MultiSectionStreamer SSE helpers
+│       │   ├── validators.py    # Schema validation helpers
+│       │   └── nodes/           # One file per pipeline node
+│       │       ├── intake.py         # intake_classify / general_chat / rejected
+│       │       ├── domain.py         # domain_specialist_node
+│       │       ├── plan.py           # plan_node
+│       │       ├── plan_validator.py # plan_validator_node
+│       │       ├── executor.py       # executor_node (runs inner graph per sub-question)
+│       │       ├── step_reflector.py # step_reflector_node
+│       │       ├── final_reflector.py # final_reflector_node
+│       │       ├── repairer.py       # repairer_node
+│       │       ├── governance.py     # governance_gate_node
+│       │       ├── brain.py          # brain_retrieval_node
+│       │       ├── compress.py       # compress_node (context compression)
+│       │       ├── graph_reasoning.py # graph_reasoning_node
+│       │       ├── human_loop.py     # human_in_loop_node
+│       │       ├── ontology.py       # ontology_lookup_node
+│       │       ├── sparql_gen.py     # sparql_gen_node
+│       │       ├── sparql_validate.py # sparql_validate_node
+│       │       ├── sparql_execute.py  # sparql_execute_node
+│       │       ├── verifier.py       # verifier_node
+│       │       ├── synthesis.py      # answer_synthesis_node
+│       │       └── visualization.py  # visualization_node
+│       ├── chat/
+│       │   ├── conversation.py  # Thread/message/project CRUD + 3-layer search
+│       │   └── feedback.py      # Feedback storage + pgvector similarity
+│       ├── user/
+│       │   ├── labels.py        # Thread label CRUD
+│       │   ├── pinned_metrics.py # Pinned metric CRUD
+│       │   └── playbook.py      # Saved query CRUD
+│       ├── analysis/
+│       │   └── sql.py           # Trust-strip: source table extraction via sqlglot (Snowflake dialect)
 │       └── health/
 │           └── service.py       # Circuit-breaker-protected Postgres health check
 ├── alembic/
@@ -147,6 +193,41 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 | DELETE | `/{project_id}` | Delete project (threads are unlinked, not deleted) |
 | PATCH | `/{project_id}/star` | Toggle project star |
 
+### Playbook (`/api/v1/playbook`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List saved queries for the current user |
+| POST | `/` | Create a saved query |
+| PATCH | `/{query_id}` | Update a saved query |
+| DELETE | `/{query_id}` | Delete a saved query |
+
+### Pinned Metrics (`/api/v1/pinned-metrics`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List pinned metric cards for the current user |
+| POST | `/` | Pin a new metric |
+| PATCH | `/{metric_id}` | Update a pinned metric (label, position, source query) |
+| DELETE | `/{metric_id}` | Remove a pinned metric |
+
+### Labels (`/api/v1/labels`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List all labels the user has applied across all threads |
+| GET | `/thread/{thread_id}` | List labels applied to a specific thread |
+| POST | `/thread/{thread_id}` | Apply a label to a thread |
+| DELETE | `/thread/{thread_id}/{label_id}` | Remove a label from a thread |
+
+### Dashboard (`/api/v1/dashboard`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/generate/{conversation_id}` | Queue background HTML dashboard generation; returns `202` immediately |
+| GET | `/{conversation_id}` | Poll status (`pending` / `ready` / `error`) and retrieve S3 presigned URL |
+| DELETE | `/{conversation_id}` | Remove dashboard from S3 and the database |
+
 ### API Docs
 
 | URL | Description |
@@ -181,11 +262,53 @@ When `deep_analysis: true` is sent, `_build_sse_generator` receives the flag and
 | Model | Table | Purpose |
 |-------|-------|---------|
 | **MTIBrainUser** | `mti_brain_user` | User record keyed by email. Fields: `id`, `okta_id`, `email`, `name`, `groups` (JSONB), `organization`, `last_login`, `created_at`. |
-| **MTIBrainProject** | `mti_brain_project` | Named collection of threads. Fields: `id`, `user_id`, `name`, `description`, `starred`, timestamps. |
+| **MTIBrainProject** | `mti_brain_project` | Named collection of threads. Fields: `id`, `user_id`, `name`, `description`, `starred`, `search_vector` (tsvector GIN), timestamps. |
 | **MTIBrainThread** | `mti_brain_thread` | Conversation thread. Fields: `id`, `user_id`, `project_id`, `title`, `starred`, `search_vector` (tsvector GIN). |
 | **MTIBrainMessage** | `mti_brain_message` | Individual user or assistant message. Fields: `id`, `thread_id`, `conversation_id`, `parent_conversation_id`, `role`, `content`, `reasoning`, `metadata` (JSONB: `sql`, `chart_spec`, `intent`, `columns`, `rows`, `follow_ups`, etc.), `search_vector`. |
 | **MTIBrainFeedback** | `mti_brain_feedback` | Thumbs-up/down + optional comment. Fields: `id`, `message_id`, `thread_id`, `liked`, `comment`, `embedding` (Vector 1536). |
+| **MTIBrainDashboard** | `mti_brain_dashboard` | Per-conversation HTML dashboard record. Fields: `id`, `conversation_id`, `user_id`, `status` (`pending`/`ready`/`error`), `s3_key`, `s3_url`, `error_msg`, timestamps. |
 | **MTIBrainExecutionLog** | `mti_brain_execution_log` | Per-run telemetry. Includes `response_tone` (string, max 30 chars) and `deep_analysis` fields for analytics. |
+| **UserSavedQuery** | `mti_brain_saved_query` | Playbook entry. Fields: `id`, `user_id`, `name` (max 255), `query_text`, timestamps. |
+| **UserPinnedMetric** | `mti_brain_pinned_metric` | Home-page metric card. Fields: `id`, `user_id`, `label`, `source_query`, `position`, timestamps. |
+| **ThreadLabel** | `mti_brain_thread_label` | Colored label applied to a thread. Fields: `id`, `thread_id`, `user_id`, `name`, `color`, `created_at`. |
+
+## AI Pipeline (LangGraph)
+
+The pipeline is a compiled LangGraph state machine in `app/services/agents/graph.py`. Two graphs share the same `AsyncPostgresSaver` checkpoint pool:
+
+- **`_main_graph`** — starts at `intake_classify`; routes to `general_chat`, `rejected`, the simple/complex domain path, or the advanced Plan/Execute/Reflect loop.
+- **`_inner_graph`** — starts at `domain_specialist`; used by `executor_node` to process each sub-question in a complex plan.
+
+### Pipeline nodes
+
+| Node | Purpose |
+|------|---------|
+| `intake_classify` | Classify question type (`kg_query`, `general_chat`, `rejected`) and complexity (`simple`, `complex`, `advanced`) |
+| `general_chat` | Handle non-analytics questions (greetings, clarifications) |
+| `rejected` | Return a rejection message for out-of-scope questions |
+| `domain_specialist` | Select the relevant knowledge domain and identify the correct ontology classes |
+| `ontology_lookup` | Look up entity IRIs and property paths from the loaded ontology |
+| `sparql_gen` | Generate a SPARQL query for the Fuseki endpoint |
+| `sparql_validate` | Validate the generated SPARQL syntax before execution |
+| `sparql_execute` | Execute the SPARQL query against Fuseki and return result bindings |
+| `verifier` | Verify result quality; trigger repair if results are empty or malformed |
+| `graph_reasoning` | Apply graph-level reasoning over SPARQL results |
+| `brain_retrieval` | Retrieve relevant prior context from the LangGraph memory store |
+| `compress` | Compress accumulated context when it exceeds the token budget |
+| `plan` | Decompose a complex question into an ordered list of sub-questions |
+| `plan_validator` | Validate the generated plan before execution |
+| `executor` | Run the inner graph for each sub-question in the plan |
+| `step_reflector` | Reflect on each executed step; decide whether to continue or repair |
+| `final_reflector` | Final quality check over the completed plan execution |
+| `repairer` | Rewrite a failing SPARQL query or re-plan after repeated step failure |
+| `governance_gate` | Enforce data-access governance rules before synthesis |
+| `human_in_loop` | Pause for optional human review in long-running plans |
+| `answer_synthesis` | Synthesise all sub-results into a single structured answer |
+| `visualization` | Produce chart spec and table data from the synthesised answer |
+
+### Deep Analysis
+
+When `deep_analysis: true` is sent, the pipeline activates extended multi-step reasoning (typically the advanced Plan/Execute/Reflect/Repair loop). The flag is stored in `MTIBrainExecutionLog` for telemetry.
 
 ## Middleware
 
@@ -309,6 +432,18 @@ Copy `.env.example` to `.env` and fill in real values.
 | `POSTGRES_HOST` | Database host |
 | `POSTGRES_DB` | Database name |
 | `JWT_SECRET` | Secret for signing JWTs — generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `AWS_REGION` | AWS region for Bedrock (e.g. `us-west-2`) |
+| `AWS_BEDROCK_SONNET_ARN` | ARN for the Claude Sonnet model on Bedrock |
+| `AWS_BEDROCK_HAIKU_ARN` | ARN for the Claude Haiku model on Bedrock |
+| `AWS_BEDROCK_OPUS_ARN` | ARN for the Claude Opus model on Bedrock |
+| `AWS_BEDROCK_COHERE_EMBED_V4_ARN` | ARN for the Cohere Embed v4 model on Bedrock |
+| `AWS_ACCESS_KEY_ID` | AWS access key (used for S3 dashboard storage and Bedrock) |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
+| `AWS_BOTO3_BUCKET_NAME` | S3 bucket name for storing generated dashboards |
+| `FUSEKI_URL` | Jena Fuseki base URL (e.g. `http://localhost:3030`) |
+| `FUSEKI_DATASET` | Fuseki dataset name for the main knowledge graph |
+| `TRIBAL_GRAPH_URL` | Fuseki base URL for the tribal/secondary graph |
+| `TRIBAL_GRAPH_DATASET` | Dataset name for the tribal graph |
 
 Optional secret overrides (uncomment in `.env` when needed):
 
@@ -329,15 +464,20 @@ Optional secret overrides (uncomment in `.env` when needed):
 | `server.cors_origins` | `[localhost:3000, 127.0.0.1:3000]` | Allowed browser origins |
 | `database.port` | `5432` | Postgres port |
 | `database.ssl_mode` | `disable` | `disable` / `require` / `verify-ca` / `verify-full` |
-| `database.pool.size` | `10` | Base connection pool size |
-| `database.pool.max_overflow` | `20` | Max extra connections above pool size |
-| `database.pool.recycle_seconds` | `1800` | Recycle connections older than N seconds |
+| `database.pool.size` | `2` | Base connection pool size (kept small — PgBouncer handles concurrency) |
+| `database.pool.max_overflow` | `8` | Max extra connections above pool size |
+| `database.pool.recycle_seconds` | `500` | Recycle connections older than N seconds (must be < PgBouncer `SERVER_IDLE_TIMEOUT`) |
 | `database.pool.timeout_seconds` | `30` | Seconds to wait for a connection |
 | `circuit_breaker.fail_max` | `5` | Consecutive failures before opening circuit |
 | `circuit_breaker.reset_timeout_seconds` | `30` | Seconds before circuit half-opens |
 | `jwt.algorithm` | `HS256` | JWT signing algorithm |
 | `jwt.expiry_hours` | `8` | JWT token lifetime |
 | `rate_limit.login_per_minute` | `5` | Max login attempts per IP per minute |
+| `rate_limit.ask_per_minute` | `30` | Max `/ask`, `/retry`, `/edit` requests per IP per minute |
+| `model_routing.llm_routing_enabled` | `true` | Enable per-question Haiku / Sonnet / Opus routing |
+| `prompt_cache.aws_bedrock_prompt_cache` | `true` | Enable AWS Bedrock prompt caching |
+| `fuseki.timeout_seconds` | `60` | HTTP timeout for SPARQL queries against Fuseki |
+| `pipeline.recursion_limit` | `80` | LangGraph recursion limit (complex multi-step queries need headroom) |
 
 ---
 

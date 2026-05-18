@@ -52,6 +52,12 @@ The frontend authenticates via username/password, receives a JWT from the backen
 - **Smart Search** — full-text (tsvector), fuzzy (trigram), and phonetic (dmetaphone) search over threads and messages
 - **Feedback Loop** — thumbs-up/down feedback with pgvector embeddings for future retrieval-augmented generation
 - **Data Visualization** — auto-generated charts (recharts), paginated data tables with sticky first column, SQL display
+- **Dashboard Generation** — per-conversation HTML dashboards generated in the background and stored in S3; accessible via presigned URL
+- **Playbook** — user-owned saved query templates; run them again from the sidebar without retyping
+- **Pinned Metrics** — per-user metric cards pinned to the home page, each backed by a saved query
+- **Thread Labels** — colored labels applied to threads for filtering and organization
+- **Export** — download results as Excel (`.xlsx`) or PowerPoint (`.pptx`) directly from any answer
+- **Knowledge Graph** — SPARQL queries against a Jena Fuseki endpoint; ontology-aware reasoning via rdflib
 - **User Preferences** — per-user response tone (`analyst`, `manager`, `director`, `executive`), SQL/chart/reasoning visibility, persisted to localStorage
 - **Fully Responsive** — mobile off-canvas sidebar, tablet icon-rail + overlay panel, desktop inline sidebar; safe-area-inset support for iOS
 - **Keyboard Shortcuts** — power-user shortcuts for navigation, starring, search, copy, and more
@@ -61,7 +67,7 @@ The frontend authenticates via username/password, receives a JWT from the backen
 ## Project Structure
 
 ```
-quest/
+mti-brain/
 ├── docker-compose.yml   # Root orchestration: backend + frontend + nginx (joins external db_net)
 ├── appspec.yml          # AWS CodeDeploy spec
 ├── nginx/               # Reverse-proxy config (TLS termination, /api routing)
@@ -70,12 +76,12 @@ quest/
 ├── backend/             # FastAPI backend (see backend/README.md)
 │   ├── app/
 │   │   ├── main.py       # FastAPI entry point, lifespan, middleware wiring
-│   │   ├── api/          # Route handlers: health, auth, chat, projects
+│   │   ├── api/          # Route handlers: health, auth, chat, projects, playbook, labels, pinned-metrics, dashboard
 │   │   ├── core/         # Config, logging, middleware, circuit breakers, rate limiter
 │   │   ├── db/           # SQLAlchemy async session factory
-│   │   ├── models/       # ORM: User, Project, Thread, Message, Feedback, ExecutionLog
+│   │   ├── models/       # ORM: User, Project, Thread, Message, Feedback, ExecutionLog, UserFeatures, Dashboard
 │   │   ├── schemas/      # Pydantic request/response schemas
-│   │   └── services/     # Auth, conversation CRUD, feedback, health, sql_analysis (trust strip)
+│   │   └── services/     # agents/ (LangGraph pipeline), chat/, user/, analysis/, health/, embeddings, dashboard
 │   ├── alembic/          # Single baseline migration (extensions + mti_brain_* tables + triggers)
 │   ├── Dockerfile        # Multi-stage Python 3.12 build
 │   └── .env.example
@@ -90,7 +96,7 @@ quest/
 │   └── .env.example
 │
 └── database/            # Data layer Docker Compose (see database/README.md)
-    ├── docker-compose.yml  # PostgreSQL 18 + PgBouncer (publishes db_net)
+    ├── docker-compose.yml  # PostgreSQL 18 + PgBouncer + Redis (publishes db_net)
     ├── docker_volume/      # Persistent data (git-ignored)
     └── .env.example
 ```
@@ -100,12 +106,16 @@ quest/
 | Layer | Technology |
 |-------|-----------|
 | Frontend | Next.js 16, React 19 (with React Compiler), TypeScript, Tailwind CSS 4, shadcn/ui, Zustand |
-| Frontend extras | PostHog analytics, Dexie (IndexedDB) for composer drafts, Framer Motion, @tanstack/react-virtual, vaul, react-hotkeys-hook |
+| Frontend extras | PostHog analytics, Dexie (IndexedDB) for composer drafts, Framer Motion, @tanstack/react-virtual, vaul, react-hotkeys-hook, pptxgenjs (PPT export), xlsx (Excel export), react-syntax-highlighter, cmdk, react-hook-form + zod |
 | Backend | FastAPI + Gunicorn + Uvicorn (Python 3.12) |
+| AI Pipeline | LangGraph (multi-node agentic graph), AWS Bedrock (Sonnet / Haiku / Opus), model routing |
+| Knowledge Graph | Jena Fuseki (SPARQL), rdflib (ontology loading), sparql-based reasoning nodes |
+| SQL Analysis | sqlglot (Snowflake dialect) for trust-strip source table extraction |
 | Auth | Username/password → JWT (PyJWT, HS256, 8-hour expiry). **Okta OIDC migration planned** |
 | App Database | PostgreSQL 18 + pgvector + SQLAlchemy (async) + Alembic |
 | Postgres extensions | `pgvector`, `pg_trgm`, `fuzzystrmatch` (installed by the baseline migration) |
 | Connection Pooling | PgBouncer (transaction mode) |
+| Caching / Queues | Redis 8.4 (rate limiting, response cache, optional task queues) |
 | Vector Search | pgvector (1536-dim) on feedback embeddings |
 | Full-Text Search | tsvector + GIN + pg_trgm trigram + fuzzystrmatch (Levenshtein) |
 | Streaming | SSE (sse-starlette) |
@@ -154,6 +164,41 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require `Authorizat
 | DELETE | `/{project_id}` | Delete project |
 | PATCH | `/{project_id}/star` | Toggle project star |
 
+### Playbook (`/api/v1/playbook`)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/` | List saved queries |
+| POST | `/` | Save a new query |
+| PATCH | `/{query_id}` | Update a saved query |
+| DELETE | `/{query_id}` | Delete a saved query |
+
+### Pinned Metrics (`/api/v1/pinned-metrics`)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/` | List pinned metric cards |
+| POST | `/` | Pin a new metric |
+| PATCH | `/{metric_id}` | Update a pinned metric |
+| DELETE | `/{metric_id}` | Remove a pinned metric |
+
+### Labels (`/api/v1/labels`)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/` | List all labels for the current user |
+| GET | `/thread/{thread_id}` | List labels on a thread |
+| POST | `/thread/{thread_id}` | Add a label to a thread |
+| DELETE | `/thread/{thread_id}/{label_id}` | Remove a label from a thread |
+
+### Dashboard (`/api/v1/dashboard`)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| POST | `/generate/{conversation_id}` | Queue background dashboard generation; returns 202 |
+| GET | `/{conversation_id}` | Get dashboard status + S3 presigned URL when ready |
+| DELETE | `/{conversation_id}` | Remove dashboard from S3 and DB |
+
 ## Prerequisites
 
 - Docker and Docker Compose
@@ -165,7 +210,7 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require `Authorizat
 
 ```bash
 git clone <repo-url>
-cd quest
+cd mti-brain
 
 # 1. Database layer
 cd database
