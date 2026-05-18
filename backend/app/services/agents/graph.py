@@ -888,10 +888,10 @@ async def stream_pipeline(
                         status = "error" if state.get("sparql_error") else "success"
                         kg_rows = state.get("kg_rows", [])
                         yield {
-                            "event": "sparql.executed",
+                            "event": "execute.done",
                             "data": {
                                 "status": status,
-                                "sparql": state.get("sparql", ""),
+                                "sql": state.get("sparql", ""),
                                 "columns": state.get("kg_columns", []),
                                 "rows": kg_rows,
                                 "row_count": state.get("kg_row_count", 0),
@@ -950,7 +950,7 @@ async def stream_pipeline(
                     "persona": state.get("persona", ""),
                     "complexity": state.get("complexity", ""),
                     "intent": state.get("intent", ""),
-                    "sparql": state.get("sparql", ""),
+                    "sql": state.get("sparql", ""),
                     "columns": state.get("kg_columns", []),
                     "rows": state.get("kg_rows", []),
                     "row_count": state.get("kg_row_count", 0),
