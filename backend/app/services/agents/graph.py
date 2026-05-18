@@ -99,6 +99,8 @@ def route_after_execute(state: State) -> str:
         if state.get("sparql_retries", 0) < MAX_SPARQL_RETRIES:
             return "sparql_gen"
         return "answer_synthesis"
+    if state.get("kg_row_count", 0) == 0:
+        return "verifier"  # skip graph_reasoning on empty results — verifier decides retry vs accept
     return "graph_reasoning"
 
 
@@ -120,7 +122,7 @@ def route_after_synthesis(state: State) -> str:
 
 
 def route_synthesis_to_viz(state: State) -> str:
-    return "visualization" if state.get("kg_rows") else "skip_viz"
+    return "visualization" if len(state.get("kg_rows", [])) > 1 else "skip_viz"
 
 
 def route_after_general_chat(state: State) -> str:
@@ -204,7 +206,7 @@ def _build_inner_graph() -> StateGraph:
     b.add_conditional_edges(
         "sparql_execute",
         route_after_execute,
-        {"sparql_gen": "sparql_gen", "graph_reasoning": "graph_reasoning", "answer_synthesis": "answer_synthesis"},
+        {"sparql_gen": "sparql_gen", "graph_reasoning": "graph_reasoning", "verifier": "verifier", "answer_synthesis": "answer_synthesis"},
     )
     b.add_edge("graph_reasoning", "verifier")
     b.add_conditional_edges(
@@ -293,7 +295,7 @@ def _build_main_graph() -> StateGraph:
     b.add_conditional_edges(
         "sparql_execute",
         route_after_execute,
-        {"sparql_gen": "sparql_gen", "graph_reasoning": "graph_reasoning", "answer_synthesis": "answer_synthesis"},
+        {"sparql_gen": "sparql_gen", "graph_reasoning": "graph_reasoning", "verifier": "verifier", "answer_synthesis": "answer_synthesis"},
     )
     b.add_edge("graph_reasoning", "verifier")
     b.add_conditional_edges(
@@ -899,7 +901,7 @@ async def stream_pipeline(
                     elif node == "sparql_gen":
                         sparql = state.get("sparql", "")
                         if sparql:
-                            yield {"event": "sparql.generated", "data": {"query": sparql}}
+                            yield {"event": "generate_sql", "data": {"sql": sparql}}
 
                     elif node == "plan":
                         sub_qs = state.get("sub_questions", [])

@@ -104,9 +104,10 @@ interface DataTableProps {
   rows: unknown[][];
   rowCount?: number;
   filename?: string;
+  isStreaming?: boolean;
 }
 
-export function DataTable({ columns, rows, rowCount, filename }: DataTableProps) {
+export function DataTable({ columns, rows, rowCount, filename, isStreaming }: DataTableProps) {
   const [page, setPage] = useState(0);
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -261,8 +262,8 @@ export function DataTable({ columns, rows, rowCount, filename }: DataTableProps)
         </Table>
       </div>
 
-      {/* Footer: row count + anomaly toggle + pagination + download */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
+      {/* Footer: row count + anomaly toggle + pagination + download — hidden during streaming to prevent layout shift */}
+      {!isStreaming && <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
         <span className="min-w-0 truncate">
           {totalRows > rows.length
             ? `Showing ${rows.length} of ${totalRows.toLocaleString('en-US')} rows`
@@ -312,7 +313,7 @@ export function DataTable({ columns, rows, rowCount, filename }: DataTableProps)
             </>
           )}
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

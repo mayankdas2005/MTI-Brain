@@ -198,6 +198,7 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require `Authorizat
 | POST | `/generate/{conversation_id}` | Queue background dashboard generation; returns 202 |
 | GET | `/{conversation_id}` | Get dashboard status + S3 presigned URL when ready |
 | DELETE | `/{conversation_id}` | Remove dashboard from S3 and DB |
+| GET | `/{conversation_id}/download` | Download the generated dashboard file directly |
 
 ## Prerequisites
 

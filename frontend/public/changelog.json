@@ -4,14 +4,19 @@
     "date": "2026-05-18",
     "entries": [
       {
-        "type": "improvement",
-        "title": "App visuals load instantly",
-        "body": "The Milestone logo and branding now appear the moment any page opens — no more blank space or delayed flash while navigating between sign-in, your workspace, or the loading screen."
+        "type": "new",
+        "title": "Export conversation as a shareable dashboard",
+        "body": "Every conversation can now be exported as a standalone visual dashboard — one click from any answer. The dashboard captures your charts, data summaries, and key findings in a format ready to drop into a board presentation or share directly with your team. No copy-pasting required."
       },
       {
         "type": "improvement",
-        "title": "Faster experience on every visit",
-        "body": "Images and app assets are now stored in your browser after the first load, so returning to MTI Brain or switching pages feels significantly snappier. No waiting for the same visuals to re-download."
+        "title": "Charts now show the correct labels",
+        "body": "Bar and line charts were sometimes displaying blank axis labels — for example, a currency distribution chart would show bars without the currency names underneath. This is now fixed. Every chart shows the data dimensions you asked about, exactly as expected."
+      },
+      {
+        "type": "improvement",
+        "title": "MTI Brain learns from your feedback over time",
+        "body": "A thumbs-up or thumbs-down now shapes how MTI Brain responds to you and to colleagues asking similar questions in the future — even when you don't leave a written comment. Feedback from several months ago fades naturally so only recent preferences guide answers, keeping the experience current as your priorities evolve."
       }
     ]
   }

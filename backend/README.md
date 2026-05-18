@@ -227,6 +227,7 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 | POST | `/generate/{conversation_id}` | Queue background HTML dashboard generation; returns `202` immediately |
 | GET | `/{conversation_id}` | Poll status (`pending` / `ready` / `error`) and retrieve S3 presigned URL |
 | DELETE | `/{conversation_id}` | Remove dashboard from S3 and the database |
+| GET | `/{conversation_id}/download` | Stream the generated dashboard file as a direct download (`Content-Disposition: attachment`) |
 
 ### API Docs
 

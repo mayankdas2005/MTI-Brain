@@ -7,8 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 from app.core.logger import logger
 from app.services.agents.bedrock import get_llm
-from app.services.agents.helpers import parse_sparql_from_response
-from app.services.agents.ontology_loader import get_ontology_summary
+from app.services.agents.helpers import parse_sparql_from_response, _format_recent_messages
+from app.services.agents.ontology_loader import get_ontology_summary, get_ontology_dict, get_r2rml_class_properties
 from app.services.agents.prompts import SPARQL_GEN_PROMPT, SPARQL_FIX_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
@@ -31,9 +31,40 @@ def _get_date_context() -> dict[str, str]:
 def _format_ontology_terms(terms: list[dict]) -> str:
     if not terms:
         return "No specific terms resolved — use lpp: prefix with ontology reference."
+    r2rml = get_r2rml_class_properties()
+    obj_prop_map = {p["local"]: p for p in get_ontology_dict().get("object_properties", [])}
+    resolved_classes = {t["local"] for t in terms if t["type"] == "class"}
     lines = []
+    excluded = []
     for t in terms:
-        lines.append(f"  lpp:{t['local']} ({t['type']})")
+        comment = t.get("comment", "")
+        if t["type"] == "class":
+            cls = t["local"]
+            lines.append(f"  lpp:{cls} (class)" + (f"  # {comment}" if comment else ""))
+            props = r2rml.get(cls, [])
+            if props:
+                parts = []
+                for p in props:
+                    op = obj_prop_map.get(p)
+                    rng = op.get("range", "") if op else ""
+                    parts.append(f"lpp:{p}→{rng}" if rng else f"lpp:{p}")
+                lines.append(f"    materialized: {' | '.join(parts)}")
+        else:
+            domain = t.get("property_type") or t.get("domain") or ""
+            if domain and resolved_classes and domain not in resolved_classes:
+                excluded.append(t["local"])
+            else:
+                lines.append(
+                    f"  lpp:{t['local']} ({t['type']}"
+                    + (f", domain:{domain}" if domain else "")
+                    + ")"
+                    + (f"  # {comment}" if comment else "")
+                )
+    if excluded:
+        lines.append(
+            f"\n  (Excluded — domain mismatch, not applicable to above classes: "
+            f"{', '.join('lpp:' + p for p in excluded)})"
+        )
     return "\n".join(lines)
 
 
@@ -74,6 +105,10 @@ async def sparql_gen_node(state: State) -> dict:
             f"Previous SPARQL to modify:\n```sparql\n{prior_sql}\n```"
         )
 
+    recent = _format_recent_messages(state.get("messages", []), n=4)
+    conversation_context = "\n\n".join(filter(None, [state.get("summary"), recent])) or "None."
+    ontology_summary = get_ontology_summary()
+
     if sparql_error and existing_sparql:
         prompt = SPARQL_FIX_PROMPT
         chain = prompt | get_llm("deep")
@@ -82,6 +117,7 @@ async def sparql_gen_node(state: State) -> dict:
             "intent": intent,
             "sparql": existing_sparql,
             "error": sparql_error,
+            "ontology_summary": ontology_summary,
             "ontology_terms": _format_ontology_terms(ontology_terms),
             "feedback_context": state.get("feedback_context") or "None.",
             "reasoning_directive": reasoning_directive,
@@ -93,12 +129,12 @@ async def sparql_gen_node(state: State) -> dict:
             "question": question,
             "intent": intent,
             "persona": persona,
-            "ontology_summary": get_ontology_summary(),
+            "ontology_summary": ontology_summary,
             "ontology_terms": _format_ontology_terms(ontology_terms),
             "tribal_facts": _format_tribal_facts(tribal_facts),
             "prior_error_section": f"Prior error (fix this):\n{sparql_error}" if sparql_error else "",
             "refinement_section": refinement_section,
-            "conversation_context": state.get("summary") or "None.",
+            "conversation_context": conversation_context,
             "cross_thread_context": state.get("cross_thread_context") or "None.",
             "feedback_context": state.get("feedback_context") or "None.",
             "max_rows": max_rows,

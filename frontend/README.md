@@ -112,7 +112,11 @@ frontend/
 │   │   │                                #   API_BASE = NEXT_PUBLIC_API_URL/api/v1
 │   │   ├── sse.ts                       # POST-based SSE stream parser
 │   │   ├── threads.ts                   # Thread/chat API functions
-│   │   └── projects.ts                  # Project API functions
+│   │   ├── projects.ts                  # Project API functions
+│   │   └── dashboard.ts                 # Dashboard generate / poll status / download helpers
+│   │                                    #   POST /dashboard/generate/{id} → triggers background build
+│   │                                    #   GET  /dashboard/{id}          → polls status + presigned URL
+│   │                                    #   GET  /dashboard/{id}/download → direct file download
 │   └── store/                           # Zustand stores
 │       ├── threads.ts                   # Thread/message CRUD, streaming, pendingDeepAnalysis
 │       ├── ui.ts                        # mobileSidebarOpen, tabletSidebarOverlayOpen, sidebarOpen

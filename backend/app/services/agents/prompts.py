@@ -65,7 +65,7 @@ and understand the user's intent in the context of the full thread.
 
 User question: "{question}"
 
-Classify on three dimensions. Output ONLY the JSON object — no explanation, no preamble.
+Classify on three dimensions. Output ONLY the JSON object — no explanation, no preamble, no reasoning.
 
 question_type:
   "kg_query"    — ANY question about internal treasury OR payments data:
@@ -91,12 +91,6 @@ complexity:
   "simple"   — single fact or balance; one SPARQL query
   "complex"  — multi-join, trend comparison, multi-entity aggregation; 2-3 queries
   "advanced" — forecasting, optimization, stress testing, multi-step DAG
-
-<reasoning>
-{reasoning_directive}
-
-Consider: is this truly a data question or conversation? Who is the likely audience? How many independent data fetches does a complete answer require?
-</reasoning>
 
 Output exactly this JSON (no other text):
 {{"question_type": "...", "persona": "...", "complexity": "..."}}"""
@@ -276,16 +270,30 @@ Failed SPARQL:
 Error:
 {error}
 
-Resolved ontology terms (authoritative list of valid classes and properties for this question):
+Ontology reference (use this to verify domain/range of every predicate you use):
+{ontology_summary}
+
+Resolved ontology terms for this question:
 {ontology_terms}
 
 Past user feedback on similar questions (apply to avoid repeating flagged mistakes):
 {feedback_context}
 
+NAMED GRAPHS (always include FROM for the relevant domain — omitting it queries the empty default graph and returns 0 rows):
+  Treasury balances & snapshots : FROM <graph:treasury:all>
+  FX positions & hedges         : FROM <graph:fx:current>
+  Investment portfolio          : FROM <graph:investments:all>
+
+DOMAIN PATTERNS — balance snapshot queries (lpp:BalanceSnapshot):
+  Account link : lpp:forAccount  (domain: BalanceSnapshot → BankAccount)
+                 !! NOT lpp:sourceAccount — that has domain SweepEvent, not BalanceSnapshot !!
+  Currency     : lpp:currencyCode ?currency   ← required for multi-currency totals
+
 Fix rules:
 - Change ONLY what is needed to resolve the error
 - Preserve the original logical intent of the query
-- If a class or property does not exist, replace with the closest valid term from Resolved ontology terms
+- Verify every predicate against the Ontology reference above before using it
+- If a class or property does not exist, replace with the closest valid term from the ontology reference
 - If the error is a GROUP BY violation, fix the aggregation grouping
 - If the error is a prefix issue, add the missing PREFIX declaration
 - Before finalising: mentally verify (1) the error is resolved and (2) the logical intent is unchanged

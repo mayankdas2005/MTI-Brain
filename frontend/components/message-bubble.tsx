@@ -538,8 +538,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           )}
           {dataView === 'table' && hasColumns && (
             hasTableData
-              ? <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} />
-              : <DataTable columns={columns!} rows={[]} rowCount={0} filename={exportFilename} />
+              ? <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} isStreaming={message.isStreaming} />
+              : <DataTable columns={columns!} rows={[]} rowCount={0} filename={exportFilename} isStreaming={message.isStreaming} />
           )}
         </div>
       )}

@@ -42,23 +42,37 @@ async def ontology_lookup_node(state: State) -> dict:
 
     # Always include the most relevant core classes based on intent
     INTENT_CLASSES = {
-        "balance_lookup": ["BankAccount", "Company"],
-        "counterparty_exposure": ["Bank", "BankAccount", "InvestmentPosition", "FxForward", "DerivativeMtm"],
-        "fx_exposure": ["FxForward", "Company", "Bank"],
-        "investment_positions": ["InvestmentPosition", "InvestmentInstrument", "Company"],
-        "maturity_ladder": ["InvestmentPosition", "FxForward"],
-        "policy_check": ["BankAccount", "Company", "Bank"],
-        "code_lookup": ["Bank", "Company", "BankAccount"],
-        "trend_analysis": ["InvestmentPosition", "BankAccount"],
-        "scenario_forecast": ["InvestmentPosition", "FxForward"],
-        "multi_entity_join": ["Company", "Bank", "BankAccount", "InvestmentPosition"],
+        # Treasury
+        "balance_lookup":           ["BankAccount", "BalanceSnapshot", "CashPosition", "Currency", "Company"],
+        "exposure_analysis":        ["Bank", "BankAccount", "InvestmentPosition", "FxForward", "DerivativeMtm", "CounterpartyExposure", "Company"],
+        "investment_and_maturity":  ["InvestmentPosition", "FinancialInstrument", "Company", "Bank"],
+        # Payments
+        "authorization_analysis":   ["Authorization", "MerchantAccount", "Acquirer", "CardNetwork", "CardType", "Transaction"],
+        "cost_and_fee_analysis":    ["BankFee", "Chargeback", "Settlement", "CardPaymentRollup", "Transaction", "FraudLossEvent"],
+        "payment_operations":       ["Transaction", "PaymentHubEvent", "PaymentBatch", "StpMetric", "Settlement", "PaymentFile"],
+        "supplier_and_crossborder": ["Invoice", "Counterparty", "FxForward", "WorkingCapitalMetric", "Company"],
+        # Strategic
+        "trend_and_forecast":       ["BankAccount", "BalanceSnapshot", "InvestmentPosition", "CashForecast", "ForecastLine", "FxForward"],
+        "code_lookup":              ["Bank", "Company", "BankAccount"],
+        "general_analytics":        ["BankAccount", "BalanceSnapshot", "CashPosition", "Company", "Bank"],
+        # Legacy keys (kept for backward compatibility)
+        "counterparty_exposure":    ["Bank", "BankAccount", "InvestmentPosition", "FxForward", "DerivativeMtm", "CounterpartyExposure"],
+        "fx_exposure":              ["FxForward", "FxExposure", "Company", "Bank"],
+        "investment_positions":     ["InvestmentPosition", "FinancialInstrument", "Company"],
+        "maturity_ladder":          ["InvestmentPosition", "FxForward"],
+        "policy_check":             ["BankAccount", "Company", "Bank"],
+        "trend_analysis":           ["InvestmentPosition", "BankAccount", "BalanceSnapshot"],
+        "scenario_forecast":        ["InvestmentPosition", "FxForward", "CashForecast", "Scenario", "StressTest"],
+        "multi_entity_join":        ["Company", "Bank", "BankAccount", "InvestmentPosition"],
     }
 
     hint_classes = INTENT_CLASSES.get(intent, [])
     LPP_NS = "https://lpp.example/ontology#"
+    # Only inject classes that actually exist in the loaded ontology
+    known_uris = set(ontology.keys())
     for cls_name in hint_classes:
         uri = f"{LPP_NS}{cls_name}"
-        if uri not in seen_uris:
+        if uri not in seen_uris and uri in known_uris:
             seen_uris.add(uri)
             matched.append({"uri": uri, "local": cls_name, "label": cls_name, "type": "class", "property_type": None})
 
