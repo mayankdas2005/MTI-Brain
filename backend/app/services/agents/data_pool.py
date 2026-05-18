@@ -21,6 +21,8 @@ async def init_data_pool() -> None:
         base_url=settings.FUSEKI_URL,
         dataset=settings.FUSEKI_DATASET,
         timeout=settings.FUSEKI_TIMEOUT,
+        username=settings.FUSEKI_USER,
+        password=settings.FUSEKI_PASSWORD,
     )
     await _kg_client.open()
 

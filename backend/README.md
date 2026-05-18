@@ -443,6 +443,8 @@ Copy `.env.example` to `.env` and fill in real values.
 | `AWS_BOTO3_BUCKET_NAME` | S3 bucket name for storing generated dashboards |
 | `FUSEKI_URL` | Jena Fuseki base URL (e.g. `http://localhost:3030`) |
 | `FUSEKI_DATASET` | Fuseki dataset name for the main knowledge graph |
+| `FUSEKI_USER` | Fuseki HTTP Basic Auth username (leave blank if auth is disabled) |
+| `FUSEKI_PASSWORD` | Fuseki HTTP Basic Auth password (leave blank if auth is disabled) |
 | `TRIBAL_GRAPH_URL` | Fuseki base URL for the tribal/secondary graph |
 | `TRIBAL_GRAPH_DATASET` | Dataset name for the tribal graph |
 
@@ -479,6 +481,23 @@ Optional secret overrides (uncomment in `.env` when needed):
 | `prompt_cache.aws_bedrock_prompt_cache` | `true` | Enable AWS Bedrock prompt caching |
 | `fuseki.timeout_seconds` | `60` | HTTP timeout for SPARQL queries against Fuseki |
 | `pipeline.recursion_limit` | `80` | LangGraph recursion limit (complex multi-step queries need headroom) |
+
+---
+
+## Known Limitations / Future Enhancements
+
+### INTENT_CLASSES — Hardcoded intent-to-class mapping
+
+`app/services/agents/nodes/ontology.py` contains a static `INTENT_CLASSES` dict that maps LangGraph intent labels (e.g. `"payment_operations"`) to a list of ontology class names used as hint context for SPARQL generation. This mapping is **manually maintained** and must be updated whenever a new class is added to `lpp-ontology.ttl`.
+
+**Known risk:** A class present in the ontology and R2RML mappings (i.e. materialized in Fuseki) but absent from `INTENT_CLASSES` will never be surfaced as a generation hint. The LLM falls back to abstract base classes (e.g. `lpp:Transaction` instead of `lpp:WireTransfer`) and generates queries that return 0 rows.
+
+**Checklist when adding a new class to `lpp-ontology.ttl` and `lpp-r2rml.ttl`:**
+1. Add the class to the relevant intent key(s) in `INTENT_CLASSES`
+2. If the class is a `PaymentTransaction` subclass, also add it to `"payment_operations"` and `"cost_and_fee_analysis"` as appropriate
+3. Add a keyword→class mapping example to the `TRANSACTION CLASS SELECTION` section of `SPARQL_GEN_PROMPT` and `SPARQL_FIX_PROMPT` in `prompts.py`
+
+**Future enhancement:** Drive `INTENT_CLASSES` from an `lpp:intentDomain` annotation property in `lpp-ontology.ttl`, parsed by `ontology_loader.py` at startup. This would eliminate the manual sync requirement entirely.
 
 ---
 

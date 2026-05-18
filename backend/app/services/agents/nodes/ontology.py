@@ -46,11 +46,11 @@ async def ontology_lookup_node(state: State) -> dict:
         "balance_lookup":           ["BankAccount", "BalanceSnapshot", "CashPosition", "Currency", "Company"],
         "exposure_analysis":        ["Bank", "BankAccount", "InvestmentPosition", "FxForward", "DerivativeMtm", "CounterpartyExposure", "Company"],
         "investment_and_maturity":  ["InvestmentPosition", "FinancialInstrument", "Company", "Bank"],
-        # Payments
-        "authorization_analysis":   ["Authorization", "MerchantAccount", "Acquirer", "CardNetwork", "CardType", "Transaction"],
-        "cost_and_fee_analysis":    ["BankFee", "Chargeback", "Settlement", "CardPaymentRollup", "Transaction", "FraudLossEvent"],
-        "payment_operations":       ["Transaction", "PaymentHubEvent", "PaymentBatch", "StpMetric", "Settlement", "PaymentFile"],
-        "supplier_and_crossborder": ["Invoice", "Counterparty", "FxForward", "WorkingCapitalMetric", "Company"],
+        # Payments — concrete PaymentTransaction subclasses (not the abstract Transaction base)
+        "authorization_analysis":   ["CardTransaction", "VirtualCardTransaction", "CommercialCardTransaction", "Authorization", "MerchantAccount", "Acquirer", "CardNetwork", "CardType"],
+        "cost_and_fee_analysis":    ["WireTransfer", "AchTransaction", "CardTransaction", "BankFee", "Chargeback", "Settlement", "CardPaymentRollup", "FraudLossEvent"],
+        "payment_operations":       ["WireTransfer", "AchTransaction", "RtpTransaction", "FedNowTransaction", "CheckPayment", "CrossBorderPayment", "CardTransaction", "PaymentHubEvent", "PaymentBatch", "StpMetric", "Settlement", "PaymentFile"],
+        "supplier_and_crossborder": ["Invoice", "Counterparty", "FxForward", "WorkingCapitalMetric", "Company", "CrossBorderPayment"],
         # Strategic
         "trend_and_forecast":       ["BankAccount", "BalanceSnapshot", "InvestmentPosition", "CashForecast", "ForecastLine", "FxForward"],
         "code_lookup":              ["Bank", "Company", "BankAccount"],
@@ -68,13 +68,24 @@ async def ontology_lookup_node(state: State) -> dict:
 
     hint_classes = INTENT_CLASSES.get(intent, [])
     LPP_NS = "https://lpp.example/ontology#"
-    # Only inject classes that actually exist in the loaded ontology
-    known_uris = set(ontology.keys())
+    # Build a set of class URIs that actually exist in the loaded ontology.
+    # NOTE: ontology.keys() returns top-level dict keys ('classes', 'object_properties', …),
+    # not class URIs — always index into ontology["classes"] to get real URIs.
+    known_class_uris = {c["uri"] for c in ontology.get("classes", [])}
+    known_class_by_local = {c["local"]: c for c in ontology.get("classes", [])}
     for cls_name in hint_classes:
         uri = f"{LPP_NS}{cls_name}"
-        if uri not in seen_uris and uri in known_uris:
+        if uri not in seen_uris and uri in known_class_uris:
+            cls_entry = known_class_by_local.get(cls_name, {})
             seen_uris.add(uri)
-            matched.append({"uri": uri, "local": cls_name, "label": cls_name, "type": "class", "property_type": None})
+            matched.append({
+                "uri": uri,
+                "local": cls_name,
+                "label": cls_entry.get("label", cls_name),
+                "comment": cls_entry.get("comment", ""),
+                "type": "class",
+                "property_type": None,
+            })
 
     step = {
         "node": "ontology_lookup",

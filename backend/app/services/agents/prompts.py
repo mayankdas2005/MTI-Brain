@@ -223,10 +223,52 @@ NAMED GRAPHS (always include FROM for the relevant domain — omitting it querie
   Investment portfolio          : FROM <graph:investments:all>
 
 DOMAIN PATTERNS — balance snapshot queries (lpp:BalanceSnapshot):
-  Account link : lpp:forAccount  (domain: BalanceSnapshot → BankAccount)
-                 !! NOT lpp:sourceAccount — that has domain SweepEvent, not BalanceSnapshot !!
-  Currency     : lpp:currencyCode ?currency   ← required for multi-currency totals
-  Grouping     : GROUP BY ?currency; ORDER BY DESC(?totalBalance)
+
+  DATE STRATEGY — choose based on intent:
+    "current / latest / today / as of yesterday / most recent"
+        → use lpp:isLatestSnapshot true   ← preferred; avoids full history scan and date mismatch
+        → DO NOT use lpp:asOfDate for latest-balance questions
+    "as of <specific past date> / on <date> / historical comparison"
+        → use lpp:asOfDate "{yesterday_date}"^^xsd:date (substitute the correct date)
+
+  REQUIRED properties for balance queries:
+    lpp:isLatestSnapshot true         ← filters to most-recent snapshot per account (boolean)
+    lpp:forAccount ?acct              ← account link (domain: BalanceSnapshot → BankAccount)
+                                         !! NOT lpp:sourceAccount — that has domain SweepEvent !!
+    lpp:closingBalance ?bal           ← the correct balance value property on BalanceSnapshot
+                                         NOT lpp:amount — that is a generic property
+    lpp:currencyCode ?currency        ← required for multi-currency totals
+
+  AGGREGATION:
+    SELECT ?currency (SUM(?bal) AS ?total) (COUNT(DISTINCT ?acct) AS ?accounts)
+    GROUP BY ?currency
+    ORDER BY DESC(?total)
+
+TRANSACTION CLASS SELECTION — always use the concrete subclass, never the abstract base:
+
+  lpp:Transaction is ABSTRACT (CASH_FLOW table: receipts and disbursements only — no paymentMethod triples).
+  lpp:PaymentTransaction is ABSTRACT — no direct instances; use a concrete subclass.
+
+  When the question mentions a payment method → use the matching concrete class:
+    "wire" / "wire transfer"           → lpp:WireTransfer
+    "ACH" / "SEPA"                     → lpp:AchTransaction
+    "RTP" / "real-time payment"        → lpp:RtpTransaction
+    "FedNow"                           → lpp:FedNowTransaction
+    "check" / "cheque"                 → lpp:CheckPayment
+    "card" / "card payment"            → lpp:CardTransaction
+    "cross-border" / "international"   → lpp:CrossBorderPayment
+    all payment types / unspecified    → lpp:PaymentTransaction (covers all TRANSFER rows)
+
+  Materialized properties on each concrete class (lpp:WireTransfer, lpp:AchTransaction, etc.):
+    lpp:amount         (xsd:decimal)
+    lpp:currencyCode   (string)
+    lpp:valueDate      (xsd:date — use for date range filters on payments)
+    lpp:status         (string)
+    lpp:reference      (string)
+    lpp:fromAccount    → lpp:BankAccount
+
+  NEVER: ?txn a lpp:Transaction ; lpp:paymentMethod lppid:Wire   ← returns 0 rows; no paymentMethod triples exist on Transaction
+  CORRECT: ?txn a lpp:WireTransfer ; lpp:amount ?amt ...
 
 SPARQL rules:
 - Prefixes: always declare lpp: <https://lpp.example/ontology#>; add lppid: <https://lpp.example/id/> only when using lppid: URIs; add xsd: <http://www.w3.org/2001/XMLSchema#> only when using xsd:date or xsd:decimal
@@ -285,9 +327,17 @@ NAMED GRAPHS (always include FROM for the relevant domain — omitting it querie
   Investment portfolio          : FROM <graph:investments:all>
 
 DOMAIN PATTERNS — balance snapshot queries (lpp:BalanceSnapshot):
-  Account link : lpp:forAccount  (domain: BalanceSnapshot → BankAccount)
-                 !! NOT lpp:sourceAccount — that has domain SweepEvent, not BalanceSnapshot !!
-  Currency     : lpp:currencyCode ?currency   ← required for multi-currency totals
+  Latest balance    : lpp:isLatestSnapshot true  ← use this instead of lpp:asOfDate for current/latest queries
+  Account link      : lpp:forAccount   !! NOT lpp:sourceAccount (that has domain SweepEvent) !!
+  Balance value     : lpp:closingBalance   !! NOT lpp:amount (generic) !!
+  Currency          : lpp:currencyCode ?currency
+
+TRANSACTION CLASS SELECTION (common 0-row cause):
+  Wrong: ?txn a lpp:Transaction ; lpp:paymentMethod lppid:Wire   ← Transaction has no paymentMethod triples
+  Right: ?txn a lpp:WireTransfer                                 ← concrete class, materialized in Fuseki
+  Map: wire→lpp:WireTransfer, ACH→lpp:AchTransaction, RTP→lpp:RtpTransaction,
+       FedNow→lpp:FedNowTransaction, check→lpp:CheckPayment, card→lpp:CardTransaction,
+       cross-border→lpp:CrossBorderPayment, unspecified→lpp:PaymentTransaction
 
 Fix rules:
 - Change ONLY what is needed to resolve the error

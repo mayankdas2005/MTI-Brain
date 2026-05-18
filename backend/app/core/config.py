@@ -119,6 +119,8 @@ class Settings(BaseSettings):
     FUSEKI_URL: str
     FUSEKI_DATASET: str = Field(default="dataset")
     FUSEKI_TIMEOUT: int = Field(default=_fuseki.get("timeout_seconds", 30))
+    FUSEKI_USER: str = Field(default="")
+    FUSEKI_PASSWORD: str = Field(default="", repr=False)
     # TRIBAL_GRAPH_URL: str = Field(default="http://localhost:3030")
     # TRIBAL_GRAPH_DATASET: str = Field(default="dataset")
 

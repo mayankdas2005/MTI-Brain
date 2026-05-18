@@ -19,10 +19,18 @@ from app.core.logger import logger
 class FusekiClient:
     """Async SPARQL client backed by a persistent aiohttp session."""
 
-    def __init__(self, base_url: str, dataset: str, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        dataset: str,
+        timeout: int = 30,
+        username: str = "",
+        password: str = "",
+    ) -> None:
         self._query_url = f"{base_url.rstrip('/')}/{dataset.strip('/')}/sparql"
         self._update_url = f"{base_url.rstrip('/')}/{dataset.strip('/')}/update"
         self._timeout = aiohttp.ClientTimeout(total=timeout)
+        self._auth = aiohttp.BasicAuth(username, password) if username else None
         self._session: aiohttp.ClientSession | None = None
 
     @property
@@ -33,6 +41,7 @@ class FusekiClient:
         self._session = aiohttp.ClientSession(
             timeout=self._timeout,
             headers={"Accept": "application/sparql-results+json"},
+            auth=self._auth,
         )
 
     async def close(self) -> None:
