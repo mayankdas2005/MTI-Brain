@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from app.core.logger import logger
 from app.models.conversation import MTIBrainFeedback
 from app.services.embeddings import embed_question
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+_FEEDBACK_STALE_DAYS = 90
+_FEEDBACK_OLD_DAYS = 30
 
 
 async def save_feedback(
@@ -71,8 +75,6 @@ _FIND_THREAD_FEEDBACK_SQL = text("""
     LEFT JOIN mti_brain_message m ON m.id = f.message_id
     LEFT JOIN mti_brain_message q ON q.conversation_id = m.conversation_id AND q.role = 'user'
     WHERE f.thread_id = :thread_id
-      AND f.comment IS NOT NULL
-      AND f.comment != ''
     ORDER BY f.created_at DESC
     LIMIT :limit
 """)
@@ -83,7 +85,7 @@ async def find_thread_feedback(
     thread_id: uuid.UUID,
     limit: int = 5,
 ) -> list[dict]:
-    """Get all feedback with comments from the current thread."""
+    """Get all feedback from the current thread."""
     result = await db.execute(
         _FIND_THREAD_FEEDBACK_SQL,
         {"thread_id": str(thread_id), "limit": limit},
@@ -94,6 +96,7 @@ async def find_thread_feedback(
             "liked": row.liked,
             "comment": row.comment,
             "thread_id": str(row.thread_id),
+            "created_at": row.created_at,
             "question_text": (row.question_text or "")[:200],
             "source": "thread",
         }
@@ -107,14 +110,13 @@ _FIND_SIMILAR_SQL = text("""
         f.liked,
         f.comment,
         f.thread_id,
+        f.created_at,
         q.content AS question_text,
         1 - (f.embedding <=> CAST(:embedding AS vector)) AS similarity
     FROM mti_brain_feedback f
     LEFT JOIN mti_brain_message m ON m.id = f.message_id
     LEFT JOIN mti_brain_message q ON q.conversation_id = m.conversation_id AND q.role = 'user'
     WHERE f.embedding IS NOT NULL
-      AND f.comment IS NOT NULL
-      AND f.comment != ''
       AND f.thread_id != :current_thread_id
       AND 1 - (f.embedding <=> CAST(:embedding AS vector)) >= :min_similarity
     ORDER BY similarity DESC
@@ -151,12 +153,21 @@ async def find_similar_feedback(
             "liked": row.liked,
             "comment": row.comment,
             "thread_id": str(row.thread_id),
+            "created_at": row.created_at,
             "question_text": (row.question_text or "")[:200],
             "similarity": round(float(row.similarity), 3),
             "source": "similar",
         }
         for row in result.fetchall()
     ]
+
+
+def _days_old(created_at: datetime | None) -> int:
+    if created_at is None:
+        return 0
+    now = datetime.now(timezone.utc)
+    ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+    return max(0, (now - ts).days)
 
 
 def build_feedback_context(
@@ -166,14 +177,37 @@ def build_feedback_context(
     """Build a feedback context string to inject into agent prompts.
 
     Deduplicates by id (thread feedback takes priority over similar).
+    Excludes feedback older than 90 days. Annotates feedback 30-90 days old.
+    Thumbs-only (no comment) signals are included with synthetic labels at lower priority.
     Returns empty string if no actionable feedback exists.
     """
     seen_ids = {f["id"] for f in thread_feedback}
     similar_deduped = [f for f in similar_feedback if f["id"] not in seen_ids]
     all_feedback = thread_feedback + similar_deduped
 
-    dislikes = [f for f in all_feedback if not f["liked"] and f.get("comment")]
-    likes = [f for f in all_feedback if f["liked"] and f.get("comment")]
+    # Exclude stale feedback
+    all_feedback = [f for f in all_feedback if _days_old(f.get("created_at")) <= _FEEDBACK_STALE_DAYS]
+
+    if not all_feedback:
+        return ""
+
+    def _label(fb: dict) -> str:
+        age = _days_old(fb.get("created_at"))
+        source = "this thread" if fb.get("source") == "thread" else "similar question"
+        comment = fb.get("comment") or ""
+        age_note = f" (from ~{age}d ago)" if age > _FEEDBACK_OLD_DAYS else ""
+        if comment:
+            return f"    - [{source}]{age_note} {comment}"
+        sentiment = "User rated a similar response positively" if fb["liked"] else "User rated a similar response negatively"
+        return f"    - [{source}]{age_note} [positive signal] {sentiment}" if fb["liked"] else f"    - [{source}]{age_note} [negative signal] {sentiment}"
+
+    def _sort_key(fb: dict):
+        age = _days_old(fb.get("created_at"))
+        has_comment = 1 if fb.get("comment") else 0
+        return (-has_comment, age)
+
+    dislikes = sorted([f for f in all_feedback if not f["liked"]], key=_sort_key)
+    likes = sorted([f for f in all_feedback if f["liked"]], key=_sort_key)
 
     if not dislikes and not likes:
         return ""
@@ -182,12 +216,10 @@ def build_feedback_context(
     if dislikes:
         lines.append("  AVOID (users disliked this):")
         for fb in dislikes[:5]:
-            source = "this thread" if fb.get("source") == "thread" else "similar question"
-            lines.append(f"    - [{source}] {fb['comment']}")
+            lines.append(_label(fb))
     if likes:
         lines.append("  KEEP DOING (users liked this):")
         for fb in likes[:3]:
-            source = "this thread" if fb.get("source") == "thread" else "similar question"
-            lines.append(f"    - [{source}] {fb['comment']}")
+            lines.append(_label(fb))
 
     return "\n".join(lines)

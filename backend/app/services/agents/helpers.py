@@ -469,7 +469,7 @@ def _build_chart_data(spec: dict, columns: list[str], rows: list[list]) -> dict:
         yis = [_col_index(k) for k in y_keys]
         chart_data = []
         for r in data:
-            point: dict[str, Any] = {"x": r[xi]}
+            point: dict[str, Any] = {x_key: r[xi]}
             for k, yi in zip(y_keys, yis):
                 point[k] = r[yi]
             chart_data.append(point)

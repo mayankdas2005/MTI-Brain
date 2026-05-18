@@ -40,6 +40,7 @@ async def plan_node(state: State) -> dict:
 
     recent = _format_recent_messages(messages, n=4)
     conversation_context = "\n\n".join(filter(None, [summary, recent])) or "None."
+    feedback_context = state.get("feedback_context", "")
 
     tier = "deep" if state.get("deep_analysis") else "balanced"
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
@@ -50,6 +51,7 @@ async def plan_node(state: State) -> dict:
         "ontology_summary": get_ontology_summary(),
         "prior_context": prior_context,
         "conversation_context": conversation_context,
+        "feedback_context": feedback_context,
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

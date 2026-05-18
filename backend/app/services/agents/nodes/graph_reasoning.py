@@ -45,6 +45,7 @@ async def graph_reasoning_node(state: State) -> dict:
     results_sample = _format_results_sample(kg_columns, kg_rows)
     tribal_str = _format_tribal_facts(tribal_facts)
 
+    feedback_context = state.get("feedback_context", "")
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
     chain = GRAPH_REASONING_PROMPT | get_llm("balanced")
     raw = await chain.ainvoke({
@@ -54,6 +55,7 @@ async def graph_reasoning_node(state: State) -> dict:
         "results_sample": results_sample,
         "row_count": len(kg_rows),
         "tribal_facts": tribal_str,
+        "feedback_context": feedback_context,
         "reasoning_directive": reasoning_directive,
     })
     text = raw.content if hasattr(raw, "content") else str(raw)

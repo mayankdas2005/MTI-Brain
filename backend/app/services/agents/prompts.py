@@ -322,6 +322,9 @@ Query results ({row_count} rows):
 Tribal policy context:
 {tribal_facts}
 
+Past user feedback on similar questions (apply this to improve your analysis):
+{feedback_context}
+
 <reasoning>
 {reasoning_directive}
 
@@ -514,6 +517,9 @@ Conversation history (this question may refer to any prior question or answer in
 Use this to resolve implicit references, carry forward established entities,
 and understand the user's intent in the context of the full thread.
 Do not create sub-questions to re-fetch data already established in the conversation history above.
+
+Past user feedback on similar questions (apply this to improve your decomposition):
+{feedback_context}
 
 Ontology summary:
 {ontology_summary}
