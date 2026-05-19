@@ -1,0 +1,30 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Docs
+README.md
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker-compose*.yml
+
+# Persistent data (can be GBs)
+docker_volume/
+
+# Logs
+*.log
+logs/
+
+# Certificates / private keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+secrets/
