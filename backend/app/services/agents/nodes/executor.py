@@ -32,6 +32,7 @@ async def _run_sub_question(sq: dict, state: State, inner_graph, writer=None) ->
         "intent": sq.get("intent", ""),
         "routing": state.get("routing", "kg_only"),
         "ontology_terms": state.get("ontology_terms", []),
+        "named_graphs": [],
         "tribal_facts": state.get("tribal_facts", []),
         "sparql": "",
         "sparql_error": "",

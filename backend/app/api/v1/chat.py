@@ -93,7 +93,7 @@ def _build_sse_generator(
             content=save_data.get("answer", ""),
             reasoning=reasoning,
             metadata={
-                "sql": save_data.get("sparql", ""),
+                "sql": save_data.get("sql", "") or save_data.get("sparql", ""),
                 "intent": save_data.get("intent", ""),
                 "columns": save_data.get("columns", []),
                 "rows": save_data.get("rows", []),
@@ -223,10 +223,15 @@ def _build_sse_generator(
                     data = {"sql": data.get("query", ""), "intent": ""}
                     event_name = "generate_sql"
 
-                yield {"event": event_name, "data": json.dumps(data)}
-
                 if event_name == "error":
+                    data = {**data, "conversation_id": str(conversation_id)}
+                    yield {"event": event_name, "data": json.dumps(data)}
+                    asyncio.create_task(_save_assistant_message({
+                        "answer": data.get("message", "Something went wrong while processing your question. Please try again."),
+                    }))
                     break
+
+                yield {"event": event_name, "data": json.dumps(data)}
 
         except Exception as e:
             logger.exception(f"Stream error for thread {thread_id}: {e}")

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from app.core.logger import logger
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_sparql_from_response, _format_recent_messages
-from app.services.agents.ontology_loader import get_ontology_summary, get_ontology_dict, get_r2rml_class_properties
+from app.services.agents.ontology_loader import get_ontology_dict, get_r2rml_class_properties
 from app.services.agents.prompts import SPARQL_GEN_PROMPT, SPARQL_FIX_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
@@ -34,6 +34,8 @@ def _format_ontology_terms(terms: list[dict]) -> str:
     r2rml = get_r2rml_class_properties()
     obj_prop_map = {p["local"]: p for p in get_ontology_dict().get("object_properties", [])}
     resolved_classes = {t["local"] for t in terms if t["type"] == "class"}
+    # Properties materialized for resolved classes in R2RML — supplement rdfs:domain.
+    r2rml_materialized = {p for cls in resolved_classes for p in r2rml.get(cls, [])}
     lines = []
     excluded = []
     for t in terms:
@@ -50,21 +52,49 @@ def _format_ontology_terms(terms: list[dict]) -> str:
                     parts.append(f"lpp:{p}→{rng}" if rng else f"lpp:{p}")
                 lines.append(f"    materialized: {' | '.join(parts)}")
         else:
-            domain = t.get("property_type") or t.get("domain") or ""
-            if domain and resolved_classes and domain not in resolved_classes:
+            domain_cls = t.get("domain") or ""
+            # A property is relevant if: its declared domain is a resolved class,
+            # OR it is explicitly materialized for a resolved class in R2RML.
+            if domain_cls and resolved_classes and domain_cls not in resolved_classes and t["local"] not in r2rml_materialized:
                 excluded.append(t["local"])
             else:
                 lines.append(
                     f"  lpp:{t['local']} ({t['type']}"
-                    + (f", domain:{domain}" if domain else "")
+                    + (f", domain:{domain_cls}" if domain_cls else "")
                     + ")"
                     + (f"  # {comment}" if comment else "")
                 )
     if excluded:
         lines.append(
-            f"\n  (Excluded — domain mismatch, not applicable to above classes: "
+            f"\n  (Excluded — domain not applicable to above classes: "
             f"{', '.join('lpp:' + p for p in excluded)})"
         )
+    return "\n".join(lines)
+
+
+_FALLBACK_GRAPHS = [
+    ("Treasury balances & snapshots", "graph:treasury:all"),
+    ("FX positions & hedges",         "graph:fx:current"),
+    ("Investment portfolio",          "graph:investments:all"),
+]
+
+
+def _format_named_graphs(named_graphs: list[str]) -> str:
+    """Format NAMED GRAPHS section for the SPARQL prompt.
+
+    Uses the vector-retrieved named graphs when available; falls back to the
+    full static list so queries never omit required FROM clauses.
+    """
+    graphs = named_graphs if named_graphs else [g for _, g in _FALLBACK_GRAPHS]
+    label_map = {g: lbl for lbl, g in _FALLBACK_GRAPHS}
+    lines = ["NAMED GRAPHS (always include FROM for the relevant domain — omitting it queries the empty default graph and returns 0 rows):"]
+    for g in graphs:
+        lbl = label_map.get(g, g)
+        lines.append(f"  {lbl} : FROM <{g}>")
+    if not named_graphs:
+        for lbl, g in _FALLBACK_GRAPHS:
+            if g not in graphs:
+                lines.append(f"  {lbl} : FROM <{g}>")
     return "\n".join(lines)
 
 
@@ -107,7 +137,9 @@ async def sparql_gen_node(state: State) -> dict:
 
     recent = _format_recent_messages(state.get("messages", []), n=4)
     conversation_context = "\n\n".join(filter(None, [state.get("summary"), recent])) or "None."
-    ontology_summary = get_ontology_summary()
+
+    named_graphs = state.get("named_graphs") or []
+    named_graphs_section = _format_named_graphs(named_graphs)
 
     if sparql_error and existing_sparql:
         prompt = SPARQL_FIX_PROMPT
@@ -117,8 +149,8 @@ async def sparql_gen_node(state: State) -> dict:
             "intent": intent,
             "sparql": existing_sparql,
             "error": sparql_error,
-            "ontology_summary": ontology_summary,
             "ontology_terms": _format_ontology_terms(ontology_terms),
+            "named_graphs_section": named_graphs_section,
             "feedback_context": state.get("feedback_context") or "None.",
             "reasoning_directive": reasoning_directive,
         })
@@ -129,8 +161,8 @@ async def sparql_gen_node(state: State) -> dict:
             "question": question,
             "intent": intent,
             "persona": persona,
-            "ontology_summary": ontology_summary,
             "ontology_terms": _format_ontology_terms(ontology_terms),
+            "named_graphs_section": named_graphs_section,
             "tribal_facts": _format_tribal_facts(tribal_facts),
             "prior_error_section": f"Prior error (fix this):\n{sparql_error}" if sparql_error else "",
             "refinement_section": refinement_section,

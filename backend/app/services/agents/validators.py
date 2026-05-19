@@ -178,11 +178,20 @@ async def validate_predicates(
         return False, f"Predicates not found in ontology: {', '.join(missing)}"
 
     # ── Domain check: verify object-property domain matches query subject types ──
-    # Only reliable when there is exactly one explicit subject type — in join queries
-    # with multiple typed variables, we cannot determine which predicate belongs to
-    # which variable without per-variable tracking, causing false positives.
+    # R2RML is the ground truth for what predicates are actually materialized per class
+    # in Fuseki. rdfs:domain declarations in the ontology TTL may be incomplete — a
+    # property may be reused across classes not listed in its domain. Always check R2RML
+    # first; only reject if neither the ontology domain nor R2RML allows the combination.
     subject_classes = extract_subject_types(query)
-    if subject_classes and len(subject_classes) == 1:
+    if subject_classes:
+        from app.services.agents.ontology_loader import get_r2rml_class_properties
+        r2rml = get_r2rml_class_properties()
+        r2rml_allowed: set[str] = {
+            prop
+            for cls in subject_classes
+            for prop in r2rml.get(cls, [])
+        }
+
         prop_domain: dict[str, str | None] = {
             p["local"]: p.get("domain")
             for p in ont.get("object_properties", [])
@@ -191,29 +200,34 @@ async def validate_predicates(
         used_locals = {uri.split("#")[-1] for uri in predicates}
         for local in used_locals:
             declared_domain = prop_domain.get(local)
-            if declared_domain and not _domain_compatible(declared_domain, subject_classes, subclass_map):
-                # Build a hint: find properties with the same range whose domain
-                # DOES appear in the query — those are the correct alternatives.
-                pred_range = next(
-                    (p.get("range") for p in ont.get("object_properties", []) if p["local"] == local),
-                    None,
-                )
-                alternatives = [
-                    p["local"]
-                    for p in ont.get("object_properties", [])
-                    if p.get("domain") in subject_classes
-                    and p.get("range") == pred_range
-                    and p["local"] != local
-                ]
-                hint = (
-                    f" Consider: {', '.join(f'lpp:{a}' for a in alternatives)}"
-                    if alternatives
-                    else ""
-                )
-                return False, (
-                    f"lpp:{local} has domain lpp:{declared_domain} but the query uses "
-                    f"{', '.join(f'lpp:{c}' for c in sorted(subject_classes))} as subject types. "
-                    f"Wrong predicate for this class.{hint}"
-                )
+            if not declared_domain:
+                continue
+            if declared_domain in subject_classes:
+                continue
+            if local in r2rml_allowed:
+                continue
+            # Build a hint: find properties with the same range whose domain
+            # DOES appear in the query — those are the correct alternatives.
+            pred_range = next(
+                (p.get("range") for p in ont.get("object_properties", []) if p["local"] == local),
+                None,
+            )
+            alternatives = [
+                p["local"]
+                for p in ont.get("object_properties", [])
+                if p.get("domain") in subject_classes
+                and p.get("range") == pred_range
+                and p["local"] != local
+            ]
+            hint = (
+                f" Consider: {', '.join(f'lpp:{a}' for a in alternatives)}"
+                if alternatives
+                else ""
+            )
+            return False, (
+                f"lpp:{local} has domain lpp:{declared_domain} but the query uses "
+                f"{', '.join(f'lpp:{c}' for c in sorted(subject_classes))} as subject types. "
+                f"Wrong predicate for this class.{hint}"
+            )
 
     return True, ""

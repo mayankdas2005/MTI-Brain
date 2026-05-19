@@ -9,6 +9,10 @@ from __future__ import annotations
 from app.core.config import settings
 from app.core.logger import logger
 from app.services.agents.fuseki_client import FusekiClient
+from app.services.agents.ontology_retriever import (
+    init_ontology_retriever,
+    close_ontology_retriever,
+)
 
 _kg_client: FusekiClient | None = None
 
@@ -31,14 +35,16 @@ async def init_data_pool() -> None:
         f"Data pool ready: KG={_kg_client.query_url} "
         f"({'ok' if kg_ok else 'UNREACHABLE'})"
     )
+    await init_ontology_retriever()
 
 
 async def close_data_pool() -> None:
-    """Close the Fuseki HTTP session."""
+    """Close the Fuseki HTTP session and ontology retriever pool."""
     global _kg_client
     if _kg_client:
         await _kg_client.close()
         _kg_client = None
+    await close_ontology_retriever()
     logger.info("Data pool closed")
 
 

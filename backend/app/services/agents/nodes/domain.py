@@ -6,7 +6,7 @@ import time
 
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_json_from_response, _format_recent_messages
-from app.services.agents.ontology_loader import get_ontology_summary
+from app.services.agents.ontology_loader import get_class_names_summary
 from app.services.agents.prompts import DOMAIN_SPECIALIST_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
@@ -30,7 +30,7 @@ async def domain_specialist_node(state: State) -> dict:
         "complexity": complexity,
         "conversation_context": conversation_context,
         "reasoning_directive": reasoning_directive,
-        "ontology_context": get_ontology_summary() or "Not available.",
+        "ontology_context": get_class_names_summary() or "Not available.",
     })
     text = raw.content if hasattr(raw, "content") else str(raw)
     parsed = parse_json_from_response(text)
