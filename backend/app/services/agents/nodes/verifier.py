@@ -87,8 +87,20 @@ async def verifier_node(state: State) -> dict:
     if row_count == 0 and state.get("sparql_retries", 0) < _MAX_SPARQL_RETRIES:
         step = {**step_base, "label": "Verifier: 0 rows — triggering guided retry",
                 "duration_ms": round((time.perf_counter() - t0) * 1000)}
-        return {
-            "sparql_error": (
+        sparql_text = state.get("sparql", "")
+        has_having = "HAVING" in sparql_text.upper()
+        if has_having:
+            error_msg = (
+                "Query executed successfully but returned 0 rows. "
+                "The query uses HAVING — the most likely cause is that the threshold filters all groups "
+                "(i.e., no entity in the data meets the condition). "
+                "Do NOT change predicates, graphs, or dates. "
+                "Instead: verify data exists by removing the HAVING clause entirely and re-running. "
+                "If removing HAVING returns data, output the query WITHOUT HAVING so the user sees all "
+                "entities ranked by variance — 0 rows with HAVING is valid when no anomaly exceeds the threshold."
+            )
+        else:
+            error_msg = (
                 "Query executed successfully but returned 0 rows. "
                 "Likely causes: "
                 "(1) wrong predicate — e.g. used lpp:sourceAccount instead of lpp:forAccount for balance snapshots; "
@@ -96,7 +108,9 @@ async def verifier_node(state: State) -> dict:
                 "FROM <graph:fx:current> for FX, FROM <graph:investments:all> for investments; "
                 "(3) date literal mismatch — use exact xsd:date literals, never SPARQL date arithmetic. "
                 "Regenerate with corrected predicates, the correct FROM clause, and literal date values."
-            ),
+            )
+        return {
+            "sparql_error": error_msg,
             "pipeline_steps": state.get("pipeline_steps", []) + [step],
         }
 

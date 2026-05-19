@@ -102,6 +102,40 @@ def extract_subject_types(query: str) -> set[str]:
     ))
 
 
+def _build_subclass_map(ont: dict) -> dict[str, set[str]]:
+    """Return {local: set_of_ancestor_locals} using transitive rdfs:subClassOf closure."""
+    direct: dict[str, list[str]] = {
+        c["local"]: c.get("subClassOf", []) for c in ont.get("classes", [])
+    }
+    cache: dict[str, set[str]] = {}
+
+    def ancestors(local: str) -> set[str]:
+        if local in cache:
+            return cache[local]
+        result: set[str] = set()
+        for parent in direct.get(local, []):
+            result.add(parent)
+            result |= ancestors(parent)
+        cache[local] = result
+        return result
+
+    return {local: ancestors(local) for local in direct}
+
+
+def _domain_compatible(
+    declared_domain: str,
+    subject_classes: set[str],
+    subclass_map: dict[str, set[str]],
+) -> bool:
+    """Return True if any subject class equals or inherits from declared_domain."""
+    for cls in subject_classes:
+        if cls == declared_domain:
+            return True
+        if declared_domain in subclass_map.get(cls, set()):
+            return True
+    return False
+
+
 async def validate_predicates(
     query: str,
     fuseki_client=None,
@@ -144,16 +178,20 @@ async def validate_predicates(
         return False, f"Predicates not found in ontology: {', '.join(missing)}"
 
     # ── Domain check: verify object-property domain matches query subject types ──
+    # Only reliable when there is exactly one explicit subject type — in join queries
+    # with multiple typed variables, we cannot determine which predicate belongs to
+    # which variable without per-variable tracking, causing false positives.
     subject_classes = extract_subject_types(query)
-    if subject_classes:
+    if subject_classes and len(subject_classes) == 1:
         prop_domain: dict[str, str | None] = {
             p["local"]: p.get("domain")
             for p in ont.get("object_properties", [])
         }
+        subclass_map = _build_subclass_map(ont)
         used_locals = {uri.split("#")[-1] for uri in predicates}
         for local in used_locals:
             declared_domain = prop_domain.get(local)
-            if declared_domain and declared_domain not in subject_classes:
+            if declared_domain and not _domain_compatible(declared_domain, subject_classes, subclass_map):
                 # Build a hint: find properties with the same range whose domain
                 # DOES appear in the query — those are the correct alternatives.
                 pred_range = next(

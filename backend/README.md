@@ -311,6 +311,79 @@ The pipeline is a compiled LangGraph state machine in `app/services/agents/graph
 
 When `deep_analysis: true` is sent, the pipeline activates extended multi-step reasoning (typically the advanced Plan/Execute/Reflect/Repair loop). The flag is stored in `MTIBrainExecutionLog` for telemetry.
 
+### SPARQL Generation Sub-pipeline
+
+The inner SPARQL loop runs inside the main graph and handles KG queries against Apache Jena Fuseki. The retry budget is controlled by `_MAX_SPARQL_RETRIES = 2` in `verifier.py`.
+
+```
+sparql_gen → sparql_validate → sparql_execute → verifier
+                  ↑                                  |
+                  └──── sparql_fix (on FAIL/0-rows) ←┘
+```
+
+| Step | What happens |
+|------|-------------|
+| `sparql_gen` | LLM generates SPARQL from the question + ontology summary + resolved terms + intent hints |
+| `sparql_validate` | Syntax check (`rdflib.prepareQuery`) + predicate existence check against the in-memory ontology dict; domain/range checked for single-subject queries |
+| `sparql_execute` | POST to Fuseki `/sparql` with HTTP Basic Auth; results parsed into columns + rows |
+| `verifier` | Row count vs intent range; monetary sign sanity; 0-row handler (HAVING-aware); LLM semantic check via `VERIFIER_PROMPT` |
+| `sparql_fix` | If verifier sets `sparql_error`, the fix node rewrites the query guided by the error message + `SPARQL_FIX_PROMPT` |
+
+**Verifier 0-row behaviour:** when a query returns 0 rows, the verifier reads `state["sparql"]` to detect a `HAVING` clause. If HAVING is present, the error message instructs the fix agent to _remove HAVING_ (the threshold may filter all groups) rather than change predicates, graphs, or dates. Without HAVING, the error message lists the three most common causes: wrong predicate, missing `FROM` graph, date literal mismatch.
+
+### SPARQL Domain Patterns
+
+These rules are embedded in `SPARQL_GEN_PROMPT` and `SPARQL_FIX_PROMPT` in `prompts.py`. They encode R2RML materialization facts that the LLM cannot infer from the ontology alone. **Keep them in sync when the R2RML mapping changes.**
+
+#### Named Graphs
+
+| Named Graph | Classes |
+|-------------|---------|
+| `<graph:treasury:all>` | `lpp:BankAccount`, `lpp:BankBranch`, `lpp:BalanceSnapshot`, `lpp:CashPosition`, `lpp:Company`, `lpp:FxRate`, `lpp:ForecastActual`, `lpp:ForecastLine`, `lpp:Receipt`, `lpp:Disbursement` |
+| `<graph:fx:current>` | `lpp:FxForward`, `lpp:FxExposure` |
+| `<graph:investments:all>` | `lpp:InvestmentPosition`, `lpp:FinancialInstrument` |
+
+> `lpp:FxRate` is in `<graph:treasury:all>`, **not** `<graph:fx:current>`. The name is misleading — the fx hedges graph only holds forward contracts.
+
+#### Payment class hierarchy
+
+```
+lpp:Transaction  (ABSTRACT — CASH_FLOW table: Receipt + Disbursement)
+└── lpp:PaymentTransaction  (ABSTRACT — TRANSFER table rows)
+    ├── lpp:WireTransfer
+    ├── lpp:AchTransaction  (→ lpp:AchDebit / lpp:AchCredit)
+    ├── lpp:RtpTransaction
+    ├── lpp:FedNowTransaction
+    ├── lpp:CheckPayment
+    ├── lpp:CardTransaction  (→ lpp:VirtualCardTransaction / lpp:CommercialCardTransaction)
+    └── lpp:CrossBorderPayment
+```
+
+Always use the **concrete subclass**, not the abstract base. `lpp:Transaction` has no `lpp:paymentMethod` triples in Fuseki — payment rail discrimination is done purely by class.
+
+"Receipts" and "disbursements" map to `lpp:Receipt` / `lpp:Disbursement` (CASH_FLOW table), not to `lpp:AchTransaction` or `lpp:WireTransfer`.
+
+#### Key per-class constraints
+
+| Class | Critical rules |
+|-------|---------------|
+| `lpp:BalanceSnapshot` | Use `lpp:forAccount` (not `lpp:sourceAccount`); current balance = `lpp:isLatestSnapshot true` |
+| `lpp:BankAccount` | No `lpp:status` property — "open accounts" = all accounts; geography via `lpp:atBranch → lpp:countryCode` |
+| `lpp:FxRate` | Currency filter: `?from lpp:code "USD"` — not `lppid:USD` (wrong IRI path) and not `lpp:currencyCode` (wrong class) |
+| `lpp:ForecastActual` | Only `lpp:forecastedOutflow` / `lpp:actualOutflow` — no `forecastedInflow` / `actualInflow`; April data has `lpp:asOfDate = "2026-03-31"` (anchored to last day of previous month); entity comparisons require `GROUP BY ?entity` + `HAVING` + `IF(SUM(?fcst)=0, 0, ...)` guard |
+
+#### Ontology loading
+
+`ontology_loader.py` performs two passes over `lpp-ontology.ttl`:
+1. Classes declared with `rdf:type owl:Class`
+2. Classes declared only via `rdfs:subClassOf` (no explicit `owl:Class` triple — all `PaymentTransaction` subclasses fall into this category)
+
+Both passes are needed because rdflib only finds `owl:Class` subjects in the first pass.
+
+#### Validator domain check
+
+`validators.py` `validate_predicates()` uses a transitive `rdfs:subClassOf` closure (`_build_subclass_map`) to check property domains. A predicate declared with domain `lpp:BankAccount` is accepted when the query subject type is `lpp:OperatingAccount` (a subclass). The domain check is suppressed for queries with more than one explicit subject type (`?var a lpp:Cls`) to avoid false positives on join queries.
+
 ## Middleware
 
 `app/core/middleware.py` (pure ASGI — no `BaseHTTPMiddleware` to avoid Windows ProactorEventLoop deadlocks):
@@ -496,8 +569,19 @@ Optional secret overrides (uncomment in `.env` when needed):
 1. Add the class to the relevant intent key(s) in `INTENT_CLASSES`
 2. If the class is a `PaymentTransaction` subclass, also add it to `"payment_operations"` and `"cost_and_fee_analysis"` as appropriate
 3. Add a keyword→class mapping example to the `TRANSACTION CLASS SELECTION` section of `SPARQL_GEN_PROMPT` and `SPARQL_FIX_PROMPT` in `prompts.py`
+4. If the class has domain-specific constraints (e.g. non-obvious property names, graph placement, date anchoring conventions), add a domain pattern block to `SPARQL_GEN_PROMPT` and a compact entry to the relevant section in `SPARQL_FIX_PROMPT`
 
 **Future enhancement:** Drive `INTENT_CLASSES` from an `lpp:intentDomain` annotation property in `lpp-ontology.ttl`, parsed by `ontology_loader.py` at startup. This would eliminate the manual sync requirement entirely.
+
+### SPARQL Domain Patterns — Manual maintenance required
+
+`prompts.py` contains domain pattern blocks (`BANK ACCOUNT DOMAIN PATTERNS`, `FX RATE DOMAIN PATTERNS`, `FORECAST ACTUAL DOMAIN PATTERNS`, etc.) that encode R2RML materialization facts the LLM cannot derive from the ontology alone — which properties are actually loaded, which named graph the class lives in, and any schema quirks (e.g. date anchoring conventions, absent properties that seem like they should exist).
+
+These blocks must be kept in sync with `lpp-r2rml.ttl`. If a property is added or removed from an R2RML TriplesMap, the corresponding domain pattern block needs updating. A stale pattern silently generates queries that return 0 rows.
+
+### Verifier 0-row retry — HAVING detection heuristic
+
+`nodes/verifier.py` detects the word `HAVING` in the SPARQL text to decide whether a 0-row result is likely caused by an over-strict threshold (in which case the fix agent is told to remove HAVING) vs a structural query error (wrong predicate, wrong graph, wrong date). This is a string match — it is not aware of query semantics. An edge case where HAVING is present but the real cause is a wrong predicate will still receive the HAVING-specific guidance and may take an extra retry cycle to resolve.
 
 ---
 

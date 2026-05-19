@@ -64,6 +64,25 @@ def _load_ontology() -> tuple[dict, dict[str, list[str]]]:
             "subClassOf": subclass_of,
         })
 
+    # Second pass: pick up subclasses declared only via rdfs:subClassOf (no explicit owl:Class triple).
+    # e.g. lpp:WireTransfer rdfs:subClassOf lpp:PaymentTransaction — valid OWL but missed by the loop above.
+    existing_class_uris = {c["uri"] for c in classes}
+    for s, _, _ in g.triples((None, RDFS.subClassOf, None)):
+        uri = str(s)
+        if "lpp.example/ontology#" not in uri or uri in existing_class_uris:
+            continue
+        label = _str(g.value(s, RDFS.label), uri.split("#")[-1])
+        comment = _str(g.value(s, RDFS.comment))
+        subclass_of = [str(o).split("#")[-1] for _, _, o in g.triples((s, RDFS.subClassOf, None))]
+        classes.append({
+            "uri": uri,
+            "local": uri.split("#")[-1],
+            "label": label,
+            "comment": comment,
+            "subClassOf": subclass_of,
+        })
+        existing_class_uris.add(uri)
+
     for s, _, _ in g.triples((None, RDF.type, OWL.ObjectProperty)):
         uri = str(s)
         if "lpp.example/ontology#" not in uri:

@@ -219,8 +219,12 @@ FORBIDDEN date constructs — Apache Jena Fuseki does not support these and they
 
 NAMED GRAPHS (always include FROM for the relevant domain — omitting it queries the empty default graph and returns 0 rows):
   Treasury balances & snapshots : FROM <graph:treasury:all>
+    Classes: lpp:BankAccount, lpp:BankBranch, lpp:BalanceSnapshot, lpp:CashPosition, lpp:Company,
+             lpp:FxRate  ← FX exchange rates live HERE, NOT in the FX hedges graph
   FX positions & hedges         : FROM <graph:fx:current>
+    Classes: lpp:FxForward, lpp:FxExposure  ← forward contracts / hedges only; NOT lpp:FxRate
   Investment portfolio          : FROM <graph:investments:all>
+    Classes: lpp:InvestmentPosition, lpp:FinancialInstrument
 
 DOMAIN PATTERNS — balance snapshot queries (lpp:BalanceSnapshot):
 
@@ -270,10 +274,99 @@ TRANSACTION CLASS SELECTION — always use the concrete subclass, never the abst
   NEVER: ?txn a lpp:Transaction ; lpp:paymentMethod lppid:Wire   ← returns 0 rows; no paymentMethod triples exist on Transaction
   CORRECT: ?txn a lpp:WireTransfer ; lpp:amount ?amt ...
 
+RECEIPT / DISBURSEMENT (CASH_FLOW table — treasury inflows and outflows):
+  "receipts" / "money received" / "inflows" / "cash in"     → lpp:Receipt
+  "disbursements" / "payments sent" / "outflows" / "paid"   → lpp:Disbursement
+  Both use: lpp:amount, lpp:currencyCode, lpp:valueDate (no lpp:paymentMethod)
+
+  "ACH receipts" / "wire receipts" / "incoming payments"    → lpp:Receipt  ← NOT lpp:AchCredit or lpp:AchTransaction
+  "ACH payments sent" / "wire transfers processed"          → lpp:AchTransaction / lpp:WireTransfer
+  lpp:Receipt = any inbound cash regardless of rail; lpp:AchTransaction = payment hub ACH transaction
+
+BANK ACCOUNT DOMAIN PATTERNS:
+  lpp:BankAccount has NO lpp:status property — do NOT add status filters.
+  "Open accounts" = ALL accounts in the graph (closed accounts are not stored).
+  Materialized properties: lpp:code, lpp:ownedBy → lpp:Company, lpp:atBranch → lpp:BankBranch, lpp:hasCurrency → lpp:Currency
+
+  Geography filtering (country):
+    ?acct lpp:atBranch ?branch .
+    ?branch lpp:countryCode "CA" .        ← use ISO 2-letter country code on BankBranch
+    NOT: ?acct lpp:countryCode "CA"       ← BankAccount has no countryCode; it lives on BankBranch
+
+  NEVER: ?acct a lpp:BankAccount ; lpp:status "Open"   ← returns 0 rows; no status triples on BankAccount
+  CORRECT: ?acct a lpp:BankAccount                     ← all accounts in graph = open accounts
+
+FX RATE DOMAIN PATTERNS (lpp:FxRate):
+  Graph: FROM <graph:treasury:all>  ← NOT <graph:fx:current> (that holds lpp:FxForward / lpp:FxExposure)
+  Currency filter: join through Currency node using lpp:code
+
+  CORRECT:
+    ?r a lpp:FxRate ;
+       lpp:fxRateFrom ?from ;
+       lpp:fxRateTo   ?to ;
+       lpp:fxRate     ?rate ;
+       lpp:asOfDate   ?d .
+    ?from lpp:code "USD" .
+    ?to   lpp:code "CAD" .
+
+  NEVER: lpp:fxRateFrom lppid:USD     ← Currency IRI is .../id/currency/USD, not .../id/USD
+  NEVER: ?from lpp:currencyCode "USD"  ← lpp:currencyCode is for lpp:BalanceSnapshot, not lpp:Currency
+  CORRECT: ?from lpp:code "USD"        ← lpp:code is the business key on lpp:Currency
+
+FORECAST ACTUAL DOMAIN PATTERNS (lpp:ForecastActual):
+  Graph: FROM <graph:treasury:all>
+  Source: LPP.FORECAST_VS_ACTUAL — one row per (entity, asOfDate, driverCategory)
+
+  Materialized properties (ONLY these):
+    lpp:forEntity         → lpp:Company
+    lpp:asOfDate          (xsd:date)
+    lpp:driverCategory    (string)
+    lpp:forecastedOutflow (xsd:decimal)  ← the ONLY flow columns on this class
+    lpp:actualOutflow     (xsd:decimal)  ← the ONLY flow columns on this class
+    lpp:varianceAmount    (xsd:decimal — pre-computed, OPTIONAL)
+    lpp:variancePct       (xsd:decimal — pre-computed, OPTIONAL)
+    lpp:currencyCode      (string)
+
+  NEVER: lpp:forecastedInflow or lpp:actualInflow  ← those exist on lpp:ForecastLine, NOT on ForecastActual
+  "Cash inflows vs forecast" and "cash outflows vs forecast" → BOTH use lpp:forecastedOutflow / lpp:actualOutflow
+
+  AGGREGATION PATTERN — required for "by entity" comparisons:
+    SELECT ?entity
+           (SUM(?actOut) AS ?actualOutflow)
+           (SUM(?fcstOut) AS ?forecastedOutflow)
+           (SUM(?varAmt) AS ?varianceAmount)
+           (IF(SUM(?fcstOut)=0, 0, (SUM(?actOut)-SUM(?fcstOut))/SUM(?fcstOut)*100) AS ?variancePct)
+    WHERE {{
+      ?fa a lpp:ForecastActual ;
+          lpp:forEntity ?entity ;
+          lpp:asOfDate ?d ;
+          lpp:actualOutflow ?actOut ;
+          lpp:forecastedOutflow ?fcstOut .
+      OPTIONAL {{ ?fa lpp:varianceAmount ?varAmt }}
+      FILTER(?d >= "2026-03-31"^^xsd:date && ?d <= "2026-04-30"^^xsd:date)
+    }}
+    GROUP BY ?entity
+    HAVING(ABS(IF(SUM(?fcstOut)=0, 0, (SUM(?actOut)-SUM(?fcstOut))/SUM(?fcstOut)*100)) > 10)
+    ORDER BY DESC(ABS(?variancePct))
+
+  Date note: ForecastActual stores monthly data anchored to the last day of the PREVIOUS month.
+    April data has ?d = "2026-03-31". Always start the FILTER one day before the target month:
+    April → FILTER(?d >= "2026-03-31"^^xsd:date && ?d <= "2026-04-30"^^xsd:date)
+    May   → FILTER(?d >= "2026-04-30"^^xsd:date && ?d <= "2026-05-31"^^xsd:date)
+
+  NEVER use FILTER inside WHERE for variance threshold — always use HAVING on the aggregated value
+  NEVER compute variance on raw row values — always aggregate first with SUM() then apply threshold in HAVING
+  NEVER add ?entity lpp:name ?entityName as a required triple — return ?entity IRI directly
+  NEVER add lpp:driverCategory to WHERE or GROUP BY for entity-level comparisons — it fragments data into per-category rows and reduces per-entity variance, causing HAVING to drop all rows
+  MANDATORY: ALWAYS wrap any division by SUM(?fcstOut) with IF(SUM(?fcstOut)=0, 0, ...) in BOTH the SELECT expression and the HAVING clause — bare division causes Fuseki runtime error when denominator=0, returning 0 rows silently
+    WRONG:  ((SUM(?actOut) - SUM(?fcstOut)) / SUM(?fcstOut) * 100)
+    CORRECT: IF(SUM(?fcstOut)=0, 0, (SUM(?actOut)-SUM(?fcstOut))/SUM(?fcstOut)*100)
+
 SPARQL rules:
 - Prefixes: always declare lpp: <https://lpp.example/ontology#>; add lppid: <https://lpp.example/id/> only when using lppid: URIs; add xsd: <http://www.w3.org/2001/XMLSchema#> only when using xsd:date or xsd:decimal
 - SELECT or ASK only — no INSERT/DELETE/UPDATE
 - OPTIONAL for fields that may be absent; BIND(... AS ?var) for derived values; descriptive variable names
+- Do NOT add label/name joins (e.g. ?entity lpp:name ?label) unless the user explicitly asks for names — required joins on secondary properties silently eliminate rows when those properties are absent from the graph
 - Date filters: FILTER(?date >= "2024-01-01"^^xsd:date)
 - ORDER BY DESC(?amount) where natural ranking is expected
 - LIMIT {max_rows} on the outer SELECT only — never inside sub-SELECTs used for aggregation
@@ -323,8 +416,12 @@ Past user feedback on similar questions (apply to avoid repeating flagged mistak
 
 NAMED GRAPHS (always include FROM for the relevant domain — omitting it queries the empty default graph and returns 0 rows):
   Treasury balances & snapshots : FROM <graph:treasury:all>
+    Classes: lpp:BankAccount, lpp:BankBranch, lpp:BalanceSnapshot, lpp:CashPosition, lpp:Company,
+             lpp:FxRate  ← FX exchange rates live HERE, NOT in the FX hedges graph
   FX positions & hedges         : FROM <graph:fx:current>
+    Classes: lpp:FxForward, lpp:FxExposure  ← forward contracts / hedges only; NOT lpp:FxRate
   Investment portfolio          : FROM <graph:investments:all>
+    Classes: lpp:InvestmentPosition, lpp:FinancialInstrument
 
 DOMAIN PATTERNS — balance snapshot queries (lpp:BalanceSnapshot):
   Latest balance    : lpp:isLatestSnapshot true  ← use this instead of lpp:asOfDate for current/latest queries
@@ -339,6 +436,30 @@ TRANSACTION CLASS SELECTION (common 0-row cause):
        FedNow→lpp:FedNowTransaction, check→lpp:CheckPayment, card→lpp:CardTransaction,
        cross-border→lpp:CrossBorderPayment, unspecified→lpp:PaymentTransaction
 
+  RECEIPT / DISBURSEMENT distinction:
+    "ACH receipts" / "wire receipts" / "inflows received"   → lpp:Receipt  ← NOT lpp:AchCredit
+    "payments sent" / "disbursements" / "outflows"          → lpp:Disbursement
+    lpp:Receipt / lpp:Disbursement are CASH_FLOW entries — use lpp:amount, lpp:currencyCode, lpp:valueDate
+
+BANK ACCOUNT DOMAIN (common 0-row cause):
+  Wrong: ?acct a lpp:BankAccount ; lpp:status "Open"   ← no status triples; always 0 rows
+  Right: ?acct a lpp:BankAccount                       ← all accounts in graph = open accounts
+  Geography: ?acct lpp:atBranch ?branch . ?branch lpp:countryCode "CA"   ← NOT on BankAccount directly
+
+FX RATE (common 0-row cause):
+  Graph: FROM <graph:treasury:all>  ← NOT <graph:fx:current> (that is for FxForward/FxExposure)
+  Currency: ?from lpp:code "USD"    ← NOT lpp:currencyCode, NOT lppid:USD
+
+FORECAST ACTUAL (common 0-row cause):
+  Wrong: lpp:forecastedInflow / lpp:actualInflow  ← not on ForecastActual; use forecastedOutflow / actualOutflow
+  Wrong: FILTER for variance threshold in WHERE   ← use HAVING on aggregated SUM values
+  Wrong: lpp:driverCategory in WHERE + GROUP BY   ← fragments per-entity totals; GROUP BY ?entity only
+  Wrong date: FILTER starts at "2026-04-01"       ← ForecastActual anchors April data to "2026-03-31"; start filter from last day of previous month
+  Wrong: bare division (SUM(?actOut)-SUM(?fcstOut))/SUM(?fcstOut) in HAVING or SELECT  ← Fuseki runtime error when denominator=0, returns 0 rows
+  Right: GROUP BY ?entity + HAVING(ABS(IF(SUM(?fcstOut)=0, 0, ...)) > 10) + IF() guard in SELECT too
+  Right SELECT: (IF(SUM(?fcstOut)=0, 0, (SUM(?actOut)-SUM(?fcstOut))/SUM(?fcstOut)*100) AS ?variancePct)
+  Right HAVING: HAVING(ABS(IF(SUM(?fcstOut)=0, 0, (SUM(?actOut)-SUM(?fcstOut))/SUM(?fcstOut)*100)) > 10)
+
 Fix rules:
 - Change ONLY what is needed to resolve the error
 - Preserve the original logical intent of the query
@@ -346,6 +467,8 @@ Fix rules:
 - If a class or property does not exist, replace with the closest valid term from the ontology reference
 - If the error is a GROUP BY violation, fix the aggregation grouping
 - If the error is a prefix issue, add the missing PREFIX declaration
+- If 0 rows returned, check for non-OPTIONAL joins to secondary entity properties (e.g. ?entity lpp:name ?label) — remove them or make them OPTIONAL
+- If 0 rows returned AND query has HAVING: the threshold may be filtering all groups — do NOT change predicates, graphs, or dates; instead remove HAVING entirely and return all entities ranked by variance so the user can see the data
 - Before finalising: mentally verify (1) the error is resolved and (2) the logical intent is unchanged
 
 <reasoning>
@@ -414,13 +537,15 @@ Verify that the result is semantically correct for the question. Check:
    A portfolio-wide query may return 10-200 rows. Thousands of rows with no LIMIT is suspicious.
 
 2. **Data types** — Monetary columns should be numeric. Date columns should be ISO 8601.
-   If a monetary column contains only zeros AND the question expects real values, flag it.
+   COUNT/aggregate columns (e.g. accountCount, txnCount, rowCount) returning 0 is valid data — it means no rows matched.
+   Only flag zero if the column name clearly indicates a monetary amount (e.g. totalBalance, amount, exposure) AND the question expects a non-zero value.
 
 3. **Completeness** — Are the columns returned actually answering the question?
    If the question asks for "total exposure" but only raw positions are returned, that is incomplete.
 
 4. **Zero result** — Zero rows is NOT automatically a failure. It may mean no data exists.
-   Only FAIL if the SPARQL logic appears wrong (e.g., wrong joins, impossible filters).
+   A single row with COUNT=0 is also NOT a failure — it is a valid aggregate result.
+   Only FAIL if the SPARQL logic appears demonstrably wrong (e.g., wrong joins, impossible filters such as a status filter on a class that has no status property).
 
 Output ONLY one of these two formats, nothing else:
 PASS

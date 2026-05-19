@@ -49,15 +49,15 @@ async def ontology_lookup_node(state: State) -> dict:
         # Payments — concrete PaymentTransaction subclasses (not the abstract Transaction base)
         "authorization_analysis":   ["CardTransaction", "VirtualCardTransaction", "CommercialCardTransaction", "Authorization", "MerchantAccount", "Acquirer", "CardNetwork", "CardType"],
         "cost_and_fee_analysis":    ["WireTransfer", "AchTransaction", "CardTransaction", "BankFee", "Chargeback", "Settlement", "CardPaymentRollup", "FraudLossEvent"],
-        "payment_operations":       ["WireTransfer", "AchTransaction", "RtpTransaction", "FedNowTransaction", "CheckPayment", "CrossBorderPayment", "CardTransaction", "PaymentHubEvent", "PaymentBatch", "StpMetric", "Settlement", "PaymentFile"],
+        "payment_operations":       ["WireTransfer", "AchTransaction", "RtpTransaction", "FedNowTransaction", "CheckPayment", "CrossBorderPayment", "CardTransaction", "Receipt", "Disbursement", "PaymentHubEvent", "PaymentBatch", "StpMetric", "Settlement", "PaymentFile"],
         "supplier_and_crossborder": ["Invoice", "Counterparty", "FxForward", "WorkingCapitalMetric", "Company", "CrossBorderPayment"],
         # Strategic
-        "trend_and_forecast":       ["BankAccount", "BalanceSnapshot", "InvestmentPosition", "CashForecast", "ForecastLine", "FxForward"],
-        "code_lookup":              ["Bank", "Company", "BankAccount"],
-        "general_analytics":        ["BankAccount", "BalanceSnapshot", "CashPosition", "Company", "Bank"],
+        "trend_and_forecast":       ["BankAccount", "BalanceSnapshot", "InvestmentPosition", "CashForecast", "ForecastLine", "ForecastActual", "FxForward", "FxRate"],
+        "code_lookup":              ["Bank", "Company", "BankAccount", "FxRate", "Currency"],
+        "general_analytics":        ["BankAccount", "BalanceSnapshot", "CashPosition", "Company", "Bank", "Receipt", "Disbursement", "ForecastActual"],
         # Legacy keys (kept for backward compatibility)
         "counterparty_exposure":    ["Bank", "BankAccount", "InvestmentPosition", "FxForward", "DerivativeMtm", "CounterpartyExposure"],
-        "fx_exposure":              ["FxForward", "FxExposure", "Company", "Bank"],
+        "fx_exposure":              ["FxForward", "FxExposure", "FxRate", "Currency", "Company", "Bank"],
         "investment_positions":     ["InvestmentPosition", "FinancialInstrument", "Company"],
         "maturity_ladder":          ["InvestmentPosition", "FxForward"],
         "policy_check":             ["BankAccount", "Company", "Bank"],
