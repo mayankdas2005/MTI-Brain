@@ -122,10 +122,12 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const [editText, setEditText] = useState(message.content);
   const [dataView, setDataView] = useState<'sql' | 'table'>(() => {
     const pref = usePreferencesStore.getState();
+    if (!pref.showSQL) return 'table';
+    // Default to SPARQL view when there's no table data (0 rows) — shows the
+    // query so the user can verify what ran and why nothing was returned.
     const md = message.metadata_;
     const hasRows = !!(md?.rows && (md.rows as unknown[]).length > 0);
     if (!hasRows && md?.sql) return 'sql';
-    if (!pref.showSQL) return 'table';
     return pref.defaultDataView;
   });
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -152,7 +154,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   }, [message.reasoning, message.isStreaming]);
 
   const retryResponse = useThreadStore((s) => s.retryResponse);
-  const askQuestion = useThreadStore((s) => s.askQuestion);
   const editQuestion = useThreadStore((s) => s.editQuestion);
   const isStreaming = useThreadStore((s) => s.isStreaming);
 
@@ -192,16 +193,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   };
 
   const handleRetry = () => {
-    if (isStreaming) return;
-    if (message.conversation_id) {
-      retryResponse(threadId, message.conversation_id);
-    } else {
-      // Error case: no conversation_id was assigned — re-ask the preceding user message
-      const msgs = useThreadStore.getState().currentMessages;
-      const idx = msgs.findIndex((m) => m.id === message.id);
-      const userMsg = idx > 0 ? msgs.slice(0, idx).reverse().find((m) => m.role === 'user') : undefined;
-      if (userMsg?.content) askQuestion(threadId, userMsg.content);
-    }
+    if (!message.conversation_id || isStreaming) return;
+    retryResponse(threadId, message.conversation_id);
   };
 
   const handleEdit = () => {
@@ -312,9 +305,13 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={handleRetry}
+                onClick={() => {
+                  if (message.conversation_id && !isStreaming) {
+                    retryResponse(threadId, message.conversation_id);
+                  }
+                }}
                 className="tap-44 h-6 w-6 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
-                disabled={isStreaming}
+                disabled={isStreaming || !message.conversation_id}
               >
                 <RotateCcw className="w-3 h-3" />
               </Button>
@@ -432,19 +429,10 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
 
-  const showSQLTab  = !!(sql);
+  const showSQLTab  = !!(prefShowSQL && sql);
   // hasColumns: columns were returned even if rows is empty — show for trust
   const hasColumns  = !!(columns && columns.length > 0);
   const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasColumns);
-
-  // When streaming ends with SQL but 0 rows, auto-switch to SQL view so the
-  // user can see what query ran. useState init can't catch this case because
-  // metadata arrives after mount.
-  useEffect(() => {
-    if (!message.isStreaming && sql && !hasTableData) {
-      setDataView('sql');
-    }
-  }, [message.isStreaming, sql, hasTableData]);
   // Show data skeleton once SQL generation step has begun but data hasn't arrived yet
   const sqlStepStarted = message.isStreaming && !message.dataReady &&
     (message.streamingSteps?.some((s) => ['generate_sql', 'execute', 'respond'].includes(s.node)) ?? false);
@@ -550,8 +538,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           )}
           {dataView === 'table' && hasColumns && (
             hasTableData
-              ? <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} isStreaming={message.isStreaming && !message.dataReady} />
-              : <DataTable columns={columns!} rows={[]} rowCount={0} filename={exportFilename} isStreaming={message.isStreaming && !message.dataReady} />
+              ? <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} isStreaming={message.isStreaming} />
+              : <DataTable columns={columns!} rows={[]} rowCount={0} filename={exportFilename} isStreaming={message.isStreaming} />
           )}
         </div>
       )}
@@ -564,7 +552,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       )}
 
       {/* Chart skeleton — only shown after answer_synthesis is done, right before visualization fires */}
-      {message.isStreaming && answerSynthesisDone && !message.chartReady && prefAutoCharts && hasTableData && message.willVisualize !== false && (
+      {message.isStreaming && answerSynthesisDone && !message.chartReady && prefAutoCharts && hasTableData && (
         <div className="mt-3 rounded-xl border border-border bg-sidebar px-4 pt-4 pb-3 animate-fade-in">
           <Skeleton className="h-3 w-40 rounded mb-4" />
           <div className="flex items-end gap-2 h-24">
@@ -662,7 +650,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
             {/* Primary: Retry */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="sm" onClick={handleRetry} aria-label="Regenerate response" className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent" disabled={isStreaming}>
+                <Button variant="ghost" size="sm" onClick={handleRetry} aria-label="Regenerate response" className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent" disabled={isStreaming || !message.conversation_id}>
                   <RotateCcw className="w-3.5 h-3.5" aria-hidden />
                 </Button>
               </TooltipTrigger>

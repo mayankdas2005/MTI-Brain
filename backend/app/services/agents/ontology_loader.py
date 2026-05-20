@@ -15,7 +15,7 @@ from pathlib import Path
 
 from app.core.logger import logger
 
-_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "lpp-ontology-enriched.ttl"
+_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "lpp-ontology.ttl"
 _R2RML_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "lpp-r2rml.ttl"
 
 _ontology_dict: dict = {}

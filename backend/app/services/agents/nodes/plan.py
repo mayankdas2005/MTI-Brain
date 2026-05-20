@@ -7,7 +7,7 @@ import time
 
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_tag, _format_recent_messages
-from app.services.agents.ontology_loader import get_class_names_summary
+from app.services.agents.ontology_loader import get_ontology_summary
 from app.services.agents.prompts import PLAN_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 
@@ -48,7 +48,7 @@ async def plan_node(state: State) -> dict:
     raw = await chain.ainvoke({
         "question": question,
         "persona": persona,
-        "ontology_summary": get_class_names_summary(),
+        "ontology_summary": get_ontology_summary(),
         "prior_context": prior_context,
         "conversation_context": conversation_context,
         "feedback_context": feedback_context,

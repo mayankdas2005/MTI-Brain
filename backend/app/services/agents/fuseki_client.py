@@ -23,7 +23,7 @@ class FusekiClient:
         self,
         base_url: str,
         dataset: str,
-        timeout: int = 60,
+        timeout: int = 30,
         username: str = "",
         password: str = "",
     ) -> None:

@@ -34,7 +34,6 @@ class State(MessagesState):
 
     # ── Ontology Resolution ─────────────────────────────────────────────────
     ontology_terms: list[dict]  # [{uri, label, type, property_type}]
-    named_graphs: list[str]     # named graph URIs for resolved classes (e.g. ['graph:treasury'])
 
     # ── SPARQL Generation / Validation / Execution ──────────────────────────
     prior_sql: str        # SPARQL from the answer the user wants to refine ("Refine this query" UI)

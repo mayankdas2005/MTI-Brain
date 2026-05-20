@@ -164,14 +164,13 @@ Routing:
   "hil"       — human-in-loop required; only for Executive + advanced scenario WITH
                 explicit breach alert or regulatory decision required
 
-Output your reasoning within <reasoning>...</reasoning> tags, then the JSON verdict.
-
 <reasoning>
 {reasoning_directive}
 
 Focus on: which specific data is being requested, whether policy limits from Tribal are needed, and which intent label most precisely captures the request. If between two labels, pick the more specific one.
 </reasoning>
 
+Output exactly this JSON:
 {{"intent": "...", "routing": "...", "hil_required": false}}"""
 )
 
@@ -194,6 +193,9 @@ Relevant past sessions (reuse SPARQL patterns and ontology terms from these if a
 
 Past user feedback on similar questions (apply this to improve your output):
 {feedback_context}
+
+Ontology reference:
+{ontology_summary}
 
 Resolved ontology terms for this question:
 {ontology_terms}
@@ -370,8 +372,6 @@ SPARQL rules:
 - LIMIT {max_rows} on the outer SELECT only — never inside sub-SELECTs used for aggregation
 - Aggregations (SUM/COUNT/AVG): GROUP BY every non-aggregated variable
 
-Output your reasoning within <reasoning>...</reasoning> tags, then the SPARQL query within <sparql>...</sparql> tags.
-
 <reasoning>
 {reasoning_directive}
 
@@ -405,7 +405,10 @@ Failed SPARQL:
 Error:
 {error}
 
-Resolved ontology terms for this question (use this to verify domain/range of every predicate you use):
+Ontology reference (use this to verify domain/range of every predicate you use):
+{ontology_summary}
+
+Resolved ontology terms for this question:
 {ontology_terms}
 
 Past user feedback on similar questions (apply to avoid repeating flagged mistakes):
@@ -468,8 +471,6 @@ Fix rules:
 - If 0 rows returned AND query has HAVING: the threshold may be filtering all groups — do NOT change predicates, graphs, or dates; instead remove HAVING entirely and return all entities ranked by variance so the user can see the data
 - Before finalising: mentally verify (1) the error is resolved and (2) the logical intent is unchanged
 
-Output your reasoning within <reasoning>...</reasoning> tags, then the corrected SPARQL within <sparql>...</sparql> tags.
-
 <reasoning>
 {reasoning_directive}
 
@@ -504,8 +505,6 @@ Tribal policy context:
 
 Past user feedback on similar questions (apply this to improve your analysis):
 {feedback_context}
-
-Output your reasoning within <reasoning>...</reasoning> tags, then evidence citations within <evidence>...</evidence> tags.
 
 <reasoning>
 {reasoning_directive}
@@ -592,8 +591,6 @@ Persona format:
 - **Manager**: key aggregation, policy breach flags, variance vs. prior period, 2-3 concrete actions. Use ## headers.
 - **Director**: risk concentration headline, limits vs. actuals, 3 prioritised recommendations with owners and timing. Use ## headers.
 - **Executive**: one-paragraph verdict, top-3 risks or opportunities, single recommended decision. No headers — flowing prose only.
-
-Output your reasoning within <reasoning>...</reasoning> tags, then the answer within <answer>...</answer> tags, then follow-ups within <follow_ups>...</follow_ups> tags.
 
 <reasoning>
 {reasoning_directive}
@@ -730,8 +727,6 @@ Critical rules:
 
 {prior_context}
 
-Output your reasoning within <reasoning>...</reasoning> tags, then the plan within <plan>...</plan> tags.
-
 <reasoning>
 {reasoning_directive}
 
@@ -820,8 +815,6 @@ Rules:
 - If 2+ sub-questions have SKIP status but the PASSed results still give a useful, honest answer, output PARTIAL not FAIL.
 - Only output FAIL if no useful answer is possible at all.
 - Be specific about what is missing and why — not "some data was unavailable" but "counterparty exposure for Bank X was not in the graph".
-
-Output your reasoning within <reasoning>...</reasoning> tags, then your verdict within <reflection>...</reflection> tags.
 
 <reasoning>
 {reasoning_directive}

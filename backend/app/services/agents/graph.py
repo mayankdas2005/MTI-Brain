@@ -504,7 +504,6 @@ _NODE_MESSAGE = {
 
 _STATE_KEYS = {
     "question", "question_type", "persona", "complexity", "intent", "routing",
-    "ontology_terms", "named_graphs",
     "sparql", "sparql_error", "sparql_retries",
     "kg_columns", "kg_rows", "kg_row_count",
     "answer", "chart_json", "viz_spec", "follow_ups",
@@ -550,7 +549,6 @@ async def stream_pipeline(
         "intent": "",
         "routing": "",
         "ontology_terms": [],
-        "named_graphs": [],
         "prior_sql": prior_sql,
         "sparql": "",
         "sparql_error": "",
@@ -797,15 +795,7 @@ async def stream_pipeline(
                     # Deterministic nodes: emit synthetic reasoning BEFORE closing
                     # the step so it gets attached to the step record in the DB.
                     _synthetic_text: str | None = None
-                    if node == "domain_specialist":
-                        # Only emit fallback when the model skipped the <reasoning> block.
-                        _ds_visit_key = f"domain_specialist:{_visit_before_inc}"
-                        if not _step_reasoning_idx.get(_ds_visit_key):
-                            intent = state.get("intent", "")
-                            routing = state.get("routing", "kg_only")
-                            _synthetic_text = f"Intent: `{intent}` | Routing: `{routing}`."
-
-                    elif node == "ontology_lookup":
+                    if node == "ontology_lookup":
                         terms = state.get("ontology_terms", [])
                         if terms:
                             term_list = ", ".join(f"`lpp:{t['local']}`" for t in terms[:8])

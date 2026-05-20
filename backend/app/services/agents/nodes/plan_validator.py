@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 
 from app.core.logger import logger
 from app.services.agents.bedrock import get_llm
-from app.services.agents.ontology_loader import get_class_names_summary
+from app.services.agents.ontology_loader import get_ontology_summary
 from app.services.agents.prompts import PLAN_VALIDATOR_PROMPT
 from app.services.agents.state import State
 
@@ -73,7 +73,7 @@ async def plan_validator_node(state: State) -> dict:
     raw = await (PLAN_VALIDATOR_PROMPT | llm).ainvoke(
         {
             "plan_json": json.dumps(plan, indent=2),
-            "ontology_summary": get_class_names_summary(),
+            "ontology_summary": get_ontology_summary(),
         },
         config={"tags": ["no_stream"]},
     )
