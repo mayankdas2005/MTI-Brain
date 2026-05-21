@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     FUSEKI_TIMEOUT: int = Field(default=_fuseki.get("timeout_seconds", 30))
     FUSEKI_USER: str = Field(default="")
     FUSEKI_PASSWORD: str = Field(default="", repr=False)
+    
+    # ── Langfuse observability (.env) ────────────────────────────────────────
+    LANGFUSE_ENABLED: bool = Field(default=False)
+    LANGFUSE_PUBLIC_KEY: str = Field(default="")
+    LANGFUSE_SECRET_KEY: str = Field(default="", repr=False)
+    LANGFUSE_HOST: str = Field(default="https://cloud.langfuse.com")
+
     # TRIBAL_GRAPH_URL: str = Field(default="http://localhost:3030")
     # TRIBAL_GRAPH_DATASET: str = Field(default="dataset")
 

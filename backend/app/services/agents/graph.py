@@ -13,6 +13,11 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from app.core.langfuse_integration import (
+    create_callback_handler as _create_lf_handler,
+    langfuse_context as _lf_context,
+)
+
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
@@ -541,6 +546,25 @@ async def stream_pipeline(
         "recursion_limit": settings.PIPELINE_RECURSION_LIMIT,
     }
 
+    lf_handler = _create_lf_handler()
+    callbacks: list = []
+    if lf_handler:
+        callbacks.append(lf_handler)
+    if callbacks:
+        config["callbacks"] = callbacks
+
+    lf_ctx = _lf_context(
+        session_id=thread_id,
+        user_id=user_id or "",
+        tags=[f"persona:{persona}"] if persona else [],
+        metadata={
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "environment": settings.ENVIRONMENT,
+        },
+    )
+
+
     initial = {
         "question": question,
         "question_type": "",
@@ -639,6 +663,7 @@ async def stream_pipeline(
         f"question={question[:80]!r}"
     )
 
+    lf_ctx.__enter__()
     try:
         async for ev in _main_graph.astream_events(initial, version="v2", config=config):
             if cancel_event.is_set():
@@ -962,6 +987,7 @@ async def stream_pipeline(
                     "sparql_error": state.get("sparql_error", ""),
                     "sparql_retries": state.get("sparql_retries", 0),
                     "duration_ms": duration_ms,
+                    "langfuse_trace_id": lf_handler.last_trace_id if lf_handler else None,
                     "pipeline_steps": _pipeline_steps,
                     "reasoning": [
                         {
@@ -1016,3 +1042,12 @@ async def stream_pipeline(
         yield {"event": "error", "data": {"message": "Something went wrong while processing your question. Please try again."}}
     finally:
         _active_streams.pop(thread_id, None)
+        try:
+            lf_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
+        if lf_handler:
+            try:
+                lf_handler.langfuse.flush()
+            except Exception:
+                pass
