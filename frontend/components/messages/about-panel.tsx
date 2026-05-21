@@ -270,12 +270,50 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
 
           {/* Pipeline — enriched with per-step cost when available */}
           {(m?.pipeline_steps?.length ?? 0) > 0 && (() => {
-            // Build a lookup: node → token usage record (first match wins for retries)
-            const costByNode = new Map(
-              (m?.token_usage?.by_node ?? []).map((r) => [r.node, r])
-            );
+            const byNode = m?.token_usage?.by_node ?? [];
+            type R = typeof byNode[number];
+
+            // Group records by node in order so repeated nodes (e.g. sparql_gen
+            // called 3×) can be matched to their pipeline step by visit index.
+            const groups = new Map<string, R[]>();
+            for (const r of byNode) {
+              const arr = groups.get(r.node);
+              if (arr) arr.push(r); else groups.set(r.node, [r]);
+            }
+
+            // Count how many times each node appears in the pipeline.
+            const pipelineCount = new Map<string, number>();
+            for (const s of m!.pipeline_steps!) {
+              pipelineCount.set(s.node, (pipelineCount.get(s.node) ?? 0) + 1);
+            }
+
+            // Build a per-step cost array:
+            //   • Nodes that appear once  → aggregate ALL their records (e.g. synthesis
+            //     runs narrative + chart concurrently — show combined cost).
+            //   • Nodes that appear multiple times → match nth step to nth record.
+            const visit = new Map<string, number>();
+            const stepCosts = m!.pipeline_steps!.map(s => {
+              const recs = groups.get(s.node);
+              if (!recs?.length) return undefined;
+              const v = visit.get(s.node) ?? 0;
+              visit.set(s.node, v + 1);
+              if ((pipelineCount.get(s.node) ?? 1) === 1 && recs.length > 1) {
+                return recs.slice(1).reduce<R>(
+                  (acc, r) => ({
+                    ...acc,
+                    cost_usd: acc.cost_usd + r.cost_usd,
+                    input_tokens: acc.input_tokens + r.input_tokens,
+                    output_tokens: acc.output_tokens + r.output_tokens,
+                    total_tokens: acc.total_tokens + r.total_tokens,
+                  }),
+                  recs[0],
+                );
+              }
+              return recs[v];
+            });
+
             const totalCost = m?.token_usage?.total_cost_usd;
-            const hasCost = costByNode.size > 0;
+            const hasCost = byNode.length > 0;
 
             return (
               <Collapsible title="Pipeline" icon={ListOrdered}>
@@ -291,21 +329,12 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 <div className="space-y-0.5">
                   {m!.pipeline_steps!.map((step, i) => {
                     const dim = step.status === 'skipped';
-                    const cost = costByNode.get(step.node);
-                    const tierColor = !cost ? '' :
-                      cost.tier === 'fast'  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' :
-                      cost.tier === 'deep'  ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400' :
-                                              'bg-amber-500/15 text-amber-600 dark:text-amber-400';
+                    const cost = stepCosts[i];
                     return (
                       <div key={`${step.node}-${i}`} className="flex items-center gap-1 py-0.5 text-[11px]">
                         <span className={`flex-1 truncate ${dim ? 'text-muted-foreground/50 line-through' : 'text-foreground/85'}`}>
                           {step.message || step.node}
                         </span>
-                        {cost && (
-                          <span className={`shrink-0 rounded px-1 py-0 text-[9px] font-medium leading-4 ${tierColor}`}>
-                            {cost.tier}
-                          </span>
-                        )}
                         {hasCost && (
                           <Tooltip>
                             <TooltipTrigger asChild>

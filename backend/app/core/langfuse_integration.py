@@ -65,7 +65,7 @@ def _register_bedrock_model_pricing() -> None:
             )
             if resp.status_code in (200, 201):
                 registered += 1
-            elif resp.status_code == 409:
+            elif resp.status_code in (400, 409):
                 pass  # already registered — idempotent
             else:
                 logger.warning(
@@ -244,7 +244,11 @@ def score_trace(
 
     try:
         from langfuse import get_client
+        # Use a deterministic ID so repeated calls overwrite the same score
+        # rather than creating duplicate entries.
+        score_id = str(uuid.uuid5(uuid.NAMESPACE_X500, f"{trace_id}:{name}"))
         get_client().create_score(
+            score_id=score_id,
             trace_id=trace_id,
             name=name,
             value=value,

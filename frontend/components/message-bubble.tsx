@@ -435,13 +435,12 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const showSQLTab  = !!(sql);
   // hasColumns: columns were returned even if rows is empty — show for trust
   const hasColumns  = !!(columns && columns.length > 0);
-  const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasColumns);
+  const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasTableData);
 
-  // When streaming ends with SQL but 0 rows, auto-switch to SQL view so the
-  // user can see what query ran. useState init can't catch this case because
-  // metadata arrives after mount.
+  // When SQL arrives with 0 rows (during or after streaming), auto-switch to
+  // SQL view so the user can see what query ran instead of an empty table.
   useEffect(() => {
-    if (!message.isStreaming && sql && !hasTableData) {
+    if (sql && !hasTableData) {
       setDataView('sql');
     }
   }, [message.isStreaming, sql, hasTableData]);
@@ -508,7 +507,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 SPARQL
               </Button>
             )}
-            {hasColumns && (
+            {hasTableData && (
               <Button
                 variant={dataView === 'table' ? 'secondary' : 'ghost'}
                 size="sm"
@@ -548,10 +547,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               </div>
             </div>
           )}
-          {dataView === 'table' && hasColumns && (
-            hasTableData
-              ? <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} isStreaming={message.isStreaming} />
-              : <DataTable columns={columns!} rows={[]} rowCount={0} filename={exportFilename} isStreaming={message.isStreaming} />
+          {dataView === 'table' && hasTableData && (
+            <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} isStreaming={message.isStreaming} />
           )}
         </div>
       )}
@@ -602,15 +599,15 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       {!!(message.followUpsReady ?? !message.isStreaming) && prefShowFollowUps && followUps && followUps.length > 0 && (
         <FollowUpChips threadId={threadId} followUps={followUps} conversationId={message.conversation_id} />
       )}
-      {!!(message.dataReady ?? !message.isStreaming) && message.role === 'assistant' && !!message.content &&
+      {!message.isStreaming && message.role === 'assistant' && !!message.content &&
         !!(message.metadata_ as Record<string, unknown> | null)?.sql && (
         <RefineInput threadId={threadId} conversationId={message.conversation_id} />
       )}
 
-      {/* Trust strip — only for SQL-backed answers. We gate on sql being
-          non-empty so conversational responses ("Hi", "Sure, here's a plan")
-          never show 0 rows / freshness timestamps. */}
-      {!!(message.dataReady ?? !message.isStreaming) && (() => {
+      {/* Trust strip — only for SQL-backed answers. Only shown after streaming
+          is fully done so row count never appears mid-generation. We gate on
+          sql being non-empty so conversational responses never show 0 rows. */}
+      {!message.isStreaming && (() => {
         const m = message.metadata_ as Record<string, unknown> | null;
         if (!m) return null;
         const sql = (m.sql as string | null | undefined) ?? '';

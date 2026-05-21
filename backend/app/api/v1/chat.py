@@ -690,7 +690,7 @@ async def stop_generation(
 @router.post(
     "/{thread_id}/conversations/{conversation_id}/feedback",
     response_model=FeedbackOut,
-    status_code=201,
+    status_code=200,
 )
 async def submit_feedback(
     thread_id: uuid.UUID,

@@ -1,8 +1,7 @@
-"""answer_synthesis_node — parallel narrative + chart generation."""
+"""answer_synthesis_node — narrative + chart generation."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -73,7 +72,11 @@ async def answer_synthesis_node(state: State) -> dict:
 
     tier = "deep" if state.get("deep_analysis") else "balanced"
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
-    narrative_coro = (ANSWER_SYNTHESIS_PROMPT | get_llm(tier)).ainvoke({
+
+    # Run narrative and chart calls sequentially (not asyncio.gather) so that
+    # LangGraph's langgraph_node context var is preserved for each call and
+    # token tracking correctly attributes both to answer_synthesis.
+    narrative_raw = await (ANSWER_SYNTHESIS_PROMPT | get_llm(tier)).ainvoke({
         "question": question,
         "intent": intent,
         "persona": persona,
@@ -87,7 +90,7 @@ async def answer_synthesis_node(state: State) -> dict:
         "reasoning_directive": reasoning_directive,
     })
 
-    chart_coro = (CHART_PROMPT | get_llm("fast")).ainvoke(
+    chart_raw = await (CHART_PROMPT | get_llm("fast")).ainvoke(
         {
             "question": question,
             "columns": ", ".join(kg_columns),
@@ -97,8 +100,6 @@ async def answer_synthesis_node(state: State) -> dict:
             "reasoning_directive": REASONING_DIRECTIVE_NORMAL,
         },
     )
-
-    narrative_raw, chart_raw = await asyncio.gather(narrative_coro, chart_coro)
 
     narrative_text = narrative_raw.content if hasattr(narrative_raw, "content") else str(narrative_raw)
     chart_text = chart_raw.content if hasattr(chart_raw, "content") else str(chart_raw)

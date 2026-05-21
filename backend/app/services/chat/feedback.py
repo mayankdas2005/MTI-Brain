@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from app.core.logger import logger
 from app.models.conversation import MTIBrainFeedback
 from app.services.embeddings import embed_question
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _FEEDBACK_STALE_DAYS = 90
@@ -32,7 +32,7 @@ async def save_feedback(
     """
     result = await db.execute(
         text(
-            "SELECT id, metadata_->>'langfuse_trace_id' AS langfuse_trace_id "
+            "SELECT id, metadata->>'langfuse_trace_id' AS langfuse_trace_id "
             "FROM mti_brain_message "
             "WHERE conversation_id = :cid AND role = 'assistant' LIMIT 1"
         ),
@@ -53,19 +53,37 @@ async def save_feedback(
     question_text = question_result.scalar_one_or_none() or ""
     embedding = await embed_question(question_text) if question_text else None
 
-    feedback = MTIBrainFeedback(
-        message_id=message_id,
-        thread_id=thread_id,
-        liked=liked,
-        comment=comment,
-        embedding=embedding,
-    )
-    db.add(feedback)
+    # Upsert: update existing feedback for this message rather than creating duplicates
+    existing: MTIBrainFeedback | None = None
+    if message_id:
+        existing = (await db.execute(
+            select(MTIBrainFeedback).where(MTIBrainFeedback.message_id == message_id)
+        )).scalar_one_or_none()
+
+    if existing:
+        existing.liked = liked
+        existing.comment = comment
+        if embedding is not None:
+            existing.embedding = embedding
+        feedback = existing
+        logger.info(
+            f"Feedback updated: conversation={conversation_id}, liked={liked}"
+        )
+    else:
+        feedback = MTIBrainFeedback(
+            message_id=message_id,
+            thread_id=thread_id,
+            liked=liked,
+            comment=comment,
+            embedding=embedding,
+        )
+        db.add(feedback)
+        logger.info(
+            f"Feedback saved: conversation={conversation_id}, liked={liked}, "
+            f"has_embedding={embedding is not None}"
+        )
+
     await db.flush()
-    logger.info(
-        f"Feedback saved: conversation={conversation_id}, liked={liked}, "
-        f"has_embedding={embedding is not None}"
-    )
     return feedback, langfuse_trace_id
 
 
