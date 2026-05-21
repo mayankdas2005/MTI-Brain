@@ -14,6 +14,28 @@ export interface PipelineStep {
   reasoning?: string;
 }
 
+export interface TokenNodeUsage {
+  node: string;
+  tier: 'fast' | 'balanced' | 'deep';
+  model: string;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cache_read_tokens?: number;
+  cache_creation_tokens?: number;
+}
+
+export interface TokenUsage {
+  by_node: TokenNodeUsage[];
+  total_tokens: number;
+  total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+}
+
 export interface MessageMetadata {
   sql?: string;
   intent?: string;
@@ -47,6 +69,9 @@ export interface MessageMetadata {
   metric_defined_at?: string;
   sparql_error?: string;
   sparql_retries?: number;
+  token_usage?: TokenUsage;
+  langfuse_trace_id?: string;
+  langfuse_trace_url?: string;
 }
 
 // ─── Response Types ───

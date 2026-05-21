@@ -12,6 +12,7 @@ import {
   Target,
   ListOrdered,
   ScrollText,
+  ExternalLink,
 } from 'lucide-react';
 import {
   Sheet,
@@ -162,6 +163,22 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 }
               />
             )}
+            {m?.langfuse_trace_url && (
+              <KV
+                label="Trace"
+                value={
+                  <a
+                    href={m.langfuse_trace_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-primary hover:underline"
+                  >
+                    View in Langfuse
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                }
+              />
+            )}
           </Section>
 
           {/* Interpretation - only when we have something interpretive to show. */}
@@ -225,8 +242,8 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Section>
           )}
 
-          {/* Result */}
-          {(m?.row_count != null || (m?.columns?.length ?? 0) > 0) && (
+          {/* Result — only shown when query actually returned data */}
+          {((m?.row_count ?? 0) > 0 || (m?.columns?.length ?? 0) > 0) && (
             <Section title="Result" icon={Hash}>
               {m?.row_count != null && (
                 <KV label="Rows" value={m.row_count.toLocaleString()} mono />
@@ -251,37 +268,101 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Section>
           )}
 
-          {/* Pipeline trace - collapsible because it can be long. */}
-          {(m?.pipeline_steps?.length ?? 0) > 0 && (
-            <Collapsible title="Pipeline" icon={ListOrdered}>
-              <div className="space-y-0.5">
-                {m!.pipeline_steps!.map((step, i) => {
-                  const dim = step.status === 'skipped';
-                  return (
-                    <div
-                      key={`${step.node}-${i}`}
-                      className="flex items-center justify-between gap-3 py-0.5"
-                    >
-                      <span
-                        className={`text-[11px] truncate ${
-                          dim
-                            ? 'text-muted-foreground/50 line-through'
-                            : 'text-foreground/85'
-                        }`}
-                      >
-                        {step.message || step.node}
-                      </span>
-                      <span className="font-mono text-[10px] tabular-nums text-muted-foreground/70 shrink-0">
-                        {step.duration_ms != null
-                          ? `${(step.duration_ms / 1000).toFixed(2)}s`
-                          : '-'}
+          {/* Pipeline — enriched with per-step cost when available */}
+          {(m?.pipeline_steps?.length ?? 0) > 0 && (() => {
+            // Build a lookup: node → token usage record (first match wins for retries)
+            const costByNode = new Map(
+              (m?.token_usage?.by_node ?? []).map((r) => [r.node, r])
+            );
+            const totalCost = m?.token_usage?.total_cost_usd;
+            const hasCost = costByNode.size > 0;
+
+            return (
+              <Collapsible title="Pipeline" icon={ListOrdered}>
+                {/* Column headers — only when cost data is present */}
+                {hasCost && (
+                  <div className="flex items-center gap-1 pb-1 mb-1 border-b border-border/60 text-[10px] font-medium text-muted-foreground/50 uppercase tracking-wide">
+                    <span className="flex-1">Step</span>
+                    <span className="w-14 text-right">Cost</span>
+                    <span className="w-12 text-right">Time</span>
+                  </div>
+                )}
+
+                <div className="space-y-0.5">
+                  {m!.pipeline_steps!.map((step, i) => {
+                    const dim = step.status === 'skipped';
+                    const cost = costByNode.get(step.node);
+                    const tierColor = !cost ? '' :
+                      cost.tier === 'fast'  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' :
+                      cost.tier === 'deep'  ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400' :
+                                              'bg-amber-500/15 text-amber-600 dark:text-amber-400';
+                    return (
+                      <div key={`${step.node}-${i}`} className="flex items-center gap-1 py-0.5 text-[11px]">
+                        <span className={`flex-1 truncate ${dim ? 'text-muted-foreground/50 line-through' : 'text-foreground/85'}`}>
+                          {step.message || step.node}
+                        </span>
+                        {cost && (
+                          <span className={`shrink-0 rounded px-1 py-0 text-[9px] font-medium leading-4 ${tierColor}`}>
+                            {cost.tier}
+                          </span>
+                        )}
+                        {hasCost && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="w-14 text-right font-mono tabular-nums text-foreground/70 text-[10px] cursor-default">
+                                {cost ? `$${cost.cost_usd.toFixed(4)}` : '—'}
+                              </span>
+                            </TooltipTrigger>
+                            {cost && (
+                              <TooltipContent side="left" className="text-[10px]">
+                                <div className="space-y-0.5">
+                                  <div>In:&nbsp;&nbsp;{cost.input_tokens.toLocaleString()} tokens</div>
+                                  <div>Out: {cost.output_tokens.toLocaleString()} tokens</div>
+                                </div>
+                              </TooltipContent>
+                            )}
+                          </Tooltip>
+                        )}
+                        <span className="w-12 text-right font-mono tabular-nums text-muted-foreground/70 text-[10px] shrink-0">
+                          {step.duration_ms != null ? `${(step.duration_ms / 1000).toFixed(2)}s` : '-'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Totals footer */}
+                {totalCost != null && (
+                  <div className="pt-1.5 mt-1 border-t border-border/60 space-y-0.5">
+                    <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                      <span className="flex-1">Total tokens</span>
+                      <span className="font-mono tabular-nums">
+                        {m!.token_usage!.total_input_tokens.toLocaleString()} in&nbsp;/&nbsp;{m!.token_usage!.total_output_tokens.toLocaleString()} out
                       </span>
                     </div>
-                  );
-                })}
-              </div>
-            </Collapsible>
-          )}
+                    <div className="flex items-center gap-1 text-[11px] font-medium">
+                      <span className="flex-1 text-foreground/60">Total cost</span>
+                      <span className="font-mono tabular-nums text-primary text-[10px]">
+                        ${totalCost.toFixed(4)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Cache hint */}
+                {((m?.token_usage?.cache_read_tokens ?? 0) > 0 || (m?.token_usage?.cache_creation_tokens ?? 0) > 0) && (
+                  <div className="mt-1 flex gap-3 text-[10px] text-muted-foreground/50">
+                    {(m!.token_usage!.cache_read_tokens > 0) && (
+                      <span>Cache read: {m!.token_usage!.cache_read_tokens.toLocaleString()}</span>
+                    )}
+                    {(m!.token_usage!.cache_creation_tokens > 0) && (
+                      <span>Cache write: {m!.token_usage!.cache_creation_tokens.toLocaleString()}</span>
+                    )}
+                  </div>
+                )}
+              </Collapsible>
+            );
+          })()}
 
           {/* SQL - collapsible, copyable, syntax-highlighted. */}
           {m?.sql && (
