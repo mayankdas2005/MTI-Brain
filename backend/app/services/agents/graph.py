@@ -914,6 +914,29 @@ async def stream_pipeline(
                                 },
                             }
 
+                    elif node == "final_reflector":
+                        # Plan path: sparql_execute never runs in the outer graph, so emit
+                        # execute.done here with aggregated data + all sub-question SPARQLs.
+                        kg_rows = state.get("kg_rows", [])
+                        scratchpad = state.get("scratchpad", {})
+                        sparql_parts = [
+                            f"-- {res.get('question', sqid)}\n{res['sparql']}"
+                            for sqid, res in scratchpad.items()
+                            if res.get("sparql")
+                        ]
+                        combined_sql = "\n\n".join(sparql_parts)
+                        yield {
+                            "event": "execute.done",
+                            "data": {
+                                "status": "success",
+                                "sql": combined_sql,
+                                "columns": state.get("kg_columns", []),
+                                "rows": kg_rows,
+                                "row_count": state.get("kg_row_count", 0),
+                                "will_visualize": bool(kg_rows),
+                            },
+                        }
+
                     elif node == "visualization":
                         if state.get("viz_spec"):
                             yield {"event": "chart", "data": {"spec": state["viz_spec"]}}
