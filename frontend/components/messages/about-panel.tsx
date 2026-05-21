@@ -343,10 +343,32 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                               </span>
                             </TooltipTrigger>
                             {cost && (
-                              <TooltipContent side="left" className="text-[10px]">
-                                <div className="space-y-0.5">
-                                  <div>In:&nbsp;&nbsp;{cost.input_tokens.toLocaleString()} tokens</div>
-                                  <div>Out: {cost.output_tokens.toLocaleString()} tokens</div>
+                              <TooltipContent side="left" className="text-[10px] min-w-[160px]">
+                                <div className="space-y-1.5">
+                                  <div className="flex justify-between gap-4 font-medium">
+                                    <span>Input</span>
+                                    <span className="tabular-nums">{cost.input_tokens.toLocaleString()}</span>
+                                  </div>
+                                  {(cost.cache_creation_tokens ?? 0) > 0 && (
+                                    <div className="flex justify-between gap-4 text-muted-foreground/70 pl-2">
+                                      <span>cache write</span>
+                                      <span className="tabular-nums">{cost.cache_creation_tokens!.toLocaleString()}</span>
+                                    </div>
+                                  )}
+                                  {(cost.cache_read_tokens ?? 0) > 0 && (
+                                    <div className="flex justify-between gap-4 text-muted-foreground/70 pl-2">
+                                      <span>cache read</span>
+                                      <span className="tabular-nums">{cost.cache_read_tokens!.toLocaleString()}</span>
+                                    </div>
+                                  )}
+                                  <div className="flex justify-between gap-4 font-medium">
+                                    <span>Output</span>
+                                    <span className="tabular-nums">{cost.output_tokens.toLocaleString()}</span>
+                                  </div>
+                                  <div className="flex justify-between gap-4 border-t border-border/60 pt-1 font-semibold">
+                                    <span>Total</span>
+                                    <span className="tabular-nums">{cost.total_tokens.toLocaleString()}</span>
+                                  </div>
                                 </div>
                               </TooltipContent>
                             )}
@@ -363,10 +385,13 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 {/* Totals footer */}
                 {totalCost != null && (
                   <div className="pt-1.5 mt-1 border-t border-border/60 space-y-0.5">
-                    <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                    <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
                       <span className="flex-1">Total tokens</span>
                       <span className="font-mono tabular-nums">
-                        {m!.token_usage!.total_input_tokens.toLocaleString()} in&nbsp;/&nbsp;{m!.token_usage!.total_output_tokens.toLocaleString()} out
+                        {m!.token_usage!.total_tokens.toLocaleString()}
+                        <span className="text-muted-foreground/40 ml-1">
+                          ({m!.token_usage!.total_input_tokens.toLocaleString()} in / {m!.token_usage!.total_output_tokens.toLocaleString()} out)
+                        </span>
                       </span>
                     </div>
                     <div className="flex items-center gap-1 text-[11px] font-medium">
