@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from app.core.langfuse_integration import init_langfuse, shutdown_langfuse
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -30,6 +31,7 @@ from slowapi.middleware import SlowAPIMiddleware
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} [env={settings.ENVIRONMENT}]")
+    init_langfuse()
     await warm_pool()
     try:
         await init_pipeline()
@@ -48,6 +50,7 @@ async def lifespan(app: FastAPI):
                 await asyncio.wait_for(shutdown_pipeline(), timeout=4.0)
             except Exception:
                 logger.warning("Pipeline shutdown timed out or failed")
+                shutdown_langfuse()
             try:
                 await asyncio.wait_for(dispose_engine(), timeout=1.0)
             except Exception:

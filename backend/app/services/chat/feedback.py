@@ -21,20 +21,26 @@ async def save_feedback(
     thread_id: uuid.UUID,
     liked: bool,
     comment: str | None = None,
-) -> MTIBrainFeedback:
+) -> tuple[MTIBrainFeedback, str | None]:
     """Save feedback and embed the question for future similarity search.
 
     Embedding is async and non-blocking. If it fails, feedback is still
     saved — just without an embedding (similarity search won't find it).
+
+    Returns ``(feedback, langfuse_trace_id)`` where ``langfuse_trace_id`` is
+    the Langfuse trace linked to this conversation, or ``None`` when unavailable.
     """
     result = await db.execute(
         text(
-            "SELECT id FROM mti_brain_message "
+            "SELECT id, metadata_->>'langfuse_trace_id' AS langfuse_trace_id "
+            "FROM mti_brain_message "
             "WHERE conversation_id = :cid AND role = 'assistant' LIMIT 1"
         ),
         {"cid": str(conversation_id)},
     )
-    message_id = result.scalar_one_or_none()
+    row = result.one_or_none()
+    message_id = row.id if row else None
+    langfuse_trace_id: str | None = row.langfuse_trace_id if row else None
 
     # Embed the user's question so future similar questions can find this feedback
     question_result = await db.execute(
@@ -60,7 +66,7 @@ async def save_feedback(
         f"Feedback saved: conversation={conversation_id}, liked={liked}, "
         f"has_embedding={embedding is not None}"
     )
-    return feedback
+    return feedback, langfuse_trace_id
 
 
 _FIND_THREAD_FEEDBACK_SQL = text("""

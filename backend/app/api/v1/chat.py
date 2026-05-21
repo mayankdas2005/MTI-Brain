@@ -77,6 +77,8 @@ def _build_sse_generator(
     deep_analysis: bool = False,
     cancel_event: asyncio.Event | None = None,
     prior_sql: str = "",
+    user_display_name: str = "",
+    user_email: str | None = None,
 ):
     async def _save_assistant_message(save_data: dict) -> None:
         from app.db import async_session_factory
@@ -93,7 +95,7 @@ def _build_sse_generator(
             content=save_data.get("answer", ""),
             reasoning=reasoning,
             metadata={
-                "sql": save_data.get("sparql", ""),
+                "sql": save_data.get("sql", ""),
                 "intent": save_data.get("intent", ""),
                 "columns": save_data.get("columns", []),
                 "rows": save_data.get("rows", []),
@@ -110,6 +112,9 @@ def _build_sse_generator(
                 "question_type": save_data.get("question_type", ""),
                 "persona": save_data.get("persona", ""),
                 "complexity": save_data.get("complexity", ""),
+                "token_usage": save_data.get("token_usage"),
+                "langfuse_trace_id": save_data.get("langfuse_trace_id"),
+                "langfuse_trace_url": save_data.get("langfuse_trace_url"),
             },
         )
         try:
@@ -186,6 +191,8 @@ def _build_sse_generator(
                 cancel_event=_cancel,
                 feedback_context=feedback_context,
                 prior_sql=prior_sql,
+                user_email=user_email,
+                user_display_name=user_display_name,
             ):
                 event_name = sse_ev["event"]
                 data = sse_ev["data"]
@@ -529,6 +536,8 @@ async def ask_question(
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
         prior_sql=body.prior_sql or "",
+        user_display_name=_get_display_name(current_user),
+        user_email=current_user.email,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -589,6 +598,8 @@ async def retry_response(
         max_rows=body.max_rows,
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
+        user_display_name=_get_display_name(current_user),
+        user_email=current_user.email,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -655,6 +666,8 @@ async def edit_question(
         max_rows=body.max_rows,
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
+        user_display_name=_get_display_name(current_user),
+        user_email=current_user.email,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -687,7 +700,7 @@ async def submit_feedback(
     db: AsyncSession = Depends(get_async_session),
 ):
     try:
-        feedback = await fb_service.save_feedback(
+        feedback, langfuse_trace_id = await fb_service.save_feedback(
             db,
             conversation_id=conversation_id,
             thread_id=thread_id,
@@ -697,6 +710,22 @@ async def submit_feedback(
     except Exception:
         logger.exception("Feedback save failed")
         raise HTTPException(status_code=500, detail="Failed to save feedback")
+
+    # Forward the thumbs-up/down score to Langfuse so it appears on the trace.
+    # Runs in a background task so it never blocks the API response.
+    if langfuse_trace_id:
+        from app.core.langfuse_integration import score_trace
+
+        asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: score_trace(
+                trace_id=langfuse_trace_id,
+                name="user-feedback",
+                value=1.0 if body.liked else 0.0,
+                comment=body.comment or None,
+                data_type="BOOLEAN",
+            ),
+        )
 
     return FeedbackOut(
         id=feedback.id,

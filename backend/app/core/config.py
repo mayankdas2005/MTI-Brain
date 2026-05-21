@@ -46,6 +46,7 @@ _prompt_cache = _yml.get("prompt_cache", {})
 _fuseki = _yml.get("fuseki", {})
 _tribal = _yml.get("tribal_graph", {})
 _pipeline = _yml.get("pipeline", {})
+_core_toggles = _yml.get("core_toggles", {})
 
 
 class Settings(BaseSettings):
@@ -118,9 +119,16 @@ class Settings(BaseSettings):
     # ── Fuseki / KG (config.yml + .env) ─────────────────────────────
     FUSEKI_URL: str
     FUSEKI_DATASET: str = Field(default="dataset")
-    FUSEKI_TIMEOUT: int = Field(default=_fuseki.get("timeout_seconds", 30))
+    FUSEKI_TIMEOUT: int = Field(default=_fuseki.get("timeout_seconds", 60))
     FUSEKI_USER: str = Field(default="")
     FUSEKI_PASSWORD: str = Field(default="", repr=False)
+    
+    # ── Langfuse observability (.env) ────────────────────────────────────────
+    LANGFUSE_ENABLED: bool = Field(default=_core_toggles.get("langfuse_enabled", False))
+    LANGFUSE_PUBLIC_KEY: str = Field(default="")
+    LANGFUSE_SECRET_KEY: str = Field(default="", repr=False)
+    LANGFUSE_BASE_URL: str = Field(default="https://cloud.langfuse.com")
+
     # TRIBAL_GRAPH_URL: str = Field(default="http://localhost:3030")
     # TRIBAL_GRAPH_DATASET: str = Field(default="dataset")
 

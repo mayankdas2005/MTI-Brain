@@ -13,6 +13,13 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from app.core.langfuse_integration import (
+    create_callback_handler as _create_lf_handler,
+    flush_langfuse as _lf_flush,
+    langfuse_context as _lf_context,
+    make_trace_public as _lf_make_public,
+)
+
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
@@ -24,8 +31,14 @@ from psycopg_pool import AsyncConnectionPool
 from app.core.config import settings
 from app.core.logger import logger
 from app.services.agents import data_pool as dp
+from app.services.agents.node_names import N
 from app.services.agents.bedrock import init_llms
 from app.services.agents.helpers import MultiSectionStreamer, SectionStreamer
+from app.services.agents.token_tracker import (
+    NODE_TIER,
+    aggregate_token_usage,
+    extract_usage,
+)
 from app.services.agents.nodes.brain import brain_retrieval_node
 from app.services.agents.nodes.compress import compress_node
 from app.services.agents.nodes.domain import domain_specialist_node
@@ -71,63 +84,63 @@ _active_streams: dict[str, asyncio.Event] = {}
 def route_after_intake(state: State) -> str:
     qt = state.get("question_type", "kg_query")
     if qt == "general_chat":
-        return "general_chat"
+        return N.GENERAL_CHAT
     if qt == "rejected":
-        return "rejected"
+        return N.REJECTED
     complexity = state.get("complexity", "simple")
     if complexity == "advanced":
-        return "plan"
-    return "domain_specialist"
+        return N.PLAN
+    return N.DOMAIN_SPECIALIST
 
 
 def route_after_validate(state: State) -> str:
     if state.get("sparql_error"):
         if state.get("sparql_retries", 0) < MAX_SPARQL_RETRIES:
-            return "sparql_gen"
-        return "answer_synthesis"
-    return "governance_gate"
+            return N.SPARQL_GEN
+        return N.ANSWER_SYNTHESIS
+    return N.GOVERNANCE_GATE
 
 
 def route_after_governance(state: State) -> str:
     if state.get("governance_halt"):
         return END
-    return "sparql_execute"
+    return N.SPARQL_EXECUTE
 
 
 def route_after_execute(state: State) -> str:
     if state.get("sparql_error"):
         if state.get("sparql_retries", 0) < MAX_SPARQL_RETRIES:
-            return "sparql_gen"
-        return "answer_synthesis"
+            return N.SPARQL_GEN
+        return N.ANSWER_SYNTHESIS
     if state.get("kg_row_count", 0) == 0:
-        return "verifier"  # skip graph_reasoning on empty results — verifier decides retry vs accept
-    return "graph_reasoning"
+        return N.VERIFIER  # skip graph_reasoning on empty results — verifier decides retry vs accept
+    return N.GRAPH_REASONING
 
 
 def route_after_verifier(state: State) -> str:
     if state.get("sparql_error"):
         if state.get("sparql_retries", 0) < MAX_SPARQL_RETRIES:
-            return "sparql_gen"
-    return "answer_synthesis"
+            return N.SPARQL_GEN
+    return N.ANSWER_SYNTHESIS
 
 
 def route_after_hil(state: State) -> str:
-    return "compress"
+    return N.COMPRESS
 
 
 def route_after_synthesis(state: State) -> str:
     if len(state.get("messages", [])) >= SUMMARIZE_THRESHOLD:
-        return "compress"
+        return N.COMPRESS
     return END
 
 
 def route_synthesis_to_viz(state: State) -> str:
-    return "visualization" if len(state.get("kg_rows", [])) > 1 else "skip_viz"
+    return N.VISUALIZATION if len(state.get("kg_rows", [])) > 1 else N.SKIP_VIZ
 
 
 def route_after_general_chat(state: State) -> str:
     if len(state.get("messages", [])) >= SUMMARIZE_THRESHOLD:
-        return "compress"
+        return N.COMPRESS
     return END
 
 
@@ -136,9 +149,9 @@ def route_after_plan_validator(state: State) -> str:
     if halt:
         plan_attempts = state.get("plan_attempts", 0)
         if plan_attempts < 2:
-            return "plan"
+            return N.PLAN
         return END
-    return "executor"
+    return N.EXECUTOR
 
 
 def route_after_step_reflector(state: State) -> str:
@@ -148,8 +161,8 @@ def route_after_step_reflector(state: State) -> str:
         for r in scratchpad.values()
     )
     if any_fail:
-        return "repairer"
-    return "final_reflector"
+        return N.REPAIRER
+    return N.FINAL_REFLECTOR
 
 
 def route_after_repairer(state: State) -> str:
@@ -157,13 +170,13 @@ def route_after_repairer(state: State) -> str:
     if halt:
         plan_attempts = state.get("plan_attempts", 0)
         if plan_attempts < 2:
-            return "plan"
-        return "final_reflector"
+            return N.PLAN
+        return N.FINAL_REFLECTOR
     sub_questions = state.get("sub_questions", [])
     has_pending = any(sq["status"] == "pending" for sq in sub_questions)
     if has_pending:
-        return "executor"
-    return "final_reflector"
+        return N.EXECUTOR
+    return N.FINAL_REFLECTOR
 
 
 # ─── Graph builders ───────────────────────────────────────────────────────────
@@ -176,50 +189,50 @@ def _build_inner_graph() -> StateGraph:
     """
     b = StateGraph(State)
 
-    b.add_node("domain_specialist", domain_specialist_node, retry_policy=LLM_RETRY)
-    b.add_node("ontology_lookup", ontology_lookup_node)
-    b.add_node("brain_retrieval", brain_retrieval_node)
-    b.add_node("sparql_gen", sparql_gen_node, retry_policy=LLM_RETRY)
-    b.add_node("sparql_validate", sparql_validate_node)
-    b.add_node("governance_gate", governance_gate_node)
-    b.add_node("sparql_execute", sparql_execute_node)
-    b.add_node("graph_reasoning", graph_reasoning_node, retry_policy=LLM_RETRY)
-    b.add_node("verifier", verifier_node)
-    b.add_node("answer_synthesis", answer_synthesis_node, retry_policy=LLM_RETRY)
-    b.add_node("visualization", visualization_node)
+    b.add_node(N.DOMAIN_SPECIALIST, domain_specialist_node, retry_policy=LLM_RETRY)
+    b.add_node(N.ONTOLOGY_LOOKUP,   ontology_lookup_node)
+    b.add_node(N.BRAIN_RETRIEVAL,   brain_retrieval_node)
+    b.add_node(N.SPARQL_GEN,        sparql_gen_node, retry_policy=LLM_RETRY)
+    b.add_node(N.SPARQL_VALIDATE,   sparql_validate_node)
+    b.add_node(N.GOVERNANCE_GATE,   governance_gate_node)
+    b.add_node(N.SPARQL_EXECUTE,    sparql_execute_node)
+    b.add_node(N.GRAPH_REASONING,   graph_reasoning_node, retry_policy=LLM_RETRY)
+    b.add_node(N.VERIFIER,          verifier_node)
+    b.add_node(N.ANSWER_SYNTHESIS,  answer_synthesis_node, retry_policy=LLM_RETRY)
+    b.add_node(N.VISUALIZATION,     visualization_node)
 
-    b.add_edge(START, "domain_specialist")
-    b.add_edge("domain_specialist", "ontology_lookup")
-    b.add_edge("ontology_lookup", "brain_retrieval")
-    b.add_edge("brain_retrieval", "sparql_gen")
-    b.add_edge("sparql_gen", "sparql_validate")
+    b.add_edge(START, N.DOMAIN_SPECIALIST)
+    b.add_edge(N.DOMAIN_SPECIALIST, N.ONTOLOGY_LOOKUP)
+    b.add_edge(N.ONTOLOGY_LOOKUP,   N.BRAIN_RETRIEVAL)
+    b.add_edge(N.BRAIN_RETRIEVAL,   N.SPARQL_GEN)
+    b.add_edge(N.SPARQL_GEN,        N.SPARQL_VALIDATE)
     b.add_conditional_edges(
-        "sparql_validate",
+        N.SPARQL_VALIDATE,
         route_after_validate,
-        {"sparql_gen": "sparql_gen", "governance_gate": "governance_gate", "answer_synthesis": "answer_synthesis"},
+        {N.SPARQL_GEN: N.SPARQL_GEN, N.GOVERNANCE_GATE: N.GOVERNANCE_GATE, N.ANSWER_SYNTHESIS: N.ANSWER_SYNTHESIS},
     )
     b.add_conditional_edges(
-        "governance_gate",
+        N.GOVERNANCE_GATE,
         route_after_governance,
-        {"sparql_execute": "sparql_execute", END: END},
+        {N.SPARQL_EXECUTE: N.SPARQL_EXECUTE, END: END},
     )
     b.add_conditional_edges(
-        "sparql_execute",
+        N.SPARQL_EXECUTE,
         route_after_execute,
-        {"sparql_gen": "sparql_gen", "graph_reasoning": "graph_reasoning", "verifier": "verifier", "answer_synthesis": "answer_synthesis"},
+        {N.SPARQL_GEN: N.SPARQL_GEN, N.GRAPH_REASONING: N.GRAPH_REASONING, N.VERIFIER: N.VERIFIER, N.ANSWER_SYNTHESIS: N.ANSWER_SYNTHESIS},
     )
-    b.add_edge("graph_reasoning", "verifier")
+    b.add_edge(N.GRAPH_REASONING, N.VERIFIER)
     b.add_conditional_edges(
-        "verifier",
+        N.VERIFIER,
         route_after_verifier,
-        {"sparql_gen": "sparql_gen", "answer_synthesis": "answer_synthesis"},
+        {N.SPARQL_GEN: N.SPARQL_GEN, N.ANSWER_SYNTHESIS: N.ANSWER_SYNTHESIS},
     )
     b.add_conditional_edges(
-        "answer_synthesis",
+        N.ANSWER_SYNTHESIS,
         route_synthesis_to_viz,
-        {"visualization": "visualization", "skip_viz": END},
+        {N.VISUALIZATION: N.VISUALIZATION, N.SKIP_VIZ: END},
     )
-    b.add_edge("visualization", END)
+    b.add_edge(N.VISUALIZATION, END)
 
     return b
 
@@ -229,118 +242,118 @@ def _build_main_graph() -> StateGraph:
     b = StateGraph(State)
 
     # ── All nodes ──
-    b.add_node("intake_classify", intake_classify_node, retry_policy=LLM_RETRY)
-    b.add_node("general_chat", general_chat_node, retry_policy=LLM_RETRY)
-    b.add_node("rejected", rejected_node)
+    b.add_node(N.INTAKE_CLASSIFY,   intake_classify_node, retry_policy=LLM_RETRY)
+    b.add_node(N.GENERAL_CHAT,      general_chat_node, retry_policy=LLM_RETRY)
+    b.add_node(N.REJECTED,          rejected_node)
 
     # Inner pipeline nodes
-    b.add_node("domain_specialist", domain_specialist_node, retry_policy=LLM_RETRY)
-    b.add_node("ontology_lookup", ontology_lookup_node)
-    b.add_node("brain_retrieval", brain_retrieval_node)
-    b.add_node("sparql_gen", sparql_gen_node, retry_policy=LLM_RETRY)
-    b.add_node("sparql_validate", sparql_validate_node)
-    b.add_node("governance_gate", governance_gate_node)
-    b.add_node("sparql_execute", sparql_execute_node)
-    b.add_node("graph_reasoning", graph_reasoning_node, retry_policy=LLM_RETRY)
-    b.add_node("verifier", verifier_node)
+    b.add_node(N.DOMAIN_SPECIALIST, domain_specialist_node, retry_policy=LLM_RETRY)
+    b.add_node(N.ONTOLOGY_LOOKUP,   ontology_lookup_node)
+    b.add_node(N.BRAIN_RETRIEVAL,   brain_retrieval_node)
+    b.add_node(N.SPARQL_GEN,        sparql_gen_node, retry_policy=LLM_RETRY)
+    b.add_node(N.SPARQL_VALIDATE,   sparql_validate_node)
+    b.add_node(N.GOVERNANCE_GATE,   governance_gate_node)
+    b.add_node(N.SPARQL_EXECUTE,    sparql_execute_node)
+    b.add_node(N.GRAPH_REASONING,   graph_reasoning_node, retry_policy=LLM_RETRY)
+    b.add_node(N.VERIFIER,          verifier_node)
 
     # Outer loop nodes
-    b.add_node("plan", plan_node, retry_policy=LLM_RETRY)
-    b.add_node("plan_validator", plan_validator_node)
-    b.add_node("executor", executor_node)
-    b.add_node("step_reflector", step_reflector_node, retry_policy=LLM_RETRY)
-    b.add_node("repairer", repairer_node)
-    b.add_node("final_reflector", final_reflector_node, retry_policy=LLM_RETRY)
+    b.add_node(N.PLAN,           plan_node, retry_policy=LLM_RETRY)
+    b.add_node(N.PLAN_VALIDATOR, plan_validator_node)
+    b.add_node(N.EXECUTOR,       executor_node)
+    b.add_node(N.STEP_REFLECTOR, step_reflector_node, retry_policy=LLM_RETRY)
+    b.add_node(N.REPAIRER,       repairer_node)
+    b.add_node(N.FINAL_REFLECTOR,final_reflector_node, retry_policy=LLM_RETRY)
 
     # Convergence nodes (shared by inner + outer paths)
-    b.add_node("answer_synthesis", answer_synthesis_node, retry_policy=LLM_RETRY)
-    b.add_node("visualization", visualization_node)
-    b.add_node("human_in_loop", human_in_loop_node)
-    b.add_node("compress", compress_node, retry_policy=LLM_RETRY)
+    b.add_node(N.ANSWER_SYNTHESIS, answer_synthesis_node, retry_policy=LLM_RETRY)
+    b.add_node(N.VISUALIZATION,    visualization_node)
+    b.add_node(N.HUMAN_IN_LOOP,    human_in_loop_node)
+    b.add_node(N.COMPRESS,         compress_node, retry_policy=LLM_RETRY)
 
     # ── Edges ──
-    b.add_edge(START, "intake_classify")
+    b.add_edge(START, N.INTAKE_CLASSIFY)
     b.add_conditional_edges(
-        "intake_classify",
+        N.INTAKE_CLASSIFY,
         route_after_intake,
         {
-            "general_chat": "general_chat",
-            "rejected": "rejected",
-            "domain_specialist": "domain_specialist",
-            "plan": "plan",
+            N.GENERAL_CHAT:      N.GENERAL_CHAT,
+            N.REJECTED:          N.REJECTED,
+            N.DOMAIN_SPECIALIST: N.DOMAIN_SPECIALIST,
+            N.PLAN:              N.PLAN,
         },
     )
-    b.add_edge("rejected", END)
+    b.add_edge(N.REJECTED, END)
     b.add_conditional_edges(
-        "general_chat",
+        N.GENERAL_CHAT,
         route_after_general_chat,
-        {"compress": "compress", END: END},
+        {N.COMPRESS: N.COMPRESS, END: END},
     )
 
     # ── Inner pipeline path (simple / complex) ──
-    b.add_edge("domain_specialist", "ontology_lookup")
-    b.add_edge("ontology_lookup", "brain_retrieval")
-    b.add_edge("brain_retrieval", "sparql_gen")
-    b.add_edge("sparql_gen", "sparql_validate")
+    b.add_edge(N.DOMAIN_SPECIALIST, N.ONTOLOGY_LOOKUP)
+    b.add_edge(N.ONTOLOGY_LOOKUP,   N.BRAIN_RETRIEVAL)
+    b.add_edge(N.BRAIN_RETRIEVAL,   N.SPARQL_GEN)
+    b.add_edge(N.SPARQL_GEN,        N.SPARQL_VALIDATE)
     b.add_conditional_edges(
-        "sparql_validate",
+        N.SPARQL_VALIDATE,
         route_after_validate,
-        {"sparql_gen": "sparql_gen", "governance_gate": "governance_gate", "answer_synthesis": "answer_synthesis"},
+        {N.SPARQL_GEN: N.SPARQL_GEN, N.GOVERNANCE_GATE: N.GOVERNANCE_GATE, N.ANSWER_SYNTHESIS: N.ANSWER_SYNTHESIS},
     )
     b.add_conditional_edges(
-        "governance_gate",
+        N.GOVERNANCE_GATE,
         route_after_governance,
-        {"sparql_execute": "sparql_execute", END: END},
+        {N.SPARQL_EXECUTE: N.SPARQL_EXECUTE, END: END},
     )
     b.add_conditional_edges(
-        "sparql_execute",
+        N.SPARQL_EXECUTE,
         route_after_execute,
-        {"sparql_gen": "sparql_gen", "graph_reasoning": "graph_reasoning", "verifier": "verifier", "answer_synthesis": "answer_synthesis"},
+        {N.SPARQL_GEN: N.SPARQL_GEN, N.GRAPH_REASONING: N.GRAPH_REASONING, N.VERIFIER: N.VERIFIER, N.ANSWER_SYNTHESIS: N.ANSWER_SYNTHESIS},
     )
-    b.add_edge("graph_reasoning", "verifier")
+    b.add_edge(N.GRAPH_REASONING, N.VERIFIER)
     b.add_conditional_edges(
-        "verifier",
+        N.VERIFIER,
         route_after_verifier,
-        {"sparql_gen": "sparql_gen", "answer_synthesis": "answer_synthesis"},
+        {N.SPARQL_GEN: N.SPARQL_GEN, N.ANSWER_SYNTHESIS: N.ANSWER_SYNTHESIS},
     )
 
     # ── Outer loop path (advanced) ──
     b.add_conditional_edges(
-        "plan",
-        lambda s: "plan_validator",
-        {"plan_validator": "plan_validator"},
+        N.PLAN,
+        lambda s: N.PLAN_VALIDATOR,
+        {N.PLAN_VALIDATOR: N.PLAN_VALIDATOR},
     )
     b.add_conditional_edges(
-        "plan_validator",
+        N.PLAN_VALIDATOR,
         route_after_plan_validator,
-        {"plan": "plan", "executor": "executor", END: END},
+        {N.PLAN: N.PLAN, N.EXECUTOR: N.EXECUTOR, END: END},
     )
-    b.add_edge("executor", "step_reflector")
+    b.add_edge(N.EXECUTOR, N.STEP_REFLECTOR)
     b.add_conditional_edges(
-        "step_reflector",
+        N.STEP_REFLECTOR,
         route_after_step_reflector,
-        {"repairer": "repairer", "final_reflector": "final_reflector"},
+        {N.REPAIRER: N.REPAIRER, N.FINAL_REFLECTOR: N.FINAL_REFLECTOR},
     )
     b.add_conditional_edges(
-        "repairer",
+        N.REPAIRER,
         route_after_repairer,
-        {"plan": "plan", "executor": "executor", "final_reflector": "final_reflector"},
+        {N.PLAN: N.PLAN, N.EXECUTOR: N.EXECUTOR, N.FINAL_REFLECTOR: N.FINAL_REFLECTOR},
     )
-    b.add_edge("final_reflector", "answer_synthesis")
+    b.add_edge(N.FINAL_REFLECTOR, N.ANSWER_SYNTHESIS)
 
     # ── Convergence: both paths → answer_synthesis → visualization → HIL → compress → END ──
     b.add_conditional_edges(
-        "answer_synthesis",
+        N.ANSWER_SYNTHESIS,
         route_synthesis_to_viz,
-        {"visualization": "visualization", "skip_viz": "human_in_loop"},
+        {N.VISUALIZATION: N.VISUALIZATION, N.SKIP_VIZ: N.HUMAN_IN_LOOP},
     )
-    b.add_edge("visualization", "human_in_loop")
+    b.add_edge(N.VISUALIZATION, N.HUMAN_IN_LOOP)
     b.add_conditional_edges(
-        "human_in_loop",
+        N.HUMAN_IN_LOOP,
         route_after_hil,
-        {"compress": "compress", END: END},
+        {N.COMPRESS: N.COMPRESS, END: END},
     )
-    b.add_edge("compress", END)
+    b.add_edge(N.COMPRESS, END)
 
     return b
 
@@ -458,48 +471,48 @@ def cancel_stream(thread_id: str) -> bool:
 _NO_REASONING_NODES: set[str] = set()
 
 _NODE_STREAM = {
-    "intake_classify": ("reasoning", "reasoning.delta"),
-    "domain_specialist": ("reasoning", "reasoning.delta"),
-    "sparql_gen": ("reasoning", "reasoning.delta"),
-    "graph_reasoning": ("reasoning", "reasoning.delta"),
-    "answer_synthesis": "multi",
-    "plan": ("reasoning", "reasoning.delta"),
-    "step_reflector": None,
-    "final_reflector": ("reasoning", "reasoning.delta"),
-    "general_chat": ("answer", "answer.delta"),
-    "ontology_lookup": ("reasoning", "reasoning.delta"),
-    "brain_retrieval": ("reasoning", "reasoning.delta"),
-    "sparql_validate": ("reasoning", "reasoning.delta"),
-    "sparql_execute": None,
-    "governance_gate": None,
-    "verifier": None,
-    "visualization": ("reasoning", "reasoning.delta"),
-    "plan_validator": None,
-    "executor": ("reasoning", "reasoning.delta"),
-    "repairer": None,
-    "rejected": None,
+    N.INTAKE_CLASSIFY:   ("reasoning", "reasoning.delta"),
+    N.DOMAIN_SPECIALIST: ("reasoning", "reasoning.delta"),
+    N.SPARQL_GEN:        ("reasoning", "reasoning.delta"),
+    N.GRAPH_REASONING:   ("reasoning", "reasoning.delta"),
+    N.ANSWER_SYNTHESIS:  "multi",
+    N.PLAN:              ("reasoning", "reasoning.delta"),
+    N.STEP_REFLECTOR:    None,
+    N.FINAL_REFLECTOR:   ("reasoning", "reasoning.delta"),
+    N.GENERAL_CHAT:      ("answer", "answer.delta"),
+    N.ONTOLOGY_LOOKUP:   ("reasoning", "reasoning.delta"),
+    N.BRAIN_RETRIEVAL:   ("reasoning", "reasoning.delta"),
+    N.SPARQL_VALIDATE:   ("reasoning", "reasoning.delta"),
+    N.SPARQL_EXECUTE:    None,
+    N.GOVERNANCE_GATE:   None,
+    N.VERIFIER:          None,
+    N.VISUALIZATION:     ("reasoning", "reasoning.delta"),
+    N.PLAN_VALIDATOR:    None,
+    N.EXECUTOR:          ("reasoning", "reasoning.delta"),
+    N.REPAIRER:          None,
+    N.REJECTED:          None,
 }
 
 _NODE_MESSAGE = {
-    "intake_classify": "Understanding your question",
-    "general_chat": "Responding",
-    "rejected": "Request not supported",
-    "domain_specialist": "Identifying data scope",
-    "ontology_lookup": "Resolving ontology terms",
-    "brain_retrieval": "Retrieving policy context",
-    "sparql_gen": "Generating SPARQL query",
-    "sparql_validate": "Validating query",
-    "governance_gate": "Governance check",
-    "sparql_execute": "Querying Knowledge Graph",
-    "graph_reasoning": "Analyzing results",
-    "answer_synthesis": "Preparing your answer",
-    "visualization": "Building chart",
-    "plan": "Planning sub-questions",
-    "plan_validator": "Validating plan",
-    "executor": "Executing sub-questions",
-    "step_reflector": "Reflecting on sub-results",
-    "repairer": "Repairing failed sub-queries",
-    "final_reflector": "Final quality check",
+    N.INTAKE_CLASSIFY:   "Understanding your question",
+    N.GENERAL_CHAT:      "Responding",
+    N.REJECTED:          "Request not supported",
+    N.DOMAIN_SPECIALIST: "Identifying data scope",
+    N.ONTOLOGY_LOOKUP:   "Resolving ontology terms",
+    N.BRAIN_RETRIEVAL:   "Retrieving policy context",
+    N.SPARQL_GEN:        "Generating SPARQL query",
+    N.SPARQL_VALIDATE:   "Validating query",
+    N.GOVERNANCE_GATE:   "Governance check",
+    N.SPARQL_EXECUTE:    "Querying Knowledge Graph",
+    N.GRAPH_REASONING:   "Analyzing results",
+    N.ANSWER_SYNTHESIS:  "Preparing your answer",
+    N.VISUALIZATION:     "Building chart",
+    N.PLAN:              "Planning sub-questions",
+    N.PLAN_VALIDATOR:    "Validating plan",
+    N.EXECUTOR:          "Executing sub-questions",
+    N.STEP_REFLECTOR:    "Reflecting on sub-results",
+    N.REPAIRER:          "Repairing failed sub-queries",
+    N.FINAL_REFLECTOR:   "Final quality check",
 }
 
 _STATE_KEYS = {
@@ -526,6 +539,8 @@ async def stream_pipeline(
     cancel_event: asyncio.Event | None = None,
     feedback_context: str = "",
     prior_sql: str = "",
+    user_email: str | None = None,
+    user_display_name: str = "",
 ):
     """Run the pipeline and yield SSE event dicts as processing progresses."""
     if _main_graph is None:
@@ -540,6 +555,25 @@ async def stream_pipeline(
         "configurable": {"thread_id": thread_id},
         "recursion_limit": settings.PIPELINE_RECURSION_LIMIT,
     }
+
+    lf_handler = _create_lf_handler()
+    callbacks: list = []
+    if lf_handler:
+        callbacks.append(lf_handler)
+    if callbacks:
+        config["callbacks"] = callbacks
+
+    lf_ctx = _lf_context(
+        session_id=thread_id,
+        user_id=user_email or user_id or user_display_name or None,
+        tags=[f"persona:{persona}"] if persona else [],
+        metadata={
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "environment": settings.ENVIRONMENT,
+        },
+    )
+
 
     initial = {
         "question": question,
@@ -588,6 +622,9 @@ async def stream_pipeline(
         "final_reflection": "",
     }
 
+    _token_usage_records: list[dict] = []
+    _token_tracked_run_ids: set[str] = set()
+
     per_call_streamers: dict[str, SectionStreamer | MultiSectionStreamer | None] = {}
 
     def _ensure_streamer(call_run_id: str, node_name: str):
@@ -627,10 +664,10 @@ async def stream_pipeline(
     # Nodes that exist in the inner sub-graph (run inside executor for sub-questions).
     # Events for these nodes are filtered while any real executor is active.
     _INNER_GRAPH_NODES: set[str] = {
-        "domain_specialist", "ontology_lookup", "brain_retrieval",
-        "sparql_gen", "sparql_validate", "governance_gate",
-        "sparql_execute", "graph_reasoning", "verifier",
-        "answer_synthesis", "visualization",
+        N.DOMAIN_SPECIALIST, N.ONTOLOGY_LOOKUP, N.BRAIN_RETRIEVAL,
+        N.SPARQL_GEN, N.SPARQL_VALIDATE, N.GOVERNANCE_GATE,
+        N.SPARQL_EXECUTE, N.GRAPH_REASONING, N.VERIFIER,
+        N.ANSWER_SYNTHESIS, N.VISUALIZATION,
     }
 
     logger.info(
@@ -639,6 +676,7 @@ async def stream_pipeline(
         f"question={question[:80]!r}"
     )
 
+    lf_ctx.__enter__()
     try:
         async for ev in _main_graph.astream_events(initial, version="v2", config=config):
             if cancel_event.is_set():
@@ -655,8 +693,23 @@ async def stream_pipeline(
             node = ev.get("metadata", {}).get("langgraph_node")
 
             # Record real executor node starts (before any filtering)
-            if kind == "on_chain_start" and node == "executor":
+            if kind == "on_chain_start" and node == N.EXECUTOR:
                 _executor_run_ids.add(run_id_str)
+
+            # ── Token tracking — captured before display-layer filtering so
+            # sub-question LLM calls (inner graph) are included in cost totals.
+            if kind == "on_chat_model_end" and run_id_str not in _token_tracked_run_ids:
+                _token_tracked_run_ids.add(run_id_str)
+                _out = ev.get("data", {}).get("output")
+                _msg = (
+                    _out if hasattr(_out, "usage_metadata") else
+                    (_out[-1] if isinstance(_out, list) and _out else None)
+                )
+                if _msg is not None:
+                    _tier = NODE_TIER.get(node or "", "balanced")
+                    _usage = extract_usage(_msg, node or "pipeline", _tier)
+                    if _usage:
+                        _token_usage_records.append(_usage)
 
             # Filter events for inner sub-graph nodes while executor is active.
             # These are sub-question runs — their events must not surface at the outer level.
@@ -665,7 +718,7 @@ async def stream_pipeline(
 
             # Filter spurious executor on_chain_end events caused by inner graph
             # completions leaking as executor ends (different run_id than the real executor).
-            if kind == "on_chain_end" and node == "executor":
+            if kind == "on_chain_end" and node == N.EXECUTOR:
                 if run_id_str not in _executor_run_ids:
                     continue
                 _executor_run_ids.discard(run_id_str)
@@ -769,19 +822,19 @@ async def stream_pipeline(
                     text = custom_data.get("text", "")
                     sq_id = custom_data.get("id", "")
                     if text:
-                        call_key = f"executor_subq:{sq_id}"
-                        exec_visit = node_visit_count.get("executor", 0)
+                        call_key = f"{N.EXECUTOR}_subq:{sq_id}"
+                        exec_visit = node_visit_count.get(N.EXECUTOR, 0)
                         reasoning_entries.append({
-                            "node": "executor",
+                            "node": N.EXECUTOR,
                             "run_id": call_key,
                             "label": f"Sub-question {sq_id}",
                             "tokens": [text],
                         })
                         _step_reasoning_idx.setdefault(
-                            f"executor:{exec_visit}", []
+                            f"{N.EXECUTOR}:{exec_visit}", []
                         ).append(len(reasoning_entries) - 1)
                         yield {"event": "reasoning.delta", "data": {
-                            "node": "executor",
+                            "node": N.EXECUTOR,
                             "run_id": call_key,
                             "text": text,
                         }}
@@ -805,7 +858,7 @@ async def stream_pipeline(
                         else:
                             _synthetic_text = "No ontology terms matched — using full ontology reference."
 
-                    elif node == "brain_retrieval":
+                    elif node == N.BRAIN_RETRIEVAL:
                         facts = state.get("tribal_facts", [])
                         routing = state.get("routing", "")
                         if routing == "kg_only":
@@ -820,7 +873,7 @@ async def stream_pipeline(
                         else:
                             _synthetic_text = "No relevant policy context found for this query."
 
-                    elif node == "sparql_validate":
+                    elif node == N.SPARQL_VALIDATE:
                         err = state.get("sparql_error", "")
                         _synthetic_text = (
                             f"Validation failed — {err}"
@@ -828,7 +881,7 @@ async def stream_pipeline(
                             else "Syntax valid. All predicates confirmed."
                         )
 
-                    elif node == "visualization":
+                    elif node == N.VISUALIZATION:
                         viz = state.get("viz_spec")
                         if viz and isinstance(viz, dict) and viz.get("type"):
                             chart_type = viz.get("type", "")
@@ -839,7 +892,7 @@ async def stream_pipeline(
                         else:
                             _synthetic_text = "No chart applicable for this result set."
 
-                    elif node == "step_reflector":
+                    elif node == N.STEP_REFLECTOR:
                         scratchpad = state.get("scratchpad", {})
                         passed = sum(1 for r in scratchpad.values() if r.get("status") == "completed")
                         skipped = sum(1 for r in scratchpad.values() if r.get("status") == "skipped")
@@ -884,7 +937,7 @@ async def stream_pipeline(
                             for i in _step_reasoning_idx.get(_step_visit_key, [])
                         )
 
-                    if node == "sparql_execute":
+                    if node == N.SPARQL_EXECUTE:
                         status = "error" if state.get("sparql_error") else "success"
                         kg_rows = state.get("kg_rows", [])
                         yield {
@@ -898,12 +951,12 @@ async def stream_pipeline(
                                 "will_visualize": bool(kg_rows),
                             },
                         }
-                    elif node == "sparql_gen":
+                    elif node == N.SPARQL_GEN:
                         sparql = state.get("sparql", "")
                         if sparql:
                             yield {"event": "generate_sql", "data": {"sql": sparql}}
 
-                    elif node == "plan":
+                    elif node == N.PLAN:
                         sub_qs = state.get("sub_questions", [])
                         if sub_qs:
                             yield {
@@ -914,7 +967,7 @@ async def stream_pipeline(
                                 },
                             }
 
-                    elif node == "final_reflector":
+                    elif node == N.FINAL_REFLECTOR:
                         # Plan path: sparql_execute never runs in the outer graph, so emit
                         # execute.done here with aggregated data + all sub-question SPARQLs.
                         kg_rows = state.get("kg_rows", [])
@@ -937,13 +990,13 @@ async def stream_pipeline(
                             },
                         }
 
-                    elif node == "visualization":
+                    elif node == N.VISUALIZATION:
                         if state.get("viz_spec"):
                             yield {"event": "chart", "data": {"spec": state["viz_spec"]}}
                         else:
                             yield {"event": "viz.skip", "data": {}}
 
-                    elif node == "answer_synthesis":
+                    elif node == N.ANSWER_SYNTHESIS:
                         if state.get("follow_ups"):
                             yield {"event": "follow_ups", "data": {"questions": state["follow_ups"]}}
 
@@ -962,6 +1015,8 @@ async def stream_pipeline(
         total = time.perf_counter() - pipeline_start
         duration_ms = round(total * 1000)
         logger.info(f"[{run_id}] Pipeline DONE | {total:.1f}s | stopped={stopped}")
+        _lf_trace_id = lf_handler.last_trace_id if lf_handler else None
+        _lf_trace_url = _lf_make_public(_lf_trace_id) if _lf_trace_id else None
         try:
             yield {
                 "event": "done",
@@ -985,6 +1040,9 @@ async def stream_pipeline(
                     "sparql_error": state.get("sparql_error", ""),
                     "sparql_retries": state.get("sparql_retries", 0),
                     "duration_ms": duration_ms,
+                    "langfuse_trace_id": _lf_trace_id,
+                    "langfuse_trace_url": _lf_trace_url,
+                    "token_usage": aggregate_token_usage(_token_usage_records),
                     "pipeline_steps": _pipeline_steps,
                     "reasoning": [
                         {
@@ -1039,3 +1097,8 @@ async def stream_pipeline(
         yield {"event": "error", "data": {"message": "Something went wrong while processing your question. Please try again."}}
     finally:
         _active_streams.pop(thread_id, None)
+        try:
+            lf_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
+        _lf_flush()  # flush Langfuse events via v3 get_client().flush()

@@ -28,6 +28,9 @@ langchain-core>=0.3.0
 langchain-aws>=0.2.0
 langchain==1.2.15
 
+# Observability (self-hosted Langfuse — see observability/langfuse/)
+langfuse>=3.0.0
+
 # Resilience
 pybreaker==1.4.1
 tenacity>=9.1.4
@@ -62,4 +65,5 @@ sqlglot>=25.0.0
 Markdown==3.10.2
 openpyxl>=3.1.0
 swagger-ui-bundle>=1.1.0
+
 

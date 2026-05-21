@@ -18,6 +18,7 @@ The backend uses an async SQLAlchemy stack against PostgreSQL (with pgvector for
 | Auth | Username/password → JWT (PyJWT, HS256, 8-hour expiry) |
 | Resilience | Circuit breakers (pybreaker) + retries (tenacity) |
 | Logging | Loguru (structured, with request-ID and timing context) |
+| Observability | Langfuse (self-hosted) — LLM tracing, token usage, latency per node |
 | Containerization | Docker (multi-stage, non-root, Python 3.12-slim) |
 
 ## Project Structure
@@ -43,7 +44,8 @@ backend/
 │   │   ├── logger.py            # Loguru configuration
 │   │   ├── middleware.py        # RequestIDMiddleware + TimingMiddleware + SecurityHeadersMiddleware
 │   │   ├── circuit_breaker.py   # pybreaker instances for external services
-│   │   └── rate_limit.py        # Shared rate limiter used by route handlers
+│   │   ├── rate_limit.py        # Shared rate limiter used by route handlers
+│   │   └── langfuse_integration.py    # Langfuse client lifecycle + callback handler + context + score_trace
 │   ├── db/
 │   │   ├── session.py           # SQLAlchemy async engine + session factory + pool warmup + LangGraph DSN helper
 │   │   └── base.py              # Declarative ORM base
@@ -383,6 +385,60 @@ Both passes are needed because rdflib only finds `owl:Class` subjects in the fir
 #### Validator domain check
 
 `validators.py` `validate_predicates()` uses a transitive `rdfs:subClassOf` closure (`_build_subclass_map`) to check property domains. A predicate declared with domain `lpp:BankAccount` is accepted when the query subject type is `lpp:OperatingAccount` (a subclass). The domain check is suppressed for queries with more than one explicit subject type (`?var a lpp:Cls`) to avoid false positives on join queries.
+## Observability (Langfuse)
+
+LLM tracing via a self-hosted [Langfuse](https://langfuse.com) instance. Disabled by default — set `LANGFUSE_ENABLED=true` in `.env` to activate.
+
+Each pipeline run produces one **trace** in Langfuse. Each LLM call within that run produces one **observation** under that trace, capturing the prompt, response, token counts, latency, and model used.
+
+| What is recorded | Details |
+|------------------|---------|
+| Trace | `session_id` (thread), `user_id`, `tags`, `environment`, total duration |
+| Observation | Prompt, response, input tokens, output tokens, latency, model ARN, node name |
+| Score | User feedback score (thumbs up/down) linked to a trace via `langfuse_trace_id` |
+
+### Traced nodes
+
+| Node | LLM tier |
+|------|----------|
+| `intake_classify` | fast (Haiku) |
+| `general_chat` | fast (Haiku) |
+| `plan_validator` | fast (Haiku) |
+| `step_reflector` | fast (Haiku) |
+| `domain_specialist` | balanced (Sonnet) |
+| `ontology_lookup` | balanced (Sonnet) |
+| `brain_retrieval` | balanced (Sonnet) |
+| `sparql_validate` | balanced (Sonnet) |
+| `graph_reasoning` | balanced (Sonnet) |
+| `plan` | balanced (Sonnet) |
+| `final_reflector` | balanced (Sonnet) |
+| `answer_synthesis` | balanced (Sonnet) |
+| `visualization` | balanced (Sonnet) |
+| `compress` | balanced (Sonnet) |
+| `sparql_gen` | deep (Opus) |
+| `executor` | inner-graph sub-question LLM calls captured per sub-question |
+
+> `sparql_execute`, `governance_gate`, `verifier`, and `rejected` are not traced — they make no LLM calls.
+
+### Configuration
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `LANGFUSE_ENABLED` | No (default: `false`) | Set to `true` to enable tracing |
+| `LANGFUSE_HOST` | Yes (if enabled) | Langfuse server URL (e.g. `http://100.21.28.155:3100/`) |
+| `LANGFUSE_PUBLIC_KEY` | Yes (if enabled) | Project public key (`pk-lf-...`) |
+| `LANGFUSE_SECRET_KEY` | Yes (if enabled) | Project secret key (`sk-lf-...`) |
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `app/core/langfuse_integration.py` | Client lifecycle (`init_langfuse`, `shutdown_langfuse`), `create_callback_handler`, `langfuse_context`, `score_trace` |
+| `app/core/config.py` | Reads the four `LANGFUSE_*` settings from `.env` |
+| `app/main.py` | Calls `init_langfuse()` on startup and `shutdown_langfuse()` on shutdown |
+| `app/services/agents/graph.py` | Attaches `CallbackHandler` to LangGraph config; wraps `stream_pipeline` with `langfuse_context`; includes `langfuse_trace_id` in the `done` SSE event |
+
+---
 
 ## Middleware
 
