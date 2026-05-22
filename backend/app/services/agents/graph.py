@@ -70,6 +70,33 @@ MAX_SPARQL_RETRIES = 2
 SUMMARIZE_THRESHOLD = 6
 LLM_RETRY = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor=2.0)
 
+# Human-readable display labels for intent keys sent to the frontend.
+# Internal pipeline code always uses the raw snake_case keys.
+INTENT_DISPLAY_LABELS: dict[str, str] = {
+    # Treasury
+    "balance_lookup":           "Balance Lookup",
+    "exposure_analysis":        "Exposure Analysis",
+    "investment_and_maturity":  "Investment & Maturity",
+    # Payments
+    "authorization_analysis":   "Authorization Analysis",
+    "cost_and_fee_analysis":    "Cost & Fee Analysis",
+    "payment_operations":       "Payment Operations",
+    "supplier_and_crossborder": "Supplier & Cross-Border",
+    # Strategic
+    "trend_and_forecast":       "Trend & Forecast",
+    "code_lookup":              "Code Lookup",
+    "general_analytics":        "General Analytics",
+    # Legacy keys
+    "counterparty_exposure":    "Counterparty Exposure",
+    "fx_exposure":              "FX Exposure",
+    "investment_positions":     "Investment Positions",
+    "maturity_ladder":          "Maturity Ladder",
+    "policy_check":             "Policy Check",
+    "trend_analysis":           "Trend Analysis",
+    "scenario_forecast":        "Scenario Forecast",
+    "multi_entity_join":        "Multi-Entity Analysis",
+}
+
 _checkpoint_pool: AsyncConnectionPool | None = None
 _main_graph = None
 _inner_graph = None
@@ -856,13 +883,13 @@ async def stream_pipeline(
                                 term_list += f" (+{len(terms) - 8} more)"
                             _synthetic_text = f"Resolved {len(terms)} ontology terms: {term_list}."
                         else:
-                            _synthetic_text = "No ontology terms matched — using full ontology reference."
+                            _synthetic_text = "No ontology terms matched - using full ontology reference."
 
                     elif node == N.BRAIN_RETRIEVAL:
                         facts = state.get("tribal_facts", [])
                         routing = state.get("routing", "")
                         if routing == "kg_only":
-                            _synthetic_text = "Policy context skipped — question answered from Knowledge Graph only."
+                            _synthetic_text = "Policy context skipped - question answered from Knowledge Graph only."
                         elif facts:
                             fact_labels = ", ".join(
                                 f"[{f.get('type', '?')}] {f.get('label', '?')}" for f in facts[:3]
@@ -1027,7 +1054,7 @@ async def stream_pipeline(
                     "stopped": stopped,
                     "persona": state.get("persona", ""),
                     "complexity": state.get("complexity", ""),
-                    "intent": state.get("intent", ""),
+                    "intent": INTENT_DISPLAY_LABELS.get(state.get("intent", ""), state.get("intent", "")),
                     "sql": state.get("sparql", ""),
                     "columns": state.get("kg_columns", []),
                     "rows": state.get("kg_rows", []),

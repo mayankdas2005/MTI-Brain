@@ -3,7 +3,7 @@
 import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, MoreHorizontal, Pin, LayoutDashboard, Loader2 } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, MoreHorizontal, Pin, LayoutDashboard, Loader2, Network } from 'lucide-react';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import {
   Dialog,
@@ -396,7 +396,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   // Treat as timed-out if pending for >5 min — shows Retry instead of forever spinner
   const dashTimedOut = dashStatus === 'pending' && !!dashEntry && (Date.now() - dashEntry.queuedAt) > DASHBOARD_TIMEOUT_MS;
   // Only assistant messages can have dashboards; user messages never do.
-  const showDashButton = !!convId && message.role === 'assistant' && !!message.content && (rowCount ?? 0) >= 2;
+  const showDashEntry  = !!convId && message.role === 'assistant' && !!message.content;
+  const showDashButton = showDashEntry && (rowCount ?? 0) >= 2;
 
   // On mount: sync dashboard state with server.
   // Runs for both 'idle' (restore) and 'ready'/'failed' (verify still exists).
@@ -468,33 +469,38 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         />
       )}
 
-      {/* Data skeleton — table shape while SQL executes */}
+      {/* Data skeleton — mirrors the SPARQL code-block that replaces it.
+          Height and structure intentionally match the real view so the
+          swap causes zero layout shift (only an opacity crossfade). */}
       {sqlStepStarted && (
         <div className="mb-2 animate-fade-in">
-          {prefShowSQL && (
-            <div className="flex items-center gap-1 mb-2">
-              <Skeleton className="h-7 w-20 rounded-md" />
-              <Skeleton className="h-7 w-24 rounded-md" />
-            </div>
-          )}
+          {/* Tab buttons — always shown, mirrors SPARQL + Data tabs */}
+          <div className="flex items-center gap-1 mb-2">
+            <Skeleton className="h-7 w-20 rounded-md" />
+            <Skeleton className="h-7 w-14 rounded-md" />
+          </div>
+          {/* Code-block skeleton — lines at realistic SPARQL widths */}
           <div className="rounded-lg border border-border overflow-hidden">
-            <div className="flex gap-4 px-3 py-2 border-b border-border bg-muted/30">
-              <Skeleton className="h-3 w-24 rounded" />
-              <Skeleton className="h-3 w-16 rounded ml-auto" />
+            <div className="flex items-center justify-end px-3 py-1.5 border-b border-border bg-muted/30">
+              <Skeleton className="h-5 w-5 rounded" />
             </div>
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="flex gap-4 px-3 py-2 border-b border-border/50 last:border-0">
-                <Skeleton className="h-3 rounded" style={{ width: `${[45, 55, 50][i]}%` }} />
-                <Skeleton className="h-3 w-16 rounded ml-auto" />
-              </div>
-            ))}
+            <div className="p-3 space-y-[9px]">
+              {[80, 55, 70, 88, 60, 75, 50, 82, 65, 45].map((w, i) => (
+                <Skeleton
+                  key={i}
+                  className="h-[11px] rounded"
+                  style={{ width: `${w}%`, marginLeft: i > 0 && i < 9 ? '16px' : '0' }}
+                />
+              ))}
+            </div>
           </div>
         </div>
       )}
 
-      {/* SPARQL / Data toggle */}
+      {/* SPARQL / Data toggle — opacity-only fade so the height reserved
+          by the skeleton above doesn't cause a second layout shift */}
       {hasDataView && (
-        <div className="mb-2 space-y-2">
+        <div className="mb-2 space-y-2 animate-fade-only">
           <div className="flex items-center gap-1">
             {showSQLTab && (
               <Button
@@ -692,60 +698,95 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                       Pin to home
                     </DropdownMenuItem>
                   )}
-                  {showDashButton && (
-                    <DropdownMenuItem
-                      disabled={dashStatus === 'pending' && !dashTimedOut}
-                      onClick={() => {
-                        if (dashStatus === 'ready') {
-                          // Always fetch a fresh presigned URL — cached URL expires after 7 days
-                          void getDashboard(convId).then((res) => {
-                            if (res.url) {
-                              // Open to display in new tab
-                              window.open(res.url, '_blank', 'noopener');
-                              // Download via backend (includes auth, avoids S3 CORS)
-                              void downloadDashboard(convId).then(({ blob, filename }) => {
-                                const blobUrl = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = blobUrl;
-                                a.download = filename;
-                                document.body.appendChild(a);
-                                a.click();
-                                document.body.removeChild(a);
-                                URL.revokeObjectURL(blobUrl);
-                              }).catch(() => {});
-                            } else {
-                              // DB record gone — clear stale state, let user regenerate
+                  {/* Knowledge Graph Context */}
+                  {message.role === 'assistant' && !!message.content && (
+                    sql ? (
+                      <DropdownMenuItem className="gap-2">
+                        <Network className="w-4 h-4" />
+                        Graph Context
+                      </DropdownMenuItem>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="cursor-not-allowed">
+                            <DropdownMenuItem disabled className="gap-2 pointer-events-none">
+                              <Network className="w-4 h-4" />
+                              Graph Context
+                            </DropdownMenuItem>
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">No knowledge graph query for this answer</TooltipContent>
+                      </Tooltip>
+                    )
+                  )}
+                  {showDashEntry && (
+                    showDashButton ? (
+                      <DropdownMenuItem
+                        disabled={dashStatus === 'pending' && !dashTimedOut}
+                        onClick={() => {
+                          if (dashStatus === 'ready') {
+                            // Always fetch a fresh presigned URL — cached URL expires after 7 days
+                            void getDashboard(convId).then((res) => {
+                              if (res.url) {
+                                // Open to display in new tab
+                                window.open(res.url, '_blank', 'noopener');
+                                // Download via backend (includes auth, avoids S3 CORS)
+                                void downloadDashboard(convId).then(({ blob, filename }) => {
+                                  const blobUrl = URL.createObjectURL(blob);
+                                  const a = document.createElement('a');
+                                  a.href = blobUrl;
+                                  a.download = filename;
+                                  document.body.appendChild(a);
+                                  a.click();
+                                  document.body.removeChild(a);
+                                  URL.revokeObjectURL(blobUrl);
+                                }).catch(() => {});
+                              } else {
+                                // DB record gone — clear stale state, let user regenerate
+                                removeDash(convId);
+                                toast.info('Dashboard no longer available. Click Generate to rebuild it.');
+                              }
+                            }).catch(() => {
+                              // 404 — DB record deleted, reset to idle
                               removeDash(convId);
                               toast.info('Dashboard no longer available. Click Generate to rebuild it.');
-                            }
-                          }).catch(() => {
-                            // 404 — DB record deleted, reset to idle
-                            removeDash(convId);
-                            toast.info('Dashboard no longer available. Click Generate to rebuild it.');
+                            });
+                            return;
+                          }
+                          setDash(convId, { status: 'pending', url: null, queuedAt: Date.now() });
+                          toast.info('Generating executive dashboard…', {
+                            id: `dash-${convId}`,
+                            description: 'This may take up to a minute. We\'ll notify you when ready.',
                           });
-                          return;
+                          void generateDashboard(convId).catch((err: unknown) => {
+                            setDash(convId, { status: 'failed', url: null, queuedAt: Date.now() });
+                            toast.error(err instanceof Error ? err.message : 'Dashboard generation failed.', { id: `dash-${convId}` });
+                          });
+                        }}
+                        className="gap-2"
+                      >
+                        {dashStatus === 'pending' && !dashTimedOut
+                          ? <Loader2 className="w-4 h-4 animate-spin" />
+                          : <LayoutDashboard className="w-4 h-4" />
                         }
-                        setDash(convId, { status: 'pending', url: null, queuedAt: Date.now() });
-                        toast.info('Generating executive dashboard…', {
-                          id: `dash-${convId}`,
-                          description: 'This may take up to a minute. We\'ll notify you when ready.',
-                        });
-                        void generateDashboard(convId).catch((err: unknown) => {
-                          setDash(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-                          toast.error(err instanceof Error ? err.message : 'Dashboard generation failed.', { id: `dash-${convId}` });
-                        });
-                      }}
-                      className="gap-2"
-                    >
-                      {dashStatus === 'pending' && !dashTimedOut
-                        ? <Loader2 className="w-4 h-4 animate-spin" />
-                        : <LayoutDashboard className="w-4 h-4" />
-                      }
-                      {dashStatus === 'ready'                     ? 'Open Dashboard'    :
-                       dashStatus === 'pending' && !dashTimedOut  ? 'Generating…'       :
-                       dashStatus === 'failed' || dashTimedOut    ? 'Retry Dashboard'   :
-                                                  'Generate Dashboard'}
-                    </DropdownMenuItem>
+                        {dashStatus === 'ready'                     ? 'View Report'       :
+                         dashStatus === 'pending' && !dashTimedOut  ? 'Generating…'       :
+                         dashStatus === 'failed' || dashTimedOut    ? 'Rebuild Report'    :
+                                                    'Build Report'}
+                      </DropdownMenuItem>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="cursor-not-allowed">
+                            <DropdownMenuItem disabled className="gap-2 pointer-events-none">
+                              <LayoutDashboard className="w-4 h-4" />
+                              Build Report
+                            </DropdownMenuItem>
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">Requires at least 2 rows of data</TooltipContent>
+                      </Tooltip>
+                    )
                   )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleOpenAbout} className="gap-2">

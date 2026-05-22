@@ -227,6 +227,95 @@ services:
   #     retries: 5
   #     start_period: 30s
 
+  neo4j:
+      image: neo4j:2026.04-enterprise
+      container_name: neo4j
+      restart: unless-stopped
+      ports:
+        - "7474:7474"
+        - "7687:7687"
+      environment:
+        - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+        - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
+
+        # Allow unrecognised settings without hard failure (guards against version drift)
+        - NEO4J_server_config_strict__validation_enabled=false
+
+        # Plugins
+        - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+
+        # Memory — Heap 3G + Pagecache 1.5G + ~512M JVM overhead ≈ 5G total, under 6G limit.
+        # Sized for GDS (FastRP, K-NN, Louvain, PageRank) on ~320 tables without OOM.
+        - NEO4J_server_memory_heap_initial__size=3g
+        - NEO4J_server_memory_heap_max__size=3g
+        - NEO4J_server_memory_pagecache_size=1500m
+
+        # Transaction memory — GDS write-backs can exceed 256M in a single tx
+        - NEO4J_db_transaction_concurrent_maximum=16
+        - NEO4J_dbms_memory_transaction_total_max=1500m
+        - NEO4J_db_memory_transaction_max=768m
+        - NEO4J_db_transaction_timeout=30m
+        - NEO4J_db_lock_acquisition_timeout=30s
+
+        # JVM — G1GC tuned for 3G heap; GC log rotated so /logs/ doesn't fill.
+        - NEO4J_server_jvm_additional=-XX:+ExitOnOutOfMemoryError -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:G1HeapRegionSize=16m -XX:InitiatingHeapOccupancyPercent=35 -XX:+ParallelRefProcEnabled -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/logs/ -Xlog:gc*:file=/logs/gc.log:time,uptime:filecount=5,filesize=20m
+
+        # GDS
+        - NEO4J_gds_arrow_enabled=false
+
+        # Bolt thread pool (Neo4j 5+ key names)
+        - NEO4J_server_bolt_thread__pool__min__size=10
+        - NEO4J_server_bolt_thread__pool__max__size=40
+        - NEO4J_server_bolt_thread__pool__keep__alive=5m
+
+        # Query cache (Neo4j 5+ key name)
+        - NEO4J_dbms_cypher_min__replan__interval=10s
+
+        # Security and Procedures — plugin installer sets unrestricted/allowlist automatically;
+        # explicit values here are kept as a fallback in case the installer skips them.
+        - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+        - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
+        - NEO4J_apoc_export_file_enabled=false
+        - NEO4J_apoc_import_file_enabled=false
+
+        # Faster browser loading
+        - NEO4J_browser_post__connect__cmd=
+        - NEO4J_browser_remote__content__hostname__whitelist=
+
+      volumes:
+        - ./docker_volume/neo4j/data:/data
+        - ./docker_volume/neo4j/logs:/logs
+        - ./docker_volume/neo4j/import:/import
+        - ./docker_volume/neo4j/plugins:/plugins
+
+      ulimits:
+        nofile:
+          soft: 40000
+          hard: 40000
+
+      deploy:
+        resources:
+          limits:
+            cpus: "4"
+            memory: 6G
+          reservations:
+            cpus: "1"
+            memory: 2G
+
+      healthcheck:
+        test:
+          [
+            "CMD-SHELL",
+            "wget -qO- http://localhost:7474/db/neo4j/cluster/available || wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1",
+          ]
+        interval: 30s
+        timeout: 10s
+        retries: 5
+        start_period: 120s
+
+      networks:
+        - db_net
+
 networks:
   db_net:
     external: true

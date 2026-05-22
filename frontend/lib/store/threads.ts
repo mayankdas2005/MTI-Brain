@@ -15,6 +15,7 @@ import type {
   SearchResult,
   MessageMetadata,
   PipelineStep,
+  TokenUsage,
 } from '../types/api';
 
 // ─── Local Message type (superset of MessageOut for streaming state) ───
@@ -1118,6 +1119,10 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
                 sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
                 sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
+                token_usage: (data.token_usage as TokenUsage | undefined) ?? m.metadata_?.token_usage,
+                langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
+                langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
+                intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
               },
             };
           }
@@ -1476,6 +1481,10 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
                 sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
                 sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
+                token_usage: (data.token_usage as TokenUsage | undefined) ?? m.metadata_?.token_usage,
+                langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
+                langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
+                intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
               },
             };
           }
@@ -1778,6 +1787,10 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
               sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
               sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
+              token_usage: (data.token_usage as TokenUsage | undefined) ?? m.metadata_?.token_usage,
+              langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
+              langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
+              intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
             },
           };
           if (m.id === userMsgId) return { ...m, conversation_id: convId };

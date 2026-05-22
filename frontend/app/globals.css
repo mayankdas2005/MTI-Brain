@@ -419,6 +419,16 @@ html[data-density="compact"] {
   animation: fade-in 0.25s ease-out both;
 }
 
+/* Opacity-only fade — no Y translation, used for sections that must not
+   appear to shift layout (e.g. data/SPARQL block swapping in during streaming). */
+@keyframes fade-only {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate-fade-only {
+  animation: fade-only 0.2s ease-out both;
+}
+
 .animate-fade-up {
   animation: fade-up 0.4s ease-out both;
 }

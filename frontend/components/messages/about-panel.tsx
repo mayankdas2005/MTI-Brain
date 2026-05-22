@@ -192,7 +192,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
               {m?.intent && (
                 <KV
                   label="Intent"
-                  value={m.intent.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                  value={m.intent}
                 />
               )}
               {m?.resolved_filters && (
