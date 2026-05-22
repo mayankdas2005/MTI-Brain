@@ -379,6 +379,15 @@ html[data-density="compact"] {
   }
 }
 
+/* Hide scrollbar track while keeping scroll functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
 /* Thinking glow - CSS custom properties per theme */
 :root {
   --glow-rest: 0 0 8px -2px #1B76B826, 0 0 20px -4px #1B76B814;

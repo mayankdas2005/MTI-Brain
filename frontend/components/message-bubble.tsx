@@ -864,10 +864,8 @@ function ReasoningPanel({
   const steps = message.streamingSteps;
   const hasSteps = !!steps && steps.length > 0;
 
-  // Only open on initial render if the message is actively streaming.
-  // Historical messages (loaded on refresh) start collapsed — streaming
-  // never happened from this component's perspective so the close effect
-  // would never fire, leaving the panel permanently expanded.
+  // Auto-open when streaming starts; auto-close 400ms after it ends.
+  // Historical messages start collapsed (streaming never fired here).
   const [open, setOpen] = useState(hasSteps && !!message.isStreaming);
   const prevHasStepsRef = useRef(hasSteps);
   const prevStreamingRef = useRef<boolean>(!!message.isStreaming);
@@ -885,6 +883,16 @@ function ReasoningPanel({
     }
     prevStreamingRef.current = nowStreaming;
   }, [message.isStreaming]);
+
+  // During streaming the content is height-capped so new steps scroll inside
+  // the box instead of pushing SPARQL/Data downward. Auto-scroll keeps the
+  // latest active step visible without the user needing to scroll manually.
+  const streamScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (message.isStreaming && streamScrollRef.current) {
+      streamScrollRef.current.scrollTop = streamScrollRef.current.scrollHeight;
+    }
+  }, [steps, message.isStreaming]);
   const activeStep = steps?.slice().reverse().find((s) => s.status === 'active');
   const lastStep = steps && steps.length > 0 ? steps[steps.length - 1] : undefined;
   // step.node arrives instantly at node.start; step.message is the prose body
@@ -941,15 +949,20 @@ function ReasoningPanel({
           )}
         </AccordionTrigger>
         <AccordionContent>
-          {hasSteps ? (
-            <PipelineTimeline steps={steps!} />
-          ) : legacyReasoning ? (
-            <ReasoningContent
-              ref={reasoningRef}
-              isStreaming={message.isStreaming}
-              content={legacyReasoning}
-            />
-          ) : null}
+          <div
+            ref={streamScrollRef}
+            className={message.isStreaming ? 'max-h-56 overflow-y-auto scrollbar-hide' : undefined}
+          >
+            {hasSteps ? (
+              <PipelineTimeline steps={steps!} />
+            ) : legacyReasoning ? (
+              <ReasoningContent
+                ref={reasoningRef}
+                isStreaming={message.isStreaming}
+                content={legacyReasoning}
+              />
+            ) : null}
+          </div>
         </AccordionContent>
       </AccordionItem>
     </Accordion>

@@ -28,7 +28,7 @@ langchain-core>=0.3.0
 langchain-aws>=0.2.0
 langchain==1.2.15
 
-# Observability (self-hosted Langfuse — see observability/langfuse/)
+# Observability (self-hosted Langfuse — see langfuse/)
 langfuse>=3.0.0
 
 # Resilience
