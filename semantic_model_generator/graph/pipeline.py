@@ -1,0 +1,1356 @@
+"""
+Neo4j Semantic Layer Pipeline — main orchestration.
+
+Usage:
+  python -m semantic_model_generator.graph.pipeline [--steps STEPS] [--dry-run] [--reset-checkpoint]
+
+Steps (comma-separated or 'all'):
+  extract   Q1-Q16 from Redshift + parse semantic_model.yml
+  infer     table type + FK inference
+  load      apply schema + MERGE nodes/edges into Neo4j
+  wcc       WCC → bridge isolated tables → re-run WCC
+  gds       PageRank + Betweenness + Leiden + FastRP + Node Similarity
+  enrich    LLM table/column/domain descriptions (Bedrock, with checkpoint)
+  embed     Cohere column + table embeddings; KNN SEMANTICALLY_SIMILAR
+  paths     Dijkstra + Yen's + cross-community JoinPath precomputation
+  rollup    ROLLUP_OF edge detection + is_subquery_anchor
+  intents   Intent nodes + RELEVANT_TO edges + intent_tags on Tables
+  glossary  BusinessTerm nodes + embeddings
+  templates QueryTemplate nodes from Questions.txt + embeddings
+  all       run all steps in order (default)
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+import uuid
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .config import bedrock as bedrock_cfg
+from .config import neo4j as neo4j_cfg
+from .config import rs as rs_cfg
+from .enrich.embeddings import (
+    embed_columns,
+    embed_communities,
+    embed_domains,
+    embed_intents,
+    embed_tables,
+)
+from .enrich.intents import (
+    build_intent_node_dicts,
+    compute_relevant_to_edges,
+    load_intent_classes,
+    resolve_anchor_table_fqns,
+)
+from .enrich.llm_enricher import (
+    _bedrock_client,
+    _langchain_bedrock,
+    _load_checkpoint,
+    _save_checkpoint,
+    build_table_llm_input,
+    enrich_columns,
+    enrich_community,
+    enrich_domain,
+    enrich_intents,
+    enrich_query_templates,
+    enrich_tables,
+    generate_business_glossary,
+)
+from .enrich.rollup import detect_rollup_candidates_from_graph, validate_rollup_with_llm
+from .extract.redshift import RedshiftExtractor
+from .extract.yml_parser import parse as parse_yml
+from .gds.algorithms import GDSPipeline
+from .gds.join_paths import JoinPathBuilder
+from .infer.fk_infer import infer_fks
+from .infer.table_type import infer_table_type
+from .load.neo4j_loader import Neo4jLoader
+from .models import ColumnMeta, FKEdge, TableMeta
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
+log = logging.getLogger("pipeline")
+
+_ALL_STEPS = [
+    "extract", "infer", "load", "wcc", "gds", "enrich",
+    "paths", "rollup", "intents", "glossary", "templates", "embed",
+]
+_NOW = lambda: datetime.now(timezone.utc).isoformat()
+_CHECKPOINT_FILE = Path(__file__).resolve().parent.parent / "graph_enrichment_cache.json"
+
+
+def _idx(rows: list[dict], key: str) -> dict:
+    """Index a list of dicts by a string key."""
+    return {str(r.get(key, "")): r for r in rows}
+
+
+def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False):
+    run_id = str(uuid.uuid4())
+    started_at = _NOW()
+    run_meta: dict = {
+        "run_id": run_id,
+        "started_at": started_at,
+        "steps": steps,
+        "dry_run": dry_run,
+    }
+    _t0 = time.time()
+    stats: dict = {k: 0 for k in [
+        "tables_processed", "columns_processed", "edges_created",
+        "llm_calls", "embed_calls", "errors",
+    ]}
+
+    if reset_checkpoint and _CHECKPOINT_FILE.exists():
+        _CHECKPOINT_FILE.unlink()
+        log.info("Checkpoint reset.")
+
+    loader = None if dry_run else Neo4jLoader(
+        neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password, neo4j_cfg.db
+    )
+    gds = None if dry_run else GDSPipeline(
+        neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password, neo4j_cfg.db
+    )
+
+    # ── EXTRACT ────────────────────────────────────────────────────────────
+
+    tables_meta: list[TableMeta] = []
+    columns_meta: list[ColumnMeta] = []
+    sme_edges: list[FKEdge] = []
+    raw: dict = {}
+
+    if "extract" in steps:
+        t = time.time()
+        log.info("── EXTRACT ──────────────────────────────────────────────")
+
+        log.info("Parsing semantic_model.yml …")
+        tables_meta, columns_meta, sme_edges = parse_yml()
+        log.info("YML: %d tables, %d columns, %d SME edges",
+                 len(tables_meta), len(columns_meta), len(sme_edges))
+
+        yml_table_names: set[str] = {tm.name for tm in tables_meta}
+        yml_col_names: set[tuple[str, str]] = {
+            (cm.table_fqn.split(".")[-1], cm.name) for cm in columns_meta
+        }
+
+        log.info("Fetching Redshift metadata (Q1–Q16) scoped to %d YML tables …", len(yml_table_names))
+        extractor = RedshiftExtractor(
+            host=rs_cfg.host,
+            database=rs_cfg.db,
+            user=rs_cfg.user,
+            password=rs_cfg.password,
+            port=rs_cfg.port,
+            schema=rs_cfg.schema,
+        )
+        raw = extractor.run_all(table_names=yml_table_names, col_names=yml_col_names)
+
+        log.info("EXTRACT done in %.1fs", time.time() - t)
+
+    # ── INFER ──────────────────────────────────────────────────────────────
+
+    all_fk_edges: list[FKEdge] = list(sme_edges)
+    col_map: dict[str, list[ColumnMeta]] = defaultdict(list)
+
+    if "infer" in steps:
+        t = time.time()
+        log.info("── INFER ────────────────────────────────────────────────")
+
+        # Enrich TableMeta + ColumnMeta from Redshift data
+        q1_idx  = _idx(raw.get("tables", []), "table_name")
+        q9_idx  = _idx(raw.get("col_type_dist", []), "table_name")
+        q10_idx = _idx(raw.get("cardinality", []), "table_name")
+        q11_idx = _idx(raw.get("encoding", []), "table_name")
+        q2_by_table: dict[str, list[dict]] = defaultdict(list)
+        for row in raw.get("columns", []):
+            q2_by_table[row["table_name"]].append(row)
+        q3_by_table: dict[str, dict[str, dict]] = defaultdict(dict)
+        for row in raw.get("pg_stats", []):
+            q3_by_table[row["table_name"]][row["column_name"]] = row
+
+        # Declared PKs from Q4
+        declared_pks: set[tuple] = set()
+        declared_fk_edges: list[FKEdge] = []
+        for row in raw.get("constraints", []):
+            if row["constraint_type"] == "PRIMARY KEY":
+                declared_pks.add((row["table_name"], row["column_name"]))
+            elif row["constraint_type"] == "FOREIGN KEY" and row.get("ref_table"):
+                declared_fk_edges.append(FKEdge(
+                    from_table=f"{rs_cfg.schema}.{row['table_name']}",
+                    from_col=row["column_name"],
+                    to_table=f"{rs_cfg.schema}.{row['ref_table']}",
+                    to_col=row["ref_column"] or "code",
+                    confidence=1.0,
+                    source="declared_fk",
+                    is_declared=True,
+                ))
+
+        # Update TableMeta from Redshift stats; infer table types
+        updated_tables: list[TableMeta] = []
+        for tm in tables_meta:
+            name = tm.name
+            q1 = q1_idx.get(name, {})
+            q9 = q9_idx.get(name, {})
+            q10 = q10_idx.get(name, {})
+            q11 = q11_idx.get(name, {})
+            q2_cols = q2_by_table.get(name, [])
+
+            # Update stats
+            tm.row_count    = int(q1.get("row_count") or tm.row_count)
+            tm.size_mb      = float(q1.get("size_mb") or tm.size_mb)
+            tm.diststyle    = q1.get("diststyle") or tm.diststyle
+            tm.distkey_col  = q1.get("distkey_col") or tm.distkey_col
+            tm.sortkey1     = q1.get("sortkey1") or tm.sortkey1
+            tm.sortkey_type = q1.get("sortkey1_type") or tm.sortkey_type
+            tm.encoded_pct  = float(q11.get("pct_encoded") or tm.encoded_pct)
+            tm.table_type_db = q1.get("table_type_db") or tm.table_type_db
+
+            if tm.table_type != "derived":
+                ttype, conf, _ = infer_table_type(
+                    table=q1, col_dist=q9, card=q10, enc=q11, columns=q2_cols
+                )
+                tm.table_type    = ttype
+                tm.type_confidence = conf
+
+            updated_tables.append(tm)
+
+        # Merge Redshift stats into YML-defined ColumnMeta only
+        col_by_id = {c.id: c for c in columns_meta}
+
+        for name, q2_cols in q2_by_table.items():
+            fqn = f"{rs_cfg.schema}.{name}"
+            for row in q2_cols:
+                col_name = row["column_name"]
+                col_id   = f"{fqn}.{col_name}"
+                q3_stat  = q3_by_table.get(name, {}).get(col_name, {})
+                is_pk    = (name, col_name) in declared_pks
+
+                cm = col_by_id.get(col_id)
+                if cm:
+                    cm.data_type        = row.get("data_type", cm.data_type)
+                    cm.ordinal_position = int(row.get("ordinal_position") or cm.ordinal_position)
+                    cm.is_nullable      = row.get("is_nullable", "YES") == "YES"
+                    cm.is_notnull       = bool(row.get("is_notnull", False))
+                    cm.is_pk            = is_pk or cm.is_pk
+                    cm.null_frac        = float(q3_stat.get("null_frac") or 0)
+                    cm.n_distinct       = float(q3_stat.get("n_distinct") or 0)
+                    cm.source_hash      = cm.compute_source_hash()
+
+        # Wire Q8 sample values (fallback for low-n_distinct cols not covered by Q_topvals)
+        q8 = raw.get("samples", {})
+        for cm in columns_meta:
+            tbl_name = cm.table_fqn.split(".")[-1]
+            vals = q8.get(tbl_name, {}).get(cm.name, [])
+            if vals:
+                cm.sample_values = vals
+
+        # Wire top_freq_values (frequency-ranked) from new Q_topvals extraction
+        q_topvals = raw.get("top_freq_values", {})
+        for cm in columns_meta:
+            tbl_name = cm.table_fqn.split(".")[-1]
+            freq_vals = q_topvals.get(tbl_name, {}).get(cm.name, [])
+            if freq_vals:
+                cm.top_freq_values = freq_vals
+
+        # Compute source hashes on tables
+        for tm in updated_tables:
+            col_names = [c.name for c in columns_meta if c.table_fqn == tm.fqn]
+            tm.source_hash = tm.compute_source_hash(col_names)
+
+        tables_meta = updated_tables
+
+        # Build col_map
+        for cm in columns_meta:
+            col_map[cm.table_fqn].append(cm)
+
+        # Inferred FK edges
+        all_fk_edges = list(sme_edges) + declared_fk_edges
+        inferred = infer_fks(
+            tables=tables_meta,
+            col_map=col_map,
+            existing_edges=all_fk_edges,
+            query_history_rows=raw.get("stl_joins") or raw.get("stl_recent") or [],
+        )
+        all_fk_edges.extend(inferred)
+
+        stats["tables_processed"] = len(tables_meta)
+        stats["columns_processed"] = len(columns_meta)
+        stats["edges_created"] = len(all_fk_edges)
+
+        log.info("INFER: %d tables, %d columns, %d total FK edges (sme=%d declared=%d inferred=%d)",
+                 len(tables_meta), len(columns_meta), len(all_fk_edges),
+                 len(sme_edges), len(declared_fk_edges), len(inferred))
+        log.info("INFER done in %.1fs", time.time() - t)
+
+    # ── LOAD ───────────────────────────────────────────────────────────────
+
+    if "load" in steps and not dry_run:
+        t = time.time()
+        log.info("── LOAD ─────────────────────────────────────────────────")
+        loader.apply_schema()
+
+        loader.load_tables(tables_meta)
+        loader.load_columns(columns_meta)
+        loader.link_columns_to_tables(columns_meta)
+        loader.load_fk_edges(all_fk_edges)
+        loader.initialize_table_defaults()
+        loader.initialize_column_defaults()
+
+        log.info("LOAD done in %.1fs", time.time() - t)
+
+    # ── WCC ────────────────────────────────────────────────────────────────
+
+    if "wcc" in steps and not dry_run:
+        t = time.time()
+        log.info("── WCC ──────────────────────────────────────────────────")
+
+        gds.project_join_graph()
+        gds.run_wcc()
+        report = gds.get_wcc_report()
+
+        log.info("WCC: isolated=%d small_clusters=%d pendants=%d",
+                 len(report["isolated"]),
+                 len(report["small_clusters"]),
+                 len(report["pendants"]))
+
+        # Bridge isolated tables using shared column names from Q15
+        shared_col_index: dict[str, list[str]] = defaultdict(list)
+        for row in raw.get("shared_cols", []):
+            col_name = row["column_name"]
+            for tbl in (row.get("tables") or "").split(","):
+                tbl = tbl.strip()
+                if tbl:
+                    shared_col_index[col_name].append(tbl)
+
+        bridge_edges: list[dict] = []
+        main_cid = report["main_component_id"]
+        isolated_fqns = (
+            [r["fqn"] for r in report["isolated"]]
+            + gds.get_small_cluster_fqns(main_cid)
+        )
+
+        # M1 — import the same blocklist used by FK inference
+        from .infer.fk_infer import _GENERIC_PK_NAMES as _GENERIC_BRIDGE_COLS
+
+        for iso_fqn in isolated_fqns:
+            iso_name = iso_fqn.split(".")[-1]
+            # Prefer FK-suffix columns over generic names for bridging
+            iso_cols = sorted(
+                [c.name for c in col_map.get(iso_fqn, [])],
+                key=lambda n: (n.lower() in _GENERIC_BRIDGE_COLS, n),
+            )
+
+            for col_name in iso_cols:
+                if col_name.lower() in _GENERIC_BRIDGE_COLS:
+                    continue  # skip generic names; only use if no FK-suffix col found
+                partners = shared_col_index.get(col_name, [])
+                for partner_name in partners:
+                    if partner_name == iso_name:
+                        continue
+                    partner_fqn = f"{rs_cfg.schema}.{partner_name}"
+                    bridge_edges.append({
+                        "from_fqn": iso_fqn,
+                        "from_col": col_name,
+                        "to_fqn": partner_fqn,
+                        "to_col": col_name,
+                        "confidence": 0.80,
+                        "source": "wcc_shared_column",
+                    })
+                    break  # one bridge per isolated table
+                if bridge_edges and bridge_edges[-1]["from_fqn"] == iso_fqn:
+                    break  # found a bridge for this table
+
+        if bridge_edges:
+            gds.load_wcc_bridge_edges(bridge_edges)
+            # Re-project and re-run WCC to verify
+            gds._drop_graph("join_graph")
+            gds.project_join_graph()
+            gds.run_wcc()
+            report2 = gds.get_wcc_report()
+            log.info("Post-bridge WCC: isolated=%d", len(report2["isolated"]))
+
+        gds.flag_isolated_tables()
+        log.info("WCC done in %.1fs", time.time() - t)
+
+    # ── GDS ────────────────────────────────────────────────────────────────
+
+    if "gds" in steps and not dry_run:
+        t = time.time()
+        log.info("── GDS ──────────────────────────────────────────────────")
+
+        # M2 — re-project join_graph in case GDS step runs without a preceding WCC step
+        gds._drop_graph("join_graph")
+        gds.project_join_graph()
+
+        gds.run_pagerank()
+        gds.run_betweenness()
+
+        # Leiden with gamma tuning
+        gds.project_leiden_graph()
+        leiden_meta = gds.run_leiden(gamma=1.2)
+        gds._drop_graph("leiden_graph")
+
+        leiden_valid = gds.validate_leiden()
+        if not leiden_valid["ok"]:
+            log.warning("Leiden validation failed — retrying with gamma=1.5")
+            gds.project_leiden_graph()
+            leiden_meta = gds.run_leiden(gamma=1.5)
+            gds._drop_graph("leiden_graph")
+            leiden_valid = gds.validate_leiden()
+            if not leiden_valid["ok"]:
+                log.warning("Leiden gamma=1.5 still not ideal: %s", leiden_valid)
+
+        gds.build_community_nodes(leiden_meta)
+        loader.initialize_community_defaults()
+
+        # FastRP + Node Similarity
+        gds.run_fastrp_for_node_similarity()
+        gds.run_node_similarity(cutoff=0.5, top_k=10)
+
+        gds._drop_graph("join_graph")
+
+        log.info("GDS done in %.1fs", time.time() - t)
+
+    # ── ENRICH ─────────────────────────────────────────────────────────────
+
+    if "enrich" in steps and not dry_run:
+        t = time.time()
+        log.info("── ENRICH ───────────────────────────────────────────────")
+
+        # C4 — rebuild tables_meta and col_map from Neo4j if INFER was skipped
+        if not tables_meta and loader:
+            tbl_rows_neo = loader._run("""
+                MATCH (t:Table)
+                RETURN t.fqn AS fqn, t.name AS name, t.table_type AS table_type,
+                       t.ontology_class AS ontology_class,
+                       toFloat(t.type_confidence) AS type_confidence,
+                       toInteger(t.row_count) AS row_count,
+                       toFloat(t.size_mb) AS size_mb,
+                       t.diststyle AS diststyle, t.distkey_col AS distkey_col,
+                       t.sortkey1 AS sortkey1, t.business_domain AS business_domain
+            """)
+            for r in tbl_rows_neo:
+                tm = TableMeta(
+                    fqn=r["fqn"], name=r["name"],
+                    schema=r["fqn"].split(".")[0],
+                    table_type_db="",
+                    table_type=r.get("table_type") or "",
+                    ontology_class=r.get("ontology_class") or "",
+                )
+                tm.row_count       = r.get("row_count") or 0
+                tm.size_mb         = float(r.get("size_mb") or 0)
+                tm.diststyle       = r.get("diststyle") or ""
+                tm.distkey_col     = r.get("distkey_col") or ""
+                tm.sortkey1        = r.get("sortkey1") or ""
+                tm.type_confidence = float(r.get("type_confidence") or 0)
+                tm.business_domain = r.get("business_domain") or ""
+                tables_meta.append(tm)
+            log.info("C4: rebuilt tables_meta from Neo4j (%d tables).", len(tables_meta))
+
+        if not col_map and loader:
+            col_rows_neo = loader._run("""
+                MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+                RETURN c.table_fqn AS table_fqn, c.id AS id, c.name AS name,
+                       c.data_type AS data_type, c.ordinal_position AS ordinal_position,
+                       c.is_nullable AS is_nullable, c.is_pk AS is_pk,
+                       c.is_notnull AS is_notnull, c.null_frac AS null_frac,
+                       c.n_distinct AS n_distinct, c.sample_values AS sample_values,
+                       c.top_freq_values AS top_freq_values
+            """)
+            for r in col_rows_neo:
+                cm = ColumnMeta(
+                    table_fqn=r["table_fqn"], name=r["name"],
+                    data_type=r.get("data_type", "varchar"),
+                    ordinal_position=r.get("ordinal_position") or 0,
+                    is_nullable=r.get("is_nullable", True),
+                    is_pk=r.get("is_pk", False),
+                    is_notnull=r.get("is_notnull", False),
+                    null_frac=float(r.get("null_frac") or 0),
+                    n_distinct=float(r.get("n_distinct") or 0),
+                    sample_values=r.get("sample_values") or [],
+                    top_freq_values=r.get("top_freq_values") or [],
+                )
+                col_map[cm.table_fqn].append(cm)
+            log.info("C4: rebuilt col_map from Neo4j (%d columns).", sum(len(v) for v in col_map.values()))
+
+        bedrock_client = _bedrock_client(bedrock_cfg)
+        chat_client    = _langchain_bedrock(bedrock_cfg)
+        model_arn = bedrock_cfg.aws_bedrock_sonnet_arn
+
+        checkpoint = _load_checkpoint()
+        table_cache = checkpoint.get("tables", {})
+        col_cache   = checkpoint.get("columns", {})
+
+        # Identify tables needing enrichment (fetch enrichment_status from Neo4j)
+        status_rows = loader._run("""
+            MATCH (t:Table) WHERE t.enrichment_status IN ['pending','stale','failed']
+            RETURN t.fqn AS fqn, t.table_type AS table_type,
+                   t.row_count AS row_count, t.ontology_class AS ontology_class,
+                   t.type_confidence AS type_confidence,
+                   t.size_mb AS size_mb, t.diststyle AS diststyle,
+                   t.distkey_col AS distkey_col, t.sortkey1 AS sortkey1
+        """)
+        fqns_to_enrich = {r["fqn"] for r in status_rows}
+
+        tables_to_enrich = [
+            tm for tm in tables_meta
+            if tm.fqn in fqns_to_enrich or tm.fqn not in table_cache
+        ]
+        total = len(tables_to_enrich)
+
+        # ── Phase 1: Column enrichment (all tables, table_description="" — no table desc yet) ──
+        COL_FLUSH = 10
+        log.info("ENRICH Phase 1 — column enrichment (%d tables) …", total)
+        pending_col_rows: list[dict] = []
+        for idx, tm in enumerate(tables_to_enrich, 1):
+            cols_data = []
+            for c in col_map.get(tm.fqn, []):
+                top_freq = c.top_freq_values
+                if top_freq:
+                    display_vals = [v.split(":")[0] for v in top_freq[:6]]
+                else:
+                    display_vals = c.sample_values[:6]
+                cols_data.append({
+                    "name": c.name, "data_type": c.data_type, "is_pk": c.is_pk,
+                    "null_frac": c.null_frac, "n_distinct": c.n_distinct,
+                    "sample_vals": display_vals,
+                })
+
+            col_results = enrich_columns(
+                fqn=tm.fqn,
+                table_description="",
+                columns_data=cols_data,
+                chat_client=chat_client,
+                col_cache=col_cache,
+            )
+            stats["llm_calls"] += 1
+
+            for col_name, col_enr in col_results.items():
+                col_id = f"{tm.fqn}.{col_name}"
+                pending_col_rows.append({
+                    "col_id":             col_id,
+                    "description":        col_enr.get("description", ""),
+                    "semantic_type":      col_enr.get("semantic_type", ""),
+                    "synonyms":           col_enr.get("synonyms") or [],
+                    "is_pii":             bool(col_enr.get("is_pii", False)),
+                    "pii_type":           col_enr.get("pii_type") or "",
+                    "temporal_grain":     col_enr.get("temporal_grain") or "none",
+                    "default_aggregation": col_enr.get("default_aggregation") or "NONE",
+                    "value_aliases":      col_enr.get("value_aliases") or [],
+                    "value_scale":        col_enr.get("value_scale") or "",
+                    "description_model":  model_arn,
+                })
+
+            if idx % COL_FLUSH == 0 or idx == total:
+                loader.batch_update_column_enrichment(pending_col_rows, _NOW())
+                checkpoint["columns"] = col_cache
+                _save_checkpoint(checkpoint)
+                log.info("ENRICH Phase 1: %d/%d tables done, %d cols flushed.",
+                         idx, total, len(pending_col_rows))
+                pending_col_rows = []
+
+        loader.initialize_column_defaults()
+
+        # ── Phase 2: Table enrichment with enriched column context from Neo4j ──
+        TABLE_BATCH = 5
+        log.info("ENRICH Phase 2 — table enrichment with enriched column context …")
+        tables_llm_input = []
+        tm_by_fqn: dict = {}
+        for tm in tables_to_enrich:
+            enriched_col_rows = loader._run("""
+                MATCH (t:Table {fqn: $fqn})-[:HAS_COLUMN]->(c:Column)
+                RETURN c.name AS name,
+                       c.description AS description,
+                       c.semantic_type AS semantic_type
+                ORDER BY coalesce(c.ordinal_position, 9999)
+            """, fqn=tm.fqn)
+            enriched_columns = {
+                r["name"]: {
+                    "description":   r.get("description") or "",
+                    "semantic_type": r.get("semantic_type") or "",
+                }
+                for r in enriched_col_rows
+            }
+
+            cols_for_llm = col_map.get(tm.fqn, [])
+            tables_llm_input.append(build_table_llm_input(
+                fqn=tm.fqn,
+                ontology_class=tm.ontology_class,
+                table_type=tm.table_type,
+                type_confidence=tm.type_confidence,
+                row_count=tm.row_count,
+                size_mb=tm.size_mb,
+                diststyle=tm.diststyle,
+                distkey_col=tm.distkey_col,
+                sortkey1=tm.sortkey1,
+                columns=[{
+                    "name": c.name,
+                    "data_type": c.data_type,
+                    "is_pk": c.is_pk,
+                    "is_notnull": c.is_notnull,
+                    "null_frac": c.null_frac,
+                    "n_distinct": c.n_distinct,
+                    "sample_values": c.sample_values,
+                    "most_common_vals": c.most_common_vals,
+                } for c in cols_for_llm],
+                enriched_columns=enriched_columns,
+            ))
+            tm_by_fqn[tm.fqn] = tm
+
+        tables_not_cached = [t for t in tables_llm_input if t["fqn"] not in table_cache]
+        total_t = len(tables_not_cached)
+        log.info("ENRICH Phase 2: %d to enrich, %d from cache.",
+                 total_t, len(tables_llm_input) - total_t)
+
+        for batch_start in range(0, max(total_t, 1), TABLE_BATCH):
+            batch = tables_not_cached[batch_start:batch_start + TABLE_BATCH]
+            if not batch:
+                break
+            batch_results = enrich_tables(batch, chat_client, {})
+            table_cache.update(batch_results)
+            stats["llm_calls"] += len(batch)
+
+            pending_tbl_rows = []
+            for tbl_input in batch:
+                fqn = tbl_input["fqn"]
+                enr = table_cache.get(fqn, {})
+                if enr.get("_enrichment_failed"):
+                    continue
+                tm_obj = tm_by_fqn.get(fqn)
+                desc   = enr.get("description", "")
+                domain = enr.get("business_domain") or (tm_obj.business_domain if tm_obj else "") or ""
+                pending_tbl_rows.append({
+                    "fqn":                fqn,
+                    "description":        desc,
+                    "description_model":  model_arn,
+                    "synonyms":           enr.get("synonyms") or [],
+                    "grain":              enr.get("grain") or "",
+                    "business_domain":    domain,
+                    "table_type_override": enr.get("table_type_override") or "",
+                })
+
+            if pending_tbl_rows:
+                loader.batch_update_table_enrichment(pending_tbl_rows, _NOW())
+            checkpoint["tables"] = table_cache
+            _save_checkpoint(checkpoint)
+            done_count = min(batch_start + TABLE_BATCH, total_t)
+            log.info("ENRICH Phase 2: %d/%d tables written.", done_count, total_t)
+
+        # Build domain_table_descriptions from full cache for Phase 3
+        domain_table_descriptions: dict[str, list[tuple]] = defaultdict(list)
+        for tm in tables_to_enrich:
+            enr = table_cache.get(tm.fqn, {})
+            if enr.get("_enrichment_failed"):
+                continue
+            desc   = enr.get("description", "")
+            domain = enr.get("business_domain") or tm.business_domain
+            if domain and desc:
+                domain_table_descriptions[domain].append((tm.name, desc))
+
+        # Create Domain nodes from enriched business_domain values + link tables
+        enriched_domains = list(domain_table_descriptions.keys())
+        if enriched_domains:
+            loader.load_domains(enriched_domains)
+            loader._run("""
+                MATCH (t:Table) WHERE t.business_domain IS NOT NULL AND t.business_domain <> ''
+                MATCH (d:Domain {name: t.business_domain})
+                MERGE (t)-[:BELONGS_TO]->(d)
+            """)
+            log.info("Created %d Domain nodes from enrichment.", len(enriched_domains))
+
+        loader.initialize_table_defaults()
+
+        # ── Phase 3: Domain voting + community enrichment + domain enrichment ──
+        log.info("ENRICH Phase 3 — domain voting + community + domain enrichment …")
+
+        # Re-run domain voting now that business_domain is set on all tables
+        loader._run("""
+            MATCH (t:Table)
+            WHERE t.community_id IS NOT NULL
+              AND t.business_domain IS NOT NULL AND t.business_domain <> ''
+            WITH t.community_id AS cid, t.business_domain AS dom,
+                 sum(coalesce(t.pagerank_score, 0.001)) AS w
+            ORDER BY w DESC
+            WITH cid, collect({domain: dom, weight: w}) AS ranked
+            WITH cid, ranked,
+                 reduce(s = 0.0, r IN ranked | s + r.weight) AS total_w
+            MATCH (c:Community {id: cid})
+            SET c.dominant_domain            = ranked[0].domain,
+                c.domain_distribution        = [r IN ranked |
+                    r.domain + ':' + toString(round(r.weight * 1000) / 1000.0)],
+                c.dominant_domain_confidence = CASE WHEN total_w = 0 THEN 0.0
+                    ELSE round(ranked[0].weight / total_w * 100) / 100.0 END
+        """)
+        log.info("  Domain voting updated on Community nodes.")
+
+        # Community enrichment with actual table descriptions + join patterns
+        community_rows_enrich = loader._run("""
+            MATCH (c:Community)-[:CONTAINS_TABLE]->(t:Table)
+            OPTIONAL MATCH (t)-[:JOINS_TO]->(t2:Table) WHERE t2.community_id = c.id
+            WITH c,
+                 collect(DISTINCT {
+                     name: t.name,
+                     description: coalesce(t.description, ''),
+                     domain: coalesce(t.business_domain, '')
+                 })[0..15] AS tables,
+                 collect(DISTINCT t2.name)[0..8] AS frequent_joins
+            RETURN c.id AS id, c.dominant_domain AS dominant_domain,
+                   tables, frequent_joins
+        """)
+        comm_cache = checkpoint.get("communities", {})
+        community_llm_input = [
+            {
+                "id": r["id"],
+                "dominant_domain": r.get("dominant_domain"),
+                "tables": r.get("tables", []),
+                "frequent_joins": r.get("frequent_joins", []),
+            }
+            for r in community_rows_enrich
+        ]
+        comm_enriched = enrich_community(community_llm_input, bedrock_client, model_arn, comm_cache)
+        checkpoint["communities"] = comm_enriched
+        _save_checkpoint(checkpoint)
+        loader.load_community_descriptions(comm_enriched)
+        loader.initialize_community_defaults()
+        log.info("  Community enrichment done (%d communities).", len(comm_enriched))
+
+        # Domain descriptions
+        for domain_name, table_descs in domain_table_descriptions.items():
+            if not table_descs:
+                continue
+            domain_desc = enrich_domain(domain_name, table_descs, bedrock_client, model_arn)
+            if domain_desc:
+                loader.update_domain_description(domain_name, domain_desc)
+
+        loader.initialize_column_defaults()
+        loader.initialize_domain_defaults()
+
+        log.info("ENRICH done in %.1fs", time.time() - t)
+
+    # ── EMBED ──────────────────────────────────────────────────────────────
+
+    if "embed" in steps and not dry_run:
+        t = time.time()
+        log.info("── EMBED ────────────────────────────────────────────────")
+
+        import json as _json
+        EMBED_BATCH = 50
+        bedrock_client = _bedrock_client(bedrock_cfg)
+        model_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
+
+        # Column embeddings — include top_values_text for value-level semantic search
+        col_rows = loader._run("""
+            MATCH (c:Column) WHERE c.cohere_embedding IS NULL
+               OR c.enrichment_status = 'stale'
+            RETURN c.id AS id, c.name AS name,
+                   c.description AS description,
+                   c.synonyms AS synonyms,
+                   c.synonyms_text AS synonyms_text,
+                   c.top_values_text AS top_values_text
+        """)
+        if col_rows:
+            col_embs = embed_columns(col_rows, bedrock_client, model_arn)
+            now = _NOW()
+            emb_rows = [{"col_id": e["id"], "emb": e["embedding"], "model": model_arn}
+                        for e in col_embs]
+            for i in range(0, len(emb_rows), EMBED_BATCH):
+                loader._batch_write("""
+                    UNWIND $rows AS r
+                    MATCH (c:Column {id: r.col_id})
+                    SET c.cohere_embedding       = r.emb,
+                        c.embedding_model        = r.model,
+                        c.embedding_generated_at = $now,
+                        c.updated_at             = $now
+                """, emb_rows[i:i + EMBED_BATCH], now=now)
+                log.info("EMBED cols: %d/%d written.",
+                         min(i + EMBED_BATCH, len(emb_rows)), len(emb_rows))
+            stats["embed_calls"] += 1
+
+        # Table embeddings — include synonyms_text for synonym-level semantic search
+        tbl_rows = loader._run("""
+            MATCH (t:Table) WHERE t.cohere_embedding IS NULL
+               OR t.enrichment_status = 'stale'
+            OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:Column)
+            WITH t, c ORDER BY coalesce(c.ordinal_position, 9999)
+            WITH t, collect(c.name)[0..8] AS top_cols
+            RETURN t.fqn AS fqn, t.name AS name,
+                   t.description AS description,
+                   t.business_domain AS business_domain,
+                   t.synonyms_text AS synonyms_text,
+                   top_cols AS top_col_names
+        """)
+        if tbl_rows:
+            tbl_embs = embed_tables(tbl_rows, bedrock_client, model_arn)
+            now = _NOW()
+            emb_rows = [{"fqn": e["fqn"], "emb": e["embedding"], "model": model_arn}
+                        for e in tbl_embs]
+            for i in range(0, len(emb_rows), EMBED_BATCH):
+                loader._batch_write("""
+                    UNWIND $rows AS r
+                    MATCH (t:Table {fqn: r.fqn})
+                    SET t.cohere_embedding       = r.emb,
+                        t.embedding_model        = r.model,
+                        t.embedding_generated_at = $now,
+                        t.updated_at             = $now
+                """, emb_rows[i:i + EMBED_BATCH], now=now)
+                log.info("EMBED tables: %d/%d written.",
+                         min(i + EMBED_BATCH, len(emb_rows)), len(emb_rows))
+            stats["embed_calls"] += 1
+
+        # Intent embeddings
+        intent_rows = loader._run("""
+            MATCH (i:Intent) WHERE i.description IS NOT NULL AND i.description <> ''
+              AND (i.cohere_embedding IS NULL OR i.enrichment_status = 'stale')
+            RETURN i.name AS name, i.description AS description
+        """)
+        if intent_rows:
+            intent_embs = embed_intents(intent_rows, bedrock_client, model_arn)
+            now = _NOW()
+            emb_rows = [{"name": e["name"], "emb": e["embedding"], "model": model_arn}
+                        for e in intent_embs]
+            loader._batch_write("""
+                UNWIND $rows AS r
+                MATCH (i:Intent {name: r.name})
+                SET i.cohere_embedding       = r.emb,
+                    i.embedding_model        = r.model,
+                    i.embedding_generated_at = $now
+            """, emb_rows, now=now)
+            log.info("EMBED intents: %d written.", len(emb_rows))
+
+        # Community embeddings
+        comm_rows = loader._run("""
+            MATCH (c:Community) WHERE c.description IS NOT NULL AND c.description <> ''
+              AND (c.cohere_embedding IS NULL OR c.enrichment_status = 'stale')
+            RETURN c.id AS id, c.dominant_domain AS dominant_domain,
+                   c.description AS description, c.query_patterns AS query_patterns
+        """)
+        if comm_rows:
+            comm_embs = embed_communities(comm_rows, bedrock_client, model_arn)
+            now = _NOW()
+            emb_rows = [{"comm_id": e["id"], "emb": e["embedding"], "model": model_arn}
+                        for e in comm_embs]
+            loader._batch_write("""
+                UNWIND $rows AS r
+                MATCH (c:Community {id: r.comm_id})
+                SET c.cohere_embedding       = r.emb,
+                    c.embedding_model        = r.model,
+                    c.embedding_generated_at = $now
+            """, emb_rows, now=now)
+            log.info("EMBED communities: %d written.", len(emb_rows))
+
+        # Domain embeddings
+        domain_rows = loader._run("""
+            MATCH (d:Domain) WHERE d.description IS NOT NULL AND d.description <> ''
+              AND (d.cohere_embedding IS NULL OR d.enrichment_status = 'stale')
+            RETURN d.name AS name, d.description AS description
+        """)
+        if domain_rows:
+            domain_embs = embed_domains(domain_rows, bedrock_client, model_arn)
+            now = _NOW()
+            emb_rows = [{"name": e["name"], "emb": e["embedding"], "model": model_arn}
+                        for e in domain_embs]
+            loader._batch_write("""
+                UNWIND $rows AS r
+                MATCH (d:Domain {name: r.name})
+                SET d.cohere_embedding       = r.emb,
+                    d.embedding_model        = r.model,
+                    d.embedding_generated_at = $now
+            """, emb_rows, now=now)
+            log.info("EMBED domains: %d written.", len(emb_rows))
+
+        # BusinessTerm embeddings (produced by GLOSSARY step)
+        bt_rows = loader._run("""
+            MATCH (b:BusinessTerm) WHERE b.cohere_embedding IS NULL
+            RETURN b.term AS term, b.description AS description
+        """)
+        if bt_rows:
+            now = _NOW()
+            texts = [r["term"] + " " + (r.get("description") or "") for r in bt_rows]
+            for i in range(0, len(bt_rows), 96):
+                chunk_texts = texts[i:i + 96]
+                chunk_rows  = bt_rows[i:i + 96]
+                try:
+                    resp = bedrock_client.invoke_model(
+                        modelId=model_arn,
+                        body=_json.dumps({"texts": chunk_texts, "input_type": "search_document"}),
+                        contentType="application/json", accept="application/json",
+                    )
+                    batch_embs = _json.loads(resp["body"].read())["embeddings"]
+                    emb_rows = [{"term": r["term"], "emb": e, "model": model_arn}
+                                for r, e in zip(chunk_rows, batch_embs)]
+                    loader._batch_write("""
+                        UNWIND $rows AS r
+                        MATCH (b:BusinessTerm {term: r.term})
+                        SET b.cohere_embedding       = r.emb,
+                            b.embedding_model        = r.model,
+                            b.embedding_generated_at = $now
+                    """, emb_rows, now=now)
+                    log.info("EMBED business terms: %d/%d written.",
+                             min(i + 96, len(bt_rows)), len(bt_rows))
+                except Exception as e:
+                    log.warning("BusinessTerm embed batch failed: %s", e)
+
+        # QueryTemplate embeddings (produced by TEMPLATES step)
+        qt_rows = loader._run("""
+            MATCH (q:QueryTemplate) WHERE q.cohere_embedding IS NULL
+            RETURN q.id AS id, q.question_text AS question_text
+        """)
+        if qt_rows:
+            now = _NOW()
+            texts = [r["question_text"] for r in qt_rows]
+            for i in range(0, len(qt_rows), 96):
+                chunk_texts = texts[i:i + 96]
+                chunk_rows  = qt_rows[i:i + 96]
+                try:
+                    resp = bedrock_client.invoke_model(
+                        modelId=model_arn,
+                        body=_json.dumps({"texts": chunk_texts, "input_type": "search_query"}),
+                        contentType="application/json", accept="application/json",
+                    )
+                    batch_embs = _json.loads(resp["body"].read())["embeddings"]
+                    emb_rows = [{"qt_id": r["id"], "emb": e, "model": model_arn}
+                                for r, e in zip(chunk_rows, batch_embs)]
+                    loader._batch_write("""
+                        UNWIND $rows AS r
+                        MATCH (q:QueryTemplate {id: r.qt_id})
+                        SET q.cohere_embedding       = r.emb,
+                            q.embedding_model        = r.model,
+                            q.embedding_generated_at = $now
+                    """, emb_rows, now=now)
+                    log.info("EMBED query templates: %d/%d written.",
+                             min(i + 96, len(qt_rows)), len(qt_rows))
+                except Exception as e:
+                    log.warning("QueryTemplate embed batch failed: %s", e)
+
+        # KNN on column embeddings → SEMANTICALLY_SIMILAR edges
+        gds.run_knn(cutoff=0.88)
+
+        log.info("EMBED done in %.1fs", time.time() - t)
+
+    # ── PATHS ──────────────────────────────────────────────────────────────
+
+    if "paths" in steps and not dry_run:
+        t = time.time()
+        log.info("── PATHS ────────────────────────────────────────────────")
+
+        # Run typical_join_role pass before cross-community path scoping
+        loader.run_post_enrich_passes()
+
+        gds.project_join_graph()
+        gds.build_bridges_to_edges()
+
+        path_builder = JoinPathBuilder(
+            neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password, neo4j_cfg.db
+        )
+        path_builder.run_dijkstra_all_pairs(max_hops=6)
+        path_builder.run_yens_all_pairs(k=3, max_hops=6)
+        path_builder.run_cross_community_paths(max_hops=6)
+        path_builder.run_quality_scores()
+        path_builder.close()
+        gds._drop_graph("join_graph")
+        loader.initialize_joinpath_defaults()
+
+        log.info("PATHS done in %.1fs", time.time() - t)
+
+    # ── ROLLUP ─────────────────────────────────────────────────────────────
+
+    if "rollup" in steps and not dry_run:
+        t = time.time()
+        log.info("── ROLLUP ───────────────────────────────────────────────")
+
+        bedrock_client = _bedrock_client(bedrock_cfg)
+        model_arn = bedrock_cfg.aws_bedrock_sonnet_arn
+
+        table_desc_map = {
+            r["fqn"]: r.get("description", "")
+            for r in loader._run("MATCH (t:Table) RETURN t.fqn AS fqn, t.description AS description")
+        }
+
+        candidates = detect_rollup_candidates_from_graph(loader)
+        validated = validate_rollup_with_llm(candidates, table_desc_map, bedrock_client, model_arn)
+
+        now = _NOW()
+        for v in validated:
+            loader._run("""
+                MATCH (rollup:Table {fqn: $rfqn})
+                MATCH (base:Table {fqn: $bfqn})
+                MERGE (rollup)-[r:ROLLUP_OF]->(base)
+                SET r.window_type  = $window_type,
+                    r.window_days  = $window_days,
+                    r.confidence   = $confidence,
+                    r.computed_at  = $now
+                SET rollup.is_rollup          = true,
+                    rollup.rollup_base_fqn    = $bfqn,
+                    rollup.rollup_window_days = $window_days
+            """,
+            rfqn=v["rollup_fqn"], bfqn=v["base_fqn"],
+            window_type=v.get("window_type"), window_days=v.get("window_days"),
+            confidence=v.get("confidence", 0.9), now=now)
+
+        loader.run_is_subquery_anchor()
+        log.info("ROLLUP: %d ROLLUP_OF edges written.", len(validated))
+        log.info("ROLLUP done in %.1fs", time.time() - t)
+
+    # ── INTENTS ────────────────────────────────────────────────────────────
+
+    if "intents" in steps and not dry_run:
+        t = time.time()
+        log.info("── INTENTS ──────────────────────────────────────────────")
+
+        bedrock_client = _bedrock_client(bedrock_cfg)
+        model_arn = bedrock_cfg.aws_bedrock_sonnet_arn
+
+        intent_json_path = Path(__file__).resolve().parents[1] / "output" / "intent_classes.json"
+        intent_classes = load_intent_classes(intent_json_path)
+
+        # Build ontology_class → [fqn] index from Neo4j
+        class_rows = loader._run("""
+            MATCH (t:Table)
+            WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
+            RETURN t.fqn AS fqn, t.ontology_class AS ontology_class
+        """)
+        table_fqn_by_class: dict[str, list[str]] = defaultdict(list)
+        for r in class_rows:
+            raw_class = r["ontology_class"]
+            # ontology_class stored as 'lpp:AcquirerSlaMetric' — extract camelCase part
+            camel = raw_class.split(":")[-1] if ":" in raw_class else raw_class
+            table_fqn_by_class[camel].append(r["fqn"])
+
+        # Query enriched table context for each ontology class
+        tbl_ctx_rows = loader._run("""
+            MATCH (t:Table) WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
+            RETURN t.name AS name, split(t.ontology_class, ':')[-1] AS cls,
+                   coalesce(t.description, '') AS description,
+                   coalesce(t.business_domain, '') AS domain,
+                   coalesce(t.natural_measures, []) AS measures
+        """)
+        tbl_ctx_by_cls: dict[str, list[dict]] = defaultdict(list)
+        for r in tbl_ctx_rows:
+            tbl_ctx_by_cls[r["cls"]].append({
+                "name": r["name"], "description": r["description"],
+                "domain": r["domain"], "measures": r.get("measures") or [],
+            })
+
+        # Build intent_input with table-level context (no column details — intent is table-level)
+        intent_input = []
+        for name, classes in intent_classes.items():
+            tables_for_intent: list[dict] = []
+            seen_names: set[str] = set()
+            for cls in classes:
+                for tbl in tbl_ctx_by_cls.get(cls, []):
+                    if tbl["name"] not in seen_names:
+                        seen_names.add(tbl["name"])
+                        tables_for_intent.append(tbl)
+            intent_input.append({
+                "intent": name,
+                "classes": classes,
+                "class_count": len(classes),
+                "tables": tables_for_intent[:8],
+            })
+
+        intent_descriptions = enrich_intents(intent_input, bedrock_client, model_arn)
+
+        # Build and load Intent nodes
+        intent_nodes = build_intent_node_dicts(intent_classes, intent_descriptions, model_arn)
+        loader.load_intent_nodes(intent_nodes)
+
+        # Build RELEVANT_TO edges and load them
+        relevant_edges = compute_relevant_to_edges(intent_classes, table_fqn_by_class)
+        loader.load_relevant_to_edges(relevant_edges)
+
+        # Derive intent_tags on Tables
+        loader.set_intent_tags_on_tables()
+
+        loader._run("""
+            MATCH (i:Intent) WHERE i.description IS NOT NULL AND i.description <> ''
+            SET i.enrichment_status = 'enriched'
+        """)
+        loader.initialize_intent_defaults()
+        log.info("INTENTS: %d nodes, %d edges.", len(intent_nodes), len(relevant_edges))
+        log.info("INTENTS done in %.1fs", time.time() - t)
+
+    # ── GLOSSARY ───────────────────────────────────────────────────────────
+
+    if "glossary" in steps and not dry_run:
+        t = time.time()
+        log.info("── GLOSSARY ─────────────────────────────────────────────")
+
+        bedrock_client = _bedrock_client(bedrock_cfg)
+        sonnet_arn = bedrock_cfg.aws_bedrock_sonnet_arn
+        cohere_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
+
+        # Build context: enriched column synonyms, semantic types, value aliases + table descriptions
+        context_rows = loader._run("""
+            MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+            WHERE c.synonyms <> [] OR c.value_aliases <> []
+            RETURN t.name AS table_name, t.description AS table_desc,
+                   c.name AS col_name, c.synonyms AS synonyms,
+                   c.semantic_type AS semantic_type,
+                   c.value_aliases AS value_aliases,
+                   c.value_vocabulary AS value_vocabulary,
+                   c.top_values_text AS top_values_text
+            LIMIT 500
+        """)
+        context_lines = []
+        for r in context_rows[:300]:
+            syns = ", ".join(r.get("synonyms") or [])
+            aliases = ", ".join(r.get("value_aliases") or [])
+            vocab = ", ".join(r.get("value_vocabulary") or [])
+            sem_type = r.get("semantic_type") or ""
+            line = f"{r['table_name']}.{r['col_name']}"
+            if sem_type:
+                line += f" [{sem_type}]"
+            line += f": synonyms=[{syns}]"
+            if aliases:
+                line += f" aliases=[{aliases}]"
+            if vocab:
+                line += f" values=[{vocab}]"
+            context_lines.append(line)
+
+        context_text = "\n".join(context_lines[:300])
+
+        glossary_checkpoint = _load_checkpoint()
+        cached_terms = glossary_checkpoint.get("glossary_terms")
+        if cached_terms:
+            log.info("GLOSSARY: %d terms from checkpoint — skipping LLM call.", len(cached_terms))
+            terms = cached_terms
+        else:
+            terms = generate_business_glossary(context_text, bedrock_client, sonnet_arn)
+            if terms:
+                glossary_checkpoint["glossary_terms"] = terms
+                _save_checkpoint(glossary_checkpoint)
+        loader.load_business_terms(terms)
+
+        # Embed BusinessTerms in batched Cohere calls
+        import json as _json
+        if terms:
+            now = _NOW()
+            texts = [t["term"] + " " + (t.get("description") or "") for t in terms]
+            for i in range(0, len(terms), 96):
+                chunk_terms = terms[i:i + 96]
+                chunk_texts = texts[i:i + 96]
+                try:
+                    resp = bedrock_client.invoke_model(
+                        modelId=cohere_arn,
+                        body=_json.dumps({"texts": chunk_texts, "input_type": "search_document"}),
+                        contentType="application/json",
+                        accept="application/json",
+                    )
+                    batch_embs = _json.loads(resp["body"].read())["embeddings"]
+                    emb_rows = [{"term": t["term"], "emb": e, "model": cohere_arn}
+                                for t, e in zip(chunk_terms, batch_embs)]
+                    loader._batch_write("""
+                        UNWIND $rows AS r
+                        MATCH (b:BusinessTerm {term: r.term})
+                        SET b.cohere_embedding       = r.emb,
+                            b.embedding_model        = r.model,
+                            b.embedding_generated_at = $now
+                    """, emb_rows, now=now)
+                    log.info("GLOSSARY embed: %d/%d terms written.",
+                             min(i + 96, len(terms)), len(terms))
+                except Exception as e:
+                    log.warning("BusinessTerm embed batch failed: %s", e)
+
+        loader.initialize_businessterm_defaults()
+        log.info("GLOSSARY: %d BusinessTerm nodes written.", len(terms))
+        log.info("GLOSSARY done in %.1fs", time.time() - t)
+
+    # ── TEMPLATES ──────────────────────────────────────────────────────────
+
+    if "templates" in steps and not dry_run:
+        t = time.time()
+        log.info("── TEMPLATES ────────────────────────────────────────────")
+
+        bedrock_client = _bedrock_client(bedrock_cfg)
+        sonnet_arn = bedrock_cfg.aws_bedrock_sonnet_arn
+        cohere_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
+
+        questions_path = Path(__file__).resolve().parents[1] / "output" / "Questions.txt"
+        questions_raw = questions_path.read_text(encoding="utf-8").splitlines()
+        questions = [
+            {"source_line": i, "question_text": line.strip()}
+            for i, line in enumerate(questions_raw)
+            if line.strip()
+        ]
+
+        intent_json_path = Path(__file__).resolve().parents[1] / "output" / "intent_classes.json"
+        intent_classes = load_intent_classes(intent_json_path)
+        intents_list = list(intent_classes.keys())
+
+        # Collect ontology classes + enriched descriptions from Neo4j
+        class_rows_qt = loader._run("""
+            MATCH (t:Table)
+            WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
+            RETURN DISTINCT split(t.ontology_class, ':')[-1] AS cls,
+                   t.description AS description,
+                   t.business_domain AS domain,
+                   t.natural_measures AS measures
+        """)
+        ontology_classes = [r["cls"] for r in class_rows_qt]
+        class_context_lines = []
+        for r in class_rows_qt:
+            line = f"{r['cls']}: {r.get('description') or ''}"
+            if r.get("domain"):
+                line += f" (domain: {r['domain']})"
+            if r.get("measures"):
+                line += f" measures: {', '.join((r['measures'] or [])[:3])}"
+            class_context_lines.append(line)
+        class_context = "\n".join(class_context_lines[:100])
+
+        checkpoint = _load_checkpoint()
+        qt_cache = checkpoint.get("query_templates", {})
+
+        enriched_qt = enrich_query_templates(
+            questions=questions,
+            intents=intents_list,
+            ontology_classes=ontology_classes,
+            client=bedrock_client,
+            model_arn=sonnet_arn,
+            cache=qt_cache,
+            class_context=class_context,
+        )
+        checkpoint["query_templates"] = enriched_qt
+        _save_checkpoint(checkpoint)
+
+        # Build ontology_class → fqn index for anchor_table_fqns resolution
+        class_fqn_rows = loader._run("""
+            MATCH (t:Table) WHERE t.ontology_class IS NOT NULL
+            RETURN t.fqn AS fqn, split(t.ontology_class, ':')[-1] AS cls
+        """)
+        fqn_by_class_qt: dict[str, list[str]] = defaultdict(list)
+        for r in class_fqn_rows:
+            fqn_by_class_qt[r["cls"]].append(r["fqn"])
+
+        templates_to_load: list[dict] = []
+        template_intent_edges: list[dict] = []
+        template_table_edges: list[dict] = []
+
+        for sl_str, enr in enriched_qt.items():
+            sl = int(sl_str)
+            if sl >= len(questions):
+                continue
+            q_text = questions[sl]["question_text"]
+            qt_id = f"qt_{sl:03d}"
+
+            intent_scores: dict = enr.get("intent_scores") or {"general_analytics": 0.5}
+            primary_intent = max(intent_scores, key=intent_scores.get)
+
+            anchor_classes = enr.get("anchor_ontology_classes") or []
+            anchor_fqns = resolve_anchor_table_fqns(anchor_classes, fqn_by_class_qt)
+
+            templates_to_load.append({
+                "id":                      qt_id,
+                "question_text":           q_text,
+                "description":             enr.get("description", q_text),
+                "primary_intent":          primary_intent,
+                "intent_scores":           [{"name": k, "score": float(v)} for k, v in intent_scores.items()],
+                "complexity":              enr.get("complexity", "complex"),
+                "anchor_ontology_classes": anchor_classes,
+                "anchor_table_fqns":       anchor_fqns,
+                "cte_steps":               enr.get("cte_steps") or [],
+                "required_aggregations":   enr.get("required_aggregations") or [],
+                "required_filters":        enr.get("required_filters") or [],
+                "time_windowed":           bool(enr.get("time_windowed", False)),
+                "source_line":             sl,
+            })
+
+            for intent_name, conf in intent_scores.items():
+                template_intent_edges.append({
+                    "qt_id": qt_id, "intent_name": intent_name, "confidence": float(conf)
+                })
+            for fqn in anchor_fqns:
+                template_table_edges.append({"qt_id": qt_id, "table_fqn": fqn})
+
+        loader.load_query_templates(templates_to_load)
+        loader.link_query_templates_to_intents(template_intent_edges)
+        loader.link_query_templates_to_tables(template_table_edges)
+
+        # Embed QueryTemplate question texts in batched Cohere calls
+        import json as _json
+        if templates_to_load:
+            now = _NOW()
+            for i in range(0, len(templates_to_load), 96):
+                chunk = templates_to_load[i:i + 96]
+                texts = [qt["question_text"] for qt in chunk]
+                try:
+                    resp = bedrock_client.invoke_model(
+                        modelId=cohere_arn,
+                        body=_json.dumps({"texts": texts, "input_type": "search_query"}),
+                        contentType="application/json",
+                        accept="application/json",
+                    )
+                    batch_embs = _json.loads(resp["body"].read())["embeddings"]
+                    emb_rows = [{"qt_id": qt["id"], "emb": e, "model": cohere_arn}
+                                for qt, e in zip(chunk, batch_embs)]
+                    loader._batch_write("""
+                        UNWIND $rows AS r
+                        MATCH (q:QueryTemplate {id: r.qt_id})
+                        SET q.cohere_embedding       = r.emb,
+                            q.embedding_model        = r.model,
+                            q.embedding_generated_at = $now
+                    """, emb_rows, now=now)
+                    log.info("TEMPLATES embed: %d/%d written.",
+                             min(i + 96, len(templates_to_load)), len(templates_to_load))
+                except Exception as e:
+                    log.warning("QueryTemplate embed batch failed: %s", e)
+
+        loader.initialize_querytemplate_defaults()
+        log.info("TEMPLATES: %d QueryTemplate nodes written.", len(templates_to_load))
+        log.info("TEMPLATES done in %.1fs", time.time() - t)
+
+    # ── Integrity check + PipelineRun ──────────────────────────────────────
+
+    if not dry_run and loader:
+        check = loader.integrity_check()
+        log.info("Integrity: %s", check)
+
+        run_meta.update({
+            **stats,
+            "completed_at": _NOW(),
+            "duration_seconds": round(time.time() - _t0, 1),
+            **{f"integrity_{k}": v for k, v in check.items()},
+        })
+        loader.save_pipeline_run(run_meta)
+
+    if loader:
+        loader.close()
+    if gds:
+        gds.close()
+
+    log.info("Pipeline complete in %.1fs.", time.time() - _t0)
+    return run_meta
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Neo4j Semantic Layer Pipeline")
+    parser.add_argument(
+        "--steps",
+        default="all",
+        help="Comma-separated steps or 'all'. Options: " + ", ".join(_ALL_STEPS),
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Parse and infer without writing to Neo4j")
+    parser.add_argument("--reset-checkpoint", action="store_true", help="Delete enrichment checkpoint and start fresh")
+    args = parser.parse_args()
+
+    if args.steps.strip().lower() == "all":
+        steps = _ALL_STEPS
+    else:
+        steps = [s.strip() for s in args.steps.split(",")]
+        invalid = [s for s in steps if s not in _ALL_STEPS]
+        if invalid:
+            print(f"Unknown steps: {invalid}. Valid: {_ALL_STEPS}", file=sys.stderr)
+            sys.exit(1)
+
+    run(steps=steps, dry_run=args.dry_run, reset_checkpoint=args.reset_checkpoint)
+
+
+if __name__ == "__main__":
+    main()

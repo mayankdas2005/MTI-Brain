@@ -1,0 +1,127 @@
+What is our total cash balance across all bank accounts as of yesterday?
+Show me the closing balance of our JPMorgan operating account for the last 7 days.
+List all wire transfers over 1 mil processed today.
+Show me all bank accounts that have a negative balance this week.
+What were our total ACH receipts yesterday?
+List all bank accounts grouped by currency.
+How many bank accounts do we have open in Canada?
+Show me the daily cash position report for last Friday.
+What is the current FX rate for USD to CAD in our system?
+Compare our actual cash inflows and forecasts for the past 30 days by entity and highlight variances greater than 10%.
+Show me the idle cash balances by region over the last 90 days and identify accounts that have been consistently above 5 mil USD. Also show a trend
+Match yesterday's bank balances against our ERP ledger balances and list all discrepancies above $10K
+Calculate the daily avg. float for our top 10 collection accounts over the last quarter.
+Show me all intercompany funding transactions over $500K in the last month along with source and destination.
+Generate a cash concentration report showing sweep activity, target balances, and unswept residuals across all subsidiary accounts.
+List all FX exposures by currency pair for our international subsidiaries and show the net position vs hedged amount.
+What is our weighted average yield on short-term investments this month vs last month. Split by instrument type
+Show me all bank fees charged in the last 90 days. Group by bank and service type, and flag fees that exceed our negotiated rate cards.
+Identify all bank accounts with no transaction activity in the past 60 days and provide their balances and account purpose.
+Build a 4 week and 3 month cash forecast using historical inflows and outflows. Factor in seasonality from the same period last year, and highlight any week where projected liquidity falls below our $200M minimum threshold.
+Analyze the variance between our forecasted and actual operating cash flow over the past 6 months. Identify the reasons for the variance from PoV of AR collections, AP disbursements, payroll, and capex. Identify the top 3 drivers of forecast inaccuracy.
+Run a stress test on our liquidity position assuming a 20% drop in daily receipts for 30 days and show which entities would breach minimum operating cash thresholds first.
+Detect vendors with anomalous payment patterns in the last 30 days using historical baselines. Flag any disbursements that deviate more than 3 standard deviations from the vendor's typical payment size.
+Calculate our true cost of cash by entity, factoring in idle balances, borrowing costs on credit facilities, and opportunity cost vs our investment portfolio yield.
+Build a counterparty exposure dashboard showing total deposits, investments, and derivative MTM by bank, and flag any counterparty exceeding 25% of total cash plus investments.
+Project our Day Sales Outstanding and Day Payables Outstanding for the next quarter based on current trends and show the impact on working capital and free cash flow.
+Analyze our interest income over the trailing 12 months by investment instrument. Calculate yield to maturity vs benchmark rates, and recommend reallocation opportunities for underperforming positions.
+Map all cash movements from collection accounts through concentration accounts to disbursement accounts for last month, and identify inefficiencies, redundant hops, or trapped cash.
+Build a hedge effectiveness analysis for our FX forward portfolio, comparing realized vs forecasted exposure coverage, and quantify under- or over-hedged positions by currency and tenor.
+What is our current debt outstanding by facility?
+Show me upcoming debt maturities in the next 90 days.
+List all open letters of credit and their expiration dates.
+What is our available borrowing capacity under the revolving credit facility?
+Show me this week's net cash position by region.
+What is the total notional of our outstanding FX hedges?
+List all investment positions maturing in the next 30 days.
+Show me current  compliance status across all credit facilities.
+What is our current commercial paper outstanding and weighted average rate?
+List all bank account signatories that need annual recertification this quarter.
+Show me our investment portfolio mix by instrument type, credit rating, and maturity bucket, and flag any positions outside of our investment policy guidelines.
+Compare our actual borrowing costs vs benchmark rates across all facilities and calculate the all-in cost of debt for the quarter.
+Generate a liquidity coverage report showing total available liquidity, committed facilities, uncommitted lines, and cash on hand by currency.
+Show working capital trends over the last 6 quarters including DSO, DPO, DIO, and benchmark against our internal targets.
+Analyze bank fee by service category over the last 12 months and identify the top 5 cost-saving opportunities through service consolidation or renegotiation.
+Show me all derivative positions by counterparty with current MTM, collateral posted, and remaining capacity.
+Compare our forecasted vs actual capital expenditure cash outflows by business unit for the quarter and identify entities trending over budget.
+Compare our forecasted vs actual capital expenditure cash outflows by business unit for the quarter and identify departments trending over budget.
+Build a counterparty credit risk dashboard aggregating exposure across deposits, investments, derivatives, and trade payables, and recommend rebalancing actions to stay within board-approved concentration limits.
+Model the working capital impact of changing our standard supplier payment terms from Net 30 to Net 45 across our top 100 vendors and estimate the cash flow benefit net of any pricing concessions or supply chain finance program changes.
+Conduct a fraud risk assessment by analyzing payment patterns across all disbursement channels for the last 90 days, identifying any single-approver high-value payments, or payments to newly added vendors.
+What is our consolidated cash and short-term investment balance globally?
+What is the weighted average cost of debt for our portfolio?
+Show me total liquidity (cash & undrawn committed facilities) by region.
+What is our current credit rating from each agency?
+List all bank relationships with their share of wallet over the last 12 months.
+Show me the year-over-year change in our net debt position.
+What is our current FX hedge ratio for forecasted EUR exposures?
+Provide a treasury dashboard showing liquidity, debt profile, investment performance, FX and interest rate hedging, and counterparty exposure.
+Analyze our capital structure vs peer companies (Walmart, Target, Home Depot, Kroger) on key metrics: leverage, liquidity, cost of capital, and shareholder returns.
+Show me the trend in working capital efficiency over 8 quarters and decompose changes into AR, inventory, and AP drivers by business segment.
+Analyze the impact of recent rate moves on our pension funded status, OCI, and projected contribution requirements over the next 3 years.
+Compare our actual capital allocation (capex, dividends, buybacks, M&A, debt paydown) vs our stated capital allocation framework over the last 3 years.
+Generate an FX risk report showing translation exposure by currency, transaction exposure by entity, hedge coverage, and YTD FX impact on earnings.
+Conduct an enterprise-wide liquidity stress test modeling a severe scenario (recession, supply chain disruption, oil price increase, 30% same-store sales decline) and quantify minimum liquidity needs, facility utilization, and contingent funding actions over 12 months.
+Develop a multi-year FX hedging strategy optimization comparing layered, static, and dynamic hedging approaches across our top 8 currency exposures, factoring in cost, P&L volatility, and budget rate protection.
+Analyze the optimal funding strategy for $3B in upcoming maturities over 18 months across bonds, term loans, commercial paper, and revolver draws, factoring in market windows, investor demand, covenant flexibility, and rating impact.
+What is our total liquidity available today?
+What is our current credit rating and outlook from each agency?
+How much have we returned to shareholders YTD via dividends and buybacks?
+Show me global cash by major region.
+What is our current debt maturity profile in summary?
+Give me a one-page CFO briefing on treasury health: liquidity, debt, FX, interest rate exposure, and key risks.
+Provide a counterparty risk summary showing our largest exposures across all banks and the actions we are taking to manage concentration risk.
+Show me total card payment volume processed across all our acquirers yesterday.
+What was the total settlement amount received from Chase Paymentech into our concentration account today?
+List all payment processors we used last week with total volume by processor.
+Show me the breakdown of yesterday's card sales by network. Visa, Mastercard, Amex, Discover, and Costco-branded.
+What is the total ACH debit volume initiated for vendor payments this week?
+List all payment file rejections from our banks in the last 24 hours with reason codes.
+What is the total amount of pending settlements in our merchant acquirer holding accounts as of today?
+Show me total chargebacks initiated against our card receivables last week.
+Reconcile yesterday's gross card sales reported by our point-of-sale system against the net settlements deposited by each acquirer, and break out the variance by interchange, assessments, processor fees, and chargebacks.
+Pull all ACH returns from the past 60 days, categorize by return reason code, and show me the dollar impact and trend by originating business unit and trend
+Generate a daily payment hub throughput report for the last 30 days showing volume and value by payment type for wire, ACH, RTP, FedNow, check, virtual card along with success, rejection, and repair rates.
+Show me total payment processing fees paid to each acquirer for the past quarter as percentage of processed amount, and slit by interchange, network assessments, and processor margin.
+List all duplicate payment exceptions flagged by our payment hub in the last 90 days, and show resolution status, dollar amount, and recovery rate.
+Show me chargeback ratios by warehouse, acquirer, and reason code for the last 6 months and flag any combination that exceeds the 1% Visa monitoring threshold.
+Analyze ACH and wire rejections over the past 12 months and classify them into bank validation issues, file format errors, beneficiary data problems, and OFAC holds, and recommend the top 5 process fixes ranked by dollar impact.
+Analyze chargeback patterns over the past 24 months using transaction-level data to identify clusters of friendly fraud, true fraud, and merchant error, and recommend representment strategies with expected win rates by reason code.
+Build a payment hub straight-through-processing scorecard that shows STP rate by payment type, country, and originating system over the past 12 months. Identify the top 10 exception drivers, and quantify the cost of each repair touch.
+What is our total payment volume processed this month across all channels?
+Show me total payment processing cost year-to-date versus budget.
+List our top 10 vendors by outbound payment volume this quarter.
+What is our current average days-to-pay across all suppliers?
+Show me total card receivables in transit between authorization and bank deposit as of today.
+Display the breakdown of outbound payments by method ACH, wire, RTP, virtual card, check for the current month.
+What was total interchange paid to card networks last quarter?
+Show me total payment fraud losses booked this year-to-date by channel.
+Compare our blended cost-per-transaction across acquirers for the past 4 quarters, normalized for ticket size and card mix, and explain variances driven by interchange, network fees, processor margin, and incentive tier achievements.
+Pull our acquirer scorecard for the last 12 months covering authorization rate, settlement timeliness, fee competitiveness, dispute win rate, technical uptime, and innovation roadmap progress.
+Generate an exceptions and repairs report for our payment hub for the past quarter showing volume by exception type, average resolution time, manpower efforts to fix.
+Compare on-time payment rates to suppliers across business units for the past 6 months, broken down by payment method, and highlight units operating outside our 95% on-time policy.
+Pull all payment-related chargebacks, refunds, and merchandise returns for the past 4 quarters and reconcile to the corresponding card settlement activity to validate net receivable position.
+Show me the breakdown of cross-border payment volume by corridor, currency, and method for the past 12 months, with end-to-end cost including FX spread, lifting fees, and correspondent charges.
+Pull all payment-related operational losses, fraud losses, and write-offs over the past 24 months, categorize by root cause, and show the trend versus our internal loss tolerance.
+What is our total annual payments processing spend across all acquirers and processors?
+Show me our top 5 payment partners ranked by volume and by spend.
+What is our blended effective interchange rate year-to-date?
+Display our payment processing cost as a percentage of card-payment revenue for the trailing 12 months.
+Show me total fraud loss as a percentage of payment volume for the current year.
+What is our straight-through-processing rate across the global payment hub?
+Show me total payment volume by region and by payment method for the trailing 12 months.
+Display our acquirer concentration and share of total card volume by top 3 acquirers.
+What is our average days-payable-outstanding versus the industry benchmark?
+Show me an 8-quarter trend of payment KPIs like cost as percent of volume, authorization rate, STP rate, fraud loss basis points, chargeback ratio, and supplier on-time rate with policy thresholds overlaid.
+Pull all material payment incidents over the past 12 months  outages, settlement delays, fraud events, sanctions hits, large reconciliation breaks with root cause, financial impact, and remediation status.
+Show me how our payments cost evolved over the past 5 years versus card mix shift, ticket-size changes, channel mix shift (in-warehouse vs e-commerce vs membership), and contract renewals.
+Generate a quarterly payments scorecard for the executive committee covering volume, cost, fraud, resilience, supplier experience, and member experience, with traffic-light status against targets.
+What is our total cost of payments as a percentage of revenue?
+How much did we spend on payment processing last year?
+Show me our top 3 payment partners and the percentage of volume each handles.
+What was our total interchange spend last year?
+What is our payment-hub straight-through-processing rate?
+What is our share of e-commerce versus in-warehouse payment volume?
+How much member-facing fraud did we absorb last year?
+Show me the trajectory of our payments cost as a percentage of revenue over the last decade, decomposed into mix, rate, and operating-leverage effects.
+Summarize all material payment incidents and regulatory matters over the past 24 months in a format suitable for the audit committee.

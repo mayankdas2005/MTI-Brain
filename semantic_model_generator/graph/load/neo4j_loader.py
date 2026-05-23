@@ -1,0 +1,1090 @@
+"""
+Neo4j loader — apply schema (constraints/indexes) and MERGE all nodes + edges.
+
+All writes use MERGE + SET so the pipeline is idempotent.
+Batched transactions of 500 rows; retried up to 3× on transient errors.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+from neo4j import GraphDatabase
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from ..models import ColumnMeta, FKEdge, TableMeta
+
+log = logging.getLogger(__name__)
+
+_BATCH = 500
+_NOW = lambda: datetime.now(timezone.utc).isoformat()
+
+
+class Neo4jLoader:
+    def __init__(self, uri: str, user: str, password: str, db: str):
+        self._driver = GraphDatabase.driver(uri, auth=(user, password))
+        self._db = db
+
+    def close(self):
+        self._driver.close()
+
+    # ── Internal helpers ───────────────────────────────────────────────────
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    def _run(self, cypher: str, **params) -> list[dict]:
+        with self._driver.session(database=self._db) as s:
+            return s.run(cypher, **params).data()
+
+    def _batch_write(self, cypher: str, rows: list[dict], **kwargs) -> int:
+        written = 0
+        for i in range(0, len(rows), _BATCH):
+            chunk = rows[i : i + _BATCH]
+            self._run(cypher, rows=chunk, **kwargs)
+            written += len(chunk)
+        return written
+
+    # ── Schema setup ───────────────────────────────────────────────────────
+
+    def apply_schema(self):
+        log.info("Applying Neo4j constraints and indexes …")
+        ddl = [
+            # Uniqueness constraints
+            "CREATE CONSTRAINT table_fqn_unique      IF NOT EXISTS FOR (t:Table)        REQUIRE t.fqn IS UNIQUE",
+            "CREATE CONSTRAINT column_id_unique      IF NOT EXISTS FOR (c:Column)       REQUIRE c.id IS UNIQUE",
+            "CREATE CONSTRAINT domain_name_unique    IF NOT EXISTS FOR (d:Domain)       REQUIRE d.name IS UNIQUE",
+            "CREATE CONSTRAINT community_id_unique   IF NOT EXISTS FOR (c:Community)    REQUIRE c.id IS UNIQUE",
+            "CREATE CONSTRAINT joinpath_id_unique    IF NOT EXISTS FOR (j:JoinPath)     REQUIRE j.id IS UNIQUE",
+            "CREATE CONSTRAINT pipeline_run_unique   IF NOT EXISTS FOR (r:PipelineRun)  REQUIRE r.run_id IS UNIQUE",
+            "CREATE CONSTRAINT intent_name_unique    IF NOT EXISTS FOR (i:Intent)       REQUIRE i.name IS UNIQUE",
+            "CREATE CONSTRAINT businessterm_unique   IF NOT EXISTS FOR (b:BusinessTerm) REQUIRE b.term IS UNIQUE",
+            "CREATE CONSTRAINT querytemplate_id      IF NOT EXISTS FOR (q:QueryTemplate) REQUIRE q.id IS UNIQUE",
+            # RANGE indexes — Table
+            "CREATE INDEX table_domain          IF NOT EXISTS FOR (t:Table)  ON (t.business_domain)",
+            "CREATE INDEX table_type            IF NOT EXISTS FOR (t:Table)  ON (t.table_type)",
+            "CREATE INDEX table_community       IF NOT EXISTS FOR (t:Table)  ON (t.community_id)",
+            "CREATE INDEX table_wcc             IF NOT EXISTS FOR (t:Table)  ON (t.wcc_component_id)",
+            "CREATE INDEX table_isolated        IF NOT EXISTS FOR (t:Table)  ON (t.is_isolated)",
+            "CREATE INDEX table_enrich          IF NOT EXISTS FOR (t:Table)  ON (t.enrichment_status)",
+            "CREATE INDEX table_is_time_series  IF NOT EXISTS FOR (t:Table)  ON (t.is_time_series)",
+            "CREATE INDEX table_join_role       IF NOT EXISTS FOR (t:Table)  ON (t.typical_join_role)",
+            "CREATE INDEX table_subq_anchor     IF NOT EXISTS FOR (t:Table)  ON (t.is_subquery_anchor)",
+            "CREATE INDEX table_rollup          IF NOT EXISTS FOR (t:Table)  ON (t.is_rollup)",
+            "CREATE INDEX table_intent_tags     IF NOT EXISTS FOR (t:Table)  ON (t.intent_tags)",
+            # RANGE indexes — Column
+            "CREATE INDEX col_table             IF NOT EXISTS FOR (c:Column) ON (c.table_fqn)",
+            "CREATE INDEX col_name              IF NOT EXISTS FOR (c:Column) ON (c.name)",
+            "CREATE INDEX col_semantic          IF NOT EXISTS FOR (c:Column) ON (c.semantic_type)",
+            "CREATE INDEX col_pii               IF NOT EXISTS FOR (c:Column) ON (c.is_pii)",
+            "CREATE INDEX col_pk                IF NOT EXISTS FOR (c:Column) ON (c.is_pk)",
+            "CREATE INDEX col_enrich            IF NOT EXISTS FOR (c:Column) ON (c.enrichment_status)",
+            "CREATE INDEX col_groupable         IF NOT EXISTS FOR (c:Column) ON (c.is_groupable)",
+            "CREATE INDEX col_measurable        IF NOT EXISTS FOR (c:Column) ON (c.is_measurable)",
+            "CREATE INDEX col_temporal_grain    IF NOT EXISTS FOR (c:Column) ON (c.temporal_grain)",
+            # Composite
+            "CREATE INDEX col_table_name        IF NOT EXISTS FOR (c:Column) ON (c.table_fqn, c.name)",
+            # TEXT indexes
+            "CREATE TEXT INDEX table_name_text  IF NOT EXISTS FOR (t:Table)  ON (t.name)",
+            "CREATE TEXT INDEX column_name_text IF NOT EXISTS FOR (c:Column) ON (c.name)",
+            # Relationship indexes
+            "CREATE INDEX joins_confidence      IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.confidence)",
+            "CREATE INDEX joins_is_ontology     IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.is_ontology)",
+            "CREATE INDEX joins_source          IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.source)",
+            "CREATE INDEX joins_canonical       IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.is_canonical)",
+            "CREATE INDEX joins_null_fk         IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.has_nullable_fk)",
+            # JoinPath
+            "CREATE INDEX joinpath_cross        IF NOT EXISTS FOR (j:JoinPath) ON (j.is_cross_community)",
+            # QueryTemplate
+            "CREATE INDEX querytemplate_intent     IF NOT EXISTS FOR (q:QueryTemplate) ON (q.primary_intent)",
+            "CREATE INDEX querytemplate_complexity IF NOT EXISTS FOR (q:QueryTemplate) ON (q.complexity)",
+        ]
+        for stmt in ddl:
+            self._run(stmt)
+
+        # Full-text indexes (drop & recreate if schema changed)
+        self._run("""
+            CREATE FULLTEXT INDEX table_fulltext IF NOT EXISTS
+            FOR (t:Table) ON EACH [t.name, t.description, t.business_domain, t.ontology_class]
+            OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}
+        """)
+        self._run("""
+            CREATE FULLTEXT INDEX column_fulltext IF NOT EXISTS
+            FOR (c:Column) ON EACH [c.name, c.description, c.synonyms_text, c.semantic_type]
+            OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}
+        """)
+        self._run("""
+            CREATE FULLTEXT INDEX table_ft_extended IF NOT EXISTS
+            FOR (t:Table) ON EACH [t.name, t.description, t.synonyms_text, t.intent_tags_text]
+            OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}
+        """)
+        self._run("""
+            CREATE FULLTEXT INDEX col_ft_extended IF NOT EXISTS
+            FOR (c:Column) ON EACH [c.name, c.description, c.synonyms_text, c.top_values_text]
+            OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}
+        """)
+        self._run("""
+            CREATE FULLTEXT INDEX querytemplate_ft IF NOT EXISTS
+            FOR (q:QueryTemplate) ON EACH [q.question_text, q.description, q.primary_intent]
+            OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}
+        """)
+
+        # Vector indexes
+        self._run("""
+            CREATE VECTOR INDEX col_cohere_embedding IF NOT EXISTS
+            FOR (c:Column) ON (c.cohere_embedding)
+            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+        """)
+        self._run("""
+            CREATE VECTOR INDEX tbl_cohere_embedding IF NOT EXISTS
+            FOR (t:Table) ON (t.cohere_embedding)
+            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+        """)
+        self._run("""
+            CREATE VECTOR INDEX querytemplate_cohere IF NOT EXISTS
+            FOR (q:QueryTemplate) ON (q.cohere_embedding)
+            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+        """)
+        self._run("""
+            CREATE VECTOR INDEX businessterm_cohere IF NOT EXISTS
+            FOR (b:BusinessTerm) ON (b.cohere_embedding)
+            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+        """)
+        self._run("""
+            CREATE VECTOR INDEX intent_cohere IF NOT EXISTS
+            FOR (i:Intent) ON (i.cohere_embedding)
+            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+        """)
+        self._run("""
+            CREATE VECTOR INDEX community_cohere IF NOT EXISTS
+            FOR (c:Community) ON (c.cohere_embedding)
+            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+        """)
+        self._run("""
+            CREATE VECTOR INDEX domain_cohere IF NOT EXISTS
+            FOR (d:Domain) ON (d.cohere_embedding)
+            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+        """)
+
+        log.info("Schema applied.")
+
+    # ── Domain nodes ───────────────────────────────────────────────────────
+
+    def load_domains(self, domain_names: list[str]):
+        now = _NOW()
+        rows = [{"name": d, "created_at": now} for d in domain_names]
+        n = self._batch_write("""
+            UNWIND $rows AS r
+            MERGE (d:Domain {name: r.name})
+            ON CREATE SET d.created_at = r.created_at,
+                          d.updated_at = r.created_at
+        """, rows)
+        log.info("Loaded %d Domain nodes.", n)
+
+    # ── Table nodes ────────────────────────────────────────────────────────
+
+    def load_tables(self, tables: list[TableMeta]):
+        now = _NOW()
+        rows = []
+        for t in tables:
+            rows.append({
+                "fqn":              t.fqn,
+                "name":             t.name,
+                "schema":           t.schema,
+                "table_type_db":    t.table_type_db,
+                "ontology_class":   t.ontology_class,
+                "table_type":       t.table_type,
+                "type_confidence":  t.type_confidence,
+                "business_domain":  t.business_domain,
+                "description":      t.description,
+                "row_count":        t.row_count,
+                "size_mb":          t.size_mb,
+                "diststyle":        t.diststyle,
+                "distkey_col":      t.distkey_col,
+                "sortkey1":         t.sortkey1,
+                "sortkey_type":     t.sortkey_type,
+                "encoded_pct":      t.encoded_pct,
+                "is_isolated":      t.is_isolated,
+                "is_weakly_bridged":t.is_weakly_bridged,
+                "source_hash":      t.source_hash,
+                "version":          t.version,
+                "enrichment_status":t.enrichment_status,
+                "created_at":       now,
+                "updated_at":       now,
+            })
+
+        n = self._batch_write("""
+            UNWIND $rows AS r
+            MERGE (t:Table {fqn: r.fqn})
+            ON CREATE SET
+                t.name              = r.name,
+                t.schema            = r.schema,
+                t.table_type_db     = r.table_type_db,
+                t.ontology_class    = r.ontology_class,
+                t.table_type        = r.table_type,
+                t.type_confidence   = r.type_confidence,
+                t.business_domain   = r.business_domain,
+                t.description       = r.description,
+                t.row_count         = r.row_count,
+                t.size_mb           = r.size_mb,
+                t.diststyle         = r.diststyle,
+                t.distkey_col       = r.distkey_col,
+                t.sortkey1          = r.sortkey1,
+                t.sortkey_type      = r.sortkey_type,
+                t.encoded_pct       = r.encoded_pct,
+                t.is_isolated       = r.is_isolated,
+                t.is_weakly_bridged = r.is_weakly_bridged,
+                t.source_hash       = r.source_hash,
+                t.version           = r.version,
+                t.enrichment_status = r.enrichment_status,
+                t.created_at        = r.created_at,
+                t.updated_at        = r.updated_at
+            ON MATCH SET
+                t.name              = r.name,
+                t.table_type_db     = r.table_type_db,
+                t.ontology_class    = CASE WHEN r.ontology_class <> '' THEN r.ontology_class ELSE t.ontology_class END,
+                t.table_type        = CASE WHEN r.table_type <> '' THEN r.table_type ELSE t.table_type END,
+                t.type_confidence   = r.type_confidence,
+                t.business_domain   = CASE WHEN r.business_domain <> '' THEN r.business_domain ELSE t.business_domain END,
+                t.row_count         = r.row_count,
+                t.size_mb           = r.size_mb,
+                t.diststyle         = r.diststyle,
+                t.distkey_col       = r.distkey_col,
+                t.sortkey1          = r.sortkey1,
+                t.sortkey_type      = r.sortkey_type,
+                t.encoded_pct       = r.encoded_pct,
+                t.version           = CASE WHEN r.source_hash <> t.source_hash THEN t.version + 1 ELSE t.version END,
+                t.enrichment_status = CASE WHEN r.source_hash <> t.source_hash THEN 'stale' ELSE t.enrichment_status END,
+                t.source_hash       = r.source_hash,
+                t.updated_at        = r.updated_at
+        """, rows)
+        log.info("Loaded/updated %d Table nodes.", n)
+
+    def link_tables_to_domains(self, tables: list[TableMeta]):
+        now = _NOW()
+        rows = [
+            {"fqn": t.fqn, "domain": t.business_domain, "created_at": now}
+            for t in tables if t.business_domain
+        ]
+        if not rows:
+            return
+        self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (t:Table {fqn: r.fqn})
+            MATCH (d:Domain {name: r.domain})
+            MERGE (t)-[rel:BELONGS_TO]->(d)
+            ON CREATE SET rel.created_at = r.created_at
+        """, rows)
+        log.info("Linked %d tables to domains.", len(rows))
+
+    # ── Column nodes ───────────────────────────────────────────────────────
+
+    def load_columns(self, columns: list[ColumnMeta]):
+        now = _NOW()
+        rows = []
+        for c in columns:
+            rows.append({
+                "id":               c.id,
+                "table_fqn":        c.table_fqn,
+                "name":             c.name,
+                "data_type":        c.data_type,
+                "ordinal_position": c.ordinal_position,
+                "is_nullable":      c.is_nullable,
+                "is_pk":            c.is_pk,
+                "is_notnull":       c.is_notnull,
+                "null_frac":        c.null_frac,
+                "n_distinct":       c.n_distinct,
+                "sample_values":    c.sample_values[:10],
+                "top_freq_values":  c.top_freq_values,
+                "description":      c.description,
+                "semantic_type":    c.semantic_type,
+                "synonyms":         c.synonyms,
+                "synonyms_text":    c.synonyms_text,
+                "is_pii":           c.is_pii,
+                "source_hash":      c.source_hash,
+                "version":          c.version,
+                "enrichment_status":c.enrichment_status,
+                "created_at":       now,
+                "updated_at":       now,
+            })
+
+        n = self._batch_write("""
+            UNWIND $rows AS r
+            MERGE (c:Column {id: r.id})
+            ON CREATE SET
+                c.table_fqn        = r.table_fqn,
+                c.name             = r.name,
+                c.data_type        = r.data_type,
+                c.ordinal_position = r.ordinal_position,
+                c.is_nullable      = r.is_nullable,
+                c.is_pk            = r.is_pk,
+                c.is_notnull       = r.is_notnull,
+                c.null_frac        = r.null_frac,
+                c.n_distinct       = r.n_distinct,
+                c.sample_values    = r.sample_values,
+                c.top_freq_values  = r.top_freq_values,
+                c.description      = r.description,
+                c.semantic_type    = r.semantic_type,
+                c.synonyms         = r.synonyms,
+                c.synonyms_text    = r.synonyms_text,
+                c.is_pii           = r.is_pii,
+                c.source_hash      = r.source_hash,
+                c.version          = r.version,
+                c.enrichment_status= r.enrichment_status,
+                c.created_at       = r.created_at,
+                c.updated_at       = r.updated_at
+            ON MATCH SET
+                c.data_type        = r.data_type,
+                c.is_nullable      = r.is_nullable,
+                c.is_pk            = r.is_pk,
+                c.is_notnull       = r.is_notnull,
+                c.null_frac        = r.null_frac,
+                c.n_distinct       = r.n_distinct,
+                c.sample_values    = CASE WHEN size(r.sample_values) > 0 THEN r.sample_values ELSE c.sample_values END,
+                c.top_freq_values  = CASE WHEN size(r.top_freq_values) > 0 THEN r.top_freq_values ELSE c.top_freq_values END,
+                c.version          = CASE WHEN r.source_hash <> c.source_hash THEN c.version + 1 ELSE c.version END,
+                c.enrichment_status= CASE WHEN r.source_hash <> c.source_hash THEN 'stale' ELSE c.enrichment_status END,
+                c.source_hash      = r.source_hash,
+                c.updated_at       = r.updated_at
+        """, rows)
+        log.info("Loaded/updated %d Column nodes.", n)
+
+    def link_columns_to_tables(self, columns: list[ColumnMeta]):
+        now = _NOW()
+        rows = [{"col_id": c.id, "tbl_fqn": c.table_fqn, "created_at": now} for c in columns]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (t:Table {fqn: r.tbl_fqn})
+            MATCH (c:Column {id: r.col_id})
+            MERGE (t)-[rel:HAS_COLUMN]->(c)
+            ON CREATE SET rel.created_at = r.created_at
+        """, rows)
+        log.info("Linked %d columns to tables.", len(rows))
+
+    # ── JOINS_TO edges ─────────────────────────────────────────────────────
+
+    def load_fk_edges(self, edges: list[FKEdge]):
+        now = _NOW()
+        rows = []
+        for e in edges:
+            rows.append({
+                "from_fqn":      e.from_table,
+                "from_col":      e.from_col,
+                "to_fqn":        e.to_table,
+                "to_col":        e.to_col,
+                "predicate":     e.predicate,
+                "confidence":    e.confidence,
+                "join_cost":     e.join_cost,
+                "leiden_weight": e.leiden_weight,
+                "is_declared":   e.is_declared,
+                "is_ontology":   e.is_ontology,
+                "is_wcc_bridge": e.is_wcc_bridge,
+                "source":        e.source,
+                "frequency":     e.frequency,
+                "source_hash":   e.compute_source_hash(),
+                "created_at":    now,
+                "updated_at":    now,
+            })
+
+        n = self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (a:Table {fqn: r.from_fqn})
+            MATCH (b:Table {fqn: r.to_fqn})
+            MERGE (a)-[j:JOINS_TO {from_col: r.from_col, to_col: r.to_col}]->(b)
+            ON CREATE SET
+                j.predicate     = r.predicate,
+                j.confidence    = r.confidence,
+                j.join_cost     = r.join_cost,
+                j.leiden_weight = r.leiden_weight,
+                j.is_declared   = r.is_declared,
+                j.is_ontology   = r.is_ontology,
+                j.is_wcc_bridge = r.is_wcc_bridge,
+                j.source        = r.source,
+                j.frequency     = r.frequency,
+                j.source_hash   = r.source_hash,
+                j.created_at    = r.created_at,
+                j.updated_at    = r.updated_at
+            ON MATCH SET
+                j.confidence    = CASE WHEN r.confidence > j.confidence THEN r.confidence ELSE j.confidence END,
+                j.join_cost     = CASE WHEN r.confidence > j.confidence THEN r.join_cost ELSE j.join_cost END,
+                j.leiden_weight = CASE WHEN r.confidence > j.confidence THEN r.leiden_weight ELSE j.leiden_weight END,
+                j.frequency     = CASE WHEN r.source = 'query_history' THEN r.frequency ELSE j.frequency END,
+                j.source_hash   = r.source_hash,
+                j.updated_at    = r.updated_at
+        """, rows)
+        log.info("Loaded/updated %d JOINS_TO edges.", n)
+
+    # ── Enrichment updates ─────────────────────────────────────────────────
+
+    def update_table_enrichment(self, fqn: str, props: dict):
+        now = _NOW()
+        synonyms = props.get("synonyms") or []
+        synonyms_text = " ".join(synonyms) if synonyms else ""
+        self._run("""
+            MATCH (t:Table {fqn: $fqn})
+            SET t += $props,
+                t.synonyms_text            = $synonyms_text,
+                t.enrichment_status        = 'complete',
+                t.cohere_embedding         = null,
+                t.description_generated_at = $now,
+                t.updated_at               = $now
+        """, fqn=fqn, props=props, synonyms_text=synonyms_text, now=now)
+
+    def update_column_enrichment(self, col_id: str, props: dict):
+        now = _NOW()
+        self._run("""
+            MATCH (c:Column {id: $id})
+            SET c += $props,
+                c.synonyms_text            = $synonyms_text,
+                c.enrichment_status        = 'complete',
+                c.cohere_embedding         = null,
+                c.description_generated_at = $now,
+                c.updated_at               = $now
+        """, id=col_id, props=props,
+             synonyms_text=" ".join(props.get("synonyms", [])),
+             now=now)
+
+    def batch_update_column_enrichment(self, rows: list[dict], now: str):
+        """rows: list of dicts with col_id + all enrichment props (no None values)."""
+        self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (c:Column {id: r.col_id})
+            SET c.description         = r.description,
+                c.semantic_type       = r.semantic_type,
+                c.synonyms            = r.synonyms,
+                c.synonyms_text       = apoc.text.join(coalesce(r.synonyms, []), ' '),
+                c.is_pii              = r.is_pii,
+                c.pii_type            = r.pii_type,
+                c.temporal_grain      = r.temporal_grain,
+                c.default_aggregation = r.default_aggregation,
+                c.value_aliases       = r.value_aliases,
+                c.value_scale         = r.value_scale,
+                c.description_model   = r.description_model,
+                c.description_generated_at = $now,
+                c.enrichment_status   = 'complete',
+                c.cohere_embedding    = null,
+                c.updated_at          = $now
+        """, rows, now=now)
+
+    def batch_update_table_enrichment(self, rows: list[dict], now: str):
+        """rows: list of dicts with fqn, description, synonyms, grain, business_domain,
+        table_type_override, description_model."""
+        self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (t:Table {fqn: r.fqn})
+            SET t.description        = r.description,
+                t.description_model  = r.description_model,
+                t.synonyms           = r.synonyms,
+                t.synonyms_text      = apoc.text.join(coalesce(r.synonyms, []), ' '),
+                t.grain              = r.grain,
+                t.business_domain    = CASE WHEN r.business_domain IS NOT NULL AND r.business_domain <> ''
+                                           THEN r.business_domain ELSE t.business_domain END,
+                t.table_type         = CASE WHEN r.table_type_override IS NOT NULL AND r.table_type_override <> ''
+                                           THEN r.table_type_override ELSE t.table_type END,
+                t.enrichment_status  = 'complete',
+                t.cohere_embedding   = null,
+                t.description_generated_at = $now,
+                t.updated_at         = $now
+        """, rows, now=now)
+
+    def update_domain_description(self, domain_name: str, description: str):
+        now = _NOW()
+        self._run("""
+            MATCH (d:Domain {name: $name})
+            SET d.description              = $description,
+                d.cohere_embedding         = null,
+                d.description_generated_at = $now,
+                d.updated_at               = $now
+        """, name=domain_name, description=description, now=now)
+
+    def update_table_embedding(self, fqn: str, embedding: list[float], model: str):
+        now = _NOW()
+        self._run("""
+            MATCH (t:Table {fqn: $fqn})
+            SET t.cohere_embedding       = $emb,
+                t.embedding_model        = $model,
+                t.embedding_generated_at = $now,
+                t.updated_at             = $now
+        """, fqn=fqn, emb=embedding, model=model, now=now)
+
+    def update_column_embedding(self, col_id: str, embedding: list[float], model: str):
+        now = _NOW()
+        self._run("""
+            MATCH (c:Column {id: $id})
+            SET c.cohere_embedding       = $emb,
+                c.embedding_model        = $model,
+                c.embedding_generated_at = $now,
+                c.updated_at             = $now
+        """, id=col_id, emb=embedding, model=model, now=now)
+
+    # ── GDS score updates ─────────────────────────────────────────────────
+
+    def update_gds_scores(self, scores: list[dict]):
+        """Each dict: {fqn, pagerank_score, betweenness_score, community_id, wcc_component_id}"""
+        now = _NOW()
+        rows = [{**s, "now": now} for s in scores]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (t:Table {fqn: r.fqn})
+            SET t.wcc_component_id     = coalesce(r.wcc_component_id, t.wcc_component_id),
+                t.community_id         = coalesce(r.community_id, t.community_id),
+                t.pagerank_score       = coalesce(r.pagerank_score, t.pagerank_score),
+                t.betweenness_score    = coalesce(r.betweenness_score, t.betweenness_score),
+                t.pagerank_computed_at = CASE WHEN r.pagerank_score IS NOT NULL THEN r.now ELSE t.pagerank_computed_at END,
+                t.leiden_computed_at   = CASE WHEN r.community_id IS NOT NULL THEN r.now ELSE t.leiden_computed_at END,
+                t.updated_at           = r.now
+        """, rows)
+
+    def create_community_nodes(self, communities: list[dict]):
+        """communities: [{id, dominant_domain, table_count, modularity, gamma}]"""
+        now = _NOW()
+        rows = [{**c, "run_date": now} for c in communities]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MERGE (c:Community {id: r.id})
+            SET c.dominant_domain         = r.dominant_domain,
+                c.table_count             = r.table_count,
+                c.modularity_contribution = coalesce(r.modularity, 0.0),
+                c.leiden_gamma            = r.gamma,
+                c.run_date                = r.run_date
+        """, rows)
+        # Link tables to communities
+        self._run("""
+            MATCH (t:Table) WHERE t.community_id IS NOT NULL
+            MATCH (c:Community {id: t.community_id})
+            MERGE (c)-[:CONTAINS_TABLE]->(t)
+        """)
+
+    # ── PipelineRun audit ─────────────────────────────────────────────────
+
+    def save_pipeline_run(self, run: dict):
+        self._run("""
+            MERGE (r:PipelineRun {run_id: $run_id})
+            SET r += $props
+        """, run_id=run["run_id"], props=run)
+
+    # ── Integrity checks ──────────────────────────────────────────────────
+
+    def integrity_check(self) -> dict:
+        table_count = self._run("MATCH (t:Table) RETURN count(t) AS n")[0]["n"]
+        col_count   = self._run("MATCH (c:Column) RETURN count(c) AS n")[0]["n"]
+        edge_count  = self._run("MATCH ()-[r:JOINS_TO]->() RETURN count(r) AS n")[0]["n"]
+        broken_fks  = self._run("""
+            MATCH ()-[r:JOINS_TO]->()
+            WHERE r.to_fqn IS NOT NULL
+              AND NOT EXISTS { MATCH (:Table {fqn: r.to_fqn}) }
+            RETURN count(r) AS n
+        """)[0]["n"]
+        missing_emb_cols = self._run("""
+            MATCH (c:Column) WHERE c.cohere_embedding IS NULL RETURN count(c) AS n
+        """)[0]["n"]
+        missing_emb_tbls = self._run("""
+            MATCH (t:Table) WHERE t.cohere_embedding IS NULL RETURN count(t) AS n
+        """)[0]["n"]
+        stale = self._run("""
+            MATCH (n) WHERE n.enrichment_status IN ['stale','failed']
+            RETURN count(n) AS n
+        """)[0]["n"]
+        return {
+            "table_count": table_count,
+            "column_count": col_count,
+            "edge_count": edge_count,
+            "broken_fk_targets": broken_fks,
+            "missing_col_embeddings": missing_emb_cols,
+            "missing_tbl_embeddings": missing_emb_tbls,
+            "stale_or_failed_nodes": stale,
+        }
+
+    # ── Post-enrich Cypher passes ─────────────────────────────────────────
+
+    def run_post_enrich_passes(self):
+        """
+        Idempotent Cypher passes that derive properties from enrichment output.
+        Call once after enrich + embed steps complete.
+        """
+        log.info("Running post-enrich Cypher passes …")
+        self._pass_top_values_text()
+        self._pass_is_groupable_measurable()
+        self._pass_filter_selectivity()
+        self._pass_value_vocabulary()
+        self._pass_same_name_col_count()
+        self._pass_time_dimension()
+        self._pass_is_time_series_natural_dims()
+        self._pass_typical_join_role()
+        self._pass_nullable_fk()
+        self._pass_is_canonical()
+        self._pass_ambiguity_risk()
+        log.info("Post-enrich Cypher passes complete.")
+
+    def _pass_top_values_text(self):
+        """B4 prerequisite — space-joined values part of top_freq_values for full-text indexing."""
+        self._run("""
+            MATCH (c:Column)
+            WHERE c.top_freq_values IS NOT NULL AND size(c.top_freq_values) > 0
+            SET c.top_values_text = reduce(
+                s = '', v IN c.top_freq_values | s + ' ' + split(v, ':')[0]
+            )
+        """)
+        log.debug("Pass: top_values_text set.")
+
+    def _pass_is_groupable_measurable(self):
+        """B1 — is_groupable / is_measurable derived from semantic_type and data_type."""
+        self._run("""
+            MATCH (c:Column)
+            SET c.is_groupable  = c.semantic_type IN
+                    ['dimension','code','flag','date','identifier'],
+                c.is_measurable = (
+                    c.semantic_type IN ['measure','amount','ratio','percentage']
+                    OR (
+                        c.data_type IN [
+                            'integer','bigint','smallint','int','int2','int4','int8',
+                            'numeric','decimal','float','float4','float8',
+                            'real','double precision'
+                        ]
+                        AND NOT c.semantic_type IN
+                            ['identifier','flag','code','date']
+                    )
+                )
+        """)
+        log.debug("Pass: is_groupable / is_measurable set.")
+
+    def _pass_filter_selectivity(self):
+        """B3 — filter_selectivity from n_distinct."""
+        self._run("""
+            MATCH (c:Column) WHERE c.n_distinct IS NOT NULL
+            SET c.filter_selectivity = CASE
+                WHEN c.n_distinct = -1.0 OR c.n_distinct > 1000 THEN 'high'
+                WHEN c.n_distinct > 50                           THEN 'medium'
+                ELSE                                                  'low'
+            END
+        """)
+        log.debug("Pass: filter_selectivity set.")
+
+    def _pass_value_vocabulary(self):
+        """B4 — value_vocabulary from top_freq_values for low-cardinality code/flag/dimension cols."""
+        self._run("""
+            MATCH (c:Column)
+            WHERE c.n_distinct > 0 AND c.n_distinct <= 50
+              AND c.semantic_type IN ['code','flag','dimension']
+              AND c.top_freq_values IS NOT NULL AND size(c.top_freq_values) > 0
+            SET c.value_vocabulary = [v IN c.top_freq_values | split(v, ':')[0]]
+        """)
+        log.debug("Pass: value_vocabulary set.")
+
+    def _pass_same_name_col_count(self):
+        """B6 — same_name_col_count: how many columns share this name across all tables."""
+        self._run("""
+            MATCH (c:Column)
+            WITH c.name AS n, count(*) AS cnt
+            MATCH (c2:Column {name: n})
+            SET c2.same_name_col_count = cnt
+        """)
+        log.debug("Pass: same_name_col_count set.")
+
+    def _pass_time_dimension(self):
+        """C2 — time_dimension_col / time_dimension_grain: best date column per table."""
+        self._run("""
+            MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+            WHERE c.semantic_type = 'date'
+            WITH t, c
+            ORDER BY
+                CASE WHEN t.sortkey1 = c.name THEN 0 ELSE 1 END,
+                CASE WHEN c.name CONTAINS 'transaction' OR c.name CONTAINS 'value_date' THEN 1
+                     WHEN c.name CONTAINS 'created'                                     THEN 2
+                     ELSE                                                                     3 END,
+                c.ordinal_position
+            WITH t, collect(c)[0] AS best
+            WHERE best IS NOT NULL
+            SET t.time_dimension_col   = best.name,
+                t.time_dimension_grain = coalesce(best.temporal_grain, 'day')
+        """)
+        log.debug("Pass: time_dimension_col / grain set.")
+
+    def _pass_is_time_series_natural_dims(self):
+        """C3 — is_time_series, natural_dimensions, natural_measures."""
+        self._run("""
+            MATCH (t:Table)
+            SET t.is_time_series = (t.time_dimension_col IS NOT NULL AND t.table_type = 'fact')
+        """)
+        self._run("""
+            MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+            WHERE c.is_groupable = true
+            WITH t, collect(c.name)[0..10] AS dims
+            SET t.natural_dimensions = dims
+        """)
+        self._run("""
+            MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+            WHERE c.is_measurable = true
+            WITH t, collect(c.name)[0..10] AS measures
+            SET t.natural_measures = measures
+        """)
+        log.debug("Pass: is_time_series / natural_dimensions / natural_measures set.")
+
+    def _pass_typical_join_role(self):
+        """C4 — typical_join_role from table_type and betweenness."""
+        self._run("""
+            MATCH (t:Table)
+            SET t.typical_join_role = CASE
+                WHEN t.table_type = 'fact' AND coalesce(t.betweenness_score, 0) > 0.1 THEN 'anchor'
+                WHEN t.table_type = 'fact'                                              THEN 'fact'
+                WHEN t.table_type IN ['reference','dimension']                          THEN 'dimension'
+                WHEN t.table_type = 'bridge'                                            THEN 'bridge'
+                WHEN coalesce(t.row_count, 0) < 10000                                  THEN 'lookup'
+                ELSE                                                                         'dimension'
+            END
+        """)
+        log.debug("Pass: typical_join_role set.")
+
+    def _pass_nullable_fk(self):
+        """D3 — has_nullable_fk / recommended_join_type on JOINS_TO edges."""
+        self._run("""
+            MATCH (a:Table)-[j:JOINS_TO]->(b:Table)
+            OPTIONAL MATCH (ca:Column) WHERE ca.id = a.fqn + '.' + j.from_col
+            OPTIONAL MATCH (cb:Column) WHERE cb.id = b.fqn + '.' + j.to_col
+            SET j.max_null_frac         = CASE
+                    WHEN coalesce(ca.null_frac, 0) > coalesce(cb.null_frac, 0)
+                    THEN coalesce(ca.null_frac, 0)
+                    ELSE coalesce(cb.null_frac, 0) END,
+                j.has_nullable_fk       = (coalesce(ca.null_frac, 0) > 0.01
+                                           OR coalesce(cb.null_frac, 0) > 0.01),
+                j.recommended_join_type = CASE
+                    WHEN coalesce(ca.null_frac, 0) > 0.05 OR coalesce(cb.null_frac, 0) > 0.05
+                    THEN 'LEFT JOIN'
+                    ELSE 'INNER JOIN'
+                END
+        """)
+        log.debug("Pass: nullable FK / recommended_join_type set.")
+
+    def _pass_is_canonical(self):
+        """E1 — is_canonical: one canonical JOINS_TO per table pair."""
+        self._run("""
+            MATCH (a:Table)-[j:JOINS_TO]->(b:Table)
+            WITH a, b, j
+            ORDER BY
+                CASE WHEN j.is_ontology = true  THEN 0
+                     WHEN j.is_declared = true   THEN 1
+                     ELSE                             2 END,
+                j.confidence DESC
+            WITH a, b, collect(j) AS edges
+            FOREACH (e IN edges[0..1] | SET e.is_canonical = true)
+            FOREACH (e IN edges[1..] | SET e.is_canonical = false)
+        """)
+        log.debug("Pass: is_canonical set.")
+
+    def _pass_ambiguity_risk(self):
+        """E2 — ambiguity_risk from same_name_col_count on from_col."""
+        self._run("""
+            MATCH (a:Table)-[j:JOINS_TO]->(b:Table)
+            OPTIONAL MATCH (c:Column) WHERE c.id = a.fqn + '.' + j.from_col
+            SET j.ambiguity_risk = CASE
+                WHEN coalesce(c.same_name_col_count, 1) <= 2  THEN 'none'
+                WHEN coalesce(c.same_name_col_count, 1) <= 5  THEN 'low'
+                WHEN coalesce(c.same_name_col_count, 1) <= 15 THEN 'medium'
+                ELSE                                                'high'
+            END
+        """)
+        log.debug("Pass: ambiguity_risk set.")
+
+    # ── Intent / community / glossary / template loaders ─────────────────
+
+    def load_intent_nodes(self, intents: list[dict]):
+        """intents: list of {name, class_count, description, description_model}"""
+        now = _NOW()
+        rows = [{**i, "created_at": now} for i in intents]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MERGE (i:Intent {name: r.name})
+            SET i.class_count        = r.class_count,
+                i.description        = r.description,
+                i.description_model  = r.description_model,
+                i.cohere_embedding   = null,
+                i.created_at         = r.created_at
+        """, rows)
+        log.info("Loaded %d Intent nodes.", len(rows))
+
+    def load_relevant_to_edges(self, edges: list[dict]):
+        """edges: list of {table_fqn, intent_name, confidence}"""
+        now = _NOW()
+        rows = [{**e, "created_at": now} for e in edges]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (t:Table {fqn: r.table_fqn})
+            MATCH (i:Intent {name: r.intent_name})
+            MERGE (t)-[rel:RELEVANT_TO]->(i)
+            SET rel.confidence  = r.confidence,
+                rel.created_at  = r.created_at
+        """, rows)
+        log.info("Loaded %d RELEVANT_TO edges.", len(rows))
+
+    def set_intent_tags_on_tables(self):
+        """Derive intent_tags, intent_tags_text, intent_tags_scored on each Table."""
+        self._run("""
+            MATCH (t:Table)-[r:RELEVANT_TO]->(i:Intent)
+            WITH t,
+                 collect(i.name) AS tags,
+                 collect(i.name + ':' + toString(round(r.confidence * 100) / 100.0)) AS scored
+            SET t.intent_tags        = tags,
+                t.intent_tags_text   = reduce(s = '', tag IN tags | s + ' ' + tag),
+                t.intent_tags_scored = scored
+        """)
+        log.info("intent_tags set on Tables.")
+
+    def load_business_terms(self, terms: list[dict]):
+        """terms: list of {term, variants, term_type, description}"""
+        now = _NOW()
+        rows = [{**t, "created_at": now} for t in terms]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MERGE (b:BusinessTerm {term: r.term})
+            SET b.variants    = r.variants,
+                b.term_type   = r.term_type,
+                b.description = r.description,
+                b.created_at  = r.created_at
+        """, rows)
+        log.info("Loaded %d BusinessTerm nodes.", len(rows))
+
+    def update_businessterm_embedding(self, term: str, embedding: list[float], model: str):
+        now = _NOW()
+        self._run("""
+            MATCH (b:BusinessTerm {term: $term})
+            SET b.cohere_embedding       = $emb,
+                b.embedding_model        = $model,
+                b.embedding_generated_at = $now
+        """, term=term, emb=embedding, model=model, now=now)
+
+    def load_query_templates(self, templates: list[dict]):
+        """templates: list of QueryTemplate property dicts from enrich_query_templates()"""
+        now = _NOW()
+        rows = [{**t, "created_at": now} for t in templates]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MERGE (q:QueryTemplate {id: r.id})
+            SET q.question_text           = r.question_text,
+                q.description             = r.description,
+                q.primary_intent          = r.primary_intent,
+                q.intent_scores           = r.intent_scores,
+                q.complexity              = r.complexity,
+                q.anchor_ontology_classes = r.anchor_ontology_classes,
+                q.anchor_table_fqns       = r.anchor_table_fqns,
+                q.cte_steps               = r.cte_steps,
+                q.required_aggregations   = r.required_aggregations,
+                q.required_filters        = r.required_filters,
+                q.time_windowed           = r.time_windowed,
+                q.source_line             = r.source_line,
+                q.created_at              = r.created_at
+        """, rows)
+        log.info("Loaded %d QueryTemplate nodes.", len(rows))
+
+    def link_query_templates_to_intents(self, template_intent_edges: list[dict]):
+        """edges: list of {qt_id, intent_name, confidence}"""
+        now = _NOW()
+        rows = [{**e, "created_at": now} for e in template_intent_edges]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (q:QueryTemplate {id: r.qt_id})
+            MATCH (i:Intent {name: r.intent_name})
+            MERGE (q)-[rel:CLASSIFIED_AS]->(i)
+            SET rel.confidence = r.confidence,
+                rel.created_at = r.created_at
+        """, rows)
+        log.info("Linked %d QueryTemplate → Intent edges.", len(rows))
+
+    def link_query_templates_to_tables(self, template_table_edges: list[dict]):
+        """edges: list of {qt_id, table_fqn}"""
+        now = _NOW()
+        rows = [{**e, "created_at": now} for e in template_table_edges]
+        self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (q:QueryTemplate {id: r.qt_id})
+            MATCH (t:Table {fqn: r.table_fqn})
+            MERGE (q)-[:REQUIRES_TABLE]->(t)
+        """, rows)
+        log.info("Linked %d QueryTemplate → Table edges.", len(rows))
+
+    def update_querytemplate_embedding(self, qt_id: str, embedding: list[float], model: str):
+        now = _NOW()
+        self._run("""
+            MATCH (q:QueryTemplate {id: $id})
+            SET q.cohere_embedding       = $emb,
+                q.embedding_model        = $model,
+                q.embedding_generated_at = $now
+        """, id=qt_id, emb=embedding, model=model, now=now)
+
+    def load_community_descriptions(self, enriched: dict):
+        """enriched: {str(community_id): {description, query_patterns}}"""
+        now = _NOW()
+        for cid_str, data in enriched.items():
+            try:
+                cid = int(cid_str)
+            except ValueError:
+                continue
+            self._run("""
+                MATCH (c:Community {id: $cid})
+                SET c.description              = $desc,
+                    c.query_patterns           = $qp,
+                    c.cohere_embedding         = null,
+                    c.description_generated_at = $now
+            """, cid=cid,
+                 desc=data.get("description", ""),
+                 qp=data.get("query_patterns", []),
+                 now=now)
+        log.info("Updated descriptions for %d Community nodes.", len(enriched))
+
+    def run_is_subquery_anchor(self):
+        """F2 — is_subquery_anchor for high-betweenness fact tables."""
+        self._run("""
+            MATCH (t:Table) WHERE t.betweenness_score IS NOT NULL
+            WITH percentileCont(t.betweenness_score, 0.75) AS p75
+            MATCH (t2:Table)
+            SET t2.is_subquery_anchor = (
+                t2.betweenness_score > p75
+                AND t2.table_type = 'fact'
+                AND coalesce(t2.is_rollup, false) = false
+            )
+        """)
+        log.info("is_subquery_anchor set.")
+
+    # ── Property defaults passes (idempotent, coalesce-safe) ──────────────
+
+    def initialize_column_defaults(self):
+        """Ensure every Column node has all expected property keys, even if enrichment skipped."""
+        self._run("""
+            MATCH (c:Column)
+            SET c.description         = coalesce(c.description, ""),
+                c.semantic_type       = coalesce(c.semantic_type, ""),
+                c.synonyms            = coalesce(c.synonyms, []),
+                c.synonyms_text       = coalesce(c.synonyms_text, ""),
+                c.is_pii              = coalesce(c.is_pii, false),
+                c.pii_type            = coalesce(c.pii_type, ""),
+                c.temporal_grain      = coalesce(c.temporal_grain, "none"),
+                c.default_aggregation = coalesce(c.default_aggregation, "NONE"),
+                c.value_aliases       = coalesce(c.value_aliases, []),
+                c.value_vocabulary    = coalesce(c.value_vocabulary, []),
+                c.value_scale         = coalesce(c.value_scale, ""),
+                c.top_values_text     = coalesce(c.top_values_text, ""),
+                c.is_groupable        = coalesce(c.is_groupable, false),
+                c.is_measurable       = coalesce(c.is_measurable, false),
+                c.enrichment_status   = coalesce(c.enrichment_status, "pending"),
+                c.embedding_model     = coalesce(c.embedding_model, ""),
+                c.embedding_generated_at = coalesce(c.embedding_generated_at, "")
+        """)
+        log.debug("Column property defaults initialized.")
+
+    def initialize_table_defaults(self):
+        """Ensure every Table node has all expected property keys."""
+        self._run("""
+            MATCH (t:Table)
+            SET t.description         = coalesce(t.description, ""),
+                t.synonyms            = coalesce(t.synonyms, []),
+                t.synonyms_text       = coalesce(t.synonyms_text, ""),
+                t.grain               = coalesce(t.grain, ""),
+                t.business_domain     = coalesce(t.business_domain, ""),
+                t.table_type_db       = coalesce(t.table_type_db, ""),
+                t.natural_dimensions  = coalesce(t.natural_dimensions, []),
+                t.natural_measures    = coalesce(t.natural_measures, []),
+                t.intent_tags         = coalesce(t.intent_tags, []),
+                t.intent_tags_text    = coalesce(t.intent_tags_text, ""),
+                t.is_time_series      = coalesce(t.is_time_series, false),
+                t.is_rollup           = coalesce(t.is_rollup, false),
+                t.is_subquery_anchor  = coalesce(t.is_subquery_anchor, false),
+                t.enrichment_status   = coalesce(t.enrichment_status, "pending"),
+                t.embedding_model     = coalesce(t.embedding_model, ""),
+                t.embedding_generated_at = coalesce(t.embedding_generated_at, "")
+        """)
+        log.debug("Table property defaults initialized.")
+
+    def initialize_intent_defaults(self):
+        """Ensure every Intent node has all expected property keys."""
+        self._run("""
+            MATCH (i:Intent)
+            SET i.description             = coalesce(i.description, ""),
+                i.description_model       = coalesce(i.description_model, ""),
+                i.class_count             = coalesce(i.class_count, 0),
+                i.enrichment_status       = coalesce(i.enrichment_status, "pending"),
+                i.embedding_model         = coalesce(i.embedding_model, ""),
+                i.embedding_generated_at  = coalesce(i.embedding_generated_at, ""),
+                i.created_at              = coalesce(i.created_at, "")
+        """)
+        log.debug("Intent property defaults initialized.")
+
+    def initialize_community_defaults(self):
+        """Ensure every Community node has all expected property keys."""
+        self._run("""
+            MATCH (c:Community)
+            SET c.dominant_domain            = coalesce(c.dominant_domain, "unknown"),
+                c.domain_distribution        = coalesce(c.domain_distribution, []),
+                c.dominant_domain_confidence = coalesce(c.dominant_domain_confidence, 0.0),
+                c.table_count                = coalesce(c.table_count, 0),
+                c.modularity_contribution    = coalesce(c.modularity_contribution, 0.0),
+                c.leiden_gamma               = coalesce(c.leiden_gamma, 1.0),
+                c.description                = coalesce(c.description, ""),
+                c.query_patterns             = coalesce(c.query_patterns, []),
+                c.description_generated_at   = coalesce(c.description_generated_at, ""),
+                c.enrichment_status          = coalesce(c.enrichment_status, "pending"),
+                c.embedding_model            = coalesce(c.embedding_model, ""),
+                c.embedding_generated_at     = coalesce(c.embedding_generated_at, "")
+        """)
+        log.debug("Community property defaults initialized.")
+
+    def initialize_domain_defaults(self):
+        """Ensure every Domain node has all expected property keys."""
+        self._run("""
+            MATCH (d:Domain)
+            SET d.description              = coalesce(d.description, ""),
+                d.description_generated_at = coalesce(d.description_generated_at, ""),
+                d.table_count              = coalesce(d.table_count, 0),
+                d.enrichment_status        = coalesce(d.enrichment_status, "pending"),
+                d.embedding_model          = coalesce(d.embedding_model, ""),
+                d.embedding_generated_at   = coalesce(d.embedding_generated_at, ""),
+                d.created_at               = coalesce(d.created_at, ""),
+                d.updated_at               = coalesce(d.updated_at, "")
+        """)
+        log.debug("Domain property defaults initialized.")
+
+    def initialize_businessterm_defaults(self):
+        """Ensure every BusinessTerm node has all expected property keys."""
+        self._run("""
+            MATCH (b:BusinessTerm)
+            SET b.variants               = coalesce(b.variants, []),
+                b.term_type              = coalesce(b.term_type, ""),
+                b.description            = coalesce(b.description, ""),
+                b.enrichment_status      = coalesce(b.enrichment_status, "pending"),
+                b.embedding_model        = coalesce(b.embedding_model, ""),
+                b.embedding_generated_at = coalesce(b.embedding_generated_at, ""),
+                b.created_at             = coalesce(b.created_at, "")
+        """)
+        log.debug("BusinessTerm property defaults initialized.")
+
+    def initialize_querytemplate_defaults(self):
+        """Ensure every QueryTemplate node has all expected property keys."""
+        self._run("""
+            MATCH (q:QueryTemplate)
+            SET q.description             = coalesce(q.description, ""),
+                q.primary_intent          = coalesce(q.primary_intent, ""),
+                q.intent_scores           = coalesce(q.intent_scores, []),
+                q.complexity              = coalesce(q.complexity, "simple"),
+                q.anchor_ontology_classes = coalesce(q.anchor_ontology_classes, []),
+                q.anchor_table_fqns       = coalesce(q.anchor_table_fqns, []),
+                q.cte_steps               = coalesce(q.cte_steps, []),
+                q.required_aggregations   = coalesce(q.required_aggregations, []),
+                q.required_filters        = coalesce(q.required_filters, []),
+                q.time_windowed           = coalesce(q.time_windowed, false),
+                q.enrichment_status       = coalesce(q.enrichment_status, "pending"),
+                q.embedding_model         = coalesce(q.embedding_model, ""),
+                q.embedding_generated_at  = coalesce(q.embedding_generated_at, "")
+        """)
+        log.debug("QueryTemplate property defaults initialized.")
+
+    def initialize_joinpath_defaults(self):
+        """Ensure every JoinPath node has all expected property keys."""
+        self._run("""
+            MATCH (jp:JoinPath)
+            SET jp.is_cross_community   = coalesce(jp.is_cross_community, false),
+                jp.bridge_community_ids = coalesce(jp.bridge_community_ids, []),
+                jp.quality_score        = coalesce(jp.quality_score, 0.0),
+                jp.hop_count            = coalesce(jp.hop_count, 0),
+                jp.k_rank               = coalesce(jp.k_rank, 1),
+                jp.join_clauses         = coalesce(jp.join_clauses, [])
+        """)
+        log.debug("JoinPath property defaults initialized.")
