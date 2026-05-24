@@ -1,0 +1,2851 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+<title>MTI Brain · Graph Explorer</title>
+<link rel="icon" type="image/png" href="https://th.bing.com/th/id/ODF.V-KQW8U0lyNZl0BhtyaPOA?w=32&h=32&qlt=90&pcl=fffffc&o=6&pid=1.2"/>
+<!-- =========================
+     DEPENDENCIES
+========================= -->
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/graphology/0.26.0/graphology.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/3.0.2/sigma.min.js"></script>
+
+<!-- =========================
+     FONT
+========================= -->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+<link
+  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+  rel="stylesheet"
+/>
+
+<script>
+  window.tailwind = {
+    config: {
+    corePlugins:{ preflight:false },
+    theme:{
+      extend:{
+        animation:{ 'panel-in':'panelIn 0.2s ease-out' },
+        keyframes:{ panelIn:{ from:{opacity:'0',transform:'translateY(6px)'}, to:{opacity:'1',transform:'translateY(0)'} } }
+      }
+    }
+  }
+}
+</script>
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+
+/* =========================
+   RESET
+========================= */
+
+*{
+  margin:0;
+  padding:0;
+  box-sizing:border-box;
+}
+
+:root{
+
+  --bg:#f5f7fb;
+
+  --panel:#ffffff;
+
+  --border:#e5e7eb;
+
+  --text:#0f172a;
+
+  --muted:#64748b;
+
+  --shadow:
+    0 8px 32px rgba(15,23,42,0.06);
+
+  --primary:#2563eb;
+
+}
+
+/* =========================
+   BODY
+========================= */
+
+body{
+
+  width:100vw;
+  height:100vh;
+
+  overflow:hidden;
+
+  background:var(--bg);
+
+  font-family:Inter,sans-serif;
+
+  color:var(--text);
+}
+
+/* =========================
+   APP
+========================= */
+
+#app{
+
+  width:100%;
+  height:100%;
+
+  display:flex;
+}
+
+/* =========================
+   GRAPH AREA
+========================= */
+
+#graph-area{
+
+  flex:1;
+
+  position:relative;
+
+  background:
+    radial-gradient(
+      circle at top,
+      #ffffff 0%,
+      #f5f7fb 70%
+    );
+}
+
+#sigma-container{
+
+  position:absolute;
+
+  inset:0;
+}
+
+/* =========================
+   TOPBAR
+========================= */
+
+#topbar{
+
+  position:absolute;
+
+  top:18px;
+  left:18px;
+  right:18px;
+
+  z-index:20;
+
+  display:flex;
+
+  justify-content:space-between;
+
+  pointer-events:none;
+}
+
+.toolbar{
+
+  display:flex;
+
+  align-items:center;
+
+  gap:10px;
+
+  pointer-events:auto;
+
+  background:rgba(255,255,255,0.92);
+
+  backdrop-filter:blur(16px);
+
+  border:1px solid var(--border);
+
+  border-radius:16px;
+
+  padding:10px 12px;
+
+  box-shadow:var(--shadow);
+}
+
+button{
+
+  border:none;
+
+  background:#f8fafc;
+
+  color:var(--text);
+
+  padding:10px 14px;
+
+  border-radius:12px;
+
+  cursor:pointer;
+
+  font-size:14px;
+
+  font-weight:500;
+
+  transition:0.18s ease;
+}
+
+button:hover{
+
+  background:#eef2ff;
+}
+
+input{
+
+  width:260px;
+
+  border:none;
+
+  outline:none;
+
+  background:#f8fafc;
+
+  border:1px solid var(--border);
+
+  border-radius:12px;
+
+  padding:10px 14px;
+
+  font-size:14px;
+}
+
+input::placeholder{
+
+  color:#94a3b8;
+}
+
+/* =========================
+   SIDEBAR
+========================= */
+
+#sidebar{
+  width:440px;
+  min-width:0;
+  background:white;
+  border-left:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  position:relative;
+  overflow:visible;
+  transition:width 0.28s cubic-bezier(0.4,0,0.2,1);
+}
+
+#sidebar.collapsed{
+  width:0;
+  border-left:none;
+}
+
+#sidebar-inner{
+  width:440px;
+  min-width:440px;
+  height:100%;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  background:white;
+}
+
+#sidebar.collapsed #sidebar-inner{
+  visibility:hidden;
+}
+
+#sidebar-toggle{
+  position:absolute;
+  left:-32px;
+  top:50%;
+  transform:translateY(-50%);
+  width:32px;
+  height:52px;
+  background:white;
+  border:1px solid var(--border);
+  border-right:none;
+  border-radius:10px 0 0 10px;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  z-index:30;
+  padding:0;
+  box-shadow:-4px 0 14px rgba(15,23,42,0.10);
+  color:#94a3b8;
+  transition:background 0.15s,color 0.15s,box-shadow 0.15s;
+}
+
+#sidebar-toggle:hover{
+  background:#f1f5f9;
+  color:#334155;
+  box-shadow:-4px 0 18px rgba(15,23,42,0.15);
+}
+
+/* resize drag strip — removed */
+
+#sidebar-header{
+
+  padding:24px;
+
+  border-bottom:1px solid var(--border);
+}
+
+#sidebar-title{
+
+  font-size:18px;
+
+  font-weight:700;
+}
+
+#sidebar-subtitle{
+
+  margin-top:6px;
+
+  color:var(--muted);
+
+  font-size:13px;
+}
+
+#details{
+
+  flex:1;
+
+  overflow:auto;
+
+  padding:24px;
+}
+
+.section{
+
+  margin-bottom:28px;
+}
+
+.label{
+
+  font-size:11px;
+
+  text-transform:uppercase;
+
+  letter-spacing:0.08em;
+
+  color:var(--muted);
+
+  margin-bottom:8px;
+}
+
+.value{
+
+  font-size:14px;
+
+  line-height:1.7;
+}
+
+.property{
+
+  display:flex;
+
+  justify-content:space-between;
+
+  padding:10px 0;
+
+  border-bottom:1px solid #f1f5f9;
+}
+
+.property-key{
+
+  color:#64748b;
+
+  font-size:13px;
+}
+
+.property-value{
+
+  font-size:13px;
+
+  font-weight:500;
+}
+
+.node-label-badge{
+
+  display:inline-flex;
+
+  align-items:center;
+
+  padding:5px 14px;
+
+  border-radius:999px;
+
+  font-size:13px;
+
+  font-weight:700;
+
+  margin-bottom:14px;
+
+  letter-spacing:0.02em;
+
+}
+
+.rel-badge{
+
+  display:inline-flex;
+
+  align-items:center;
+
+  padding:5px 14px;
+
+  border-radius:999px;
+
+  font-size:12px;
+
+  font-weight:700;
+
+  background:#e2e8f0;
+
+  color:#334155;
+
+  letter-spacing:0.06em;
+
+  margin-bottom:16px;
+
+}
+
+.props-table{
+
+  width:100%;
+
+  border-collapse:collapse;
+
+  font-size:13px;
+
+}
+
+.props-table td{
+
+  padding:10px 6px;
+
+  border-bottom:1px solid #f1f5f9;
+
+  vertical-align:top;
+
+}
+
+.props-table td:first-child{
+
+  color:#64748b;
+
+  width:42%;
+
+  font-weight:500;
+
+}
+
+.props-table td:last-child{
+
+  color:#0f172a;
+
+  font-weight:600;
+
+  text-align:right;
+
+  word-break:break-all;
+
+}
+
+/* =========================
+   CONTEXT MENU
+========================= */
+
+#context-menu{
+
+  position:absolute;
+
+  display:none;
+
+  min-width:260px;
+
+  background:white;
+
+  border:1px solid var(--border);
+
+  border-radius:16px;
+
+  overflow:hidden;
+
+  z-index:9999;
+
+  box-shadow:
+    0 20px 50px rgba(15,23,42,0.14);
+}
+
+.menu-item{
+
+  padding:13px 16px;
+
+  cursor:pointer;
+
+  font-size:14px;
+
+  transition:0.15s ease;
+}
+
+.menu-item:hover{
+
+  background:#f8fafc;
+}
+
+.menu-divider{
+
+  height:1px;
+
+  background:#f1f5f9;
+}
+
+/* =========================
+   STATUS
+========================= */
+
+#status{
+
+  position:absolute;
+
+  left:18px;
+  bottom:18px;
+
+  z-index:20;
+
+  background:rgba(255,255,255,0.95);
+
+  border:1px solid var(--border);
+
+  border-radius:14px;
+
+  padding:10px 14px;
+
+  font-size:13px;
+
+  color:var(--muted);
+
+  box-shadow:var(--shadow);
+}
+
+/* =========================
+   INFO MODAL
+========================= */
+
+#info-modal{
+  display:none;
+  position:fixed;
+  inset:0;
+  z-index:2000;
+  background:rgba(15,23,42,0.45);
+  align-items:center;
+  justify-content:center;
+}
+
+#info-modal.open{
+  display:flex;
+}
+
+.info-box{
+  background:#ffffff;
+  border-radius:20px;
+  padding:28px 32px;
+  max-width:430px;
+  width:90%;
+  box-shadow:0 20px 60px rgba(15,23,42,0.22);
+}
+
+.info-title{
+  font-size:16px;
+  font-weight:700;
+  color:#0f172a;
+  margin-bottom:18px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.info-close{
+  background:none;
+  color:#64748b;
+  padding:4px 10px;
+  font-size:18px;
+  line-height:1;
+  border-radius:8px;
+}
+
+.info-row{
+  display:flex;
+  gap:16px;
+  padding:9px 0;
+  border-bottom:1px solid #f1f5f9;
+  font-size:13px;
+}
+
+.info-row:last-child{
+  border-bottom:none;
+}
+
+.info-key{
+  font-weight:600;
+  color:#0f172a;
+  min-width:140px;
+}
+
+.info-val{
+  color:#64748b;
+  line-height:1.5;
+}
+
+/* =========================
+   OVERVIEW PANEL
+========================= */
+.ov-wrap{font-family:Inter,sans-serif;}
+.ov-title{font-size:15px;font-weight:700;color:#0f172a;margin-bottom:20px;}
+.ov-section{margin-bottom:22px;}
+.ov-section-label{font-size:13px;font-weight:600;color:#0f172a;margin-bottom:10px;}
+.ov-divider{height:1px;background:#e5e7eb;margin:16px 0;}
+.ov-badges-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.ov-badge{display:inline-flex;align-items:center;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:700;color:#0f172a;cursor:pointer;transition:all 0.15s;}
+.ov-badge:hover{filter:brightness(0.88);transform:scale(1.06);box-shadow:0 2px 10px rgba(0,0,0,0.14);}
+.ov-badge-all{background:#A782EF;color:#0f172a;}
+.ov-badge-rel{background:#e2e8f0;color:#0f172a;}
+
+/* =========================
+   DETAILS PANEL
+========================= */
+.det-wrap{font-family:Inter,sans-serif;}
+.det-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #e5e7eb;}
+.det-title{font-size:15px;font-weight:700;color:#0f172a;}
+.det-copy-all{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;cursor:pointer;color:#64748b;display:flex;align-items:center;transition:0.15s;}
+.det-copy-all:hover{background:#eef2ff;color:#2563eb;}
+.det-node-badge{display:inline-flex;align-items:center;padding:4px 16px;border-radius:999px;font-size:13px;font-weight:700;margin-bottom:16px;letter-spacing:0.01em;}
+.det-rel-badge{display:inline-flex;align-items:center;justify-content:center;padding:4px 20px;font-size:12px;font-weight:800;color:#0f172a;background:#e2e8f0;margin-bottom:16px;letter-spacing:0.06em;clip-path:polygon(14px 0%,calc(100% - 14px) 0%,100% 50%,calc(100% - 14px) 100%,14px 100%,0% 50%);}
+.det-table{width:100%;border-collapse:collapse;font-size:13px;}
+.det-th{text-align:left;padding:7px 6px 7px 4px;font-size:11px;font-weight:700;color:#0f172a;border-bottom:2px solid #e5e7eb;text-transform:uppercase;letter-spacing:0.06em;}
+.det-th-copy{width:28px;border-bottom:2px solid #e5e7eb;}
+.det-row{border-bottom:1px solid #f1f5f9;}
+.det-row:last-child{border-bottom:none;}
+.det-key{padding:10px 6px 10px 4px;font-weight:700;color:#0f172a;width:38%;vertical-align:top;word-break:break-word;}
+.det-val{padding:10px 4px;color:#0f172a;font-weight:400;vertical-align:top;word-break:break-all;line-height:1.5;}
+.det-copy-btn{padding:10px 2px 10px 6px;vertical-align:top;color:#cbd5e1;cursor:pointer;white-space:nowrap;}
+.det-copy-btn:hover{color:#2563eb;}
+
+/* =========================
+   PANEL ANIMATION + ROW HOVER
+========================= */
+@keyframes panelIn{
+  from{ opacity:0; transform:translateY(6px); }
+  to  { opacity:1; transform:translateY(0);   }
+}
+.animate-panel-in{ animation:panelIn 0.2s ease-out; }
+.row-copy{ opacity:0; transition:opacity 0.15s; }
+.det-tr:hover .row-copy{ opacity:1; }
+.det-tr:last-child{ border-bottom:none !important; }
+
+/* =========================
+   TOOLBAR BUTTONS
+========================= */
+.toolbar .tb-btn{
+  background:transparent;
+  padding:5px 10px;
+  border-radius:8px;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  font-size:13px;
+  font-weight:500;
+  color:#334155;
+  white-space:nowrap;
+  border:none;
+}
+.toolbar .tb-btn:hover{ background:#f1f5f9; }
+.toolbar .tb-icon-btn{ padding:5px 7px; color:#64748b; }
+.toolbar-sep{ width:1px; height:16px; background:#e2e8f0; flex-shrink:0; }
+.search-toolbar{ gap:8px; padding:7px 14px; }
+.search-toolbar input{
+  width:190px;
+  border:none;
+  background:transparent;
+  padding:0;
+  font-size:13px;
+  outline:none;
+  color:#0f172a;
+  caret-color:transparent;
+}
+.search-toolbar input:focus{
+  caret-color:auto;
+}
+.search-toolbar input::placeholder{ color:#94a3b8; }
+
+</style>
+
+</head>
+
+<body>
+
+<div id="app">
+
+  <!-- =========================
+       GRAPH
+  ========================== -->
+
+  <div id="graph-area">
+
+    <!-- TOPBAR -->
+
+    <div id="topbar">
+
+      <div class="toolbar" style="padding:5px 8px;gap:2px;">
+
+        <button id="fit-btn" class="tb-btn" title="Fit to screen">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+          Fit
+        </button>
+
+        <div class="toolbar-sep"></div>
+
+        <button id="collapse-btn" class="tb-btn" title="Collapse all nodes">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/></svg>
+          Collapse All
+        </button>
+
+        <div class="toolbar-sep"></div>
+
+        <button id="layout-btn" class="tb-btn" title="Auto arrange nodes">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Auto Layout
+        </button>
+
+        <div class="toolbar-sep"></div>
+
+        <button id="info-btn" class="tb-btn tb-icon-btn" title="How to use">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </button>
+
+      </div>
+
+      <div class="toolbar search-toolbar">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="search-input" placeholder="Search nodes…" />
+      </div>
+
+    </div>
+
+    <!-- GRAPH -->
+
+    <div id="sigma-container"></div>
+
+
+  </div>
+
+  <!-- =========================
+       SIDEBAR
+  ========================== -->
+
+  <div id="sidebar">
+
+    <button id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle panel">
+      <svg id="toggle-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" style="transition:transform 0.25s;">
+        <path d="M7.5 2.5L4.5 6L7.5 9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+
+    <div id="sidebar-inner">
+
+      <!-- <div id="sidebar-header">
+
+        <div id="sidebar-title">
+          Graph Explorer
+        </div>
+
+        <div id="sidebar-subtitle">
+          Single-click: details &nbsp;·&nbsp; Double-click: expand
+        </div>
+
+      </div> -->
+
+      <div id="details"></div>
+
+    </div>
+
+  </div>
+
+</div>
+
+<!-- INFO MODAL -->
+
+<div id="info-modal">
+  <div class="info-box">
+
+    <div class="info-title">
+      How to use
+      <button class="info-close" id="close-info">&#x2715;</button>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Click node / edge</span>
+      <span class="info-val">Select it &amp; view properties in the side panel</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Double-click node</span>
+      <span class="info-val">Expand or collapse its connected children</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Drag node</span>
+      <span class="info-val">Reposition the node freely</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Right-click node</span>
+      <span class="info-val">Context menu: Expand / Collapse / Dismiss</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Scroll wheel</span>
+      <span class="info-val">Zoom in / out</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Drag canvas</span>
+      <span class="info-val">Pan the view</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Search box</span>
+      <span class="info-val">Filter nodes by name (others are dimmed)</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Fit button</span>
+      <span class="info-val">Reset camera to show all nodes</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Collapse All button</span>
+      <span class="info-val">Hide all expanded children</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-key">Auto Layout button</span>
+      <span class="info-val">Force-directed auto-arrange — animates nodes to optimal positions</span>
+    </div>
+
+  </div>
+</div>
+
+<!-- CONTEXT MENU -->
+
+<div id="context-menu"></div>
+
+<script>
+
+/* =========================
+   DISABLE BROWSER MENU
+========================= */
+
+document.addEventListener(
+  "contextmenu",
+  e=>e.preventDefault()
+);
+
+/* =========================
+   GRAPH
+========================= */
+
+const graph =
+  new graphology.DirectedGraph();
+
+const graphState = {
+
+  selectedNode:null,
+
+  selectedEdge:null
+
+};
+
+/* =========================
+   NODE COLOUR PALETTE
+========================= */
+
+const NODE_PALETTE = [
+  "#FFE081","#C990C0","#F79767","#57C7E3",
+  "#F16667","#D9C8AE","#8DCC93","#ECB5C9",
+  "#4C8EDA","#FFC454","#DA7194","#569480"
+];
+
+/* Pre-seed semantic type → color assignments; unknown types
+   auto-pick the next unused palette slot.               */
+const _typeColorCache = new Map([
+  ["Table",           "#FFE081"],
+  ["Column",          "#57C7E3"],
+  ["BusinessDomain",  "#8DCC93"],
+  ["Insight",         "#C990C0"]
+]);
+let _palIdx = 0;
+function typeColor(type){
+  if(!_typeColorCache.has(type)){
+    const reserved = new Set(_typeColorCache.values());
+    while(reserved.has(NODE_PALETTE[_palIdx % NODE_PALETTE.length])) _palIdx++;
+    _typeColorCache.set(type, NODE_PALETTE[_palIdx++ % NODE_PALETTE.length]);
+  }
+  return _typeColorCache.get(type);
+}
+
+/* Pick black or white text so it's readable on any palette color */
+function badgeTextColor(hex){
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return (r*299 + g*587 + b*114) / 1000 > 145 ? "#0f172a" : "#ffffff";
+}
+
+/* =========================
+   DATA
+========================= */
+
+const nodes = [
+
+  {
+    id:"acquirer",
+    label:"acquirer",
+    nodeType:"Table",
+    color:"#FFE081",
+    size:36,
+    expanded:false,
+    hiddenChildren:[
+      "account_id",
+      "merchant_id",
+      "scenario_forecast"
+    ],
+    properties:{
+      business_domain:"card_acquiring",
+      community_id:"23",
+      records:"1.2M"
+    }
+  },
+
+  {
+    id:"bank",
+    label:"bank",
+    nodeType:"Table",
+    color:"#FFE081",
+    size:30,
+    expanded:false,
+    hiddenChildren:[
+      "trend_analysis"
+    ],
+    properties:{
+      business_domain:"card_acquiring",
+      community_id:"23",
+      records:"850K"
+    }
+  },
+
+  {
+    id:"card_settlement",
+    label:"card_settlement",
+    nodeType:"Table",
+    color:"#FFE081",
+    size:30,
+    expanded:false,
+    properties:{
+      business_domain:"settlement",
+      community_id:"24",
+      records:"5.4M"
+    }
+  },
+
+  {
+    id:"card_acquiring_biz",
+    label:"card_acquiring",
+    nodeType:"BusinessDomain",
+    color:"#8DCC93",
+    size:32,
+    expanded:false,
+    properties:{
+      description:"Card acquiring ops"
+    }
+  },
+
+  {
+    id:"account_id",
+    label:"account_id",
+    nodeType:"Column",
+    color:"#57C7E3",
+    size:26,
+    hidden:true,
+    properties:{
+      type:"VARCHAR(36)",
+      nullable:"false"
+    }
+  },
+
+  {
+    id:"merchant_id",
+    label:"merchant_id",
+    nodeType:"Column",
+    color:"#57C7E3",
+    size:26,
+    hidden:true,
+    properties:{
+      type:"VARCHAR(50)",
+      nullable:"false"
+    }
+  },
+
+  {
+    id:"scenario_forecast",
+    label:"scenario_forecast",
+    nodeType:"Insight",
+    color:"#C990C0",
+    size:28,
+    hidden:true,
+    properties:{
+      description:"Card acquiring scenario forecasts"
+    }
+  },
+
+  {
+    id:"trend_analysis",
+    label:"trend_analysis",
+    nodeType:"Insight",
+    color:"#C990C0",
+    size:28,
+    hidden:true,
+    properties:{
+      description:"Trend analysis for bank transactions"
+    }
+  }
+
+];
+
+nodes.forEach(node=>{
+
+  graph.addNode(node.id,node);
+
+});
+
+/* Apply palette colours to every node by its type */
+graph.forEachNode((id,attrs)=>{
+  graph.setNodeAttribute(id,"color",typeColor(attrs.nodeType||"Unknown"));
+});
+
+const relationships = [
+
+  {
+    source:"acquirer",
+    target:"bank",
+    type:"JOINS_TO"
+  },
+
+  {
+    source:"acquirer",
+    target:"card_settlement",
+    type:"JOINS_TO"
+  },
+
+  {
+    source:"bank",
+    target:"card_settlement",
+    type:"STRUCTURALLY_SIMILAR"
+  },
+
+  {
+    source:"acquirer",
+    target:"account_id",
+    type:"HAS_COLUMN"
+  },
+
+  {
+    source:"acquirer",
+    target:"merchant_id",
+    type:"HAS_COLUMN"
+  },
+
+  {
+    source:"acquirer",
+    target:"card_acquiring_biz",
+    type:"BELONGS_TO"
+  },
+
+  {
+    source:"card_acquiring_biz",
+    target:"acquirer",
+    type:"CONTAINS_TABLE"
+  },
+
+  {
+    source:"scenario_forecast",
+    target:"acquirer",
+    type:"REQUIRES_TABLE"
+  },
+
+  {
+    source:"trend_analysis",
+    target:"bank",
+    type:"REQUIRES_TABLE"
+  }
+
+];
+
+relationships.forEach(r=>{
+
+  graph.addEdge(
+
+    r.source,
+    r.target,
+
+    {
+
+      relationship:r.type,
+
+      label:r.type,
+
+      color:"#A8B5C4",
+
+      size:2,
+
+      hidden:
+        graph.getNodeAttribute(
+          r.source,
+          "hidden"
+        ) ||
+
+        graph.getNodeAttribute(
+          r.target,
+          "hidden"
+        )
+
+    }
+
+  );
+
+});
+
+/* =========================
+   PARALLEL EDGE DETECTION
+   Groups edges by canonical node pair and assigns curvature offsets so
+   parallel edges arc apart — Neo4j style.
+========================= */
+
+(function tagParallelEdges(){
+  const pairMap = new Map();
+  graph.forEachEdge((edge, _a, src, tgt) => {
+    const key = [src, tgt].sort().join('\x00');
+    if(!pairMap.has(key)) pairMap.set(key, []);
+    pairMap.get(key).push(edge);
+  });
+  pairMap.forEach(edges => {
+    if(edges.length < 2) return;
+    const n = edges.length;
+    edges.forEach((edge, i) => {
+      /* n=2 → -0.25, +0.25   n=3 → -0.3, 0, +0.3 */
+      const curvature = (i - (n - 1) / 2) * (0.5 / Math.max(n - 1, 1));
+      graph.setEdgeAttribute(edge, 'isCurved',  true);
+      graph.setEdgeAttribute(edge, 'curvature', curvature);
+    });
+  });
+})();
+
+/* =========================
+   CIRCULAR LAYOUT  (runs after edges so degree() is accurate)
+========================= */
+
+(function circularLayout(){
+  const visible = [];
+  const hidden  = [];
+  graph.forEachNode((id, attrs) => {
+    if(attrs.hidden) hidden.push(id);
+    else             visible.push(id);
+  });
+  /* Hub nodes first so highly-connected nodes spread evenly around the ring */
+  visible.sort((a,b) => graph.degree(b) - graph.degree(a));
+  const n = visible.length;
+  if(n === 0) return;
+  /* Radius scales with VISIBLE count — camera fits the circle cleanly */
+  const R = Math.max(5, n * 0.9);
+  visible.forEach((id, i) => {
+    const angle = (2 * Math.PI * i) / n - Math.PI / 2;  /* 12-o'clock start */
+    graph.setNodeAttribute(id, "x", R * Math.cos(angle));
+    graph.setNodeAttribute(id, "y", R * Math.sin(angle));
+  });
+  /* Hidden nodes: park near their closest visible neighbour so they appear
+     in the right spot when expanded; fallback to a centre offset */
+  hidden.forEach((id, idx) => {
+    const nb = graph.neighbors(id).find(nb => !graph.getNodeAttribute(nb, "hidden"));
+    const px = nb ? graph.getNodeAttribute(nb, "x") : 0;
+    const py = nb ? graph.getNodeAttribute(nb, "y") : 0;
+    const a  = (2 * Math.PI * idx) / Math.max(1, hidden.length);
+    graph.setNodeAttribute(id, "x", px + Math.cos(a) * 1.2);
+    graph.setNodeAttribute(id, "y", py + Math.sin(a) * 1.2);
+  });
+})();
+
+/* =========================
+   INITIAL NODE LIMIT
+========================= */
+
+const MAX_INITIAL_NODES = 25;
+(function applyInitialLimit(){
+  const visible = [];
+  graph.forEachNode((id, attrs) => { if(!attrs.hidden) visible.push(id); });
+  if(visible.length <= MAX_INITIAL_NODES) return;
+  visible.sort((a,b) => graph.degree(b) - graph.degree(a));
+  visible.slice(MAX_INITIAL_NODES).forEach(id => {
+    graph.setNodeAttribute(id, "hidden", true);
+    graph.edges(id).forEach(e => graph.setEdgeAttribute(e, "hidden", true));
+  });
+})();
+
+/* Hide all edges on initial render — Neo4j style: edges revealed per-node on click */
+graph.forEachEdge(e => graph.setEdgeAttribute(e, "hidden", true));
+
+/* =========================
+   RENDERER
+========================= */
+
+const renderer =
+  new Sigma(
+
+    graph,
+
+    document.getElementById(
+      "sigma-container"
+    ),
+
+    {
+
+      renderLabels:false,
+
+      labelDensity:1,
+
+      labelGridCellSize:1,
+
+      labelRenderedSizeThreshold:0,
+
+      labelFont:"Inter",
+
+      labelSize:14,
+
+      defaultEdgeType:"arrow",
+
+      renderEdgeLabels:true,
+
+      edgeLabelSize:10,
+
+      edgeLabelRenderedSizeThreshold:0,
+
+      enableEdgeEvents:true,
+
+      zIndex:true,
+
+      /* labels drawn by glow-canvas overlay — suppress Sigma's own label+hover renderers */
+      defaultDrawNodeLabel: ()=>{},
+
+      /* suppress built-in hover tooltip — keep glow-canvas hover ring instead */
+      defaultDrawNodeHover: ()=>{},
+
+      /* ALL edge labels are drawn on the glow canvas (drawGlows) where we use
+         getVP() for verified CSS-pixel coords. Suppress Sigma's built-in pass. */
+      defaultDrawEdgeLabel: ()=>{}
+
+    }
+
+  );
+
+/* =========================
+   DRAGGING
+========================= */
+
+/*
+ * Anchor approach — every frame we set positions as (snapshotted_start + total_delta).
+ * This eliminates per-frame incremental accumulation which caused multi-edge nodes
+ * to drift or stack: reading prevX after setNodeAttribute could race with Sigma's
+ * internal attribute cache, making the incremental delta wrong on dense subgraphs.
+ *
+ * camera.disable() — Sigma registers its own camera-pan handler at construction
+ * time (before ours), so preventSigmaDefault() in mousemove fires too late.
+ * camera.disable() freezes the camera before any mousemove handler runs.
+ */
+
+let hasDragged          = false;
+let justClickedElement  = false;
+let dragNode            = null;
+let hoveredNode         = null;  /* node currently under cursor */
+let dragStartVP         = null;  /* viewport pos at first mousemove */
+let dragMouseStart      = null;  /* cursor in graph-space at first move */
+let dragNodeStart       = null;  /* dragged node's graph pos at first move */
+let dragNeighborStarts  = {};    /* { nbId → {x,y} } snapshotted at first move */
+const pinnedNodes       = new Set();
+
+const _sigmaContainer   = () => document.getElementById("sigma-container");
+
+function _endDrag(){
+  if(!dragNode) return;
+  if(hasDragged) pinnedNodes.add(dragNode);
+  const cam = renderer.getCamera();
+  if(typeof cam.enable === "function") cam.enable();
+  dragNode       = null;
+  dragStartVP    = null;
+  dragMouseStart = null;
+  dragNodeStart  = null;
+  _sigmaContainer().style.cursor = hoveredNode ? "grab" : "default";
+  renderer.refresh();
+}
+
+/* Catch mouseup outside the canvas — left button only, ignore right-click */
+document.addEventListener("mouseup", e => { if(e.button === 0) _endDrag(); });
+
+renderer.on("downNode", ({node, event}) => {
+  event.preventSigmaDefault();
+  const cam = renderer.getCamera();
+  if(typeof cam.disable === "function") cam.disable();
+  dragNode       = node;
+  dragStartVP    = null;
+  dragMouseStart = null;
+  dragNodeStart  = null;
+  hasDragged     = false;
+  _sigmaContainer().style.cursor = "grabbing";
+  renderer.refresh();
+});
+
+renderer.getMouseCaptor().on("mousemove", e => {
+  if(dragNode === null) return;
+  e.preventSigmaDefault();       /* stop Sigma's camera from panning during drag */
+  e.original.preventDefault();
+
+  /* ── Snapshot all starting positions on very first mousemove ─────────── */
+  if(!dragStartVP){
+    dragStartVP    = { x: e.x, y: e.y };
+    dragMouseStart = renderer.viewportToGraph(dragStartVP);
+    dragNodeStart  = {
+      x: graph.getNodeAttribute(dragNode, "x"),
+      y: graph.getNodeAttribute(dragNode, "y"),
+    };
+    return;
+  }
+
+  /* ── 5-px threshold — micro-tremor on click must not count as drag ───── */
+  if(Math.hypot(e.x - dragStartVP.x, e.y - dragStartVP.y) < 5) return;
+  hasDragged = true;
+
+  /* ── Total cursor delta in graph-space since drag started ────────────── */
+  const cur = renderer.viewportToGraph({ x: e.x, y: e.y });
+  graph.setNodeAttribute(dragNode, "x", dragNodeStart.x + (cur.x - dragMouseStart.x));
+  graph.setNodeAttribute(dragNode, "y", dragNodeStart.y + (cur.y - dragMouseStart.y));
+});
+
+renderer.getMouseCaptor().on("mouseup", _endDrag);
+
+/* =========================
+   REDUCERS
+========================= */
+
+let searchQuery = "";
+
+/* single unified reducer — visual states: search-dim, hover-enlarge, drag-highlight */
+renderer.setSetting(
+  "nodeReducer",
+  (node,data)=>{
+    const res = {...data};
+
+    if(
+      searchQuery &&
+      !data.label.toLowerCase().includes(searchQuery)
+    ){
+      res.color = "#E2E8F0";
+      res.label = "";
+      return res;
+    }
+
+    /* Node being actively dragged — make it clearly distinct */
+    if(node === dragNode){
+      res.size        = data.size * 1.25;
+      res.zIndex      = 10;
+      res.borderColor = "#f59e0b";
+      res.borderSize  = 3;
+      return res;
+    }
+
+    /* Pinned (manually placed) node — amber ring so user knows it's anchored */
+    if(pinnedNodes.has(node) && node !== hoveredNode){
+      res.borderColor = "#f59e0b";
+      res.borderSize  = 2;
+    }
+
+    /* Hovered node (not dragging) — subtle enlarge for pointer affordance */
+    if(node === hoveredNode){
+      res.size   = data.size * 1.15;
+      res.zIndex = 8;
+    }
+
+    return res;
+  }
+);
+
+renderer.setSetting(
+  "edgeReducer",
+  (_edge, data) => {
+    /* Curved parallel edges are fully drawn on the glow canvas —
+       make Sigma's own rendering invisible so they don't double-draw. */
+    if(data.isCurved) return { ...data, color: 'rgba(0,0,0,0)', label: '' };
+    return { ...data, forceLabel: true };
+  }
+);
+
+/* =========================
+   GLOW CANVAS OVERLAY
+========================= */
+
+const glowCanvas = document.createElement("canvas");
+glowCanvas.style.cssText =
+  "position:absolute;inset:0;pointer-events:none;z-index:10;";
+document
+  .getElementById("sigma-container")
+  .appendChild(glowCanvas);
+
+const glowCtx = glowCanvas.getContext("2d");
+let glowW = 0, glowH = 0;  /* CSS-pixel dimensions kept in sync with container */
+
+function resizeGlow(){
+  const c   = document.getElementById("sigma-container");
+  const dpr = window.devicePixelRatio || 1;
+  glowW = c.offsetWidth;
+  glowH = c.offsetHeight;
+  /* CSS size matches the container exactly */
+  glowCanvas.style.width  = glowW + "px";
+  glowCanvas.style.height = glowH + "px";
+  /* Physical pixel size accounts for HiDPI so lines match Sigma’s WebGL weight */
+  glowCanvas.width  = Math.round(glowW * dpr);
+  glowCanvas.height = Math.round(glowH * dpr);
+  /* Scale context so all draw calls use CSS pixels (same as graphToViewport) */
+  glowCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resizeGlow();
+renderer.on("resize", resizeGlow);
+
+/* =========================
+   CURVED EDGE HELPER
+   Draws one parallel (bezier) edge + its label on the glow canvas.
+========================= */
+
+/* Truncate text with '\u2026' to fit maxW pixels in the current ctx font.
+   ctx.font must be set before calling.                                   */
+function truncateLabel(ctx, text, maxW){
+  if(ctx.measureText(text).width <= maxW) return text;
+  let lo = 1, hi = text.length - 1, result = '\u2026';
+  while(lo <= hi){
+    const mid = (lo + hi) >> 1;
+    const t = text.slice(0, mid) + '\u2026';
+    if(ctx.measureText(t).width <= maxW){ result = t; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return result;
+}
+
+function drawCurvedEdgeGlow(ctx, edge, selected){
+  const src = graph.source(edge);
+  const tgt = graph.target(edge);
+  if(graph.getNodeAttribute(src,'hidden') || graph.getNodeAttribute(tgt,'hidden')) return;
+  if(graph.getEdgeAttribute(edge,'hidden')) return;
+
+  const sd        = getVP(src);
+  const td        = getVP(tgt);
+  const curvature = graph.getEdgeAttribute(edge,'curvature') || 0;
+
+  const dx   = td.x - sd.x;
+  const dy   = td.y - sd.y;
+  const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+
+  /* CANONICAL perpendicular — always computed from the lexicographically-first
+     node to the second, so bidirectional parallel edges (A→B and B→A) get
+     opposite curvature offsets instead of both arcing to the same side.     */
+  const [canonA, canonB] = [src, tgt].sort();
+  const csdVP = getVP(canonA);
+  const ctdVP = getVP(canonB);
+  const cdx   = ctdVP.x - csdVP.x;
+  const cdy   = ctdVP.y - csdVP.y;
+  const cdist = Math.sqrt(cdx*cdx + cdy*cdy) || 1;
+  const px = -cdy / cdist;   /* perpendicular to canonical A→B direction */
+  const py =  cdx / cdist;
+
+  /* Quadratic bezier control point */
+  const cpX = (sd.x + td.x) / 2 + px * curvature * dist;
+  const cpY = (sd.y + td.y) / 2 + py * curvature * dist;
+
+  /* Tangent at t=0 (src→cp) */
+  const t0x = cpX - sd.x, t0y = cpY - sd.y;
+  const t0l = Math.sqrt(t0x*t0x + t0y*t0y) || 1;
+
+  /* Tangent at t=1 (cp→tgt) */
+  const t1x = td.x - cpX, t1y = td.y - cpY;
+  const t1l = Math.sqrt(t1x*t1x + t1y*t1y) || 1;
+  const tx  = t1x / t1l, ty = t1y / t1l;
+
+  const GAP = 2;
+  /* Scale lines/arrows with zoom so they match Sigma's WebGL edges at every
+     zoom level — capped at 1 so they never blow up when zoomed in.        */
+  const _ratio = renderer.getCamera().ratio;
+  const sf     = Math.min(1, 1 / _ratio);
+  const lw        = (selected ? 4   : 2)   * sf;
+  const ARROW_LEN = (selected ? 12  : 9)   * sf;
+  const ARROW_WID = (selected ? 5   : 3.5) * sf;
+  const color = selected ? "#57C7E3" : "#A8B5C4";
+
+  /* Start: on source node border along initial tangent */
+  const x0 = sd.x + (t0x / t0l) * (sd.size + GAP);
+  const y0 = sd.y + (t0y / t0l) * (sd.size + GAP);
+
+  /* End: arrowhead tip on target border; base just behind it */
+  const tipX  = td.x - tx * (td.size + GAP);
+  const tipY  = td.y - ty * (td.size + GAP);
+  const baseX = tipX - tx * ARROW_LEN;
+  const baseY = tipY - ty * ARROW_LEN;
+
+  ctx.save();
+  if(selected){ ctx.shadowColor = "#57C7E3"; ctx.shadowBlur = 18; }
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = lw;
+  ctx.lineCap     = "round";
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.quadraticCurveTo(cpX, cpY, baseX, baseY);
+  ctx.stroke();
+
+  /* Arrowhead */
+  const apx = -ty, apy = tx;
+  ctx.fillStyle = color;
+  ctx.shadowBlur = selected ? 10 : 0;
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(baseX + apx * ARROW_WID, baseY + apy * ARROW_WID);
+  ctx.lineTo(baseX - apx * ARROW_WID, baseY - apy * ARROW_WID);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  /* Label at bezier midpoint — rotated PARALLEL to the arc tangent so it
+     sits beside the arc without crossing it.                              */
+  const label = graph.getEdgeAttribute(edge,'label');
+  if(!label || searchQuery) return;
+
+  /* Available space = chord between node borders; arc is longer but chord
+     gives a conservative min so the label never overruns the arrowhead.  */
+  const arcAvail = dist - sd.size - td.size - 16;
+  if(arcAvail < 16) return;   /* no room even for one char + \u2026 */
+
+  /* Arc midpoint at bezier t=0.5 */
+  const lx = 0.25*sd.x + 0.5*cpX + 0.25*td.x;
+  const ly = 0.25*sd.y + 0.5*cpY + 0.25*td.y;
+
+  /* Tangent at t=0.5 of quadratic bezier = P2 - P0 (exact derivative) */
+  let labelAngle = Math.atan2(td.y - sd.y, td.x - sd.x);
+  /* Normalise: always read left-to-right */
+  if(labelAngle > Math.PI / 2 || labelAngle < -Math.PI / 2) labelAngle += Math.PI;
+
+  const fontSize = selected ? 11 : 10;
+  const YOFF     = -13;  /* px above the arc in rotated local frame */
+  /* Measure + truncate before save/rotate */
+  ctx.font = `${selected ? 700 : 500} ${fontSize}px Inter,sans-serif`;
+  const displayLabel = truncateLabel(ctx, label, arcAvail);
+
+  ctx.save();
+  ctx.translate(lx, ly);
+  ctx.rotate(labelAngle);
+  ctx.textAlign    = "center";
+  ctx.textBaseline = "middle";
+  ctx.font         = `${selected ? 700 : 500} ${fontSize}px Inter,sans-serif`;
+
+  if(selected){
+    const tw  = ctx.measureText(label).width;
+    const pad = 5;
+    const bx  = -tw/2 - pad;
+    const by  = YOFF - fontSize/2 - 3;
+    const bw  = tw + pad*2;
+    const bh  = fontSize + 6;
+    const br  = 4;
+    const rrPath = () => {
+      ctx.beginPath();
+      ctx.moveTo(bx+br,by); ctx.lineTo(bx+bw-br,by);
+      ctx.quadraticCurveTo(bx+bw,by, bx+bw,by+br);
+      ctx.lineTo(bx+bw,by+bh-br);
+      ctx.quadraticCurveTo(bx+bw,by+bh, bx+bw-br,by+bh);
+      ctx.lineTo(bx+br,by+bh);
+      ctx.quadraticCurveTo(bx,by+bh, bx,by+bh-br);
+      ctx.lineTo(bx,by+br);
+      ctx.quadraticCurveTo(bx,by, bx+br,by);
+      ctx.closePath();
+    };
+    rrPath(); ctx.fillStyle = "rgba(255,255,255,0.98)"; ctx.fill();
+    rrPath(); ctx.strokeStyle = "#57C7E3"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = "#0f172a";
+  } else {
+    ctx.fillStyle = "#64748b";
+  }
+  ctx.fillText(displayLabel, 0, YOFF);
+  ctx.restore();
+}
+
+function getVP(node){
+  /* graphToViewport returns CSS-pixel coords; scaleSize matches Sigma's own
+     rendering — both work correctly in Sigma 3.x                          */
+  const nx = graph.getNodeAttribute(node,"x");
+  const ny = graph.getNodeAttribute(node,"y");
+  const ns = graph.getNodeAttribute(node,"size");
+  const vp = renderer.graphToViewport({x:nx, y:ny});
+  const sz = renderer.scaleSize(ns);
+  return { x:vp.x, y:vp.y, size: sz };
+}
+
+function drawGlows(){
+  glowCtx.clearRect(0, 0, glowW, glowH);
+  const W = glowW;
+  const H = glowH;
+
+  /* --- curved parallel edges drawn before nodes so nodes sit on top --- */
+  graph.forEachEdge((edge, attrs) => {
+    if(!attrs.isCurved || attrs.hidden) return;
+    const isSel = graphState.selectedEdge === edge;
+    if(!isSel) drawCurvedEdgeGlow(glowCtx, edge, false);
+  });
+
+  /* --- straight edge labels (uses getVP for verified CSS-pixel coords) --- */
+  if(!searchQuery){
+    graph.forEachEdge((edge, attrs) => {
+      if(attrs.hidden || attrs.isCurved || !attrs.label) return;
+      const src = graph.source(edge);
+      const tgt = graph.target(edge);
+      if(graph.getNodeAttribute(src,'hidden') || graph.getNodeAttribute(tgt,'hidden')) return;
+
+      const sd  = getVP(src);
+      const td  = getVP(tgt);
+      const edx = td.x - sd.x;
+      const edy = td.y - sd.y;
+      const elen = Math.sqrt(edx*edx + edy*edy) || 1;
+      const avail = elen - sd.size - td.size - 16;
+      if(avail < 16) return;
+
+      const cx  = (sd.x + td.x) / 2;
+      const cy  = (sd.y + td.y) / 2;
+      const sel = graphState.selectedEdge === edge;
+      const fontSize = sel ? 11 : 10;
+      const YOFF     = -13;
+
+      let labelAngle = Math.atan2(edy, edx);
+      if(labelAngle > Math.PI / 2 || labelAngle < -Math.PI / 2) labelAngle += Math.PI;
+
+      glowCtx.font = `${sel ? 700 : 500} ${fontSize}px Inter,sans-serif`;
+      const displayLabel = truncateLabel(glowCtx, attrs.label, avail);
+
+      glowCtx.save();
+      glowCtx.translate(cx, cy);
+      glowCtx.rotate(labelAngle);
+      glowCtx.textAlign    = "center";
+      glowCtx.textBaseline = "middle";
+      glowCtx.font         = `${sel ? 700 : 500} ${fontSize}px Inter,sans-serif`;
+
+      if(sel){
+        const tw  = glowCtx.measureText(displayLabel).width;
+        const pad = 5;
+        const bx  = -tw/2 - pad;
+        const by  = YOFF - fontSize/2 - 3;
+        const bw  = tw + pad*2;
+        const bh  = fontSize + 6;
+        const br  = 4;
+        const rrPath = () => {
+          glowCtx.beginPath();
+          glowCtx.moveTo(bx+br,by); glowCtx.lineTo(bx+bw-br,by);
+          glowCtx.quadraticCurveTo(bx+bw,by, bx+bw,by+br);
+          glowCtx.lineTo(bx+bw,by+bh-br);
+          glowCtx.quadraticCurveTo(bx+bw,by+bh, bx+bw-br,by+bh);
+          glowCtx.lineTo(bx+br,by+bh);
+          glowCtx.quadraticCurveTo(bx,by+bh, bx,by+bh-br);
+          glowCtx.lineTo(bx,by+br);
+          glowCtx.quadraticCurveTo(bx,by, bx+br,by);
+          glowCtx.closePath();
+        };
+        rrPath(); glowCtx.fillStyle = "rgba(255,255,255,0.98)"; glowCtx.fill();
+        rrPath(); glowCtx.strokeStyle = "#57C7E3"; glowCtx.lineWidth = 1.5; glowCtx.stroke();
+        glowCtx.fillStyle = "#0f172a";
+      } else {
+        glowCtx.fillStyle = "#64748b";
+      }
+
+      glowCtx.fillText(displayLabel, 0, YOFF);
+      glowCtx.restore();
+    });
+  }
+
+  /* --- node labels drawn inside circles --- */
+  graph.forEachNode((node,attrs)=>{
+    if(attrs.hidden) return;
+    if(searchQuery && !attrs.label.toLowerCase().includes(searchQuery)) return;
+    const d = getVP(node);
+    /* viewport cull: skip off-screen nodes (50px padding for label overflow) */
+    if(d.x < -50 || d.x > W + 50 || d.y < -50 || d.y > H + 50) return;
+    if(d.size < 10) return;                  /* hide labels when zoomed out */
+    const label = attrs.label;
+    if(!label) return;
+
+    const fontSize = Math.max(7, Math.min(d.size * 0.37, 13));
+    glowCtx.font          = `600 ${fontSize}px Inter,sans-serif`;
+    glowCtx.textAlign     = "center";
+    glowCtx.textBaseline  = "middle";
+    glowCtx.fillStyle     = "#0f172a";
+
+    const maxW  = d.size * 1.8;
+    const words = label.split(/[\s_]+/);
+
+    if(words.length <= 1 || glowCtx.measureText(label).width <= maxW){
+      glowCtx.fillText(label, d.x, d.y, maxW);
+    } else {
+      const mid = Math.ceil(words.length / 2);
+      const l1  = words.slice(0,mid).join(" ");
+      const l2  = words.slice(mid).join(" ");
+      glowCtx.fillText(l1, d.x, d.y - fontSize * 0.7, maxW);
+      glowCtx.fillText(l2, d.x, d.y + fontSize * 0.7, maxW);
+    }
+  });
+
+  /* --- selected node glow --- */
+  if(
+    graphState.selectedNode &&
+    graph.hasNode(graphState.selectedNode) &&
+    !graph.getNodeAttribute(graphState.selectedNode,"hidden")
+  ){
+    const d = getVP(graphState.selectedNode);
+    glowCtx.save();
+    glowCtx.shadowColor = "#57C7E3";
+    glowCtx.shadowBlur  = 22;
+    glowCtx.strokeStyle = "#57C7E3";
+    glowCtx.lineWidth   = 3;
+    glowCtx.beginPath();
+    glowCtx.arc(d.x, d.y, d.size + 5, 0, Math.PI * 2);
+    glowCtx.stroke();
+    glowCtx.restore();
+  }
+
+  /* --- selected edge glow --- */
+  if(
+    graphState.selectedEdge &&
+    graph.hasEdge(graphState.selectedEdge) &&
+    !graph.getEdgeAttribute(graphState.selectedEdge,"hidden")
+  ){
+    /* Curved parallel edge: delegate entirely to the curved helper */
+    if(graph.getEdgeAttribute(graphState.selectedEdge,'isCurved')){
+      drawCurvedEdgeGlow(glowCtx, graphState.selectedEdge, true);
+    } else {
+      const src = graph.source(graphState.selectedEdge);
+      const tgt = graph.target(graphState.selectedEdge);
+      const sd  = getVP(src);
+      const td  = getVP(tgt);
+
+      const dx   = td.x - sd.x;
+      const dy   = td.y - sd.y;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if(dist < 1){ return; }
+      const nx = dx / dist;
+      const ny = dy / dist;
+
+      /* Scale glow overlay with zoom — same formula as curved edges */
+      const _r  = renderer.getCamera().ratio;
+      const _sf = Math.min(1, 1 / _r);
+      const ARROW_LEN = 12 * _sf;
+      const ARROW_WID = 5  * _sf;
+      const GAP = 2;
+
+      const x1 = sd.x + nx * (sd.size + GAP);
+      const y1 = sd.y + ny * (sd.size + GAP);
+      const x2 = td.x - nx * (td.size + GAP + ARROW_LEN);
+      const y2 = td.y - ny * (td.size + GAP + ARROW_LEN);
+
+      const tipX = td.x - nx * (td.size + GAP);
+      const tipY = td.y - ny * (td.size + GAP);
+      const px   = -ny;
+      const py   =  nx;
+
+      glowCtx.save();
+      glowCtx.lineCap     = "round";
+      glowCtx.shadowColor = "#57C7E3";
+      glowCtx.shadowBlur  = 18;
+
+      glowCtx.strokeStyle = "#57C7E3";
+      glowCtx.lineWidth   = 4 * _sf;
+      glowCtx.beginPath();
+      glowCtx.moveTo(x1, y1);
+      glowCtx.lineTo(x2, y2);
+      glowCtx.stroke();
+
+      glowCtx.fillStyle  = "#57C7E3";
+      glowCtx.shadowBlur = 10;
+      glowCtx.beginPath();
+      glowCtx.moveTo(tipX, tipY);
+      glowCtx.lineTo(tipX - nx*ARROW_LEN + px*ARROW_WID, tipY - ny*ARROW_LEN + py*ARROW_WID);
+      glowCtx.lineTo(tipX - nx*ARROW_LEN - px*ARROW_WID, tipY - ny*ARROW_LEN - py*ARROW_WID);
+      glowCtx.closePath();
+      glowCtx.fill();
+      glowCtx.restore();
+    }
+  }
+}
+
+renderer.on("afterRender", drawGlows);
+
+/* =========================
+   DETAILS PANEL
+========================= */
+
+function showAllNodes(){
+  /* Show a sidebar list of every node — never dump hidden nodes into the canvas */
+  const all = [];
+  graph.forEachNode((id, attrs) => all.push({ id, ...attrs }));
+  all.sort((a, b) => (a.label||a.id).localeCompare(b.label||b.id));
+
+  const rows = all.map(n => {
+    const c  = n.color || "#94a3b8";
+    const tc = badgeTextColor(c);
+    const dim = n.hidden ? "opacity:0.45;" : "";
+    return `<tr class="det-tr border-b border-slate-100" style="${dim}">
+      <td class="py-2 pr-2 align-middle w-8">
+        <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-bold" style="background:${c};color:${tc};">${n.nodeType||"?"}</span>
+      </td>
+      <td class="py-2 text-sm font-semibold text-slate-900 align-middle ${n.hidden?"":"cursor-pointer hover:text-blue-600"}" onclick="${n.hidden?"":"focusNode('" + n.id + "')"}">${
+        n.label||n.id}</td>
+      <td class="py-2 text-xs text-slate-400 align-middle text-right">${n.hidden?"hidden":""}</td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("details").innerHTML = `
+    <div class="animate-panel-in">
+      <div class="flex items-center justify-between mb-4 pb-3 border-b-2 border-slate-200">
+        <span class="text-sm font-bold text-slate-900">All nodes (${all.length})</span>
+        <button onclick="renderOverview()" class="text-xs text-blue-600 hover:text-blue-800 font-semibold underline underline-offset-2">&#8592; Back</button>
+      </div>
+      <table class="w-full border-collapse">${rows}</table>
+    </div>
+  `;
+}
+
+function focusNode(id){
+  if(graph.getNodeAttribute(id,"hidden")) return;
+  graphState.selectedNode = id;
+  renderNodeDetails(id);
+  const x = graph.getNodeAttribute(id,"x");
+  const y = graph.getNodeAttribute(id,"y");
+  renderer.getCamera().animate({x, y, ratio:0.5},{duration:400});
+  renderer.refresh();
+}
+
+function renderOverview(){
+
+  graphState.selectedNode = null;
+  graphState.selectedEdge = null;
+
+  const nodeCounts = {};
+  const nodeColors = {};
+  let   totalNodes = 0;
+  let   allNodes   = 0;
+
+  graph.forEachNode((id, attrs) => {
+    allNodes++;
+    if(attrs.hidden) return;
+    totalNodes++;
+    const t = attrs.nodeType || "Unknown";
+    nodeCounts[t] = (nodeCounts[t]||0) + 1;
+    if(!nodeColors[t]) nodeColors[t] = attrs.color || "#94a3b8";
+  });
+
+  const hiddenCount = allNodes - totalNodes;
+
+  const edgeCounts = {};
+  let   totalEdges = 0;
+
+  graph.forEachEdge((id, attrs) => {
+    totalEdges++;
+    const t = attrs.relationship || "RELATES_TO";
+    edgeCounts[t] = (edgeCounts[t]||0) + 1;
+  });
+
+  const BADGE = "inline-flex items-center px-3 py-1 rounded-full text-xs font-bold text-slate-900 cursor-pointer transition-all duration-150 hover:scale-105 hover:shadow-md select-none";
+
+  let nodeBadges =
+    `<span class="${BADGE}" style="background:#A782EF;color:black;">* (${totalNodes})</span>`;
+  Object.entries(nodeCounts).forEach(([type, cnt]) => {
+    const c = nodeColors[type];
+    const tc = badgeTextColor(c);
+    nodeBadges +=
+      `<span class="${BADGE}" style="background:${c};color:${tc};">${type} (${cnt})</span>`;
+  });
+
+  const HEX = "clip-path:polygon(14px 0%,calc(100% - 14px) 0%,100% 50%,calc(100% - 14px) 100%,14px 100%,0% 50%)";
+  const BADGE_REL = "inline-flex items-center justify-center px-6 py-1 text-xs font-bold text-slate-900 cursor-pointer transition-all duration-150 hover:scale-105 select-none";
+
+  let relBadges =
+    `<span class="${BADGE_REL}" style="background:#A782EF;color:black;${HEX}">* (${totalEdges})</span>`;
+  Object.entries(edgeCounts).forEach(([type, cnt]) => {
+    relBadges +=
+      `<span class="${BADGE_REL}" style="background:#e2e8f0;${HEX}">${type} (${cnt})</span>`;
+  });
+
+  const nodeHeading = hiddenCount > 0
+    ? `Nodes (${totalNodes} of ${allNodes})`
+    : `Nodes (${totalNodes})`;
+
+  const showAllBtn = hiddenCount > 0
+    ? `<button onclick="showAllNodes()" class="mt-2 text-xs text-blue-600 hover:text-blue-800 font-semibold underline underline-offset-2 cursor-pointer">View all ${allNodes} nodes (+${hiddenCount} hidden) &rsaquo;</button>`
+    : "";
+
+  document.getElementById("details").innerHTML = `
+    <div class="animate-panel-in">
+      <h2 class="text-sm font-bold text-slate-900 mb-5">Results overview</h2>
+      <div class="mb-1">
+        <p class="text-xs font-semibold text-slate-900 mb-2">${nodeHeading}</p>
+        <div class="flex flex-wrap gap-1.5">${nodeBadges}</div>
+        ${showAllBtn}
+      </div>
+      <hr class="border-slate-200 my-4"/>
+      <div>
+        <p class="text-xs font-semibold text-slate-900 mb-2">Relationships (${totalEdges})</p>
+        <div class="flex flex-wrap gap-1.5">${relBadges}</div>
+      </div>
+    </div>
+  `;
+}
+
+function copyToClip(text){
+  navigator.clipboard.writeText(text).catch(()=>{
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  });
+}
+
+function renderNodeDetails(node){
+
+  const data = graph.getNodeAttributes(node);
+  const c    = data.color || "#94a3b8";
+
+  const COPY_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+
+  const props = { label: data.label, nodeType: data.nodeType||"", ...(data.properties||{}) };
+
+  let rows = "";
+  Object.entries(props).forEach(([k, v]) => {
+    const raw  = typeof v === "object" ? JSON.stringify(v) : String(v);
+    const disp = raw.length > 80 ? raw.slice(0,80) + "…" : raw;
+    const safe = encodeURIComponent(raw);
+    rows += `<tr class="det-tr border-b border-slate-100">
+      <td class="py-2.5 pr-2 font-bold text-slate-900 align-top text-sm" style="width:38%;word-break:break-word">${k}</td>
+      <td class="py-2.5 px-1 text-slate-900 align-top text-sm break-all leading-relaxed">${disp}</td>
+      <td class="py-2.5 pl-1.5 align-top w-7">
+        <button class="row-copy p-1 rounded text-slate-400 hover:text-blue-500 transition-colors" onclick="copyToClip(decodeURIComponent('${safe}'))" title="Copy">${COPY_SVG}</button>
+      </td>
+    </tr>`;
+  });
+
+  window._detailsCopyData = JSON.stringify(props);
+
+  document.getElementById("details").innerHTML = `
+    <div class="animate-panel-in">
+      <div class="flex items-center justify-between mb-3 pb-3 border-b-2 border-slate-200">
+        <span class="text-sm font-bold text-slate-900">Node details</span>
+        <button class="p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-all duration-150 flex items-center" onclick="copyToClip(window._detailsCopyData)" title="Copy all">${COPY_SVG}</button>
+      </div>
+      <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-extrabold mb-4" style="background:${c};color:${badgeTextColor(c)};">
+        ${data.nodeType||"Node"}
+      </span>
+      <table class="w-full border-collapse">
+        <thead>
+          <tr>
+            <th class="text-left py-2 pr-2 text-xs font-bold text-slate-900 uppercase tracking-widest border-b-2 border-slate-200" style="width:38%">Key</th>
+            <th class="text-left py-2 px-1 text-xs font-bold text-slate-900 uppercase tracking-widest border-b-2 border-slate-200">Value</th>
+            <th class="border-b-2 border-slate-200 w-7"></th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+
+}
+
+function renderEdgeDetails(edge){
+
+  const data = graph.getEdgeAttributes(edge);
+  const src  = graph.source(edge);
+  const tgt  = graph.target(edge);
+
+  const COPY_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+
+  const props = { type: data.relationship||data.label||"", from: src, to: tgt, ...(data.properties||{}) };
+
+  let rows = "";
+  Object.entries(props).forEach(([k, v]) => {
+    const raw  = typeof v === "object" ? JSON.stringify(v) : String(v);
+    const disp = raw.length > 80 ? raw.slice(0,80) + "…" : raw;
+    const safe = encodeURIComponent(raw);
+    rows += `<tr class="det-tr border-b border-slate-100">
+      <td class="py-2.5 pr-2 font-bold text-slate-900 align-top text-sm" style="width:38%;word-break:break-word">${k}</td>
+      <td class="py-2.5 px-1 text-slate-900 align-top text-sm break-all leading-relaxed">${disp}</td>
+      <td class="py-2.5 pl-1.5 align-top w-7">
+        <button class="row-copy p-1 rounded text-slate-400 hover:text-blue-500 transition-colors" onclick="copyToClip(decodeURIComponent('${safe}'))" title="Copy">${COPY_SVG}</button>
+      </td>
+    </tr>`;
+  });
+
+  window._detailsCopyData = JSON.stringify(props);
+
+  document.getElementById("details").innerHTML = `
+    <div class="animate-panel-in">
+      <div class="flex items-center justify-between mb-3 pb-3 border-b-2 border-slate-200">
+        <span class="text-sm font-bold text-slate-900">Relationship details</span>
+        <button class="p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-all duration-150 flex items-center" onclick="copyToClip(window._detailsCopyData)" title="Copy all">${COPY_SVG}</button>
+      </div>
+      <span class="inline-flex items-center justify-center px-6 py-1.5 text-xs font-extrabold text-slate-900 bg-slate-200 mb-4 tracking-widest" style="clip-path:polygon(14px 0%,calc(100% - 14px) 0%,100% 50%,calc(100% - 14px) 100%,14px 100%,0% 50%);">
+        ${data.relationship||data.label||"RELATES_TO"}
+      </span>
+      <table class="w-full border-collapse">
+        <thead>
+          <tr>
+            <th class="text-left py-2 pr-2 text-xs font-bold text-slate-900 uppercase tracking-widest border-b-2 border-slate-200" style="width:38%">Key</th>
+            <th class="text-left py-2 px-1 text-xs font-bold text-slate-900 uppercase tracking-widest border-b-2 border-slate-200">Value</th>
+            <th class="border-b-2 border-slate-200 w-7"></th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+
+}
+
+/* =========================
+   VISIBILITY
+========================= */
+
+function refreshVisibility(){
+  /* Only HIDE edges whose endpoints are hidden — never auto-reveal (Neo4j style) */
+  graph.forEachEdge(edge => {
+    const s = graph.source(edge);
+    const t = graph.target(edge);
+    if( graph.getNodeAttribute(s, "hidden") ||
+        graph.getNodeAttribute(t, "hidden") ){
+      graph.setEdgeAttribute(edge, "hidden", true);
+    }
+  });
+
+}
+
+/* =========================
+   NODE CLICK
+========================= */
+
+renderer.on(
+  "clickNode",
+
+  ({node})=>{
+
+    // suppress the spurious click that fires after a drag
+    if(hasDragged){
+      hasDragged = false;
+      return;
+    }
+
+    justClickedElement = true;   /* prevent clickStage from immediately clearing this */
+
+    /* pin: this node won't follow future neighbour drags */
+    pinnedNodes.add(node);
+
+    graphState.selectedNode =
+      node;
+
+    graphState.selectedEdge =
+      null;
+
+    renderNodeDetails(node);
+
+    renderer.refresh();
+
+  }
+);
+
+/* =========================
+   NODE DOUBLE CLICK
+========================= */
+
+renderer.on(
+  "doubleClickNode",
+
+  ({node, event})=>{
+
+    // prevent Sigma's default camera zoom-in on double-click
+    event.preventSigmaDefault();
+
+    hasDragged = false;
+
+    graphState.selectedNode =
+      node;
+
+    graphState.selectedEdge =
+      null;
+
+    renderNodeDetails(node);
+
+    const attrs =
+      graph.getNodeAttributes(node);
+
+    const expanded =
+      attrs.expanded;
+
+    const children =
+      attrs.hiddenChildren || [];
+
+    children.forEach(child=>{
+
+      graph.setNodeAttribute(
+        child,
+        "hidden",
+        expanded
+      );
+
+    });
+
+    graph.setNodeAttribute(
+      node,
+      "expanded",
+      !expanded
+    );
+
+    /* When expanding: fan children OUTWARD from the graph centre so edge labels
+       are readable and nodes don't overlap.
+       - outAngle = direction from graph centre → this parent (children go further out)
+       - childR scales with child count so nodes have room for their labels
+       - halfArc spreads the fan; capped so children don't wrap back inward          */
+    if(!expanded && children.length > 0){
+      const px = graph.getNodeAttribute(node, "x");
+      const py = graph.getNodeAttribute(node, "y");
+
+      /* Fan direction: outward from graph centre; fall back to downward if parent is near centre */
+      const distFromCentre = Math.sqrt(px*px + py*py);
+      const outAngle = distFromCentre > 0.5 ? Math.atan2(py, px) : -Math.PI / 2;
+
+      /* Radius: grow with child count; large enough so edge labels fit without
+         overlap — minimum 8 units, 3 units per child.                        */
+      const childR  = Math.max(8, children.length * 3.0);
+      const halfArc = children.length <= 1
+        ? 0
+        : Math.min(Math.PI * 0.7, (children.length - 1) * 0.55);
+
+      /* Initial fan placement */
+      children.forEach((child, i) => {
+        const t     = children.length > 1 ? i / (children.length - 1) : 0;
+        const angle = outAngle + (t - 0.5) * 2 * halfArc;
+        graph.setNodeAttribute(child, "x", px + Math.cos(angle) * childR);
+        graph.setNodeAttribute(child, "y", py + Math.sin(angle) * childR);
+      });
+
+      /* Repulsion pass: nudge children away from any existing visible node that
+         is too close — MIN_SEP large enough to show full edge labels          */
+      const MIN_SEP = 7;
+      for(let pass = 0; pass < 15; pass++){
+        children.forEach(child => {
+          let cx = graph.getNodeAttribute(child, "x");
+          let cy = graph.getNodeAttribute(child, "y");
+          let fx = 0, fy = 0;
+          graph.forEachNode((id, attrs) => {
+            if(id === child || attrs.hidden) return;
+            const dx = cx - attrs.x, dy = cy - attrs.y;
+            const d  = Math.sqrt(dx*dx + dy*dy) || 0.001;
+            if(d < MIN_SEP){
+              const push = (MIN_SEP - d) / d;
+              fx += dx * push;
+              fy += dy * push;
+            }
+          });
+          graph.setNodeAttribute(child, "x", cx + fx * 0.4);
+          graph.setNodeAttribute(child, "y", cy + fy * 0.4);
+        });
+      }
+    }
+
+    refreshVisibility();
+
+    /* Reveal edges from this node to now-visible children (Neo4j expand style) */
+    graph.edges(node).forEach(e => {
+      const src = graph.source(e);
+      const tgt = graph.target(e);
+      if( !graph.getNodeAttribute(src, "hidden") &&
+          !graph.getNodeAttribute(tgt, "hidden") ){
+        graph.setEdgeAttribute(e, "hidden", false);
+      }
+    });
+
+    renderer.refresh();
+
+  }
+);
+
+/* =========================
+   EDGE CLICK
+========================= */
+
+renderer.on(
+  "clickEdge",
+
+  ({edge})=>{
+
+    justClickedElement = true;   /* prevent clickStage from immediately clearing this */
+
+    graphState.selectedEdge =
+      edge;
+
+    graphState.selectedNode =
+      null;
+
+    renderEdgeDetails(edge);
+
+    renderer.refresh();
+
+  }
+);
+
+/* =========================
+   EDGE PROXIMITY HELPER
+   Returns the nearest visible edge within `threshold` CSS pixels of (mx, my),
+   or null. Covers both curved (bezier sampling) and straight (segment distance)
+   edges so click and hover both use a single consistent code path.
+========================= */
+
+function findNearestEdge(mx, my, threshold){
+  let best = null, bestDist = threshold;
+  for(const edge of graph.edges()){
+    const attrs = graph.getEdgeAttributes(edge);
+    if(attrs.hidden) continue;
+    const src = graph.source(edge);
+    const tgt = graph.target(edge);
+    if(graph.getNodeAttribute(src,'hidden') || graph.getNodeAttribute(tgt,'hidden')) continue;
+    const sd = getVP(src);
+    const td = getVP(tgt);
+    let d, labelX = null, labelY = null;
+    if(attrs.isCurved){
+      /* Quadratic bezier — canonical perpendicular (same formula as drawCurvedEdgeGlow) */
+      const [canonA, canonB] = [src, tgt].sort();
+      const csdVP = getVP(canonA);
+      const ctdVP = getVP(canonB);
+      const cdx   = ctdVP.x - csdVP.x;
+      const cdy   = ctdVP.y - csdVP.y;
+      const cdist = Math.sqrt(cdx*cdx + cdy*cdy) || 1;
+      const px    = -cdy / cdist;
+      const py    =  cdx / cdist;
+      const dist  = Math.sqrt((td.x-sd.x)**2 + (td.y-sd.y)**2) || 1;
+      const cpX   = (sd.x + td.x) / 2 + px * attrs.curvature * dist;
+      const cpY   = (sd.y + td.y) / 2 + py * attrs.curvature * dist;
+      /* Label is now centered at the arc midpoint (rotated in draw) */
+      labelX = 0.25*sd.x + 0.5*cpX + 0.25*td.x;
+      labelY = 0.25*sd.y + 0.5*cpY + 0.25*td.y;
+      d = Infinity;
+      for(let i = 0; i <= 60; i++){
+        const t  = i / 60;
+        const bx = (1-t)*(1-t)*sd.x + 2*(1-t)*t*cpX + t*t*td.x;
+        const by = (1-t)*(1-t)*sd.y + 2*(1-t)*t*cpY + t*t*td.y;
+        const dd = Math.hypot(mx - bx, my - by);
+        if(dd < d) d = dd;
+        if(d < bestDist) break;
+      }
+    } else {
+      /* Straight segment — perpendicular distance */
+      const dx = td.x - sd.x, dy = td.y - sd.y;
+      const len   = Math.sqrt(dx*dx + dy*dy) || 1;
+      const lenSq = len * len;
+      const t  = lenSq > 0 ? Math.max(0, Math.min(1, ((mx-sd.x)*dx + (my-sd.y)*dy) / lenSq)) : 0;
+      d = Math.hypot(mx - (sd.x + t*dx), my - (sd.y + t*dy));
+      /* Label is now near the edge midpoint (parallel text, 13px above) */
+      labelX = (sd.x + td.x) / 2;
+      labelY = (sd.y + td.y) / 2;
+    }
+    /* Label is a valid hit target — clicking the text selects the edge.
+       Use a fixed 28px label radius so short labels remain clickable. */
+    if(labelX !== null && attrs.label && !searchQuery){
+      d = Math.min(d, Math.hypot(mx - labelX, my - labelY));
+    }
+    if(d < bestDist){ bestDist = d; best = edge; }
+  }
+  return best;
+}
+
+/* =========================
+   STAGE CLICK (canvas bg)
+========================= */
+
+renderer.on(
+  "clickStage",
+  ({event})=>{
+    /* clickStage fires on every click including node/edge clicks — guard against that */
+    if(justClickedElement){ justClickedElement = false; return; }
+
+    if(!hasDragged){
+      /* Threshold scales with camera ratio so a click is equally easy at any zoom level.
+         Base 18px at ratio=1; larger when zoomed out (ratio>1), smaller when zoomed in. */
+      const HIT_THRESHOLD = Math.max(14, 18 * renderer.getCamera().ratio);
+      const hitEdge = findNearestEdge(event.x, event.y, HIT_THRESHOLD);
+      if(hitEdge){
+        justClickedElement = true;
+        graphState.selectedEdge = hitEdge;
+        graphState.selectedNode = null;
+        renderEdgeDetails(hitEdge);
+        renderer.refresh();
+        return;
+      }
+    }
+
+    /* Clicking empty space always shows overview.
+       Only clear pinnedNodes on a genuine (non-drag) click. */
+    if(!hasDragged) pinnedNodes.clear();
+    hasDragged = false;
+    /* Clicking empty canvas deselects but does NOT hide revealed edges (Neo4j style) */
+    graphState.selectedNode = null;
+    graphState.selectedEdge = null;
+    renderOverview();
+    renderer.refresh();
+  }
+);
+
+/* =========================
+   HOVER — cursor & visual feedback
+========================= */
+
+renderer.on("enterNode", ({node}) => {
+  hoveredNode = node;
+  if(dragNode === null) _sigmaContainer().style.cursor = "grab";
+  renderer.refresh();
+});
+
+renderer.on("leaveNode", () => {
+  hoveredNode = null;
+  if(dragNode === null) _sigmaContainer().style.cursor = "default";
+  renderer.refresh();
+});
+
+/* Edge hover — pointer cursor gives affordance that edges are clickable */
+renderer.getMouseCaptor().on("mousemove", e => {
+  if(dragNode !== null || hoveredNode !== null) return;
+  const HOVER_THRESHOLD = Math.max(10, 14 * renderer.getCamera().ratio);
+  const near = findNearestEdge(e.x, e.y, HOVER_THRESHOLD);
+  _sigmaContainer().style.cursor = near ? "pointer" : "default";
+});
+
+/* =========================
+   CONTEXT MENU
+========================= */
+
+const menu =
+  document.getElementById(
+    "context-menu"
+  );
+
+function showMenu(x,y,html){
+
+  menu.innerHTML = html;
+
+  menu.style.left =
+    x + "px";
+
+  menu.style.top =
+    y + "px";
+
+  menu.style.display =
+    "block";
+
+}
+
+window.addEventListener(
+  "click",
+
+  ()=>{
+
+    menu.style.display =
+      "none";
+
+  }
+);
+
+/* =========================
+   RIGHT CLICK NODE
+========================= */
+
+renderer.on(
+  "rightClickNode",
+
+  ({event,node})=>{
+
+    event.preventSigmaDefault();
+
+    showMenu(
+
+      event.original.clientX,
+      event.original.clientY,
+
+      `
+
+      <div
+        class="menu-item"
+        onclick="expandNode('${node}')"
+      >
+        Expand Selected
+      </div>
+
+      <div
+        class="menu-item"
+        onclick="collapseNode('${node}')"
+      >
+        Collapse Selected
+      </div>
+
+      <div class="menu-divider"></div>
+
+      ${pinnedNodes.has(node) ? `
+      <div
+        class="menu-item"
+        onclick="unpinNode('${node}')"
+      >
+        Unpin (allow layout to move)
+      </div>
+      ` : `
+      <div
+        class="menu-item"
+        onclick="pinNode('${node}')"
+      >
+        Pin (lock position)
+      </div>
+      `}
+
+      <div class="menu-divider"></div>
+
+      <div
+        class="menu-item"
+        onclick="dismissNode('${node}')"
+      >
+        Dismiss Selected
+      </div>
+
+      `
+    );
+
+  }
+);
+
+/* =========================
+   RIGHT CLICK EDGE
+========================= */
+
+renderer.on(
+  "rightClickEdge",
+
+  ({event,edge})=>{
+
+    event.preventSigmaDefault();
+
+    showMenu(
+
+      event.original.clientX,
+      event.original.clientY,
+
+      `
+
+      <div
+        class="menu-item"
+        onclick="dismissEdge('${edge}')"
+      >
+        Dismiss Relationship
+      </div>
+
+      `
+    );
+
+  }
+);
+
+/* =========================
+   ACTIONS
+========================= */
+
+window.expandNode = function(node){
+
+  const attrs =
+    graph.getNodeAttributes(node);
+
+  (attrs.hiddenChildren || [])
+    .forEach(child=>{
+
+      graph.setNodeAttribute(
+        child,
+        "hidden",
+        false
+      );
+
+    });
+
+  graph.setNodeAttribute(
+    node,
+    "expanded",
+    true
+  );
+
+  refreshVisibility();
+
+  renderer.refresh();
+
+};
+
+window.collapseNode = function(node){
+
+  const attrs =
+    graph.getNodeAttributes(node);
+
+  (attrs.hiddenChildren || [])
+    .forEach(child=>{
+
+      graph.setNodeAttribute(
+        child,
+        "hidden",
+        true
+      );
+
+    });
+
+  graph.setNodeAttribute(
+    node,
+    "expanded",
+    false
+  );
+
+  refreshVisibility();
+
+  renderer.refresh();
+
+};
+
+window.dismissNode = function(node){
+
+  const attrs = graph.getNodeAttributes(node);
+
+  /* collapse any revealed children first */
+  if(attrs.expanded){
+    (attrs.hiddenChildren || []).forEach(child=>{
+      if(graph.hasNode(child)){
+        graph.setNodeAttribute(child,"hidden",true);
+      }
+    });
+    graph.setNodeAttribute(node,"expanded",false);
+  }
+
+  graph.setNodeAttribute(node,"hidden",true);
+
+  /* clear panel if this was the selected node */
+  if(graphState.selectedNode === node){
+    graphState.selectedNode = null;
+    renderOverview();
+  }
+
+  refreshVisibility();
+  renderer.refresh();
+
+};
+
+window.dismissEdge = function(edge){
+
+  graph.setEdgeAttribute(edge,"hidden",true);
+
+  if(graphState.selectedEdge === edge){
+    graphState.selectedEdge = null;
+    renderOverview();
+  }
+
+  renderer.refresh();
+
+};
+
+window.pinNode = function(node){
+  pinnedNodes.add(node);
+  renderer.refresh();
+};
+
+window.unpinNode = function(node){
+  pinnedNodes.delete(node);
+  renderer.refresh();
+};
+
+/* =========================
+   SEARCH
+========================= */
+
+document
+.getElementById(
+  "search-input"
+)
+.addEventListener(
+  "input",
+
+  e=>{
+
+    searchQuery =
+      e.target.value
+        .toLowerCase()
+        .trim();
+
+    renderer.refresh();
+
+  }
+);
+
+/* =========================
+   CONTROLS
+========================= */
+
+document
+.getElementById(
+  "fit-btn"
+)
+.onclick = ()=>{
+
+  renderer
+    .getCamera()
+    .animatedReset();
+
+};
+
+document
+.getElementById(
+  "collapse-btn"
+)
+.onclick = ()=>{
+
+  graph.forEachNode(node=>{
+
+    const attrs =
+      graph.getNodeAttributes(node);
+
+    (attrs.hiddenChildren || [])
+      .forEach(child=>{
+
+        graph.setNodeAttribute(
+          child,
+          "hidden",
+          true
+        );
+
+      });
+
+    graph.setNodeAttribute(
+      node,
+      "expanded",
+      false
+    );
+
+  });
+
+  refreshVisibility();
+
+  renderer.refresh();
+
+};
+
+/* =========================
+   AUTO LAYOUT  (Fruchterman-Reingold)
+========================= */
+
+/* Compute a force-directed layout for all currently-visible nodes.
+   Returns { nodeId: {x, y} } — positions are in graph-space.
+   Uses the Fruchterman-Reingold algorithm (same family as ForceAtlas2). */
+function computeFRLayout(){
+  const nodes    = [];
+  const edgeList = [];
+
+  graph.forEachNode((id, attrs) => {
+    if(!attrs.hidden) nodes.push({ id, x: attrs.x, y: attrs.y });
+  });
+  if(nodes.length < 2) return null;
+
+  graph.forEachEdge((id, attrs, src, tgt, sa, ta) => {
+    /* use all edges for topology — edge.hidden is visual-only, not structural */
+    if(!sa.hidden && !ta.hidden) edgeList.push({ src, tgt });
+  });
+
+  const W = 10, H = 10;
+  const k = Math.sqrt((W * H) / nodes.length);
+  const pos = {};
+  nodes.forEach(n => { pos[n.id] = { x: n.x, y: n.y }; });
+
+  const ITERS = 200;
+  for(let iter = 0; iter < ITERS; iter++){
+    const disp = {};
+    nodes.forEach(n => { disp[n.id] = { x: 0, y: 0 }; });
+
+    /* Repulsion: every pair of nodes pushes apart */
+    for(let i = 0; i < nodes.length; i++){
+      for(let j = i + 1; j < nodes.length; j++){
+        const a = pos[nodes[i].id], b = pos[nodes[j].id];
+        const dx = a.x - b.x, dy = a.y - b.y;
+        const d  = Math.sqrt(dx*dx + dy*dy) || 0.001;
+        const f  = k * k / d;
+        disp[nodes[i].id].x += dx / d * f;
+        disp[nodes[i].id].y += dy / d * f;
+        disp[nodes[j].id].x -= dx / d * f;
+        disp[nodes[j].id].y -= dy / d * f;
+      }
+    }
+
+    /* Attraction: edges pull endpoints together, normalised by degree to
+       prevent hub-collapse where high-degree nodes suck all spokes in */
+    edgeList.forEach(e => {
+      const a = pos[e.src], b = pos[e.tgt];
+      if(!a || !b) return;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d  = Math.sqrt(dx*dx + dy*dy) || 0.001;
+      const degSrc = graph.degree(e.src) || 1;
+      const degTgt = graph.degree(e.tgt) || 1;
+      const f  = (d * d / k) / Math.sqrt((degSrc + degTgt) / 2);
+      disp[e.src].x += dx / d * f;  disp[e.src].y += dy / d * f;
+      disp[e.tgt].x -= dx / d * f;  disp[e.tgt].y -= dy / d * f;
+    });
+
+    /* Apply displacement with simulated-annealing temperature.
+       Pinned nodes are fixed anchors — they contribute forces to others
+       but do not move themselves. */
+    const temp = Math.max(W * (1 - iter / ITERS) * 0.5, 0.02);
+    nodes.forEach(n => {
+      if(pinnedNodes.has(n.id)) return;   /* respect manual placements */
+      const d   = disp[n.id];
+      const len = Math.sqrt(d.x*d.x + d.y*d.y) || 0.001;
+      pos[n.id].x += d.x / len * Math.min(len, temp);
+      pos[n.id].y += d.y / len * Math.min(len, temp);
+    });
+  }
+
+  /* Minimum edge-length pass: push connected nodes apart until their gap is
+     large enough to render the full edge label without clipping.           */
+  const MIN_EDGE_DIST = Math.max(k * 2.5, 8);
+  for(let pass = 0; pass < 30; pass++){
+    let settled = true;
+    edgeList.forEach(e => {
+      const a = pos[e.src], b = pos[e.tgt];
+      if(!a || !b) return;
+      const ddx = b.x - a.x, ddy = b.y - a.y;
+      const d   = Math.sqrt(ddx*ddx + ddy*ddy) || 0.001;
+      if(d < MIN_EDGE_DIST){
+        settled = false;
+        const push = (MIN_EDGE_DIST - d) * 0.3 / d;
+        if(!pinnedNodes.has(e.src)){ a.x -= ddx * push; a.y -= ddy * push; }
+        if(!pinnedNodes.has(e.tgt)){ b.x += ddx * push; b.y += ddy * push; }
+      }
+    });
+    if(settled) break;
+  }
+
+  return pos;
+}
+
+function runAutoLayout(){
+  const btn = document.getElementById("layout-btn");
+  if(btn){ btn.disabled = true; btn.style.opacity = "0.5"; }
+
+  /* Snapshot current positions for animation start */
+  const startPos = {};
+  graph.forEachNode((id, attrs) => {
+    if(!attrs.hidden) startPos[id] = { x: attrs.x, y: attrs.y };
+  });
+
+  const targetPos = computeFRLayout();
+  if(!targetPos){
+    if(btn){ btn.disabled = false; btn.style.opacity = ""; }
+    return;
+  }
+
+  /* 800ms ease-out-cubic animated transition */
+  const DURATION = 800;
+  const t0 = Date.now();
+
+  (function step(){
+    const raw  = Math.min((Date.now() - t0) / DURATION, 1);
+    const ease = 1 - Math.pow(1 - raw, 3);
+
+    graph.forEachNode((id, attrs) => {
+      if(attrs.hidden) return;
+      const s = startPos[id], e = targetPos[id];
+      if(!s || !e) return;
+      graph.setNodeAttribute(id, "x", s.x + (e.x - s.x) * ease);
+      graph.setNodeAttribute(id, "y", s.y + (e.y - s.y) * ease);
+    });
+    renderer.refresh();
+
+    if(raw < 1){
+      requestAnimationFrame(step);
+    } else {
+      if(btn){ btn.disabled = false; btn.style.opacity = ""; }
+      renderer.getCamera().animatedReset();  /* fit camera to new layout */
+    }
+  })();
+}
+
+document.getElementById("layout-btn").onclick = runAutoLayout;
+
+/* =========================
+   INFO MODAL
+========================= */
+
+(function(){
+  const modal = document.getElementById("info-modal");
+  document.getElementById("info-btn").onclick = ()=>{
+    modal.classList.toggle("open");
+  };
+  document.getElementById("close-info").onclick = ()=>{
+    modal.classList.remove("open");
+  };
+  modal.addEventListener("click", e=>{
+    if(e.target === modal) modal.classList.remove("open");
+  });
+})();
+
+/* =========================
+   SIDEBAR TOGGLE
+========================= */
+
+function toggleSidebar(){
+  const sidebar = document.getElementById("sidebar");
+  const inner   = document.getElementById("sidebar-inner");
+  const chevron = document.getElementById("toggle-chevron");
+  sidebar.classList.toggle("collapsed");
+  chevron.style.transform =
+    sidebar.classList.contains("collapsed") ? "rotate(180deg)" : "";
+  /* after CSS transition completes, resize Sigma's canvases then re-render */
+  function onTransitionEnd(e){
+    if(e.propertyName !== "width") return;
+    sidebar.removeEventListener("transitionend", onTransitionEnd);
+    renderer.resize();
+    renderer.refresh();
+    renderer.getCamera().animatedReset();
+  }
+  sidebar.addEventListener("transitionend", onTransitionEnd);
+}
+
+/* =========================
+   INITIAL STATE
+========================= */
+
+renderOverview();
+renderer.refresh();
+
+</script>
+
+</body>
+</html>
