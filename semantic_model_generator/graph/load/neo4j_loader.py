@@ -855,8 +855,14 @@ class Neo4jLoader:
 
     def load_query_templates(self, templates: list[dict]):
         """templates: list of QueryTemplate property dicts from enrich_query_templates()"""
+        import json as _json
         now = _NOW()
-        rows = [{**t, "created_at": now} for t in templates]
+        rows = [
+            {**t,
+             "intent_scores": _json.dumps(t.get("intent_scores") or {}),
+             "created_at": now}
+            for t in templates
+        ]
         self._batch_write("""
             UNWIND $rows AS r
             MERGE (q:QueryTemplate {id: r.id})
@@ -1062,7 +1068,7 @@ class Neo4jLoader:
             MATCH (q:QueryTemplate)
             SET q.description             = coalesce(q.description, ""),
                 q.primary_intent          = coalesce(q.primary_intent, ""),
-                q.intent_scores           = coalesce(q.intent_scores, []),
+                q.intent_scores           = coalesce(q.intent_scores, "{}"),
                 q.complexity              = coalesce(q.complexity, "simple"),
                 q.anchor_ontology_classes = coalesce(q.anchor_ontology_classes, []),
                 q.anchor_table_fqns       = coalesce(q.anchor_table_fqns, []),

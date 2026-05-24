@@ -49,7 +49,7 @@ class ColumnEnrichment(BaseModel):
 
 
 class ColumnsEnrichmentResponse(BaseModel):
-    columns: list[ColumnEnrichment]
+    columns: list[ColumnEnrichment] = Field(default_factory=list)
 
 
 class TableEnrichment(BaseModel):
@@ -69,7 +69,7 @@ class TableEnrichment(BaseModel):
 
 
 class TablesEnrichmentResponse(BaseModel):
-    tables: list[TableEnrichment]
+    tables: list[TableEnrichment] = Field(default_factory=list)
 
 _TABLE_SEMANTIC_TYPES = (
     "identifier", "measure", "dimension", "date", "flag",
@@ -77,14 +77,62 @@ _TABLE_SEMANTIC_TYPES = (
 )
 
 
+class CommunityEnrichment(BaseModel):
+    id: Any
+    description: str
+    query_patterns: list[str] = Field(default_factory=list)
+
+
+class CommunitiesOutput(BaseModel):
+    communities: list[CommunityEnrichment] = Field(default_factory=list)
+
+
+class IntentEnrichment(BaseModel):
+    intent: str
+    description: str
+
+
+class IntentsOutput(BaseModel):
+    intents: list[IntentEnrichment] = Field(default_factory=list)
+
+
+class BusinessTermItem(BaseModel):
+    term: str
+    variants: list[str] = Field(default_factory=list)
+    term_type: Literal["abbreviation", "entity_alias", "unit", "metric", "product"]
+    description: str
+
+
+class GlossaryOutput(BaseModel):
+    terms: list[BusinessTermItem] = Field(default_factory=list)
+
+
+class QueryTemplateItem(BaseModel):
+    source_line: int
+    description: str
+    intent_scores: dict[str, float] = Field(default_factory=lambda: {"general_analytics": 0.5})
+    complexity: Literal["simple", "complex", "advanced"] = "complex"
+    anchor_ontology_classes: list[str] = Field(default_factory=list)
+    cte_steps: list[str] = Field(default_factory=list)
+    required_aggregations: list[str] = Field(default_factory=list)
+    required_filters: list[str] = Field(default_factory=list)
+    time_windowed: bool = False
+
+
+class QueryTemplatesOutput(BaseModel):
+    templates: list[QueryTemplateItem] = Field(default_factory=list)
+
+
 # ── Bedrock clients ────────────────────────────────────────────────────────────
 
 def _bedrock_client(cfg):
+    from botocore.config import Config as _BotoCfg
     return boto3.client(
         "bedrock-runtime",
         region_name=cfg.aws_region,
         aws_access_key_id=cfg.aws_access_key_id,
         aws_secret_access_key=cfg.aws_secret_access_key,
+        config=_BotoCfg(read_timeout=120, connect_timeout=15),
     )
 
 
@@ -160,7 +208,6 @@ Each object must have these exact keys:
 
 Column descriptions and semantic types (where available) are pre-enriched — use them to ground your table description in specific business meaning.
 Use sample_values, data types, row_count, diststyle/sortkey as additional evidence.
-Return ONLY valid JSON. No markdown, no explanation outside the JSON array.
 
 Tables:
 {tables_json}"""
@@ -219,9 +266,7 @@ Rules for value_aliases: Only populate when semantic_type IN [code, flag, dimens
 Rules for value_scale: Only populate when semantic_type IN [amount, measure, ratio, percentage]. Infer from column name (e.g. "_bps" → basis points, "_pct" → percentage, "_usd" → USD). If unclear, set null.
 
 Columns:
-{columns_json}
-
-Return ONLY valid JSON array. No markdown."""
+{columns_json}"""
 
 
 def enrich_columns(
@@ -296,34 +341,6 @@ def enrich_domain(
         return ""
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _parse_json_response(text: str) -> list[dict]:
-    text = text.strip()
-    # Strip markdown fences if present
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, list):
-            return parsed
-        if isinstance(parsed, dict):
-            return [parsed]
-    except json.JSONDecodeError:
-        pass
-    # Try to extract JSON array from text
-    start = text.find("[")
-    end = text.rfind("]") + 1
-    if start >= 0 and end > start:
-        try:
-            return json.loads(text[start:end])
-        except json.JSONDecodeError:
-            pass
-    log.warning("Could not parse JSON from LLM response: %s…", text[:200])
-    return []
-
-
 def build_table_llm_input(
     fqn: str,
     ontology_class: str,
@@ -391,12 +408,10 @@ Each community entry contains:
 - "frequent_joins": list of table names that are commonly joined within this community
 - "dominant_domain": the primary business domain for this community
 
-For each community below, return a JSON array with one object per community:
-- "id": community id as given
-- "description": 2-3 sentences — what business area does this cluster represent, what data does it contain, and what analytical questions can it answer? Ground your description in the actual table descriptions provided.
-- "query_patterns": list of 3 example question templates that this community's tables can answer (plain English, no SQL)
-
-Return ONLY valid JSON array. No markdown.
+For each community below, provide:
+- id: the community id exactly as given
+- description: 2-3 sentences — what business area this cluster represents, what data it contains, and what analytical questions it can answer. Ground your description in the actual table descriptions provided.
+- query_patterns: list of 3 example question templates that this community's tables can answer (plain English, no SQL)
 
 Communities:
 {communities_json}"""
@@ -404,8 +419,7 @@ Communities:
 
 def enrich_community(
     communities: list[dict],
-    client,
-    model_arn: str,
+    chat_client,
     cache: dict,
 ) -> dict:
     """
@@ -416,6 +430,7 @@ def enrich_community(
     to_process = [c for c in communities if str(c["id"]) not in cache]
     results = dict(cache)
     batch_size = 8
+    structured = chat_client.with_structured_output(CommunitiesOutput)
 
     for i in range(0, len(to_process), batch_size):
         batch = to_process[i: i + batch_size]
@@ -423,13 +438,12 @@ def enrich_community(
             communities_json=json.dumps(batch, indent=2, default=str)
         )
         try:
-            raw = _invoke(client, model_arn, [{"role": "user", "content": prompt}], max_tokens=3000)
-            parsed = _parse_json_response(raw)
-            for item in parsed:
-                cid = item.get("id")
-                if cid is not None:
-                    results[str(cid)] = item
-            _save_checkpoint(results)
+            output: CommunitiesOutput = structured.invoke(prompt)
+            for item in output.communities:
+                d = item.model_dump()
+                results[str(d["id"])] = d
+            log.info("Community enrichment: batch %d/%d done.", i // batch_size + 1,
+                     -(-len(to_process) // batch_size))
         except Exception as e:
             log.error("Community enrichment batch %d failed: %s", i // batch_size, e)
 
@@ -446,16 +460,12 @@ Each intent entry contains:
 - "classes": ontology class names that belong to this intent
 - "tables": list of {{name, description, domain, measures}} — enriched descriptions of the key tables this intent covers
 
-For each intent below, write a 1-2 sentence description of:
+For each intent below, write a 1-2 sentence description covering:
 1. What business questions this intent covers (use the table descriptions as evidence)
 2. What types of data are queried (entities, metrics, time windows)
 3. What makes it distinct from other intents
 
-Return a JSON array — one object per intent:
-- "intent": intent name as given
-- "description": 1-2 sentence description
-
-Return ONLY valid JSON array. No markdown.
+For each intent provide: the intent name (exactly as given) and its description.
 
 Intents:
 {intents_json}"""
@@ -463,8 +473,7 @@ Intents:
 
 def enrich_intents(
     intents: list[dict],
-    client,
-    model_arn: str,
+    chat_client,
 ) -> dict:
     """
     Generate descriptions for Intent nodes.
@@ -475,9 +484,9 @@ def enrich_intents(
         intents_json=json.dumps(intents, indent=2, default=str)
     )
     try:
-        raw = _invoke(client, model_arn, [{"role": "user", "content": prompt}], max_tokens=3000)
-        parsed = _parse_json_response(raw)
-        return {item["intent"]: item for item in parsed if "intent" in item}
+        structured = chat_client.with_structured_output(IntentsOutput)
+        output: IntentsOutput = structured.invoke(prompt)
+        return {item.intent: item.model_dump() for item in output.intents}
     except Exception as e:
         log.error("Intent enrichment failed: %s", e)
         return {}
@@ -491,49 +500,33 @@ Non-technical users ask questions using business terms, abbreviations, and synon
 Context — column synonyms, table descriptions, and sample domain values from the database:
 {context_text}
 
-Generate a JSON array of BusinessTerm objects. Focus on:
+Identify business terms from the context above. Focus on:
 1. Financial abbreviations: DPO, DSO, DIO, MTD, YTD, QTD, ACH, RTP, FedNow, STP, SLA, MTM, OCI, WC, EBITDA, WACC, LTV, ARR
 2. Entity aliases: terms users say vs what the database calls them (e.g. customer vs member, vendor vs supplier/payee, bank vs lender/counterparty)
 3. Product/value synonyms: what users call card networks, payment methods vs DB codes (e.g. Visa vs VI, Wire vs wires)
 4. Unit terms: how users express amounts, rates, percentages (million, billion, basis points, bps, %)
 5. Treasury-specific metrics: hedge ratio, blended rate, Days Sales Outstanding, etc.
 
-For each term return:
-{{
-  "term": "DPO",
-  "variants": ["Days Payable Outstanding", "days payable", "supplier payment days", "AP days"],
-  "term_type": "abbreviation",
-  "description": "Average number of days a company takes to pay its trade payables"
-}}
-
-term_type must be one of: abbreviation, entity_alias, unit, metric, product
-
-Return ONLY a JSON array. No markdown. Aim for 50-80 terms."""
+For each term, provide: the canonical term, common variants/synonyms, the term type (abbreviation, entity_alias, unit, metric, or product), and a short description of what it means in this treasury context.
+Identify as many relevant terms as you can from the context provided. If the context contains no recognisable business terms, return an empty list."""
 
 
 def generate_business_glossary(
     context_text: str,
-    client,
-    model_arn: str,
+    chat_client,
 ) -> list[dict]:
     """
-    Generate BusinessTerm nodes from database context.
+    Generate BusinessTerm nodes from database context using structured output.
     context_text: concise summary of column synonyms, table descriptions, and sample values
     Returns list of {term, variants, term_type, description}
     """
     prompt = _GLOSSARY_PROMPT_TEMPLATE.format(context_text=context_text)
     try:
-        raw = _invoke(client, model_arn, [{"role": "user", "content": prompt}], max_tokens=6000)
-        parsed = _parse_json_response(raw)
-        valid = [
-            t for t in parsed
-            if isinstance(t, dict)
-            and t.get("term")
-            and isinstance(t.get("variants"), list)
-            and t.get("term_type") in ("abbreviation", "entity_alias", "unit", "metric", "product")
-        ]
-        log.info("Business glossary: %d terms generated.", len(valid))
-        return valid
+        structured = chat_client.with_structured_output(GlossaryOutput)
+        result: GlossaryOutput = structured.invoke(prompt)
+        terms = [t.model_dump() for t in result.terms]
+        log.info("Business glossary: %d terms generated.", len(terms))
+        return terms
     except Exception as e:
         log.error("Business glossary generation failed: %s", e)
         return []
@@ -551,55 +544,38 @@ Available ontology classes (camelCase — pick only from this list): {classes_li
 Ontology class descriptions (use these to understand what each class represents):
 {class_context}
 
-For each question below, return a JSON object:
-{{
-  "source_line": <int>,
-  "description": "One sentence: what data and metrics does the answer contain?",
-  "intent_scores": {{"intent_name": 0.85, "other_intent": 0.40}},
-  "complexity": "simple|complex|advanced",
-  "anchor_ontology_classes": ["ClassName1", "ClassName2"],
-  "cte_steps": [
-    "cte_name_1: what this CTE selects and why",
-    "cte_name_2: what this CTE computes from cte_name_1",
-    "final: what the outermost SELECT returns to the user"
-  ],
-  "required_aggregations": ["plain English description of each aggregation"],
-  "required_filters": ["plain English description of each filter condition"],
-  "time_windowed": true
-}}
+For each question provided, analyze it and fill in:
+- source_line: the integer source_line from the question entry
+- description: one sentence describing what data and metrics the answer contains
+- intent_scores: a dict mapping intent names to confidence scores (0.0-1.0); at least one intent required
+- complexity: one of simple, complex, or advanced
+- anchor_ontology_classes: list of ontology class names from the provided list that are relevant; empty list if none match
+- cte_steps: list of CTE step descriptions in snake_case — always at least 2 steps, each as "cte_name: what this CTE does"
+- required_aggregations: list of plain English descriptions of each aggregation (no SQL)
+- required_filters: list of plain English descriptions of each filter condition
+- time_windowed: true if the question involves a time window (MTD, YTD, last N days, etc.)
 
 Complexity rules:
 - simple: 1-2 CTEs, <= 2 tables, single aggregate or lookup
 - complex: 3-5 CTEs, 3-5 tables, multi-aggregate with conditions
 - advanced: 5+ CTEs, cross-domain, stress tests, trends, executive dashboards
 
-Rules:
-- cte_steps: ALWAYS include, minimum 2 steps even for simple questions. Use snake_case CTE names.
-- required_aggregations: plain English only, no SQL column names.
-- required_filters: plain English descriptions of filter conditions.
-- anchor_ontology_classes: ONLY classes from the provided list. Leave empty [] if none match.
-- intent_scores: at least one intent, confidence between 0.0-1.0, multiple intents allowed.
-
-Questions (JSON array with source_line and question_text):
-{questions_json}
-
-Return a JSON array of objects, one per question. No markdown."""
+Questions (with source_line and question_text):
+{questions_json}"""
 
 
 def enrich_query_templates(
     questions: list[dict],
     intents: list[str],
     ontology_classes: list[str],
-    client,
-    model_arn: str,
+    chat_client,
     cache: dict,
     batch_size: int = 10,
     class_context: str = "",
 ) -> dict:
     """
-    Enrich QueryTemplate nodes from Questions.txt.
+    Enrich QueryTemplate nodes from Questions.txt using structured output.
     questions: list of {source_line: int, question_text: str}
-    class_context: optional multi-line string with ontology class descriptions for richer LLM context
     Returns {source_line: enriched_dict}
     """
     to_process = [q for q in questions if str(q["source_line"]) not in cache]
@@ -607,6 +583,7 @@ def enrich_query_templates(
 
     intents_list = ", ".join(intents)
     classes_list = ", ".join(ontology_classes[:150])
+    structured = chat_client.with_structured_output(QueryTemplatesOutput)
 
     for i in range(0, len(to_process), batch_size):
         batch = to_process[i: i + batch_size]
@@ -617,20 +594,17 @@ def enrich_query_templates(
             questions_json=json.dumps(batch, indent=2),
         )
         try:
-            raw = _invoke(client, model_arn, [{"role": "user", "content": prompt}], max_tokens=6000)
-            parsed = _parse_json_response(raw)
-            for item in parsed:
-                sl = item.get("source_line")
-                if sl is not None:
-                    # Ensure cte_steps always has at least 2 entries
-                    if not item.get("cte_steps") or len(item["cte_steps"]) < 2:
-                        item["cte_steps"] = [
-                            "base: select relevant rows from anchor tables with applied filters",
-                            "final: aggregate or format results for the user",
-                        ]
-                    results[str(sl)] = item
-                    log.debug("Enriched QueryTemplate line %s", sl)
-            _save_checkpoint(results)
+            output: QueryTemplatesOutput = structured.invoke(prompt)
+            for item in output.templates:
+                d = item.model_dump()
+                if len(d.get("cte_steps") or []) < 2:
+                    d["cte_steps"] = [
+                        "base: select relevant rows from anchor tables with applied filters",
+                        "final: aggregate or format results for the user",
+                    ]
+                results[str(d["source_line"])] = d
+            done = min(i + batch_size, len(to_process))
+            log.info("Templates LLM: %d/%d questions enriched.", done, len(to_process))
         except Exception as e:
             log.error("QueryTemplate batch %d failed: %s", i // batch_size, e)
             for q in batch:

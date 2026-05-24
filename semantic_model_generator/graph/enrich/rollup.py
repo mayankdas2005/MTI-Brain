@@ -13,7 +13,9 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from ..enrich.llm_enricher import _invoke, _parse_json_response
+from pydantic import BaseModel, Field
+from typing import Optional
+from ..enrich.llm_enricher import _langchain_bedrock
 
 log = logging.getLogger(__name__)
 _NOW = lambda: datetime.now(timezone.utc).isoformat()
@@ -180,31 +182,37 @@ def detect_rollup_candidates(table_names: list[str]) -> list[dict]:
 
 _ROLLUP_LLM_PROMPT = """You are validating rollup/time-windowed table relationships in a data warehouse.
 
-For each candidate pair below, determine:
-1. Is the "rollup_table" genuinely a time-windowed or pre-aggregated variant of "base_table"?
-2. Assign confidence between 0.0 and 1.0.
+For each candidate pair below, determine whether the rollup_table is genuinely a time-windowed or pre-aggregated variant of the base_table.
+
+For each candidate provide:
+- rollup_fqn: the rollup table fqn exactly as given
+- base_fqn: the base table fqn exactly as given
+- window_type: the window type string (e.g. trailing_7_days, month_to_date) or null if not applicable
+- window_days: integer number of days in the window, or null
+- confidence: a float between 0.0 and 1.0
+- confirmed: true if this is genuinely a rollup/time-windowed variant, false otherwise
 
 Candidate pairs:
-{pairs_json}
+{pairs_json}"""
 
-Return a JSON array — one object per candidate:
-{{
-  "rollup_fqn": "...",
-  "base_fqn": "...",
-  "window_type": "...",
-  "window_days": <int or null>,
-  "confidence": 0.92,
-  "confirmed": true
-}}
 
-Return ONLY valid JSON array. No markdown."""
+class _RollupValidation(BaseModel):
+    rollup_fqn: str
+    base_fqn: str
+    window_type: Optional[str] = None
+    window_days: Optional[int] = None
+    confidence: float
+    confirmed: bool
+
+
+class _RollupValidationsOutput(BaseModel):
+    validations: list[_RollupValidation] = Field(default_factory=list)
 
 
 def validate_rollup_with_llm(
     candidates: list[dict],
     table_descriptions: dict[str, str],
-    client,
-    model_arn: str,
+    chat_client,
 ) -> list[dict]:
     """
     Use LLM to validate heuristic rollup candidates.
@@ -213,25 +221,31 @@ def validate_rollup_with_llm(
     if not candidates:
         return []
 
-    enriched = []
-    for c in candidates:
-        enriched.append({
-            **c,
-            "rollup_description": table_descriptions.get(c["rollup_fqn"], ""),
-            "base_description":   table_descriptions.get(c["base_fqn"], ""),
-        })
-
+    enriched = [
+        {**c,
+         "rollup_description": table_descriptions.get(c["rollup_fqn"], ""),
+         "base_description":   table_descriptions.get(c["base_fqn"], "")}
+        for c in candidates
+    ]
     prompt = _ROLLUP_LLM_PROMPT.format(
         pairs_json=json.dumps(enriched, indent=2, default=str)
     )
     try:
-        raw = _invoke(client, model_arn, [{"role": "user", "content": prompt}], max_tokens=3000)
-        parsed = _parse_json_response(raw)
-        return [
-            item for item in parsed
-            if item.get("confirmed") is True
-            and float(item.get("confidence", 0)) >= _MIN_CONFIDENCE
+        structured = chat_client.with_structured_output(_RollupValidationsOutput)
+        output: _RollupValidationsOutput = structured.invoke(prompt)
+        confirmed = [
+            v.model_dump() for v in output.validations
+            if v.confirmed and v.confidence >= _MIN_CONFIDENCE
         ]
+        rejected = len(output.validations) - len(confirmed)
+        log.info("Rollup LLM: %d/%d confirmed, %d rejected (confidence < %.2f or confirmed=false).",
+                 len(confirmed), len(candidates), rejected, _MIN_CONFIDENCE)
+        if rejected:
+            for v in output.validations:
+                if not (v.confirmed and v.confidence >= _MIN_CONFIDENCE):
+                    log.debug("  rejected: %s → %s confirmed=%s conf=%.2f",
+                              v.rollup_fqn, v.base_fqn, v.confirmed, v.confidence)
+        return confirmed
     except Exception as e:
         log.error("Rollup LLM validation failed: %s — returning heuristic candidates", e)
         return [c for c in candidates if c["confidence"] >= _MIN_CONFIDENCE]

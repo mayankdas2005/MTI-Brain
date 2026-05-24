@@ -712,7 +712,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
             }
             for r in community_rows_enrich
         ]
-        comm_enriched = enrich_community(community_llm_input, bedrock_client, model_arn, comm_cache)
+        comm_enriched = enrich_community(community_llm_input, chat_client, comm_cache)
         checkpoint["communities"] = comm_enriched
         _save_checkpoint(checkpoint)
         loader.load_community_descriptions(comm_enriched)
@@ -732,13 +732,379 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
 
         log.info("ENRICH done in %.1fs", time.time() - t)
 
+    # ── PATHS ──────────────────────────────────────────────────────────────
+
+    if "paths" in steps and not dry_run:
+        t = time.time()
+        log.info("── PATHS ────────────────────────────────────────────────")
+
+        # Run typical_join_role pass before cross-community path scoping
+        loader.run_post_enrich_passes()
+
+        gds.project_join_graph()
+        gds.build_bridges_to_edges()
+
+        path_builder = JoinPathBuilder(
+            neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password, neo4j_cfg.db
+        )
+        path_builder.run_dijkstra_all_pairs(max_hops=6)
+        path_builder.run_yens_all_pairs(k=3, max_hops=6)
+        path_builder.run_cross_community_paths(max_hops=6)
+        path_builder.run_quality_scores()
+        path_builder.close()
+        gds._drop_graph("join_graph")
+        loader.initialize_joinpath_defaults()
+
+        log.info("PATHS done in %.1fs", time.time() - t)
+
+    # ── ROLLUP ─────────────────────────────────────────────────────────────
+
+    if "rollup" in steps and not dry_run:
+        t = time.time()
+        log.info("── ROLLUP ───────────────────────────────────────────────")
+
+        chat_client = _langchain_bedrock(bedrock_cfg)
+
+        table_desc_map = {
+            r["fqn"]: r.get("description", "")
+            for r in loader._run("MATCH (t:Table) RETURN t.fqn AS fqn, t.description AS description")
+        }
+
+        candidates = detect_rollup_candidates_from_graph(loader)
+        validated = validate_rollup_with_llm(candidates, table_desc_map, chat_client)
+
+        now = _NOW()
+        for v in validated:
+            loader._run("""
+                MATCH (rollup:Table {fqn: $rfqn})
+                MATCH (base:Table {fqn: $bfqn})
+                MERGE (rollup)-[r:ROLLUP_OF]->(base)
+                SET r.window_type  = $window_type,
+                    r.window_days  = $window_days,
+                    r.confidence   = $confidence,
+                    r.computed_at  = $now
+                SET rollup.is_rollup          = true,
+                    rollup.rollup_base_fqn    = $bfqn,
+                    rollup.rollup_window_days = $window_days
+            """,
+            rfqn=v["rollup_fqn"], bfqn=v["base_fqn"],
+            window_type=v.get("window_type"), window_days=v.get("window_days"),
+            confidence=v.get("confidence", 0.9), now=now)
+
+        loader.run_is_subquery_anchor()
+        log.info("ROLLUP: %d ROLLUP_OF edges written.", len(validated))
+        log.info("ROLLUP done in %.1fs", time.time() - t)
+
+    # ── INTENTS ────────────────────────────────────────────────────────────
+
+    if "intents" in steps and not dry_run:
+        t = time.time()
+        log.info("── INTENTS ──────────────────────────────────────────────")
+
+        chat_client = _langchain_bedrock(bedrock_cfg)
+
+        intent_json_path = Path(__file__).resolve().parents[1] / "output" / "intent_classes.json"
+        intent_classes = load_intent_classes(intent_json_path)
+
+        # Build ontology_class → [fqn] index from Neo4j
+        class_rows = loader._run("""
+            MATCH (t:Table)
+            WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
+            RETURN t.fqn AS fqn, t.ontology_class AS ontology_class
+        """)
+        table_fqn_by_class: dict[str, list[str]] = defaultdict(list)
+        for r in class_rows:
+            raw_class = r["ontology_class"]
+            # ontology_class stored as 'lpp:AcquirerSlaMetric' — extract camelCase part
+            camel = raw_class.split(":")[-1] if ":" in raw_class else raw_class
+            table_fqn_by_class[camel].append(r["fqn"])
+
+        # Query enriched table context for each ontology class
+        tbl_ctx_rows = loader._run("""
+            MATCH (t:Table) WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
+            RETURN t.name AS name, split(t.ontology_class, ':')[-1] AS cls,
+                   coalesce(t.description, '') AS description,
+                   coalesce(t.business_domain, '') AS domain,
+                   coalesce(t.natural_measures, []) AS measures
+        """)
+        tbl_ctx_by_cls: dict[str, list[dict]] = defaultdict(list)
+        for r in tbl_ctx_rows:
+            tbl_ctx_by_cls[r["cls"]].append({
+                "name": r["name"], "description": r["description"],
+                "domain": r["domain"], "measures": r.get("measures") or [],
+            })
+
+        # Build intent_input with table-level context (no column details — intent is table-level)
+        intent_input = []
+        for name, classes in intent_classes.items():
+            tables_for_intent: list[dict] = []
+            seen_names: set[str] = set()
+            for cls in classes:
+                for tbl in tbl_ctx_by_cls.get(cls, []):
+                    if tbl["name"] not in seen_names:
+                        seen_names.add(tbl["name"])
+                        tables_for_intent.append(tbl)
+            intent_input.append({
+                "intent": name,
+                "classes": classes,
+                "class_count": len(classes),
+                "tables": tables_for_intent[:8],
+            })
+
+        intent_descriptions = enrich_intents(intent_input, chat_client)
+
+        # Build and load Intent nodes
+        intent_nodes = build_intent_node_dicts(intent_classes, intent_descriptions, model_arn)
+        loader.load_intent_nodes(intent_nodes)
+
+        # Build RELEVANT_TO edges and load them
+        relevant_edges = compute_relevant_to_edges(intent_classes, table_fqn_by_class)
+        loader.load_relevant_to_edges(relevant_edges)
+
+        # Derive intent_tags on Tables
+        loader.set_intent_tags_on_tables()
+
+        loader._run("""
+            MATCH (i:Intent) WHERE i.description IS NOT NULL AND i.description <> ''
+            SET i.enrichment_status = 'enriched'
+        """)
+        loader.initialize_intent_defaults()
+        log.info("INTENTS: %d nodes, %d edges.", len(intent_nodes), len(relevant_edges))
+        log.info("INTENTS done in %.1fs", time.time() - t)
+
+    # ── GLOSSARY ───────────────────────────────────────────────────────────
+
+    if "glossary" in steps and not dry_run:
+        t = time.time()
+        log.info("── GLOSSARY ─────────────────────────────────────────────")
+
+        bedrock_client = _bedrock_client(bedrock_cfg)
+        chat_client = _langchain_bedrock(bedrock_cfg)
+
+        # Build context: enriched column synonyms, semantic types, value aliases + table descriptions
+        context_rows = loader._run("""
+            MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+            WHERE c.synonyms <> [] OR c.value_aliases <> []
+            RETURN t.name AS table_name, t.description AS table_desc,
+                   c.name AS col_name, c.synonyms AS synonyms,
+                   c.semantic_type AS semantic_type,
+                   c.value_aliases AS value_aliases,
+                   c.value_vocabulary AS value_vocabulary,
+                   c.top_values_text AS top_values_text
+            LIMIT 500
+        """)
+        context_lines = []
+        for r in context_rows[:300]:
+            syns = ", ".join(r.get("synonyms") or [])
+            aliases = ", ".join(r.get("value_aliases") or [])
+            vocab = ", ".join(r.get("value_vocabulary") or [])
+            sem_type = r.get("semantic_type") or ""
+            line = f"{r['table_name']}.{r['col_name']}"
+            if sem_type:
+                line += f" [{sem_type}]"
+            line += f": synonyms=[{syns}]"
+            if aliases:
+                line += f" aliases=[{aliases}]"
+            if vocab:
+                line += f" values=[{vocab}]"
+            context_lines.append(line)
+
+        GLOSS_BATCH = 10
+        glossary_checkpoint = _load_checkpoint()
+        cached_terms: list[dict] = glossary_checkpoint.get("glossary_terms") or []
+        glossary_offset: int = glossary_checkpoint.get("glossary_context_offset", 0)
+
+        if glossary_offset >= len(context_lines) and cached_terms:
+            log.info("GLOSSARY: %d terms from checkpoint — all %d context rows done, skipping LLM.",
+                     len(cached_terms), len(context_lines))
+            terms = cached_terms
+        else:
+            existing_term_names: set[str] = {bt["term"] for bt in cached_terms}
+            all_terms: list[dict] = list(cached_terms)
+
+            log.info("GLOSSARY: %d context lines total, resuming from offset %d, %d terms cached.",
+                     len(context_lines), glossary_offset, len(all_terms))
+
+            for i in range(glossary_offset, len(context_lines), GLOSS_BATCH):
+                chunk = context_lines[i:i + GLOSS_BATCH]
+                done_rows = min(i + GLOSS_BATCH, len(context_lines))
+                log.info("GLOSSARY: calling LLM for context rows %d–%d / %d ...",
+                         i + 1, done_rows, len(context_lines))
+                batch_terms = generate_business_glossary("\n".join(chunk), chat_client)
+                new_terms = [bt for bt in batch_terms if bt["term"] not in existing_term_names]
+                all_terms.extend(new_terms)
+                existing_term_names.update(bt["term"] for bt in new_terms)
+                if new_terms:
+                    loader.load_business_terms(new_terms)
+                glossary_checkpoint["glossary_terms"] = all_terms
+                glossary_checkpoint["glossary_context_offset"] = done_rows
+                _save_checkpoint(glossary_checkpoint)
+                log.info("GLOSSARY: %d/%d rows done — %d new terms, %d total written to Neo4j.",
+                         done_rows, len(context_lines), len(new_terms), len(all_terms))
+
+            terms = all_terms
+
+        loader.initialize_businessterm_defaults()
+        log.info("GLOSSARY: %d BusinessTerm nodes written.", len(terms))
+        log.info("GLOSSARY done in %.1fs", time.time() - t)
+
+    # ── TEMPLATES ──────────────────────────────────────────────────────────
+
+    if "templates" in steps and not dry_run:
+        t = time.time()
+        log.info("── TEMPLATES ────────────────────────────────────────────")
+
+        bedrock_client = _bedrock_client(bedrock_cfg)
+        chat_client = _langchain_bedrock(bedrock_cfg)
+
+        questions_path = Path(__file__).resolve().parents[1] / "output" / "Questions.txt"
+        questions_raw = questions_path.read_text(encoding="utf-8").splitlines()
+        questions = [
+            {"source_line": i, "question_text": line.strip()}
+            for i, line in enumerate(questions_raw)
+            if line.strip()
+        ]
+
+        intent_json_path = Path(__file__).resolve().parents[1] / "output" / "intent_classes.json"
+        intent_classes = load_intent_classes(intent_json_path)
+        intents_list = list(intent_classes.keys())
+
+        # Collect ontology classes + enriched descriptions from Neo4j
+        class_rows_qt = loader._run("""
+            MATCH (t:Table)
+            WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
+            RETURN DISTINCT split(t.ontology_class, ':')[-1] AS cls,
+                   t.description AS description,
+                   t.business_domain AS domain,
+                   t.natural_measures AS measures
+        """)
+        ontology_classes = [r["cls"] for r in class_rows_qt]
+        class_context_lines = []
+        for r in class_rows_qt:
+            line = f"{r['cls']}: {r.get('description') or ''}"
+            if r.get("domain"):
+                line += f" (domain: {r['domain']})"
+            if r.get("measures"):
+                line += f" measures: {', '.join((r['measures'] or [])[:3])}"
+            class_context_lines.append(line)
+        class_context = "\n".join(class_context_lines[:100])
+
+        checkpoint = _load_checkpoint()
+
+        # Migrate corrupted checkpoint: old bug saved template results at root level
+        # instead of under "query_templates" key — recover them if present.
+        if "query_templates" not in checkpoint:
+            recovered = {
+                k: v for k, v in checkpoint.items()
+                if k.isdigit() and isinstance(v, dict) and "source_line" in v
+            }
+            if recovered:
+                log.info("TEMPLATES: migrating %d cached results from corrupted checkpoint.", len(recovered))
+                checkpoint["query_templates"] = recovered
+                _save_checkpoint(checkpoint)
+
+        qt_cache = checkpoint.get("query_templates", {})
+
+        to_enrich_qt = [q for q in questions if str(q["source_line"]) not in qt_cache]
+        n_cached_qt = len(questions) - len(to_enrich_qt)
+        log.info("TEMPLATES: %d questions total, %d cached, %d to enrich.",
+                 len(questions), n_cached_qt, len(to_enrich_qt))
+
+        # Build ontology_class → fqn index for anchor_table_fqns resolution
+        class_fqn_rows = loader._run("""
+            MATCH (t:Table) WHERE t.ontology_class IS NOT NULL
+            RETURN t.fqn AS fqn, split(t.ontology_class, ':')[-1] AS cls
+        """)
+        fqn_by_class_qt: dict[str, list[str]] = defaultdict(list)
+        for r in class_fqn_rows:
+            fqn_by_class_qt[r["cls"]].append(r["fqn"])
+
+        def _build_qt_dicts(qs: list[dict]) -> tuple:
+            tmpls, i_edges, t_edges = [], [], []
+            for q in qs:
+                sl = q["source_line"]
+                enr = qt_cache.get(str(sl))
+                if not enr:
+                    continue
+                qt_id = f"qt_{sl:03d}"
+                intent_scores: dict = enr.get("intent_scores") or {"general_analytics": 0.5}
+                primary_intent = max(intent_scores, key=intent_scores.get)
+                anchor_classes = enr.get("anchor_ontology_classes") or []
+                anchor_fqns = resolve_anchor_table_fqns(anchor_classes, fqn_by_class_qt)
+                tmpls.append({
+                    "id":                      qt_id,
+                    "question_text":           q["question_text"],
+                    "description":             enr.get("description", q["question_text"]),
+                    "primary_intent":          primary_intent,
+                    "intent_scores":           [{"name": k, "score": float(v)} for k, v in intent_scores.items()],
+                    "complexity":              enr.get("complexity", "complex"),
+                    "anchor_ontology_classes": anchor_classes,
+                    "anchor_table_fqns":       anchor_fqns,
+                    "cte_steps":               enr.get("cte_steps") or [],
+                    "required_aggregations":   enr.get("required_aggregations") or [],
+                    "required_filters":        enr.get("required_filters") or [],
+                    "time_windowed":           bool(enr.get("time_windowed", False)),
+                    "source_line":             sl,
+                })
+                for intent_name, conf in intent_scores.items():
+                    i_edges.append({"qt_id": qt_id, "intent_name": intent_name, "confidence": float(conf)})
+                for fqn in anchor_fqns:
+                    t_edges.append({"qt_id": qt_id, "table_fqn": fqn})
+            return tmpls, i_edges, t_edges
+
+        all_templates_to_load: list[dict] = []
+
+        # Write already-cached templates to Neo4j first
+        if n_cached_qt:
+            cached_qs = [q for q in questions if str(q["source_line"]) in qt_cache]
+            c_tmpls, c_i_edges, c_t_edges = _build_qt_dicts(cached_qs)
+            if c_tmpls:
+                loader.load_query_templates(c_tmpls)
+                loader.link_query_templates_to_intents(c_i_edges)
+                loader.link_query_templates_to_tables(c_t_edges)
+                all_templates_to_load.extend(c_tmpls)
+                log.info("TEMPLATES: %d cached templates written to Neo4j.", len(c_tmpls))
+
+        # Process uncached in batches of 10 — write to Neo4j after each batch
+        TMPL_BATCH = 10
+        for batch_start in range(0, len(to_enrich_qt), TMPL_BATCH):
+            batch = to_enrich_qt[batch_start:batch_start + TMPL_BATCH]
+            batch_result = enrich_query_templates(
+                questions=batch,
+                intents=intents_list,
+                ontology_classes=ontology_classes,
+                chat_client=chat_client,
+                cache={},
+                batch_size=TMPL_BATCH,
+                class_context=class_context,
+            )
+            qt_cache.update(batch_result)
+
+            b_tmpls, b_i_edges, b_t_edges = _build_qt_dicts(batch)
+            if b_tmpls:
+                loader.load_query_templates(b_tmpls)
+                loader.link_query_templates_to_intents(b_i_edges)
+                loader.link_query_templates_to_tables(b_t_edges)
+                all_templates_to_load.extend(b_tmpls)
+
+            checkpoint["query_templates"] = qt_cache
+            _save_checkpoint(checkpoint)
+            done = min(batch_start + TMPL_BATCH, len(to_enrich_qt))
+            log.info("TEMPLATES: %d/%d enriched and written to Neo4j.",
+                     n_cached_qt + done, len(questions))
+
+        templates_to_load = all_templates_to_load
+
+        loader.initialize_querytemplate_defaults()
+        log.info("TEMPLATES: %d QueryTemplate nodes written.", len(templates_to_load))
+        log.info("TEMPLATES done in %.1fs", time.time() - t)
+
     # ── EMBED ──────────────────────────────────────────────────────────────
 
     if "embed" in steps and not dry_run:
         t = time.time()
         log.info("── EMBED ────────────────────────────────────────────────")
 
-        import json as _json
         EMBED_BATCH = 50
         bedrock_client = _bedrock_client(bedrock_cfg)
         model_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
@@ -865,443 +1231,56 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
 
         # BusinessTerm embeddings (produced by GLOSSARY step)
         bt_rows = loader._run("""
-            MATCH (b:BusinessTerm) WHERE b.cohere_embedding IS NULL
+            MATCH (b:BusinessTerm)
+            WHERE b.cohere_embedding IS NULL OR NOT (size(b.cohere_embedding) > 100)
             RETURN b.term AS term, b.description AS description
         """)
         if bt_rows:
             now = _NOW()
+            from .enrich.embeddings import embed_texts as _embed_texts
             texts = [r["term"] + " " + (r.get("description") or "") for r in bt_rows]
-            for i in range(0, len(bt_rows), 96):
-                chunk_texts = texts[i:i + 96]
-                chunk_rows  = bt_rows[i:i + 96]
-                try:
-                    resp = bedrock_client.invoke_model(
-                        modelId=model_arn,
-                        body=_json.dumps({"texts": chunk_texts, "input_type": "search_document"}),
-                        contentType="application/json", accept="application/json",
-                    )
-                    batch_embs = _json.loads(resp["body"].read())["embeddings"]
-                    emb_rows = [{"term": r["term"], "emb": e, "model": model_arn}
-                                for r, e in zip(chunk_rows, batch_embs)]
-                    loader._batch_write("""
-                        UNWIND $rows AS r
-                        MATCH (b:BusinessTerm {term: r.term})
-                        SET b.cohere_embedding       = r.emb,
-                            b.embedding_model        = r.model,
-                            b.embedding_generated_at = $now
-                    """, emb_rows, now=now)
-                    log.info("EMBED business terms: %d/%d written.",
-                             min(i + 96, len(bt_rows)), len(bt_rows))
-                except Exception as e:
-                    log.warning("BusinessTerm embed batch failed: %s", e)
+            embeddings = _embed_texts(texts, bedrock_client, model_arn, input_type="search_document")
+            emb_rows = [{"term": r["term"], "emb": e, "model": model_arn}
+                        for r, e in zip(bt_rows, embeddings)]
+            for i in range(0, len(emb_rows), EMBED_BATCH):
+                loader._batch_write("""
+                    UNWIND $rows AS r
+                    MATCH (b:BusinessTerm {term: r.term})
+                    SET b.cohere_embedding       = r.emb,
+                        b.embedding_model        = r.model,
+                        b.embedding_generated_at = $now
+                """, emb_rows[i:i + EMBED_BATCH], now=now)
+                log.info("EMBED business terms: %d/%d written.",
+                         min(i + EMBED_BATCH, len(emb_rows)), len(emb_rows))
 
         # QueryTemplate embeddings (produced by TEMPLATES step)
         qt_rows = loader._run("""
-            MATCH (q:QueryTemplate) WHERE q.cohere_embedding IS NULL
+            MATCH (q:QueryTemplate)
+            WHERE q.cohere_embedding IS NULL OR NOT (size(q.cohere_embedding) > 100)
             RETURN q.id AS id, q.question_text AS question_text
         """)
         if qt_rows:
             now = _NOW()
+            from .enrich.embeddings import embed_texts as _embed_texts
             texts = [r["question_text"] for r in qt_rows]
-            for i in range(0, len(qt_rows), 96):
-                chunk_texts = texts[i:i + 96]
-                chunk_rows  = qt_rows[i:i + 96]
-                try:
-                    resp = bedrock_client.invoke_model(
-                        modelId=model_arn,
-                        body=_json.dumps({"texts": chunk_texts, "input_type": "search_query"}),
-                        contentType="application/json", accept="application/json",
-                    )
-                    batch_embs = _json.loads(resp["body"].read())["embeddings"]
-                    emb_rows = [{"qt_id": r["id"], "emb": e, "model": model_arn}
-                                for r, e in zip(chunk_rows, batch_embs)]
-                    loader._batch_write("""
-                        UNWIND $rows AS r
-                        MATCH (q:QueryTemplate {id: r.qt_id})
-                        SET q.cohere_embedding       = r.emb,
-                            q.embedding_model        = r.model,
-                            q.embedding_generated_at = $now
-                    """, emb_rows, now=now)
-                    log.info("EMBED query templates: %d/%d written.",
-                             min(i + 96, len(qt_rows)), len(qt_rows))
-                except Exception as e:
-                    log.warning("QueryTemplate embed batch failed: %s", e)
+            embeddings = _embed_texts(texts, bedrock_client, model_arn, input_type="search_query")
+            emb_rows = [{"qt_id": r["id"], "emb": e, "model": model_arn}
+                        for r, e in zip(qt_rows, embeddings)]
+            for i in range(0, len(emb_rows), EMBED_BATCH):
+                loader._batch_write("""
+                    UNWIND $rows AS r
+                    MATCH (q:QueryTemplate {id: r.qt_id})
+                    SET q.cohere_embedding       = r.emb,
+                        q.embedding_model        = r.model,
+                        q.embedding_generated_at = $now
+                """, emb_rows[i:i + EMBED_BATCH], now=now)
+                log.info("EMBED query templates: %d/%d written.",
+                         min(i + EMBED_BATCH, len(emb_rows)), len(emb_rows))
 
         # KNN on column embeddings → SEMANTICALLY_SIMILAR edges
         gds.run_knn(cutoff=0.88)
 
         log.info("EMBED done in %.1fs", time.time() - t)
-
-    # ── PATHS ──────────────────────────────────────────────────────────────
-
-    if "paths" in steps and not dry_run:
-        t = time.time()
-        log.info("── PATHS ────────────────────────────────────────────────")
-
-        # Run typical_join_role pass before cross-community path scoping
-        loader.run_post_enrich_passes()
-
-        gds.project_join_graph()
-        gds.build_bridges_to_edges()
-
-        path_builder = JoinPathBuilder(
-            neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password, neo4j_cfg.db
-        )
-        path_builder.run_dijkstra_all_pairs(max_hops=6)
-        path_builder.run_yens_all_pairs(k=3, max_hops=6)
-        path_builder.run_cross_community_paths(max_hops=6)
-        path_builder.run_quality_scores()
-        path_builder.close()
-        gds._drop_graph("join_graph")
-        loader.initialize_joinpath_defaults()
-
-        log.info("PATHS done in %.1fs", time.time() - t)
-
-    # ── ROLLUP ─────────────────────────────────────────────────────────────
-
-    if "rollup" in steps and not dry_run:
-        t = time.time()
-        log.info("── ROLLUP ───────────────────────────────────────────────")
-
-        bedrock_client = _bedrock_client(bedrock_cfg)
-        model_arn = bedrock_cfg.aws_bedrock_sonnet_arn
-
-        table_desc_map = {
-            r["fqn"]: r.get("description", "")
-            for r in loader._run("MATCH (t:Table) RETURN t.fqn AS fqn, t.description AS description")
-        }
-
-        candidates = detect_rollup_candidates_from_graph(loader)
-        validated = validate_rollup_with_llm(candidates, table_desc_map, bedrock_client, model_arn)
-
-        now = _NOW()
-        for v in validated:
-            loader._run("""
-                MATCH (rollup:Table {fqn: $rfqn})
-                MATCH (base:Table {fqn: $bfqn})
-                MERGE (rollup)-[r:ROLLUP_OF]->(base)
-                SET r.window_type  = $window_type,
-                    r.window_days  = $window_days,
-                    r.confidence   = $confidence,
-                    r.computed_at  = $now
-                SET rollup.is_rollup          = true,
-                    rollup.rollup_base_fqn    = $bfqn,
-                    rollup.rollup_window_days = $window_days
-            """,
-            rfqn=v["rollup_fqn"], bfqn=v["base_fqn"],
-            window_type=v.get("window_type"), window_days=v.get("window_days"),
-            confidence=v.get("confidence", 0.9), now=now)
-
-        loader.run_is_subquery_anchor()
-        log.info("ROLLUP: %d ROLLUP_OF edges written.", len(validated))
-        log.info("ROLLUP done in %.1fs", time.time() - t)
-
-    # ── INTENTS ────────────────────────────────────────────────────────────
-
-    if "intents" in steps and not dry_run:
-        t = time.time()
-        log.info("── INTENTS ──────────────────────────────────────────────")
-
-        bedrock_client = _bedrock_client(bedrock_cfg)
-        model_arn = bedrock_cfg.aws_bedrock_sonnet_arn
-
-        intent_json_path = Path(__file__).resolve().parents[1] / "output" / "intent_classes.json"
-        intent_classes = load_intent_classes(intent_json_path)
-
-        # Build ontology_class → [fqn] index from Neo4j
-        class_rows = loader._run("""
-            MATCH (t:Table)
-            WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
-            RETURN t.fqn AS fqn, t.ontology_class AS ontology_class
-        """)
-        table_fqn_by_class: dict[str, list[str]] = defaultdict(list)
-        for r in class_rows:
-            raw_class = r["ontology_class"]
-            # ontology_class stored as 'lpp:AcquirerSlaMetric' — extract camelCase part
-            camel = raw_class.split(":")[-1] if ":" in raw_class else raw_class
-            table_fqn_by_class[camel].append(r["fqn"])
-
-        # Query enriched table context for each ontology class
-        tbl_ctx_rows = loader._run("""
-            MATCH (t:Table) WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
-            RETURN t.name AS name, split(t.ontology_class, ':')[-1] AS cls,
-                   coalesce(t.description, '') AS description,
-                   coalesce(t.business_domain, '') AS domain,
-                   coalesce(t.natural_measures, []) AS measures
-        """)
-        tbl_ctx_by_cls: dict[str, list[dict]] = defaultdict(list)
-        for r in tbl_ctx_rows:
-            tbl_ctx_by_cls[r["cls"]].append({
-                "name": r["name"], "description": r["description"],
-                "domain": r["domain"], "measures": r.get("measures") or [],
-            })
-
-        # Build intent_input with table-level context (no column details — intent is table-level)
-        intent_input = []
-        for name, classes in intent_classes.items():
-            tables_for_intent: list[dict] = []
-            seen_names: set[str] = set()
-            for cls in classes:
-                for tbl in tbl_ctx_by_cls.get(cls, []):
-                    if tbl["name"] not in seen_names:
-                        seen_names.add(tbl["name"])
-                        tables_for_intent.append(tbl)
-            intent_input.append({
-                "intent": name,
-                "classes": classes,
-                "class_count": len(classes),
-                "tables": tables_for_intent[:8],
-            })
-
-        intent_descriptions = enrich_intents(intent_input, bedrock_client, model_arn)
-
-        # Build and load Intent nodes
-        intent_nodes = build_intent_node_dicts(intent_classes, intent_descriptions, model_arn)
-        loader.load_intent_nodes(intent_nodes)
-
-        # Build RELEVANT_TO edges and load them
-        relevant_edges = compute_relevant_to_edges(intent_classes, table_fqn_by_class)
-        loader.load_relevant_to_edges(relevant_edges)
-
-        # Derive intent_tags on Tables
-        loader.set_intent_tags_on_tables()
-
-        loader._run("""
-            MATCH (i:Intent) WHERE i.description IS NOT NULL AND i.description <> ''
-            SET i.enrichment_status = 'enriched'
-        """)
-        loader.initialize_intent_defaults()
-        log.info("INTENTS: %d nodes, %d edges.", len(intent_nodes), len(relevant_edges))
-        log.info("INTENTS done in %.1fs", time.time() - t)
-
-    # ── GLOSSARY ───────────────────────────────────────────────────────────
-
-    if "glossary" in steps and not dry_run:
-        t = time.time()
-        log.info("── GLOSSARY ─────────────────────────────────────────────")
-
-        bedrock_client = _bedrock_client(bedrock_cfg)
-        sonnet_arn = bedrock_cfg.aws_bedrock_sonnet_arn
-        cohere_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
-
-        # Build context: enriched column synonyms, semantic types, value aliases + table descriptions
-        context_rows = loader._run("""
-            MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
-            WHERE c.synonyms <> [] OR c.value_aliases <> []
-            RETURN t.name AS table_name, t.description AS table_desc,
-                   c.name AS col_name, c.synonyms AS synonyms,
-                   c.semantic_type AS semantic_type,
-                   c.value_aliases AS value_aliases,
-                   c.value_vocabulary AS value_vocabulary,
-                   c.top_values_text AS top_values_text
-            LIMIT 500
-        """)
-        context_lines = []
-        for r in context_rows[:300]:
-            syns = ", ".join(r.get("synonyms") or [])
-            aliases = ", ".join(r.get("value_aliases") or [])
-            vocab = ", ".join(r.get("value_vocabulary") or [])
-            sem_type = r.get("semantic_type") or ""
-            line = f"{r['table_name']}.{r['col_name']}"
-            if sem_type:
-                line += f" [{sem_type}]"
-            line += f": synonyms=[{syns}]"
-            if aliases:
-                line += f" aliases=[{aliases}]"
-            if vocab:
-                line += f" values=[{vocab}]"
-            context_lines.append(line)
-
-        context_text = "\n".join(context_lines[:300])
-
-        glossary_checkpoint = _load_checkpoint()
-        cached_terms = glossary_checkpoint.get("glossary_terms")
-        if cached_terms:
-            log.info("GLOSSARY: %d terms from checkpoint — skipping LLM call.", len(cached_terms))
-            terms = cached_terms
-        else:
-            terms = generate_business_glossary(context_text, bedrock_client, sonnet_arn)
-            if terms:
-                glossary_checkpoint["glossary_terms"] = terms
-                _save_checkpoint(glossary_checkpoint)
-        loader.load_business_terms(terms)
-
-        # Embed BusinessTerms in batched Cohere calls
-        import json as _json
-        if terms:
-            now = _NOW()
-            texts = [t["term"] + " " + (t.get("description") or "") for t in terms]
-            for i in range(0, len(terms), 96):
-                chunk_terms = terms[i:i + 96]
-                chunk_texts = texts[i:i + 96]
-                try:
-                    resp = bedrock_client.invoke_model(
-                        modelId=cohere_arn,
-                        body=_json.dumps({"texts": chunk_texts, "input_type": "search_document"}),
-                        contentType="application/json",
-                        accept="application/json",
-                    )
-                    batch_embs = _json.loads(resp["body"].read())["embeddings"]
-                    emb_rows = [{"term": t["term"], "emb": e, "model": cohere_arn}
-                                for t, e in zip(chunk_terms, batch_embs)]
-                    loader._batch_write("""
-                        UNWIND $rows AS r
-                        MATCH (b:BusinessTerm {term: r.term})
-                        SET b.cohere_embedding       = r.emb,
-                            b.embedding_model        = r.model,
-                            b.embedding_generated_at = $now
-                    """, emb_rows, now=now)
-                    log.info("GLOSSARY embed: %d/%d terms written.",
-                             min(i + 96, len(terms)), len(terms))
-                except Exception as e:
-                    log.warning("BusinessTerm embed batch failed: %s", e)
-
-        loader.initialize_businessterm_defaults()
-        log.info("GLOSSARY: %d BusinessTerm nodes written.", len(terms))
-        log.info("GLOSSARY done in %.1fs", time.time() - t)
-
-    # ── TEMPLATES ──────────────────────────────────────────────────────────
-
-    if "templates" in steps and not dry_run:
-        t = time.time()
-        log.info("── TEMPLATES ────────────────────────────────────────────")
-
-        bedrock_client = _bedrock_client(bedrock_cfg)
-        sonnet_arn = bedrock_cfg.aws_bedrock_sonnet_arn
-        cohere_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
-
-        questions_path = Path(__file__).resolve().parents[1] / "output" / "Questions.txt"
-        questions_raw = questions_path.read_text(encoding="utf-8").splitlines()
-        questions = [
-            {"source_line": i, "question_text": line.strip()}
-            for i, line in enumerate(questions_raw)
-            if line.strip()
-        ]
-
-        intent_json_path = Path(__file__).resolve().parents[1] / "output" / "intent_classes.json"
-        intent_classes = load_intent_classes(intent_json_path)
-        intents_list = list(intent_classes.keys())
-
-        # Collect ontology classes + enriched descriptions from Neo4j
-        class_rows_qt = loader._run("""
-            MATCH (t:Table)
-            WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
-            RETURN DISTINCT split(t.ontology_class, ':')[-1] AS cls,
-                   t.description AS description,
-                   t.business_domain AS domain,
-                   t.natural_measures AS measures
-        """)
-        ontology_classes = [r["cls"] for r in class_rows_qt]
-        class_context_lines = []
-        for r in class_rows_qt:
-            line = f"{r['cls']}: {r.get('description') or ''}"
-            if r.get("domain"):
-                line += f" (domain: {r['domain']})"
-            if r.get("measures"):
-                line += f" measures: {', '.join((r['measures'] or [])[:3])}"
-            class_context_lines.append(line)
-        class_context = "\n".join(class_context_lines[:100])
-
-        checkpoint = _load_checkpoint()
-        qt_cache = checkpoint.get("query_templates", {})
-
-        enriched_qt = enrich_query_templates(
-            questions=questions,
-            intents=intents_list,
-            ontology_classes=ontology_classes,
-            client=bedrock_client,
-            model_arn=sonnet_arn,
-            cache=qt_cache,
-            class_context=class_context,
-        )
-        checkpoint["query_templates"] = enriched_qt
-        _save_checkpoint(checkpoint)
-
-        # Build ontology_class → fqn index for anchor_table_fqns resolution
-        class_fqn_rows = loader._run("""
-            MATCH (t:Table) WHERE t.ontology_class IS NOT NULL
-            RETURN t.fqn AS fqn, split(t.ontology_class, ':')[-1] AS cls
-        """)
-        fqn_by_class_qt: dict[str, list[str]] = defaultdict(list)
-        for r in class_fqn_rows:
-            fqn_by_class_qt[r["cls"]].append(r["fqn"])
-
-        templates_to_load: list[dict] = []
-        template_intent_edges: list[dict] = []
-        template_table_edges: list[dict] = []
-
-        for sl_str, enr in enriched_qt.items():
-            sl = int(sl_str)
-            if sl >= len(questions):
-                continue
-            q_text = questions[sl]["question_text"]
-            qt_id = f"qt_{sl:03d}"
-
-            intent_scores: dict = enr.get("intent_scores") or {"general_analytics": 0.5}
-            primary_intent = max(intent_scores, key=intent_scores.get)
-
-            anchor_classes = enr.get("anchor_ontology_classes") or []
-            anchor_fqns = resolve_anchor_table_fqns(anchor_classes, fqn_by_class_qt)
-
-            templates_to_load.append({
-                "id":                      qt_id,
-                "question_text":           q_text,
-                "description":             enr.get("description", q_text),
-                "primary_intent":          primary_intent,
-                "intent_scores":           [{"name": k, "score": float(v)} for k, v in intent_scores.items()],
-                "complexity":              enr.get("complexity", "complex"),
-                "anchor_ontology_classes": anchor_classes,
-                "anchor_table_fqns":       anchor_fqns,
-                "cte_steps":               enr.get("cte_steps") or [],
-                "required_aggregations":   enr.get("required_aggregations") or [],
-                "required_filters":        enr.get("required_filters") or [],
-                "time_windowed":           bool(enr.get("time_windowed", False)),
-                "source_line":             sl,
-            })
-
-            for intent_name, conf in intent_scores.items():
-                template_intent_edges.append({
-                    "qt_id": qt_id, "intent_name": intent_name, "confidence": float(conf)
-                })
-            for fqn in anchor_fqns:
-                template_table_edges.append({"qt_id": qt_id, "table_fqn": fqn})
-
-        loader.load_query_templates(templates_to_load)
-        loader.link_query_templates_to_intents(template_intent_edges)
-        loader.link_query_templates_to_tables(template_table_edges)
-
-        # Embed QueryTemplate question texts in batched Cohere calls
-        import json as _json
-        if templates_to_load:
-            now = _NOW()
-            for i in range(0, len(templates_to_load), 96):
-                chunk = templates_to_load[i:i + 96]
-                texts = [qt["question_text"] for qt in chunk]
-                try:
-                    resp = bedrock_client.invoke_model(
-                        modelId=cohere_arn,
-                        body=_json.dumps({"texts": texts, "input_type": "search_query"}),
-                        contentType="application/json",
-                        accept="application/json",
-                    )
-                    batch_embs = _json.loads(resp["body"].read())["embeddings"]
-                    emb_rows = [{"qt_id": qt["id"], "emb": e, "model": cohere_arn}
-                                for qt, e in zip(chunk, batch_embs)]
-                    loader._batch_write("""
-                        UNWIND $rows AS r
-                        MATCH (q:QueryTemplate {id: r.qt_id})
-                        SET q.cohere_embedding       = r.emb,
-                            q.embedding_model        = r.model,
-                            q.embedding_generated_at = $now
-                    """, emb_rows, now=now)
-                    log.info("TEMPLATES embed: %d/%d written.",
-                             min(i + 96, len(templates_to_load)), len(templates_to_load))
-                except Exception as e:
-                    log.warning("QueryTemplate embed batch failed: %s", e)
-
-        loader.initialize_querytemplate_defaults()
-        log.info("TEMPLATES: %d QueryTemplate nodes written.", len(templates_to_load))
-        log.info("TEMPLATES done in %.1fs", time.time() - t)
 
     # ── Integrity check + PipelineRun ──────────────────────────────────────
 
