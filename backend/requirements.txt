@@ -18,8 +18,8 @@ pgvector>=0.3.0
 psycopg[binary]>=3.2.0
 psycopg-pool>=3.2.0
 
-# Redis (response cache, optional — graceful degradation if unreachable)
-# redis>=5.0
+# Redis (response cache, analytics pipeline)
+redis>=5.0
 
 # LangGraph + LangChain
 langgraph>=0.4.0
@@ -60,6 +60,13 @@ rdflib>=7.0.0
 
 # SQL analysis (extract source tables for trust strip; Snowflake dialect)
 sqlglot>=25.0.0
+
+# Neo4j analytics pipeline
+neo4j>=5.0.0
+redshift-connector>=2.1.0
+json-repair>=0.25.0
+rapidfuzz>=3.0.0
+dateparser>=1.2.0
 
 # Misc
 Markdown==3.10.2

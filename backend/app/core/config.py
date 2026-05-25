@@ -135,6 +135,21 @@ class Settings(BaseSettings):
     # ── Pipeline (config.yml) ─────────────────────────────────────────────────
     PIPELINE_RECURSION_LIMIT: int = Field(default=_pipeline.get("recursion_limit", 80))
 
+    # ── Neo4j (analytics pipeline) ────────────────────────────────────────────
+    NEO4J_URI: str = Field(default="bolt://localhost:7687")
+    NEO4J_USER: str = Field(default="neo4j")
+    NEO4J_PASSWORD: str = Field(default="", repr=False)
+
+    # ── Redshift (analytics pipeline) ────────────────────────────────────────
+    REDSHIFT_HOST: str = Field(default="")
+    REDSHIFT_DB: str = Field(default="dev")
+    REDSHIFT_USER: str = Field(default="")
+    REDSHIFT_PASSWORD: str = Field(default="", repr=False)
+    REDSHIFT_PORT: int = Field(default=5439)
+
+    # ── Redis (analytics pipeline) ────────────────────────────────────────────
+    REDIS_URL: str = Field(default="redis://localhost:6379")
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
