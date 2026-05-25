@@ -352,9 +352,8 @@ class JoinPathBuilder:
         result = self._run("""
             MATCH (jp:JoinPath)
             WHERE jp.path_tables IS NOT NULL AND size(jp.path_tables) >= 2
-            CALL {
-                WITH jp
-                WITH jp, jp.path_tables AS tables,
+            CALL (jp) {
+                WITH jp.path_tables AS tables,
                      CASE WHEN coalesce(jp.hop_count, 0) < 1 THEN 1 ELSE jp.hop_count END AS hop_count
                 UNWIND range(0, size(tables) - 2) AS i
                 MATCH (a:Table {fqn: tables[i]})-[r:JOINS_TO]-(b:Table {fqn: tables[i+1]})
