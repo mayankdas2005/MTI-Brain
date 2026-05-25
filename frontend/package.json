@@ -69,6 +69,9 @@
     "sonner": "^1.7.1",
     "tailwind-merge": "^3.3.1",
     "vaul": "^1.1.2",
+    "vega": "^6.2.0",
+    "vega-embed": "^7.1.0",
+    "vega-lite": "^6.4.3",
     "xlsx": "^0.18.5",
     "zod": "^3.24.1",
     "zustand": "^4.5.0"

@@ -151,7 +151,7 @@
     #graph-status {
       position: absolute; bottom: 10px; left: 50%;
       transform: translateX(-50%);
-      background: rgba(15,23,42,0.72); color: #cbd5e1;
+      background: rgba(15,23,42,0.1); color: rgba(34,34,34,0.7);
       font-size: 11px; font-weight: 500;
       padding: 5px 14px; border-radius: 999px;
       pointer-events: none; z-index: 10;
@@ -191,7 +191,7 @@
     </button>
 
     <div style="flex:1;"></div>
-    <span style="font-size:12px;font-weight:700;color:#9ca3af;letter-spacing:0.04em;">MTI Brain · Graph Explorer</span>
+    <span style="font-size:12px;font-weight:700;color:#222;letter-spacing:0.04em;">MTI Brain · Graph Explorer</span>
   </div>
 
   <!-- ── Main area ── -->
@@ -633,7 +633,7 @@
       const el = document.getElementById('graph-status');
       if (!el) return;
       el.textContent = shown < total
-        ? `Showing ${shown} of ${total} nodes  \u00b7  double-click an violet-bordered node to reveal its neighbors`
+        ? `Showing ${shown} of ${total} nodes  \u00b7  double-click a violet-bordered node to reveal its neighbors`
         : `All ${total} nodes visible`;
     }
 
@@ -1011,6 +1011,11 @@
     // Default: panel collapsed, button at far right, chevron points right (= "open")
     toggleChevron.setAttribute('points', '15 18 9 12 15 6');
     document.getElementById('panel-toggle').style.right = '0px';
+
+      document.addEventListener(
+  "contextmenu",
+  e=>e.preventDefault()
+);
   </script>
 </body>
 </html>

@@ -19,38 +19,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { useTheme } from 'next-themes';
-
-const _base = { background: 'transparent', margin: 0, padding: 0 };
-const sparqlDark: Record<string, React.CSSProperties> = {
-  'pre[class*="language-"]': _base,
-  'code[class*="language-"]': { ..._base, color: '#cbd5e1' },
-  keyword:     { color: '#7dd3fc' },
-  builtin:     { color: '#a5b4fc' },
-  string:      { color: '#86efac' },
-  url:         { color: '#6ee7b7' },
-  variable:    { color: '#f9a8d4' },
-  comment:     { color: '#475569', fontStyle: 'italic' },
-  number:      { color: '#fcd34d' },
-  operator:    { color: '#94a3b8' },
-  punctuation: { color: '#64748b' },
-  'class-name':{ color: '#c4b5fd' },
-};
-const sparqlLight: Record<string, React.CSSProperties> = {
-  'pre[class*="language-"]': _base,
-  'code[class*="language-"]': { ..._base, color: '#1e293b' },
-  keyword:     { color: '#2563eb' },
-  builtin:     { color: '#7c3aed' },
-  string:      { color: '#16a34a' },
-  url:         { color: '#0891b2' },
-  variable:    { color: '#9333ea' },
-  comment:     { color: '#94a3b8', fontStyle: 'italic' },
-  number:      { color: '#d97706' },
-  operator:    { color: '#475569' },
-  punctuation: { color: '#64748b' },
-  'class-name':{ color: '#7c3aed' },
-};
+import { SqlBlock } from './sql-block';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
@@ -116,7 +85,6 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ message, threadId, versionNav }: MessageBubbleProps) {
-  const { resolvedTheme } = useTheme();
   const [editing, setEditing] = useState(false);
 
   const [editText, setEditText] = useState(message.content);
@@ -428,15 +396,12 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   }, [convId, showDashButton]);
 
   // User preferences
-  const prefShowSQL = usePreferencesStore((s) => s.showSQL);
   const prefAutoCharts = usePreferencesStore((s) => s.autoShowCharts);
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
 
   const showSQLTab  = !!(sql);
-  // hasColumns: columns were returned even if rows is empty — show for trust
-  const hasColumns  = !!(columns && columns.length > 0);
-  const hasDataView = !!(message.dataReady ?? !message.isStreaming) && !!(showSQLTab || hasTableData);
+  const hasDataView = !!(showSQLTab || hasTableData);
 
   // When SQL arrives with 0 rows (during or after streaming), auto-switch to
   // SQL view so the user can see what query ran instead of an empty table.
@@ -447,11 +412,11 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   }, [message.isStreaming, sql, hasTableData]);
   // Show data skeleton once SQL generation step has begun but data hasn't arrived yet
   const sqlStepStarted = message.isStreaming && !message.dataReady &&
-    (message.streamingSteps?.some((s) => ['generate_sql', 'execute', 'respond'].includes(s.node)) ?? false);
-  // Chart skeleton only shows after answer_synthesis is done — visualization runs right after and is nearly instant.
-  // Without this gate the skeleton would show for the entire answer_synthesis duration (often 20+ seconds).
+    (message.streamingSteps?.some((s) => ['query_compiler', 'sql_validator', 'executor', 'synthesis'].includes(s.node)) ?? false);
+  // Chart skeleton only shows after synthesis is done — visualization runs right after and is nearly instant.
+  // Without this gate the skeleton would show for the entire synthesis duration (often 20+ seconds).
   const answerSynthesisDone = message.streamingSteps?.some(
-    (s) => s.node === 'answer_synthesis' && s.status === 'done'
+    (s) => s.node === 'synthesis' && s.status === 'done'
   ) ?? false;
 
   return (
@@ -469,17 +434,17 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         />
       )}
 
-      {/* Data skeleton — mirrors the SPARQL code-block that replaces it.
+      {/* Data skeleton — mirrors the SQL code-block that replaces it.
           Height and structure intentionally match the real view so the
           swap causes zero layout shift (only an opacity crossfade). */}
       {sqlStepStarted && (
         <div className="mb-2 animate-fade-in">
-          {/* Tab buttons — always shown, mirrors SPARQL + Data tabs */}
+          {/* Tab buttons — always shown, mirrors SQL + Data tabs */}
           <div className="flex items-center gap-1 mb-2">
             <Skeleton className="h-7 w-20 rounded-md" />
             <Skeleton className="h-7 w-14 rounded-md" />
           </div>
-          {/* Code-block skeleton — lines at realistic SPARQL widths */}
+          {/* Code-block skeleton — lines at realistic SQL widths */}
           <div className="rounded-lg border border-border overflow-hidden">
             <div className="flex items-center justify-end px-3 py-1.5 border-b border-border bg-muted/30">
               <Skeleton className="h-5 w-5 rounded" />
@@ -497,7 +462,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         </div>
       )}
 
-      {/* SPARQL / Data toggle — opacity-only fade so the height reserved
+      {/* SQL / Data toggle — opacity-only fade so the height reserved
           by the skeleton above doesn't cause a second layout shift */}
       {hasDataView && (
         <div className="mb-2 space-y-2 animate-fade-only">
@@ -510,7 +475,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 onClick={() => setDataView('sql')}
               >
                 <Code2 className="w-3.5 h-3.5" />
-                SPARQL
+                SQL
               </Button>
             )}
             {hasTableData && (
@@ -534,7 +499,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                   className="h-6 w-6 p-0 text-muted-foreground"
                   onClick={async () => {
                     const ok = await copyText(sql!);
-                    if (ok) toast.success('SPARQL copied');
+                    if (ok) toast.success('SQL copied');
                     else toast.error('Copy failed');
                   }}
                 >
@@ -542,14 +507,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 </Button>
               </div>
               <div className="flex-1 overflow-y-auto">
-                <SyntaxHighlighter
-                  language="sparql"
-                  style={resolvedTheme === 'dark' ? sparqlDark : sparqlLight}
-                  customStyle={{ margin: 0, padding: '12px', fontSize: '12px', lineHeight: '1.6', background: 'transparent' }}
-                  wrapLongLines
-                >
-                  {sql ?? ''}
-                </SyntaxHighlighter>
+                <SqlBlock code={sql!} />
               </div>
             </div>
           )}
@@ -885,7 +843,7 @@ function ReasoningPanel({
   }, [message.isStreaming]);
 
   // During streaming the content is height-capped so new steps scroll inside
-  // the box instead of pushing SPARQL/Data downward. Auto-scroll keeps the
+  // the box instead of pushing SQL/Data downward. Auto-scroll keeps the
   // latest active step visible without the user needing to scroll manually.
   const streamScrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {

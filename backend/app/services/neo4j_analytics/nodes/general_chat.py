@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics.prompts import GENERAL_CHAT_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.neo4j_analytics.state import AnalyticsState
 
@@ -16,15 +16,16 @@ async def general_chat(state: AnalyticsState, config: dict) -> dict:
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
     )
 
-    from app.services.agents.bedrock import get_llm
-    from app.core.langfuse_integration import create_callback_handler, langfuse_context
+    from app.services.neo4j_analytics.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
 
     llm = get_llm("fast")
-    handler = create_callback_handler()
-    callbacks = [handler] if handler else []
 
-    with langfuse_context(session_id=state["thread_id"], user_id=state["user_id"], tags=["neo4j_analytics", "general_chat"]):
-        response = await llm.ainvoke(prompt, config={"callbacks": callbacks})
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=config)
+
+    response = await _call()
 
     raw = response.content or ""
     answer = parse_tag(raw, "answer") or raw.strip()

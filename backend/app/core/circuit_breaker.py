@@ -76,3 +76,17 @@ external_api_breaker = pybreaker.CircuitBreaker(
     name="external_api",
     listeners=[LoggingListener()],
 )
+
+neo4j_breaker = pybreaker.CircuitBreaker(
+    fail_max=3,
+    reset_timeout=30,
+    name="neo4j",
+    listeners=[LoggingListener()],
+)
+
+redis_breaker = pybreaker.CircuitBreaker(
+    fail_max=5,
+    reset_timeout=10,
+    name="redis",
+    listeners=[LoggingListener()],
+)

@@ -40,7 +40,6 @@ def _build_cte_sql(ir: SemanticIR) -> str:
     join_sql = _build_join_clause(ir)
     where_conditions = _build_where_conditions(ir)
     group_by_cols = _build_group_by_cols(ir)
-    select_cols = _build_select_cols(ir)
     measure_cols = _build_measure_cols(ir)
     order_by_clause = _build_order_by(ir)
 

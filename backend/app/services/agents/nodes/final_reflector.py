@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import time
 
-from app.services.agents.bedrock import get_llm
-from app.services.agents.helpers import parse_tag
+from backend.app.services.neo4j_analytics.bedrock import get_llm
+from backend.app.services.neo4j_analytics.helpers import parse_tag
 from app.services.agents.prompts import FINAL_REFLECTOR_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State
 

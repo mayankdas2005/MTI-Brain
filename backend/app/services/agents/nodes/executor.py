@@ -19,7 +19,7 @@ PARALLEL_FANOUT = 4
 
 async def _run_sub_question(sq: dict, state: State, inner_graph, writer=None) -> dict:
     """Invoke the inner graph for a single sub-question and return result dict."""
-    from app.services.agents.helpers import _format_scratchpad_context
+    from backend.app.services.neo4j_analytics.helpers import _format_scratchpad_context
 
     scratchpad = state.get("scratchpad", {})
     dep_context = _format_scratchpad_context(scratchpad, sq.get("depends_on", []))

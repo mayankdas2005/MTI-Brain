@@ -70,13 +70,12 @@ async def context_fetcher(state: AnalyticsState, config: dict) -> dict:
 async def _get_embedding(text: str) -> list[float]:
     normalized = text.strip().lower()
     cached = redis_client.get_embedding(normalized)
-    t0 = time.monotonic()
-    cache_hit = cached is not None
 
     if cached:
         logger.debug("cohere embed | cache_hit=True | ms=0")
         return cached
 
+    t0 = time.monotonic()
     from app.services.embeddings import embed_question
     embedding = await embed_question(normalized)
     elapsed_ms = (time.monotonic() - t0) * 1000

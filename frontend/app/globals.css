@@ -429,7 +429,7 @@ html[data-density="compact"] {
 }
 
 /* Opacity-only fade — no Y translation, used for sections that must not
-   appear to shift layout (e.g. data/SPARQL block swapping in during streaming). */
+   appear to shift layout (e.g. data/SQL block swapping in during streaming). */
 @keyframes fade-only {
   from { opacity: 0; }
   to   { opacity: 1; }

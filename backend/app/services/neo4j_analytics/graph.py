@@ -44,21 +44,21 @@ from app.services.neo4j_analytics.nodes.intent_resolver import intent_resolver
 from app.services.neo4j_analytics.nodes.query_compiler import query_compiler
 from app.services.neo4j_analytics.nodes.sql_validator import sql_validator
 from app.services.neo4j_analytics.nodes.synthesis import synthesis
+from app.services.neo4j_analytics.node_names import (
+    CHART_AGENT as N_CHART_AGENT,
+    CLARIFICATION as N_CLARIFICATION,
+    CONTEXT_FETCHER as N_CONTEXT_FETCHER,
+    ERROR_RESPONSE as N_ERROR_RESPONSE,
+    EXECUTOR as N_EXECUTOR,
+    FILTER_RESOLVER as N_FILTER_RESOLVER,
+    GENERAL_CHAT as N_GENERAL_CHAT,
+    INTAKE as N_INTAKE,
+    INTENT_RESOLVER as N_INTENT_RESOLVER,
+    QUERY_COMPILER as N_QUERY_COMPILER,
+    SQL_VALIDATOR as N_SQL_VALIDATOR,
+    SYNTHESIS as N_SYNTHESIS,
+)
 from app.services.neo4j_analytics.state import AnalyticsState
-
-# ── Node names ────────────────────────────────────────────────────────────────
-N_INTAKE = "intake_classifier"
-N_GENERAL_CHAT = "general_chat"
-N_CONTEXT_FETCHER = "context_fetcher"
-N_INTENT_RESOLVER = "intent_resolver"
-N_CLARIFICATION = "clarification"
-N_QUERY_COMPILER = "query_compiler"
-N_FILTER_RESOLVER = "filter_resolver"
-N_SQL_VALIDATOR = "sql_validator"
-N_EXECUTOR = "executor"
-N_SYNTHESIS = "synthesis"
-N_CHART_AGENT = "chart_agent"
-N_ERROR_RESPONSE = "error_response"
 
 MAX_RECOMPILE = 1
 MAX_REPAIR = 2
@@ -271,6 +271,12 @@ async def init_analytics_pipeline() -> None:
     redis_client.init_redis()
 
     try:
+        from app.services.neo4j_analytics.bedrock import init_llms
+        init_llms()
+    except Exception as e:
+        logger.warning("LLM init failed (non-fatal — will init on first use): {}", e)
+
+    try:
         from app.services.neo4j_analytics.redshift_client import init_redshift
         await init_redshift()
     except Exception as e:
@@ -420,6 +426,8 @@ async def stream_pipeline(
         metadata={"thread_id": thread_id, "run_id": run_id, "environment": settings.ENVIRONMENT},
     )
 
+    deep_analysis: bool = bool(kwargs.get("deep_analysis", False))
+
     initial: AnalyticsState = {
         "messages": [],
         "user_id": user_id or "",
@@ -451,10 +459,16 @@ async def stream_pipeline(
         "summary": "",
         "error": None,
         "stopped": False,
+        "deep_analysis": deep_analysis,
     }
+
+    from app.services.neo4j_analytics.helpers import MultiSectionStreamer
+    from app.services.neo4j_analytics.token_tracker import NODE_TIER, aggregate_token_usage, extract_usage
 
     _pipeline_steps: list[dict] = []
     _step_timers: dict[str, float] = {}
+    _token_records: list[dict] = []
+    _node_streamers: dict[str, MultiSectionStreamer] = {}
     state: dict = {}
     pipeline_start = time.perf_counter()
     stopped = False
@@ -492,6 +506,10 @@ async def stream_pipeline(
                     "started_at_ms": int(elapsed * 1000),
                     "duration_ms": None,
                 })
+                _node_streamers[node] = MultiSectionStreamer([
+                    ("reasoning", "reasoning.delta"),
+                    ("answer", "answer.delta"),
+                ])
                 yield {
                     "event": "node.start",
                     "data": {"node": node, "message": _NODE_MESSAGE[node]},
@@ -503,9 +521,22 @@ async def stream_pipeline(
                     continue
                 raw_content = ev["data"]["chunk"].content
                 token = raw_content if isinstance(raw_content, str) else ""
-                if token:
-                    from app.services.agents.helpers import SectionStreamer
-                    yield {"event": "reasoning.delta", "data": {"node": node, "text": token}}
+                if token and node in _node_streamers:
+                    emitted, event_type = _node_streamers[node].feed(token)
+                    if emitted and event_type:
+                        yield {"event": event_type, "data": {"node": node, "text": emitted}}
+
+            elif kind == "on_chat_model_end":
+                ai_message = ev.get("data", {}).get("output")
+                if ai_message is not None:
+                    tier = NODE_TIER.get(node, "balanced")
+                    usage = extract_usage(ai_message, node=node, tier=tier)
+                    if usage:
+                        _token_records.append(usage)
+                        logger.debug(
+                            "[{}] tokens | node={} | in={} out={} cost=${:.6f}",
+                            run_id, node, usage["input_tokens"], usage["output_tokens"], usage["cost_usd"],
+                        )
 
             elif kind == "on_chain_end":
                 output = ev.get("data", {}).get("output")
@@ -585,6 +616,7 @@ async def stream_pipeline(
                     "pipeline_steps": _pipeline_steps,
                     "no_data": state.get("no_data", False),
                     "reliability_flags": state.get("reliability_flags", []),
+                    "token_usage": aggregate_token_usage(_token_records) if _token_records else {},
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

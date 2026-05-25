@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP, SYNTHESIS_PROMPT
 from app.services.neo4j_analytics.state import AnalyticsState
 
@@ -44,7 +44,7 @@ async def synthesis(state: AnalyticsState, config: dict) -> dict:
         _FLAG_INSTRUCTIONS.get(flag, "") for flag in reliability_flags if flag in _FLAG_INSTRUCTIONS
     )
 
-    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("persona") == "analyst" else REASONING_DIRECTIVE_NORMAL
+    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
 
     prompt = SYNTHESIS_PROMPT.format_messages(
         persona=state.get("persona", "analyst"),
@@ -59,16 +59,17 @@ async def synthesis(state: AnalyticsState, config: dict) -> dict:
         reasoning_directive=reasoning_directive,
     )
 
-    from app.services.agents.bedrock import get_llm
-    from app.core.langfuse_integration import create_callback_handler, langfuse_context
+    from app.services.neo4j_analytics.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
 
     llm = get_llm("balanced")
-    handler = create_callback_handler()
-    callbacks = [handler] if handler else []
+
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=config)
 
     try:
-        with langfuse_context(session_id=state["thread_id"], user_id=state["user_id"], tags=["neo4j_analytics", "synthesis"]):
-            response = await llm.ainvoke(prompt, config={"callbacks": callbacks})
+        response = await _call()
     except Exception as e:
         logger.error("synthesis LLM failed | thread={} | error={}", state["thread_id"], e)
         return {"answer": "I encountered an error preparing your answer. Please try again.", "follow_ups": []}

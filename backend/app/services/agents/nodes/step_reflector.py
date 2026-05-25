@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from app.services.agents.bedrock import get_llm
+from backend.app.services.neo4j_analytics.bedrock import get_llm
 from app.services.agents.prompts import STEP_REFLECTOR_PROMPT
 from app.services.agents.state import State
 

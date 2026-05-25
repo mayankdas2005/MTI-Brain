@@ -6,8 +6,8 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from app.core.logger import logger
-from app.services.agents.bedrock import get_llm
-from app.services.agents.helpers import parse_sparql_from_response, _format_recent_messages
+from backend.app.services.neo4j_analytics.bedrock import get_llm
+from backend.app.services.neo4j_analytics.helpers import parse_sparql_from_response, _format_recent_messages
 from app.services.agents.ontology_loader import get_ontology_summary, get_ontology_dict, get_r2rml_class_properties
 from app.services.agents.prompts import SPARQL_GEN_PROMPT, SPARQL_FIX_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State

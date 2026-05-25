@@ -26,43 +26,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { useTheme } from 'next-themes';
+import { SqlBlock } from '@/components/sql-block';
 import { copyText } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { formatRelativeTime } from '@/lib/utils/relative-time';
 import { useNow } from '@/lib/hooks/use-now';
 import type { Message } from '@/lib/store/threads';
 
-const _base = { background: 'transparent', margin: 0, padding: 0 };
-const sparqlDark: Record<string, React.CSSProperties> = {
-  'pre[class*="language-"]': _base,
-  'code[class*="language-"]': { ..._base, color: '#cbd5e1' },
-  keyword:     { color: '#7dd3fc' },
-  builtin:     { color: '#a5b4fc' },
-  string:      { color: '#86efac' },
-  url:         { color: '#6ee7b7' },
-  variable:    { color: '#f9a8d4' },
-  comment:     { color: '#475569', fontStyle: 'italic' },
-  number:      { color: '#fcd34d' },
-  operator:    { color: '#94a3b8' },
-  punctuation: { color: '#64748b' },
-  'class-name':{ color: '#c4b5fd' },
-};
-const sparqlLight: Record<string, React.CSSProperties> = {
-  'pre[class*="language-"]': _base,
-  'code[class*="language-"]': { ..._base, color: '#1e293b' },
-  keyword:     { color: '#2563eb' },
-  builtin:     { color: '#7c3aed' },
-  string:      { color: '#16a34a' },
-  url:         { color: '#0891b2' },
-  variable:    { color: '#9333ea' },
-  comment:     { color: '#94a3b8', fontStyle: 'italic' },
-  number:      { color: '#d97706' },
-  operator:    { color: '#475569' },
-  punctuation: { color: '#64748b' },
-  'class-name':{ color: '#7c3aed' },
-};
 
 interface AboutPanelProps {
   open: boolean;
@@ -89,8 +59,6 @@ interface AboutPanelProps {
 export function AboutPanel({ open, onOpenChange, message, question }: AboutPanelProps) {
   const m = message.metadata_;
   const now = useNow();
-  const { resolvedTheme } = useTheme();
-
   const handleCopy = async (text: string, label: string) => {
     const ok = await copyText(text);
     if (ok) toast.success(`${label} copied`);
@@ -273,7 +241,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             const byNode = m?.token_usage?.by_node ?? [];
             type R = typeof byNode[number];
 
-            // Group records by node in order so repeated nodes (e.g. sparql_gen
+            // Group records by node in order so repeated nodes (e.g. executor
             // called 3×) can be matched to their pipeline step by visit index.
             const groups = new Map<string, R[]>();
             for (const r of byNode) {
@@ -421,30 +389,23 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
           {/* SQL - collapsible, copyable, syntax-highlighted. */}
           {m?.sql && (
             <Collapsible
-              title="SPARQL"
+              title="SQL"
               icon={Database}
               actions={
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleCopy(m.sql!, 'SPARQL');
+                    handleCopy(m.sql!, 'SQL');
                   }}
                   className="p-1 rounded text-muted-foreground"
-                  aria-label="Copy SPARQL"
+                  aria-label="Copy SQL"
                 >
                   <Copy className="w-3.5 h-3.5" />
                 </button>
               }
             >
               <div className="rounded-md border border-border bg-muted/40 max-h-72 overflow-y-auto">
-                <SyntaxHighlighter
-                  language="sparql"
-                  style={resolvedTheme === 'dark' ? sparqlDark : sparqlLight}
-                  customStyle={{ margin: 0, padding: '10px', fontSize: '11px', lineHeight: '1.6', background: 'transparent' }}
-                  wrapLongLines
-                >
-                  {m.sql}
-                </SyntaxHighlighter>
+                <SqlBlock code={m.sql} />
               </div>
             </Collapsible>
           )}

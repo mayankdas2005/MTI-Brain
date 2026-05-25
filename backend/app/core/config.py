@@ -115,22 +115,12 @@ class Settings(BaseSettings):
 
     # ── Prompt cache (config.yml) ───────────────────────────────────────────
     AWS_BEDROCK_PROMPT_CACHE: bool = Field(default=_prompt_cache.get("aws_bedrock_prompt_cache", False))
-
-    # ── Fuseki / KG (config.yml + .env) ─────────────────────────────
-    FUSEKI_URL: str
-    FUSEKI_DATASET: str = Field(default="dataset")
-    FUSEKI_TIMEOUT: int = Field(default=_fuseki.get("timeout_seconds", 60))
-    FUSEKI_USER: str = Field(default="")
-    FUSEKI_PASSWORD: str = Field(default="", repr=False)
     
     # ── Langfuse observability (.env) ────────────────────────────────────────
     LANGFUSE_ENABLED: bool = Field(default=_core_toggles.get("langfuse_enabled", False))
     LANGFUSE_PUBLIC_KEY: str = Field(default="")
     LANGFUSE_SECRET_KEY: str = Field(default="", repr=False)
     LANGFUSE_BASE_URL: str = Field(default="https://cloud.langfuse.com")
-
-    # TRIBAL_GRAPH_URL: str = Field(default="http://localhost:3030")
-    # TRIBAL_GRAPH_DATASET: str = Field(default="dataset")
 
     # ── Pipeline (config.yml) ─────────────────────────────────────────────────
     PIPELINE_RECURSION_LIMIT: int = Field(default=_pipeline.get("recursion_limit", 80))

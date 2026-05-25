@@ -8,8 +8,8 @@ import time
 
 from langchain_core.messages import AIMessage
 
-from app.services.agents.bedrock import get_llm
-from app.services.agents.helpers import (
+from backend.app.services.neo4j_analytics.bedrock import get_llm
+from backend.app.services.neo4j_analytics.helpers import (
     _build_data_summary,
     _NARRATIVE_SAMPLE_CAP,
     parse_tag,

@@ -6,7 +6,7 @@ Uses Haiku for speed. No <reasoning> output — not displayed in UI.
 from __future__ import annotations
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics.prompts import INTAKE_CLASSIFY_PROMPT
 from app.services.neo4j_analytics.state import AnalyticsState
 
@@ -28,10 +28,19 @@ async def intake_classifier(state: AnalyticsState, config: dict) -> dict:
 
 
 async def _call_llm(prompt, config: dict) -> str:
-    from app.services.agents.bedrock import get_llm
+    from app.services.neo4j_analytics.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
+
     llm = get_llm("fast")
-    response = await llm.ainvoke(prompt, config={"tags": ["no_stream"]})
+
+    merged_config = dict(config)
+    merged_config["tags"] = list(merged_config.get("tags", [])) + ["no_stream"]
+
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=merged_config)
+
+    response = await _call()
     return response.content or ""
 
 

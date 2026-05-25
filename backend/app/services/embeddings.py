@@ -62,23 +62,23 @@ async def embed_question(text: str) -> list[float] | None:
     if not settings.AWS_BEARER_TOKEN_BEDROCK:
         return None
     try:
-        # Check circuit breaker state before making the async call
-        if embedding_breaker.current_state == "open":
-            logger.warning("Embedding circuit breaker OPEN — skipping embed_question")
-            return None
-        client = await _get_async_client()
-        resp = await client.post(
-            _EMBED_URL,
-            headers=_COMMON_HEADERS,
-            json={
-                "texts": [text[:2048]],
-                "input_type": "search_query",
-                "embedding_types": ["float"],
-                "truncate": "END",
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()["embeddings"]["float"][0]
+        @embedding_breaker
+        async def _call():
+            client = await _get_async_client()
+            resp = await client.post(
+                _EMBED_URL,
+                headers=_COMMON_HEADERS,
+                json={
+                    "texts": [text[:2048]],
+                    "input_type": "search_query",
+                    "embedding_types": ["float"],
+                    "truncate": "END",
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["embeddings"]["float"][0]
+
+        return await _call()
     except Exception as e:
         logger.warning(f"embed_question failed: {e}")
         return None
@@ -111,18 +111,22 @@ def embed_texts_sync(texts: list[str]) -> list[list[float]]:
         with httpx.Client(timeout=15.0) as client:
             for text in texts:
                 try:
-                    resp = client.post(
-                        _EMBED_URL,
-                        headers=_COMMON_HEADERS,
-                        json={
-                            "texts": [text[:2048]],
-                            "input_type": "search_document",
-                            "embedding_types": ["float"],
-                            "truncate": "END",
-                        },
-                    )
-                    resp.raise_for_status()
-                    results.append(resp.json()["embeddings"]["float"][0])
+                    @embedding_breaker
+                    def _call():
+                        resp = client.post(
+                            _EMBED_URL,
+                            headers=_COMMON_HEADERS,
+                            json={
+                                "texts": [text[:2048]],
+                                "input_type": "search_document",
+                                "embedding_types": ["float"],
+                                "truncate": "END",
+                            },
+                        )
+                        resp.raise_for_status()
+                        return resp.json()["embeddings"]["float"][0]
+
+                    results.append(_call())
                 except Exception as e:
                     logger.warning(f"embed_texts_sync single text failed: {e}")
                     results.append([0.0] * 1536)

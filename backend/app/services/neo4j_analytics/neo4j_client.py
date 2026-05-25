@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 
+from app.core.circuit_breaker import neo4j_breaker
 from app.core.config import settings
 from app.core.logger import logger
 
@@ -66,6 +67,7 @@ def _bootstrap_indexes() -> None:
 
 # ── Template search ──────────────────────────────────────────────────────────
 
+@neo4j_breaker
 def search_query_templates(embedding: list[float]) -> list[dict]:
     query = """
     CALL db.index.vector.queryNodes('querytemplate_cohere_embedding', 5, $embedding)
@@ -85,6 +87,7 @@ def search_query_templates(embedding: list[float]) -> list[dict]:
 
 # ── Table search ─────────────────────────────────────────────────────────────
 
+@neo4j_breaker
 def search_tables_fulltext(query_text: str) -> list[dict]:
     query = """
     CALL db.index.fulltext.queryNodes('Table_name_description_synonyms_text_intent_tags_text', $query)
@@ -105,6 +108,7 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
 
 # ── Column search ─────────────────────────────────────────────────────────────
 
+@neo4j_breaker
 def search_columns_fulltext(query_text: str) -> list[dict]:
     query = """
     CALL db.index.fulltext.queryNodes('Column_name_description_synonyms_text_top_values_text', $query)
@@ -123,6 +127,7 @@ def search_columns_fulltext(query_text: str) -> list[dict]:
 
 # ── BusinessTerm lookup ──────────────────────────────────────────────────────
 
+@neo4j_breaker
 def lookup_business_terms(tokens: list[str]) -> list[dict]:
     query = """
     MATCH (bt:BusinessTerm)
@@ -141,6 +146,7 @@ def lookup_business_terms(tokens: list[str]) -> list[dict]:
 
 # ── Intent search ─────────────────────────────────────────────────────────────
 
+@neo4j_breaker
 def search_intents(embedding: list[float]) -> list[dict]:
     query = """
     CALL db.index.vector.queryNodes('intent_cohere_embedding', 3, $embedding)
@@ -156,6 +162,7 @@ def search_intents(embedding: list[float]) -> list[dict]:
 
 # ── JoinPath loading ─────────────────────────────────────────────────────────
 
+@neo4j_breaker
 def load_join_path(from_fqn: str, to_fqn: str) -> dict | None:
     query = """
     MATCH (jp:JoinPath)
@@ -173,12 +180,13 @@ def load_join_path(from_fqn: str, to_fqn: str) -> dict | None:
     return dict(result) if result else None
 
 
-def load_join_path_yens(from_fqn: str, to_fqn: str) -> dict | None:
-    """Fallback: try Yen's k=1 path when Dijkstra k=1 is missing."""
+@neo4j_breaker
+def load_join_path_yens(from_fqn: str, to_fqn: str, k_rank: int = 1) -> dict | None:
+    """Fallback: try Yen's k-shortest path for the given k_rank (1, 2, or 3)."""
     query = """
     MATCH (jp:JoinPath)
     WHERE jp.from_fqn = $from AND jp.to_fqn = $to
-      AND jp.algorithm = 'yens' AND jp.k_rank = 1
+      AND jp.algorithm = 'yens' AND jp.k_rank = $k_rank
     RETURN jp.id AS id, jp.join_clauses AS join_clauses, jp.path_tables AS path_tables,
            jp.hop_count AS hop_count, jp.total_cost AS total_cost,
            jp.quality_score AS quality_score, jp.is_cross_community AS is_cross_community
@@ -186,11 +194,32 @@ def load_join_path_yens(from_fqn: str, to_fqn: str) -> dict | None:
     """
     t0 = time.monotonic()
     with get_driver().session() as session:
-        result = session.run(query, **{"from": from_fqn, "to": to_fqn}, timeout=10).single()
-    logger.debug("neo4j | fn=load_join_path_yens | from={} to={} | ms={:.0f} | found={}", from_fqn, to_fqn, (time.monotonic() - t0) * 1000, result is not None)
+        result = session.run(query, **{"from": from_fqn, "to": to_fqn, "k_rank": k_rank}, timeout=10).single()
+    logger.debug("neo4j | fn=load_join_path_yens | from={} to={} | k={} | ms={:.0f} | found={}", from_fqn, to_fqn, k_rank, (time.monotonic() - t0) * 1000, result is not None)
     return dict(result) if result else None
 
 
+def load_best_join_path(from_fqn: str, to_fqn: str) -> dict | None:
+    """Load the best available JoinPath using a fallback sequence.
+
+    Tries in order: Dijkstra k=1 → Yen's k=1 → Yen's k=2 → Yen's k=3.
+    Returns None only if no precomputed path exists at all.
+    """
+    result = load_join_path(from_fqn, to_fqn)
+    if result:
+        return result
+
+    for k in (1, 2, 3):
+        result = load_join_path_yens(from_fqn, to_fqn, k_rank=k)
+        if result:
+            logger.info("neo4j | join_path fallback | from={} to={} | yens k={}", from_fqn, to_fqn, k)
+            return result
+
+    logger.warning("neo4j | no join_path found | from={} to={}", from_fqn, to_fqn)
+    return None
+
+
+@neo4j_breaker
 def write_join_path(path_data: dict) -> None:
     """Write a newly computed JoinPath back to Neo4j for future reuse."""
     query = """
@@ -204,6 +233,7 @@ def write_join_path(path_data: dict) -> None:
 
 # ── Column resolution ────────────────────────────────────────────────────────
 
+@neo4j_breaker
 def resolve_columns(table_fqn: str, column_names: list[str]) -> list[dict]:
     query = """
     MATCH (t:Table {fqn: $table_fqn})-[:HAS_COLUMN]->(c:Column)
@@ -223,6 +253,7 @@ def resolve_columns(table_fqn: str, column_names: list[str]) -> list[dict]:
 
 # ── QueryPattern / AntiPattern ───────────────────────────────────────────────
 
+@neo4j_breaker
 def search_query_patterns(embedding: list[float]) -> list[dict]:
     query = """
     CALL db.index.vector.queryNodes('querypattern_cohere_embedding', 2, $embedding)
@@ -237,6 +268,7 @@ def search_query_patterns(embedding: list[float]) -> list[dict]:
     return [dict(r) for r in results]
 
 
+@neo4j_breaker
 def search_anti_patterns(embedding: list[float]) -> list[dict]:
     query = """
     CALL db.index.vector.queryNodes('antipattern_cohere_embedding', 2, $embedding)
@@ -251,6 +283,7 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
     return [dict(r) for r in results]
 
 
+@neo4j_breaker
 def write_query_pattern(pattern_data: dict) -> None:
     query = """
     MERGE (qp:QueryPattern {id: $id})
@@ -261,6 +294,7 @@ def write_query_pattern(pattern_data: dict) -> None:
     logger.debug("neo4j | fn=write_query_pattern | id={}", pattern_data.get("id"))
 
 
+@neo4j_breaker
 def write_anti_pattern(pattern_data: dict) -> None:
     query = """
     MERGE (ap:AntiPattern {id: $id})

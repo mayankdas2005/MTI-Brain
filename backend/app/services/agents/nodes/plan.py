@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import time
 
-from app.services.agents.bedrock import get_llm
-from app.services.agents.helpers import parse_tag, _format_recent_messages
+from backend.app.services.neo4j_analytics.bedrock import get_llm
+from backend.app.services.neo4j_analytics.helpers import parse_tag, _format_recent_messages
 from app.services.agents.ontology_loader import get_ontology_summary
 from app.services.agents.prompts import PLAN_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import State

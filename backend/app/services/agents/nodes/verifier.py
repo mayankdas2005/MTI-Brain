@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from app.services.agents.bedrock import get_llm
+from backend.app.services.neo4j_analytics.bedrock import get_llm
 from app.services.agents.prompts import VERIFIER_PROMPT
 from app.services.agents.state import State
 

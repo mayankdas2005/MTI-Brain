@@ -7,7 +7,7 @@ import time
 from collections import defaultdict, deque
 
 from app.core.logger import logger
-from app.services.agents.bedrock import get_llm
+from backend.app.services.neo4j_analytics.bedrock import get_llm
 from app.services.agents.ontology_loader import get_ontology_summary
 from app.services.agents.prompts import PLAN_VALIDATOR_PROMPT
 from app.services.agents.state import State

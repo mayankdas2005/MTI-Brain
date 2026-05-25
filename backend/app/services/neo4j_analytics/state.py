@@ -56,3 +56,4 @@ class AnalyticsState(TypedDict):
     # ── Error / control ──────────────────────────────────────────────────────
     error: str | None
     stopped: bool
+    deep_analysis: bool                   # True → use REASONING_DIRECTIVE_DEEP in Sonnet/Opus nodes

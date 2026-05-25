@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics import neo4j_client, redis_client
 from app.services.neo4j_analytics.filter_resolver_logic import (
     build_redshift_probe_params,
@@ -192,8 +192,8 @@ async def _run_redshift_probe(table_fqn: str, col_name: str, user_value: str, th
 
 async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: AnalyticsState, config: dict) -> str | None:
     """Use Haiku to pick the best candidate."""
-    from app.services.agents.bedrock import get_llm
-    from app.core.langfuse_integration import create_callback_handler, langfuse_context
+    from app.services.neo4j_analytics.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
 
     prompt = FILTER_DISAMBIGUATE_PROMPT.format_messages(
         raw_user_value=f.raw_user_value,
@@ -205,12 +205,13 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
     )
 
     llm = get_llm("fast")
-    handler = create_callback_handler()
-    callbacks = [handler] if handler else []
+
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=config)
 
     try:
-        with langfuse_context(session_id=state["thread_id"], user_id=state["user_id"], tags=["neo4j_analytics", "filter_disambiguate"]):
-            response = await llm.ainvoke(prompt, config={"callbacks": callbacks})
+        response = await _call()
         raw = response.content or ""
         from json_repair import loads as json_loads
         output = parse_tag(raw, "output")

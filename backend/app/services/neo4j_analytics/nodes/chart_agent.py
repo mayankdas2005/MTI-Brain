@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics.chart_rules import select_chart_type
 from app.services.neo4j_analytics.prompts import CHART_LABEL_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.neo4j_analytics.state import AnalyticsState
@@ -74,18 +74,19 @@ async def _generate_labels(
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
     )
 
-    from app.services.agents.bedrock import get_llm
-    from app.core.langfuse_integration import create_callback_handler, langfuse_context
+    from app.services.neo4j_analytics.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
 
     llm = get_llm("fast")
-    handler = create_callback_handler()
-    callbacks = [handler] if handler else []
+
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=config)
 
     try:
-        with langfuse_context(session_id=state["thread_id"], user_id=state["user_id"], tags=["neo4j_analytics", "chart_labels"]):
-            response = await llm.ainvoke(prompt, config={"callbacks": callbacks})
+        response = await _call()
         raw = response.content or ""
-        output = parse_tag(raw, "output")
+        output = parse_tag(raw, "chart")
         if output:
             from json_repair import loads as json_loads
             return json_loads(output)

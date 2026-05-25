@@ -11,7 +11,7 @@ import json
 import uuid
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics import neo4j_client
 from app.services.neo4j_analytics.prompts import DECOMPOSE_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.neo4j_analytics.semantic_ir import ColumnRef, FilterSpec, SemanticIR
@@ -77,25 +77,29 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
     anti_patterns = _fetch_anti_patterns(state)
     query_patterns = _fetch_query_patterns(state)
 
+    from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_DEEP
+    reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
+
     prompt = DECOMPOSE_PROMPT.format_messages(
         question=state["question"],
         resolved_intent=json.dumps(resolved, indent=2),
         semantic_context=context_str,
         query_patterns=query_patterns,
         anti_patterns=anti_patterns,
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        reasoning_directive=reasoning_directive,
     )
 
-    from app.services.agents.bedrock import get_llm
-    from app.core.langfuse_integration import create_callback_handler, langfuse_context
+    from app.services.neo4j_analytics.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
 
     llm = get_llm("balanced")
-    handler = create_callback_handler()
-    callbacks = [handler] if handler else []
+
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=config)
 
     try:
-        with langfuse_context(session_id=state["thread_id"], user_id=state["user_id"], tags=["neo4j_analytics", "decompose"]):
-            response = await llm.ainvoke(prompt, config={"callbacks": callbacks})
+        response = await _call()
     except Exception as e:
         logger.error("query_compiler decompose LLM failed | thread={} | error={}", state["thread_id"], e)
         return await _handle_single(state, resolved, semantic_context)

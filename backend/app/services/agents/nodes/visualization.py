@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from app.services.agents.helpers import _build_chart_data
+from backend.app.services.neo4j_analytics.helpers import _build_chart_data
 from app.services.agents.state import State
 
 

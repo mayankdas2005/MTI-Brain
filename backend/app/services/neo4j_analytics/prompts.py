@@ -16,12 +16,13 @@ from langchain_core.prompts import ChatPromptTemplate
 # ─── Reasoning directives (same style as existing pipeline) ──────────────────
 
 _REASONING_FORMAT = (
-    "Format for maximum readability:\n"
+    "Format for maximum readability — a reader should be able to eyeball this in seconds:\n"
     "- **Bold** every key term, entity name, decision, or finding\n"
-    "- *Italic* for uncertainty, caveats, or emphasis\n"
-    "- `backtick` for column names, table names, SQL terms, values\n"
-    "- Bullet points for lists; blank lines between distinct thoughts\n"
-    "- NO markdown headers. No horizontal rules."
+    "- *Italic* for uncertainty, caveats, or emphasis ('*this might not hold if...*')\n"
+    "- `backtick` for every class name, property, variable, value, or SPARQL term\n"
+    "- Bullet points (- item) for lists of options, observations, or reasoning steps\n"
+    "- Blank line between distinct thoughts — never write a wall of text\n"
+    "- NO markdown headers (##/###). No horizontal rules."
 )
 
 REASONING_DIRECTIVE_NORMAL = (
@@ -74,15 +75,10 @@ User: {question}
 Respond conversationally. If the user asks about your capabilities, describe what you can analyze:
 treasury data, payments, ACH returns, balances, exposures, trends, and more.
 
-<reasoning>
-Think about what the user is asking and what would be most helpful.
-</reasoning>
+
 <answer>
 {{your response here}}
-</answer>
-<follow_ups>
-["What would you like to know about our payment data?", "Can I help you analyze any specific trends?", "Would you like to see a summary of recent activity?"]
-</follow_ups>"""
+</answer>"""
 )
 
 # ─── Node 1b: Intent Resolver ────────────────────────────────────────────────
@@ -97,7 +93,6 @@ Schema rules:
 - Column format: table_fqn.column_name (e.g. lpp.ach_return.amount)
 - Measures need aggregation (SUM/AVG/COUNT). Dimensions go in GROUP BY. Dates become time filters.
 
-{reasoning_directive}
 
 USER PROFILE:
 Persona: {persona}
@@ -123,7 +118,9 @@ SCHEMA CANDIDATES:
 
 USER QUESTION: {question}
 
-Output your reasoning and then a strict JSON object with the resolved intent.
+{reasoning_directive}
+
+Output your reasoning within <reasoning>...</reasoning> and then a strict JSON object with the resolved intent within <output>...</output>.
 Any identifier NOT in schema_candidates makes the entire output invalid.
 
 <reasoning>
@@ -148,13 +145,15 @@ Any identifier NOT in schema_candidates makes the entire output invalid.
 CLARIFICATION_PROMPT = ChatPromptTemplate.from_template(
     """You are asking a targeted clarification question for a financial analytics query.
 
-{reasoning_directive}
-
 The user asked: "{question}"
 
 Reason clarification is needed: {clarification_reason}
 
 Ask ONE specific, concise question. Do not explain why you're asking.
+
+{reasoning_directive}
+
+Output your reasoning within <reasoning>...</reasoning> and then one specific, concise question within <question>...</question>.
 
 <reasoning>
 {{What specific information is missing and what is the most direct way to ask for it?}}
@@ -185,9 +184,12 @@ CURRENT INTENT: {resolved_intent}
 
 USER QUESTION: {question}
 
+Output your reasoning within <reasoning>...</reasoning> and then a strict JSON object within <output>...</output>.
+
 <reasoning>
 {{Think through how to split this into independent sub-questions. Identify merge keys if results need joining.}}
 </reasoning>
+
 <output>
 {{
   "sub_queries": [
@@ -204,7 +206,6 @@ USER QUESTION: {question}
 FILTER_DISAMBIGUATE_PROMPT = ChatPromptTemplate.from_template(
     """You are resolving an ambiguous filter value for a financial data query.
 
-{reasoning_directive}
 
 The user said: "{raw_user_value}" for the column `{column_name}` in table `{table_fqn}`.
 
@@ -214,6 +215,10 @@ Candidate values found in the database:
 Context: {question}
 
 Pick the most likely match based on context. If none fit, output null.
+
+{reasoning_directive}
+
+Output your reasoning within <reasoning>...</reasoning> and then a strict JSON object within <output>...</output>.
 
 <reasoning>
 {{Consider what the user likely meant given the question context and the available values.}}
@@ -229,7 +234,6 @@ REPAIR_PROMPT = ChatPromptTemplate.from_template(
     """You are fixing broken Redshift SQL. ONLY fix: syntax errors, bad aliases, schema drift, Redshift dialect issues.
 NEVER change: JOINs, aggregations, filters, metric definitions, or the semantic meaning of the query.
 
-{reasoning_directive}
 
 SEMANTIC BOUNDARY (must be preserved):
 {semantic_ir}
@@ -246,7 +250,9 @@ PRIOR REPAIR ATTEMPTS:
 ANTI-PATTERNS (known failure patterns to avoid):
 <anti_patterns>{anti_patterns}</anti_patterns>
 
-Output ONLY the fixed SQL inside <sql> tags. No JSON, no explanation outside the tags.
+{reasoning_directive}
+
+Output your reasoning within <reasoning>...</reasoning> and the fixed SQL inside <sql>...</sql>. No JSON, no explanation outside the tags.
 
 <reasoning>
 {{Identify the exact cause of the error and the minimal fix needed.}}
@@ -261,12 +267,11 @@ Output ONLY the fixed SQL inside <sql> tags. No JSON, no explanation outside the
 SYNTHESIS_PROMPT = ChatPromptTemplate.from_template(
     """You are a senior financial analyst preparing an answer for a {persona} at a treasury organization.
 
-{reasoning_directive}
-
-PERSONA TONE:
-- executive: 1 headline sentence + 2 bullet points maximum. Lead with the key insight.
-- manager: summary paragraph + recommended actions. Medium detail.
-- analyst: full detail with methodology, caveats, and data context.
+Persona format:
+- **Analyst**: precise numbers, markdown table, column-level commentary, methodology notes. Use ## headers.
+- **Manager**: key aggregation, policy breach flags, variance vs. prior period, 2-3 concrete actions. Use ## headers.
+- **Director**: risk concentration headline, limits vs. actuals, 3 prioritised recommendations with owners and timing. Use ## headers.
+- **Executive**: one-paragraph verdict, top-3 risks or opportunities, single recommended decision. No headers — flowing prose only.
 
 QUERY CONTEXT:
 <query_context>
@@ -292,12 +297,25 @@ RULES:
 - If reliability flags are present, mention uncertainty explicitly.
 - If low_confidence_filters are present, note that filter values were approximately matched.
 
+Writing standards:
+- **Pyramid Principle**: open with the single most important finding. Everything that follows supports it.
+- **Quantify every claim**: never write "significant" without a number; never write "exposure is high" without the amount and what it is high relative to.
+- **Business implication, not data description**: explain what the data means for the business and what decision it informs. Exception: for Analyst persona with simple lookups (1-3 rows), a direct table + brief note is preferred.
+- **Zero/anomalous results**: if all values are zero or the result is a single row of zeros, state clearly that the metric cannot be reported reliably. Diagnose the most likely root cause (data ingestion gap, ontology mismatch, date filter, missing triples) and recommend the specific corrective action.
+- **Data gaps**: if a question cannot be answered from available data, name what is missing, why it matters, and what interim workaround exists.
+
+{reasoning_directive}
+
+Output your reasoning within <reasoning>...</reasoning> tags, then the answer within <answer>...</answer> tags, then follow-ups within <follow_ups>...</follow_ups> tags.
+
 <reasoning>
 {{Think through what the data shows, what's significant, what's uncertain, and how to frame it for this persona.}}
 </reasoning>
 <answer>
 {{Your answer here — appropriate length and detail for the persona}}
 </answer>
+
+Now output exactly 3 follow-up questions a {persona} would naturally ask next. Phrased as the user querying the system, not as the system offering to help. Specific to the data returned, not generic. Output ONLY the JSON array — no other text before or after.
 <follow_ups>
 ["...", "...", "..."]
 </follow_ups>"""
@@ -308,8 +326,6 @@ RULES:
 CHART_LABEL_PROMPT = ChatPromptTemplate.from_template(
     """You are generating chart labels for a financial data visualization.
 
-{reasoning_directive}
-
 Chart type: {chart_type}
 Column names: {column_names}
 Column stats: {column_stats}
@@ -319,10 +335,14 @@ Intent: {intent}
 Generate concise, business-appropriate labels. Use financial terminology.
 The value_format should follow d3-format conventions (e.g. ",.0f" for integers, "$,.2f" for currency, ".1%" for percentages).
 
+{reasoning_directive}
+
+Output your reasoning within <reasoning>...</reasoning> tags, then the label JSON within <chart>...</chart> tags.
+
 <reasoning>
 {{Consider the chart type and what labels would make it clear to a finance professional.}}
 </reasoning>
-<output>
+<chart>
 {{
   "chart_title": "...",
   "x_axis_label": "...",
@@ -331,7 +351,7 @@ The value_format should follow d3-format conventions (e.g. ",.0f" for integers, 
   "value_format": ",.0f",
   "color_scheme": "blues"
 }}
-</output>"""
+</chart>"""
 )
 
 # ─── Conversation Compress ───────────────────────────────────────────────────

@@ -1,69 +1,103 @@
 """Async Redshift client for the analytics pipeline.
 
-Uses redshift_connector with asyncio.to_thread for non-blocking execution.
+Uses redshift_connector with a queue.Queue-based connection pool (size 3)
+so concurrent queries from decomposed sub-queries don't conflict.
 All queries use parameterized execution — never string interpolation.
 """
 
 from __future__ import annotations
 
 import asyncio
+import queue
 import time
 
 from app.core.config import settings
 from app.core.logger import logger
 
-_pool = None
+_POOL_SIZE = 3
+_connection_pool: queue.Queue | None = None
+
+
+def _make_connection():
+    import redshift_connector
+    return redshift_connector.connect(
+        host=settings.REDSHIFT_HOST,
+        database=settings.REDSHIFT_DB,
+        user=settings.REDSHIFT_USER,
+        password=settings.REDSHIFT_PASSWORD,
+        port=getattr(settings, "REDSHIFT_PORT", 5439),
+    )
 
 
 async def init_redshift() -> None:
-    """Initialize the Redshift connection pool."""
-    global _pool
+    """Initialize the Redshift connection pool (3 connections)."""
+    global _connection_pool
     try:
-        import redshift_connector
-        _pool = redshift_connector.connect(
-            host=settings.REDSHIFT_HOST,
-            database=settings.REDSHIFT_DB,
-            user=settings.REDSHIFT_USER,
-            password=settings.REDSHIFT_PASSWORD,
-            port=getattr(settings, "REDSHIFT_PORT", 5439),
-        )
-        logger.info("Redshift connection initialized | host={}", settings.REDSHIFT_HOST)
+        pool: queue.Queue = queue.Queue(maxsize=_POOL_SIZE)
+        for _ in range(_POOL_SIZE):
+            conn = await asyncio.to_thread(_make_connection)
+            pool.put_nowait(conn)
+        _connection_pool = pool
+        logger.info("Redshift pool initialized | size={} | host={}", _POOL_SIZE, settings.REDSHIFT_HOST)
     except Exception as e:
         logger.error("Redshift initialization failed: {}", e)
         raise
 
 
 async def close_redshift() -> None:
-    global _pool
-    if _pool:
-        try:
-            _pool.close()
-        except Exception:
-            pass
-        _pool = None
-        logger.info("Redshift connection closed")
+    global _connection_pool
+    pool, _connection_pool = _connection_pool, None
+    if pool:
+        while not pool.empty():
+            try:
+                conn = pool.get_nowait()
+                conn.close()
+            except Exception:
+                pass
+        logger.info("Redshift pool closed")
 
 
-def _get_connection():
-    if not _pool:
+def _get_pool() -> queue.Queue:
+    if not _connection_pool:
         raise RuntimeError("Redshift not initialized — call init_redshift() first.")
-    return _pool
+    return _connection_pool
 
 
 def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 30) -> tuple[list[str], list[list]]:
-    """Synchronous execution — run via asyncio.to_thread from async callers."""
-    conn = _get_connection()
-    cursor = conn.cursor()
+    """Borrow a connection from the pool, execute, return it. Runs in a thread."""
+    pool = _get_pool()
     try:
-        if params:
-            cursor.execute(sql, params)
-        else:
-            cursor.execute(sql)
-        columns = [desc[0] for desc in cursor.description] if cursor.description else []
-        rows = cursor.fetchall()
-        return columns, [list(r) for r in rows]
+        conn = pool.get(timeout=timeout_s)
+    except queue.Empty:
+        raise TimeoutError("All Redshift connections busy — pool exhausted.")
+
+    try:
+        cursor = conn.cursor()
+        try:
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            rows = cursor.fetchall()
+            return columns, [list(r) for r in rows]
+        finally:
+            cursor.close()
+    except Exception:
+        try:
+            conn.close()
+            conn = _make_connection()
+        except Exception as reconnect_err:
+            logger.error("Redshift reconnect failed: {}", reconnect_err)
+        raise
     finally:
-        cursor.close()
+        try:
+            pool.put_nowait(conn)
+        except queue.Full:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 async def execute_query(

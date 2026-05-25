@@ -11,7 +11,7 @@ import time
 import uuid
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics import neo4j_client, redis_client
 from app.services.neo4j_analytics.filter_resolver_logic import is_time_sensitive_sql
 from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_DEEP, REPAIR_PROMPT
@@ -181,8 +181,8 @@ async def _attempt_repair(
 ) -> dict | None:
     """Use Opus to repair broken SQL. Returns updated state dict or None."""
     import json
-    from app.services.agents.bedrock import get_llm
-    from app.core.langfuse_integration import create_callback_handler, langfuse_context
+    from app.services.neo4j_analytics.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
 
     logger.warning("executor | attempting repair | thread={} | repair_count={}", state["thread_id"], repair_count)
 
@@ -210,12 +210,13 @@ async def _attempt_repair(
     )
 
     llm = get_llm("deep")
-    handler = create_callback_handler()
-    callbacks = [handler] if handler else []
+
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=config)
 
     try:
-        with langfuse_context(session_id=state["thread_id"], user_id=state["user_id"], tags=["neo4j_analytics", "repair"]):
-            response = await llm.ainvoke(prompt, config={"callbacks": callbacks})
+        response = await _call()
     except Exception as e:
         logger.error("executor | repair LLM failed | thread={} | error={}", state["thread_id"], e)
         return None

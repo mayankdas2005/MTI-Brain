@@ -146,10 +146,13 @@ def resolve_tier3_temporal(user_value: str) -> dict | None:
         end = date(year, end_m, end_day)
         return {"operator": "BETWEEN", "value": [str(start), str(end)]}
 
-    # Try dateparser as fallback
+    # Try dateparser as fallback (explicit MDY order for US financial data)
     try:
         import dateparser
-        parsed = dateparser.parse(user_value)
+        parsed = dateparser.parse(
+            user_value,
+            settings={"DATE_ORDER": "MDY", "PREFER_DAY_OF_MONTH": "first"},
+        )
         if parsed:
             return {"operator": "=", "value": str(parsed.date())}
     except ImportError:

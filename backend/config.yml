@@ -53,8 +53,6 @@ model_routing:
 prompt_cache:
   aws_bedrock_prompt_cache: true   # Enable AWS Bedrock prompt cache
 
-fuseki:
-  timeout_seconds: 60
 
 pipeline:
   recursion_limit: 80              # LangGraph recursion limit (advanced queries need headroom)

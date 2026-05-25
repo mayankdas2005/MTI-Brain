@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
-from app.services.neo4j_analytics.prompts import INTENT_RESOLVE_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.neo4j_analytics.helpers import parse_tag
+from app.services.neo4j_analytics.prompts import INTENT_RESOLVE_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
@@ -19,16 +19,17 @@ async def intent_resolver(state: AnalyticsState, config: dict) -> dict:
 
     prompt = _build_prompt(state)
 
-    from app.services.agents.bedrock import get_llm
-    from app.core.langfuse_integration import create_callback_handler, langfuse_context
+    from app.services.neo4j_analytics.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
 
     llm = get_llm("balanced")
-    handler = create_callback_handler()
-    callbacks = [handler] if handler else []
+
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=config)
 
     try:
-        with langfuse_context(session_id=state["thread_id"], user_id=state["user_id"], tags=["neo4j_analytics", "intent_resolver"]):
-            response = await llm.ainvoke(prompt, config={"callbacks": callbacks})
+        response = await _call()
     except Exception as e:
         logger.error("intent_resolver LLM failed | thread={} | error={}", state["thread_id"], e)
         return {"needs_clarification": True, "clarification_reason": "I couldn't process your question. Please try again."}
@@ -75,13 +76,13 @@ def _build_prompt(state: AnalyticsState) -> list:
 
     return INTENT_RESOLVE_PROMPT.format_messages(
         question=state["question"],
-        persona=state.get("persona", "analyst"),
+        persona=state.get("persona", "executive"),
         domain_preference="",
         feedback_context=state.get("feedback_context", ""),
         conversation_context=semantic_context.get("session_summary", ""),
         memory_context=semantic_context.get("memory_context", ""),
         semantic_context=context_str,
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
     )
 
 

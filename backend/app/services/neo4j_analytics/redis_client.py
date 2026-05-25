@@ -10,6 +10,7 @@ import hashlib
 import json
 import time
 
+from app.core.circuit_breaker import redis_breaker
 from app.core.logger import logger
 
 _redis = None
@@ -69,6 +70,19 @@ def session_summary_key(thread_id: str) -> str:
     return f"session_summary:{thread_id}"
 
 
+# ── Breaker-protected inner calls ─────────────────────────────────────────────
+# Defined at module level so @redis_breaker is applied once, not per call.
+
+@redis_breaker
+def _do_get(client, key: str) -> str | None:
+    return client.get(key)
+
+
+@redis_breaker
+def _do_set(client, key: str, ttl_seconds: int, value: str) -> None:
+    client.setex(key, ttl_seconds, value)
+
+
 # ── Get / set / delete ────────────────────────────────────────────────────────
 
 def cache_get(key: str) -> str | None:
@@ -77,7 +91,7 @@ def cache_get(key: str) -> str | None:
         return None
     t0 = time.monotonic()
     try:
-        val = client.get(key)
+        val = _do_get(client, key)
         logger.debug("redis get | key={} | hit={} | ms={:.0f}", key[:60], val is not None, (time.monotonic() - t0) * 1000)
         return val
     except Exception as e:
@@ -90,7 +104,7 @@ def cache_set(key: str, value: str, ttl_seconds: int) -> None:
     if not client:
         return
     try:
-        client.setex(key, ttl_seconds, value)
+        _do_set(client, key, ttl_seconds, value)
         logger.debug("redis set | key={} | ttl={}s", key[:60], ttl_seconds)
     except Exception as e:
         logger.warning("redis set failed | key={} | error={}", key[:60], e)

@@ -5,7 +5,7 @@ emitted by on_chat_model_end events in the astream_events loop.
 """
 from __future__ import annotations
 
-from app.services.agents.node_names import N
+from app.services.neo4j_analytics.node_names import NODE_TIER as NODE_TIER  # noqa: F401 re-export
 
 # All model definitions in one place.
 # Keys are matched as substrings of the model name (lowercase, longest first) for
@@ -42,30 +42,6 @@ MODELS: dict[str, dict] = {
 }
 
 _DEFAULT_PRICING = {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30}
-
-# Maps graph node name → LLM tier (for labelling; actual cost uses model name from response).
-NODE_TIER: dict[str, str] = {
-    N.INTAKE_CLASSIFY:    "fast",
-    N.GENERAL_CHAT:       "fast",
-    N.VISUALIZATION:      "fast",
-    N.DOMAIN_SPECIALIST:  "balanced",
-    N.ONTOLOGY_LOOKUP:    "balanced",
-    N.BRAIN_RETRIEVAL:    "balanced",
-    N.SPARQL_VALIDATE:    "balanced",
-    N.GOVERNANCE_GATE:    "balanced",
-    N.GRAPH_REASONING:    "balanced",
-    N.ANSWER_SYNTHESIS:   "balanced",
-    N.PLAN:               "balanced",
-    N.PLAN_VALIDATOR:     "balanced",
-    N.STEP_REFLECTOR:     "balanced",
-    N.FINAL_REFLECTOR:    "balanced",
-    N.COMPRESS:           "balanced",
-    N.VERIFIER:           "balanced",
-    N.EXECUTOR:           "balanced",
-    N.HUMAN_IN_LOOP:      "balanced",
-    N.SPARQL_GEN:         "deep",
-    N.REPAIRER:           "deep",
-}
 
 
 def _get_pricing(model_name: str) -> dict:

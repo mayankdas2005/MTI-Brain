@@ -96,7 +96,6 @@ def _build_sse_generator(
             reasoning=reasoning,
             metadata={
                 "sql": save_data.get("sql", ""),
-                "intent": save_data.get("intent", ""),
                 "columns": save_data.get("columns", []),
                 "rows": save_data.get("rows", []),
                 "row_count": save_data.get("row_count", 0),
@@ -106,12 +105,10 @@ def _build_sse_generator(
                 "stopped": save_data.get("stopped", False),
                 "duration_ms": save_data.get("duration_ms"),
                 "pipeline_steps": save_data.get("pipeline_steps") or [],
-                "governance_halt": save_data.get("governance_halt"),
-                "sparql_error": save_data.get("sparql_error", ""),
-                "sparql_retries": save_data.get("sparql_retries", 0),
                 "question_type": save_data.get("question_type", ""),
                 "persona": save_data.get("persona", ""),
-                "complexity": save_data.get("complexity", ""),
+                "no_data": save_data.get("no_data", False),
+                "reliability_flags": save_data.get("reliability_flags", []),
                 "token_usage": save_data.get("token_usage"),
                 "langfuse_trace_id": save_data.get("langfuse_trace_id"),
                 "langfuse_trace_url": save_data.get("langfuse_trace_url"),
@@ -126,7 +123,7 @@ def _build_sse_generator(
             logger.exception("Failed to save assistant message")
 
     async def event_generator():
-        from app.services.agents.graph import stream_pipeline
+        from app.services.neo4j_analytics.graph import stream_pipeline
         from app.services.chat.feedback import (
             build_feedback_context,
             find_similar_feedback,
@@ -216,19 +213,6 @@ def _build_sse_generator(
 
                 if event_name == "answer.delta":
                     _partial_answer.append(data.get("text", ""))
-                elif event_name == "sparql.executed":
-                    data = {
-                        "sql": data.get("sparql", ""),
-                        "columns": data.get("columns", []),
-                        "rows": data.get("rows", []),
-                        "row_count": data.get("row_count", 0),
-                        "status": data.get("status", "success"),
-                        "will_visualize": data.get("will_visualize", False),
-                    }
-                    event_name = "execute.done"
-                elif event_name == "sparql.generated":
-                    data = {"sql": data.get("query", ""), "intent": ""}
-                    event_name = "generate_sql"
 
                 yield {"event": event_name, "data": json.dumps(data)}
 
