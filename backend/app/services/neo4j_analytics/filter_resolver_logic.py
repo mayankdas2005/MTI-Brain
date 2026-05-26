@@ -11,8 +11,6 @@ The tiered resolution pipeline:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-
 
 def resolve_tier1_exact(
     user_value: str,
@@ -20,7 +18,7 @@ def resolve_tier1_exact(
     value_aliases: dict[str, str] | None,
 ) -> str | None:
     """Tier 1: exact match against aliases and sample_values."""
-    if value_aliases:
+    if value_aliases and isinstance(value_aliases, dict):
         for alias, canonical in value_aliases.items():
             if alias.lower() == user_value.lower():
                 return canonical
@@ -75,125 +73,124 @@ def resolve_tier2_fuzzy(
 
 
 def resolve_tier3_temporal(user_value: str) -> dict | None:
-    """Tier 3: parse temporal expressions into ISO date ranges.
+    """Tier 3: map standardized temporal keywords to Redshift SQL expressions.
 
-    Returns {"operator": "BETWEEN", "value": ["YYYY-MM-DD", "YYYY-MM-DD"]}
-    or None if not a temporal expression.
+    The LLM outputs keywords (e.g. 'last_30_days', 'this_month', 'q4_2024').
+    We translate them to Redshift-native SQL so CURRENT_DATE is evaluated at
+    query time — no hardcoded dates, no need for the LLM to know today's date.
+
+    Returns one of:
+      {"operator": ">=",          "value": "<sql_expr>",             "is_raw_sql": True}
+      {"operator": "BETWEEN_SQL", "value": ["<sql_expr>","<sql_expr>"], "is_raw_sql": True}
+      {"operator": "BETWEEN",     "value": ["YYYY-MM-DD","YYYY-MM-DD"]} (specific quarter)
+    or None if the value is not a recognized temporal keyword.
     """
-    value_lower = user_value.lower().strip()
-    today = date.today()
-
-    if value_lower in ("today",):
-        return {"operator": "=", "value": str(today)}
-
-    if value_lower in ("yesterday",):
-        return {"operator": "=", "value": str(today - timedelta(days=1))}
-
-    if value_lower in ("this month", "mtd", "month to date"):
-        start = today.replace(day=1)
-        return {"operator": "BETWEEN", "value": [str(start), str(today)]}
-
-    if value_lower in ("last month",):
-        first_this = today.replace(day=1)
-        last_prev = first_this - timedelta(days=1)
-        first_prev = last_prev.replace(day=1)
-        return {"operator": "BETWEEN", "value": [str(first_prev), str(last_prev)]}
-
-    if value_lower in ("ytd", "year to date", "this year"):
-        start = today.replace(month=1, day=1)
-        return {"operator": "BETWEEN", "value": [str(start), str(today)]}
-
-    if value_lower in ("last year",):
-        start = date(today.year - 1, 1, 1)
-        end = date(today.year - 1, 12, 31)
-        return {"operator": "BETWEEN", "value": [str(start), str(end)]}
-
-    # Last N days
     import re
-    m = re.match(r"last\s+(\d+)\s+days?", value_lower)
+    v = user_value.strip().lower().replace(" ", "_")
+
+    # last_N_days / last_N_day
+    m = re.match(r"last[_]?(\d+)[_]?days?$", v)
     if m:
-        n = int(m.group(1))
-        start = today - timedelta(days=n)
-        return {"operator": "BETWEEN", "value": [str(start), str(today)]}
+        n = m.group(1)
+        return {"operator": ">=", "value": f"DATEADD(day, -{n}, CURRENT_DATE)", "is_raw_sql": True}
 
-    # Last N months
-    m = re.match(r"last\s+(\d+)\s+months?", value_lower)
+    # last_N_months
+    m = re.match(r"last[_]?(\d+)[_]?months?$", v)
     if m:
-        n = int(m.group(1))
-        start = _subtract_months(today, n)
-        return {"operator": "BETWEEN", "value": [str(start), str(today)]}
+        n = m.group(1)
+        return {"operator": ">=", "value": f"DATEADD(month, -{n}, CURRENT_DATE)", "is_raw_sql": True}
 
-    # This quarter
-    if value_lower in ("this quarter", "current quarter"):
-        q_start = _quarter_start(today)
-        return {"operator": "BETWEEN", "value": [str(q_start), str(today)]}
+    # last_N_years
+    m = re.match(r"last[_]?(\d+)[_]?years?$", v)
+    if m:
+        n = m.group(1)
+        return {"operator": ">=", "value": f"DATEADD(year, -{n}, CURRENT_DATE)", "is_raw_sql": True}
 
-    # Last quarter
-    if value_lower in ("last quarter", "prior quarter"):
-        q_start = _quarter_start(today)
-        prev_q_end = q_start - timedelta(days=1)
-        prev_q_start = _quarter_start(prev_q_end)
-        return {"operator": "BETWEEN", "value": [str(prev_q_start), str(prev_q_end)]}
+    # today
+    if v == "today":
+        return {"operator": "=", "value": "CURRENT_DATE", "is_raw_sql": True}
 
-    # Q1/Q2/Q3/Q4 YYYY patterns
-    m = re.match(r"q([1-4])\s+(\d{4})", value_lower)
+    # yesterday
+    if v == "yesterday":
+        return {"operator": "=", "value": "DATEADD(day, -1, CURRENT_DATE)", "is_raw_sql": True}
+
+    # this_month / mtd / month_to_date
+    if v in ("this_month", "mtd", "month_to_date", "current_month"):
+        return {"operator": ">=", "value": "DATE_TRUNC('month', CURRENT_DATE)", "is_raw_sql": True}
+
+    # last_month
+    if v in ("last_month", "prior_month", "previous_month"):
+        return {
+            "operator": "BETWEEN_SQL",
+            "value": [
+                "DATE_TRUNC('month', DATEADD(month, -1, CURRENT_DATE))",
+                "LAST_DAY(DATEADD(month, -1, CURRENT_DATE))",
+            ],
+            "is_raw_sql": True,
+        }
+
+    # this_quarter / qtd
+    if v in ("this_quarter", "qtd", "quarter_to_date", "current_quarter"):
+        return {"operator": ">=", "value": "DATE_TRUNC('quarter', CURRENT_DATE)", "is_raw_sql": True}
+
+    # last_quarter / prior_quarter
+    if v in ("last_quarter", "prior_quarter", "previous_quarter"):
+        return {
+            "operator": "BETWEEN_SQL",
+            "value": [
+                "DATE_TRUNC('quarter', DATEADD(quarter, -1, CURRENT_DATE))",
+                "DATEADD(day, -1, DATE_TRUNC('quarter', CURRENT_DATE))",
+            ],
+            "is_raw_sql": True,
+        }
+
+    # ytd / this_year / year_to_date
+    if v in ("ytd", "this_year", "year_to_date", "current_year"):
+        return {"operator": ">=", "value": "DATE_TRUNC('year', CURRENT_DATE)", "is_raw_sql": True}
+
+    # last_year / prior_year
+    if v in ("last_year", "prior_year", "previous_year"):
+        return {
+            "operator": "BETWEEN_SQL",
+            "value": [
+                "DATE_TRUNC('year', DATEADD(year, -1, CURRENT_DATE))",
+                "DATEADD(day, -1, DATE_TRUNC('year', CURRENT_DATE))",
+            ],
+            "is_raw_sql": True,
+        }
+
+    # Specific quarter: q4_2024 / q4 2024 / Q4_2024
+    m = re.match(r"q([1-4])[_\s]?(\d{4})$", v)
     if m:
         q, year = int(m.group(1)), int(m.group(2))
-        q_map = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
-        start_m, end_m = q_map[q]
-        start = date(year, start_m, 1)
-        end_day = _last_day_of_month(year, end_m)
-        end = date(year, end_m, end_day)
-        return {"operator": "BETWEEN", "value": [str(start), str(end)]}
+        q_map = {1: ("01-01", "03-31"), 2: ("04-01", "06-30"), 3: ("07-01", "09-30"), 4: ("10-01", "12-31")}
+        start, end = q_map[q]
+        return {"operator": "BETWEEN", "value": [f"{year}-{start}", f"{year}-{end}"]}
 
-    # Try dateparser as fallback (explicit MDY order for US financial data)
-    try:
-        import dateparser
-        parsed = dateparser.parse(
-            user_value,
-            settings={"DATE_ORDER": "MDY", "PREFER_DAY_OF_MONTH": "first"},
-        )
-        if parsed:
-            return {"operator": "=", "value": str(parsed.date())}
-    except ImportError:
-        pass
+    # Single ISO date YYYY-MM-DD
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", user_value.strip()):
+        return {"operator": "=", "value": user_value.strip()}
+
+    # ISO range: YYYY-MM-DD TO YYYY-MM-DD (LLM may still produce this)
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})$", v)
+    if m:
+        return {"operator": "BETWEEN", "value": [m.group(1), m.group(2)]}
 
     return None
 
 
-def _quarter_start(d: date) -> date:
-    quarter = (d.month - 1) // 3
-    return date(d.year, quarter * 3 + 1, 1)
-
-
-def _last_day_of_month(year: int, month: int) -> int:
-    import calendar
-    return calendar.monthrange(year, month)[1]
-
-
-def _subtract_months(d: date, n: int) -> date:
-    month = d.month - n
-    year = d.year
-    while month <= 0:
-        month += 12
-        year -= 1
-    day = min(d.day, _last_day_of_month(year, month))
-    return date(year, month, day)
-
-
 def build_redshift_probe_sql(table_fqn: str, col_name: str, user_value: str) -> str:
-    """Build a parameterized DISTINCT probe SQL (returns template with placeholder)."""
+    """Build a fast probe SQL — fetches first 200 non-null values, no full scan."""
     return (
-        f"SELECT DISTINCT CAST({col_name} AS VARCHAR) AS val "
+        f"SELECT CAST({col_name} AS VARCHAR) AS val "
         f"FROM {table_fqn} "
-        f"WHERE LOWER(CAST({col_name} AS VARCHAR)) LIKE %s "
-        f"LIMIT 50"
+        f"WHERE {col_name} IS NOT NULL "
+        f"LIMIT 200"
     )
 
 
 def build_redshift_probe_params(user_value: str) -> list:
-    """Returns params list for the probe SQL."""
-    return [f"%{user_value.lower()}%"]
+    return []
 
 
 def is_time_sensitive_sql(sql: str) -> bool:

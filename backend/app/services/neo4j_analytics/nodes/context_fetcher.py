@@ -109,8 +109,8 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         embedding = await _get_embedding(search_query)
 
         templates = neo4j_client.search_query_templates(embedding)
-        tables = neo4j_client.search_tables_fulltext(search_query)
-        columns = neo4j_client.search_columns_fulltext(search_query)
+        tables = neo4j_client.search_tables_vector(embedding)
+        columns = neo4j_client.search_columns_vector(embedding)
         tokens = _tokenize_with_bigrams(search_query)
         business_terms = neo4j_client.lookup_business_terms(tokens)
         intents = neo4j_client.search_intents(embedding)
@@ -119,6 +119,13 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         templates = _trim_objects(templates)
         tables = _trim_objects(tables)
         columns = _trim_objects(columns)
+
+        logger.info(
+            "context_fetcher | tables_fetched={} | cols_fetched={} | templates_fetched={}",
+            [t.get("fqn") for t in tables],
+            [f"{c.get('table_fqn')}.{c.get('name')}" for c in columns],
+            [(t.get("id"), round(t.get("score", 0), 3)) for t in templates],
+        )
 
         memory_context = await long_term.retrieve_user_memory(state["user_id"], search_query)
 

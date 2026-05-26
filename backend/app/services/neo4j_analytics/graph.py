@@ -96,10 +96,6 @@ def route_after_context_fetcher(state: AnalyticsState) -> str:
 
 
 def route_intent(state: AnalyticsState) -> str:
-    count = state.get("clarification_count", 0)
-    if state.get("needs_clarification") and count < MAX_CLARIFICATION:
-        logger.info("route: intent_resolver → clarification | thread={} | count={}", state["thread_id"], count)
-        return N_CLARIFICATION
     logger.info("route: intent_resolver → query_compiler | thread={}", state["thread_id"])
     return N_QUERY_COMPILER
 
@@ -118,10 +114,6 @@ def route_compiler(state: AnalyticsState) -> str:
 
 
 def route_filter_resolver(state: AnalyticsState) -> str:
-    count = state.get("clarification_count", 0)
-    if state.get("needs_clarification") and count < MAX_CLARIFICATION:
-        logger.info("route: filter_resolver → clarification | thread={}", state["thread_id"])
-        return N_CLARIFICATION
     logger.info("route: filter_resolver → sql_validator | thread={}", state["thread_id"])
     return N_SQL_VALIDATOR
 
@@ -199,7 +191,7 @@ def compile_graph():
     b.add_node(N_INTENT_RESOLVER, intent_resolver,   retry_policy=LLM_RETRY)
     b.add_node(N_CLARIFICATION,   clarification,     retry_policy=LLM_RETRY)
     b.add_node(N_QUERY_COMPILER,  query_compiler,    retry_policy=LLM_RETRY)
-    b.add_node(N_FILTER_RESOLVER, filter_resolver,   retry_policy=LLM_RETRY)
+    b.add_node(N_FILTER_RESOLVER, filter_resolver)
     b.add_node(N_SQL_VALIDATOR,   sql_validator)
     b.add_node(N_EXECUTOR,        executor,          retry_policy=LLM_RETRY)
     b.add_node(N_SYNTHESIS,       synthesis,         retry_policy=LLM_RETRY)
@@ -307,21 +299,34 @@ async def init_analytics_pipeline() -> None:
         logger.warning("Redshift init failed (non-fatal for startup): {}", e)
 
     conninfo = settings.CHECKPOINT_CONNINFO
-    async with await AsyncConnection.connect(conninfo, autocommit=True) as conn:
-        try:
-            await AsyncPostgresSaver(conn).setup()
-        except UniqueViolation:
-            pass
+    conninfo_fast = conninfo + " connect_timeout=10"
 
-    _checkpoint_pool = AsyncConnectionPool(
-        conninfo=conninfo,
-        open=False,
-        min_size=1,
-        max_size=5,
-        check=AsyncConnectionPool.check_connection,
-        max_idle=300,
-    )
-    await _checkpoint_pool.open()
+    checkpointer = None
+    try:
+        async with await AsyncConnection.connect(
+            conninfo_fast, autocommit=True, prepare_threshold=0
+        ) as conn:
+            try:
+                await AsyncPostgresSaver(conn).setup()
+            except UniqueViolation:
+                pass
+
+        _checkpoint_pool = AsyncConnectionPool(
+            conninfo=conninfo_fast,
+            open=False,
+            min_size=settings.CHECKPOINT_POOL_MIN,
+            max_size=settings.CHECKPOINT_POOL_MAX,
+            check=AsyncConnectionPool.check_connection,
+            max_idle=settings.CHECKPOINT_POOL_MAX_IDLE,
+            kwargs={"prepare_threshold": 0},
+        )
+        await _checkpoint_pool.open()
+        checkpointer = AsyncPostgresSaver(_checkpoint_pool)
+        logger.info("Analytics checkpoint store initialized")
+    except Exception as e:
+        logger.warning("Checkpoint store init failed (non-fatal — running without persistence): {}", e)
+        from langgraph.checkpoint.memory import MemorySaver
+        checkpointer = MemorySaver()
 
     try:
         from contextlib import ExitStack
@@ -331,7 +336,7 @@ async def init_analytics_pipeline() -> None:
         _memory_store_exit = ExitStack()
         _memory_store = _memory_store_exit.enter_context(
             PostgresStore.from_conn_string(
-                conninfo,
+                conninfo_fast,
                 index=IndexConfig(embed=embed_texts_sync, dims=1536),
             )
         )
@@ -342,7 +347,6 @@ async def init_analytics_pipeline() -> None:
         logger.warning("Analytics memory store init failed (non-fatal): {}", e)
         _memory_store = None
 
-    checkpointer = AsyncPostgresSaver(_checkpoint_pool)
     _compiled_graph = compile_graph().compile(checkpointer=checkpointer, store=_memory_store)
 
     logger.info("Neo4j analytics pipeline initialized")
@@ -542,7 +546,7 @@ async def stream_pipeline(
             if node not in NODE_MESSAGE:
                 continue
 
-            if kind == "on_chain_start":
+            if kind == "on_chain_start" and ev.get("name") == node:
                 visit      = _node_visit_count.get(node, 0)
                 visit_key  = f"{node}:{visit}"
                 is_retry   = visit > 0
@@ -610,7 +614,7 @@ async def stream_pipeline(
                         etype = cfg[1] if isinstance(cfg, tuple) else "reasoning.delta"
                         yield _emit_token(text, etype)
 
-            elif kind == "on_chain_end":
+            elif kind == "on_chain_end" and ev.get("name") == node:
                 output = ev.get("data", {}).get("output")
                 visit_before = _node_visit_count.get(node, 0)
                 if isinstance(output, dict):

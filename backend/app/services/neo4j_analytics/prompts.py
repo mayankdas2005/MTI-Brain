@@ -94,11 +94,29 @@ INTENT_RESOLVE_PROMPT = ChatPromptTemplate.from_template(
 
 HARD CONSTRAINT: Select ONLY identifiers from <schema_candidates>. NEVER invent table names, column names, or template IDs.
 
+FILTER RULES:
+- Every filter MUST include an `operator` field. Default is "=". Valid: = | != | > | >= | < | <= | IN | LIKE | BETWEEN
+- For numeric comparisons ("greater than 10%", "more than 5"), use the correct operator (>, >=, <, <=) — NEVER embed the operator symbol inside raw_value.
+- For categorical filters, raw_value MUST exactly match one of the column's sample_values shown in schema_candidates. If no matching value exists, OMIT the filter entirely.
+
 Schema rules:
 - All tables use the lpp. schema prefix (e.g. lpp.ach_return, lpp.bank_account)
 - Column format: table_fqn.column_name (e.g. lpp.ach_return.amount)
 - Measures need aggregation (SUM/AVG/COUNT). Dimensions go in GROUP BY. Dates become time filters.
 
+TEMPORAL EXPRESSIONS — output as a standardized keyword, never as resolved ISO dates.
+The system translates keywords to Redshift SQL (CURRENT_DATE, DATEADD, DATE_TRUNC) at query time.
+Supported keywords:
+  last_N_days     — e.g. last_30_days, last_7_days, last_90_days
+  last_N_months   — e.g. last_3_months, last_6_months
+  last_N_years    — e.g. last_2_years
+  today, yesterday
+  this_month, last_month, mtd
+  this_quarter, last_quarter, qtd
+  this_year, last_year, ytd
+  qN_YYYY         — specific quarter, e.g. q4_2024, q1_2025
+  YYYY-MM-DD      — exact calendar date only when explicitly stated by the user
+  null            — no time filter
 
 USER PROFILE:
 Persona: {persona}
@@ -130,15 +148,15 @@ Output your reasoning within <reasoning>...</reasoning> and then a strict JSON o
 Any identifier NOT in schema_candidates makes the entire output invalid.
 
 <reasoning>
-{{Think through which template matches, which columns are measures vs dimensions, any filters needed, and confidence level.}}
+{{Think through which template matches, which columns are measures vs dimensions, any filters needed, and which temporal keyword matches the user's time expression.}}
 </reasoning>
 <output>
 {{
   "template_id": "...",
   "measures": [...],
   "dimensions": [...],
-  "filters": [{{"table_fqn": "...", "column": "...", "raw_value": "..."}}],
-  "timeframe": null,
+  "filters": [{{"table_fqn": "...", "column": "...", "operator": "=", "raw_value": "..."}}],
+  "timeframe": "last_30_days",
   "intent": "...",
   "complexity": "simple|complex|advanced",
   "confidence": 0.0
@@ -203,8 +221,8 @@ Output your reasoning within <reasoning>...</reasoning> and then a strict JSON o
 <output>
 {{
   "sub_queries": [
-    {{"description": "...", "intent": "...", "anchor_tables": ["..."], "merge_key": "column_name", "depends_on": null}},
-    {{"description": "...", "intent": "...", "anchor_tables": ["..."], "merge_key": "column_name", "depends_on": null}}
+    {{"description": "...", "intent": "...", "anchor_tables": ["..."], "merge_key": ["column_name"], "depends_on": null}},
+    {{"description": "...", "intent": "...", "anchor_tables": ["..."], "merge_key": ["column_name"], "depends_on": 0}}
   ],
   "merge_strategy": "join|union|labeled_sets"
 }}

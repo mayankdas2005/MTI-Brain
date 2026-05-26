@@ -38,12 +38,16 @@ def _build_cte_sql(ir: SemanticIR) -> str:
     """Build the full 4-layer CTE SQL from a SemanticIR."""
     cte_names = _get_cte_names(ir)
     join_sql = _build_join_clause(ir)
-    where_conditions = _build_where_conditions(ir)
+    where_filters = [f for f in ir.filters if not f.is_having]
+    having_filters = [f for f in ir.filters if f.is_having]
+    where_conditions = _build_where_conditions_for(where_filters, ir.time_filter)
+    having_conditions = _build_having_conditions(having_filters, ir.measures)
     group_by_cols = _build_group_by_cols(ir)
     measure_cols = _build_measure_cols(ir)
     order_by_clause = _build_order_by(ir)
 
     where_clause = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
+    having_clause = f"HAVING {' AND '.join(having_conditions)}" if having_conditions else ""
     group_by_clause = f"GROUP BY {', '.join(group_by_cols)}" if group_by_cols else ""
 
     base_select = ", ".join(
@@ -77,6 +81,7 @@ def _build_cte_sql(ir: SemanticIR) -> str:
             f"    SELECT {agg_select}\n"
             f"    FROM {cte_names[0]}\n"
             f"    {group_by_clause}\n"
+            f"    {having_clause}\n"
             f"  )"
         )
         parts.append(",\n" + agg_cte)
@@ -136,24 +141,42 @@ def _parse_join_clause(clause: str) -> tuple[str, str]:
     return clause.strip(), clause.strip()
 
 
-def _build_where_conditions(ir: SemanticIR) -> list[str]:
-    """Build parameterized WHERE conditions from FilterSpecs."""
+def _build_where_conditions_for(filters: list[FilterSpec], time_filter: FilterSpec | None) -> list[str]:
+    """Build WHERE conditions from the given filters and optional time_filter."""
     conditions = []
-    all_filters = list(ir.filters)
-    if ir.time_filter:
-        all_filters.append(ir.time_filter)
+    all_filters = list(filters)
+    if time_filter:
+        all_filters.append(time_filter)
 
     for f in all_filters:
         col_ref = f"{f.table_fqn}.{f.column_name}"
-        if f.operator == "BETWEEN" and isinstance(f.value, list) and len(f.value) == 2:
+        if f.operator == "BETWEEN_SQL" and isinstance(f.value, list) and len(f.value) == 2:
+            conditions.append(f"{col_ref} BETWEEN {f.value[0]} AND {f.value[1]}")
+        elif f.operator == "BETWEEN" and isinstance(f.value, list) and len(f.value) == 2:
             conditions.append(f"{col_ref} BETWEEN '{f.value[0]}' AND '{f.value[1]}'")
         elif f.operator == "IN" and isinstance(f.value, list):
             values_str = ", ".join(f"'{v}'" for v in f.value)
             conditions.append(f"{col_ref} IN ({values_str})")
         elif f.operator == "LIKE":
             conditions.append(f"LOWER({col_ref}) LIKE LOWER('{f.value}')")
+        elif f.is_raw_sql:
+            conditions.append(f"{col_ref} {f.operator} {f.value}")
         else:
             conditions.append(f"{col_ref} {f.operator} '{f.value}'")
+    return conditions
+
+
+def _build_having_conditions(having_filters: list[FilterSpec], measures: list) -> list[str]:
+    """Build HAVING conditions for filters on aggregated measures."""
+    measure_map = {(m.table_fqn, m.column_name): m for m in measures}
+    conditions = []
+    for f in having_filters:
+        m = measure_map.get((f.table_fqn, f.column_name))
+        if m and m.aggregation and m.aggregation.upper() not in ("", "NONE"):
+            agg_expr = f"{m.aggregation.upper()}({m.table_fqn}.{m.column_name})"
+        else:
+            agg_expr = f"{f.table_fqn}.{f.column_name}"
+        conditions.append(f"{agg_expr} {f.operator} {f.value}")
     return conditions
 
 

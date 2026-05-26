@@ -75,8 +75,8 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
         "columns": semantic_context.get("columns", [])[:12],
     }, indent=2)
 
-    anti_patterns = _fetch_anti_patterns(state)
-    query_patterns = _fetch_query_patterns(state)
+    anti_patterns = await _fetch_anti_patterns(state)
+    query_patterns = await _fetch_query_patterns(state)
 
     from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_DEEP
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
@@ -138,8 +138,12 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
 
         try:
             ir = _build_semantic_ir(sub_resolved, semantic_context, sub_query_index=i)
-            ir.merge_key = sub_q.get("merge_key")
-            ir.depends_on = sub_q.get("depends_on")
+            raw_key = sub_q.get("merge_key")
+            if isinstance(raw_key, str):
+                raw_key = [raw_key]
+            ir.merge_key = raw_key
+            raw_depends = sub_q.get("depends_on")
+            ir.depends_on = raw_depends if isinstance(raw_depends, int) else None
             ir.merge_strategy = decomposition.get("merge_strategy")
             ir_list.append(ir.model_dump())
         except Exception as e:
@@ -179,13 +183,13 @@ def _build_semantic_ir(resolved: dict, semantic_context: dict, sub_query_index: 
 
     measures = [ColumnRef(**m) for m in resolved.get("measures", []) if isinstance(m, dict) and "table_fqn" in m]
     dimensions = [ColumnRef(**d) for d in resolved.get("dimensions", []) if isinstance(d, dict) and "table_fqn" in d]
-    filters = _build_filter_specs(resolved.get("filters", []), semantic_context)
-    time_filter = _build_time_filter(resolved.get("timeframe"), anchor_tables)
+    filters = _build_filter_specs(resolved.get("filters", []), raw_measures=resolved.get("measures", []))
+    time_filter = _build_time_filter(resolved.get("timeframe"), anchor_tables, semantic_context)
 
     template_id = resolved.get("template_id", "")
     cte_steps = _get_cte_steps(template_id, semantic_context)
 
-    return SemanticIR(
+    ir = SemanticIR(
         template_id=template_id,
         intent=resolved.get("intent", ""),
         complexity=resolved.get("complexity", "simple"),
@@ -207,6 +211,14 @@ def _build_semantic_ir(resolved: dict, semantic_context: dict, sub_query_index: 
         merge_key=None,
         merge_strategy=None,
     )
+    logger.info(
+        "query_compiler | ir_built | template={} | anchor_tables={} | time_filter={}.{} | filters={}",
+        template_id, anchor_tables,
+        time_filter.table_fqn if time_filter else None,
+        time_filter.column_name if time_filter else None,
+        [(f.column_name, f.operator, f.is_having) for f in filters],
+    )
+    return ir
 
 
 def _extract_anchor_tables(resolved: dict) -> list[str]:
@@ -237,15 +249,22 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
         from_table = anchor_tables[i]
         to_table = anchor_tables[i + 1]
 
-        jp = neo4j_client.load_join_path(from_table, to_table)
+        jp = neo4j_client.load_best_join_path(from_table, to_table)
         if not jp:
-            jp = neo4j_client.load_join_path_yens(from_table, to_table)
+            jp = neo4j_client.load_best_join_path(to_table, from_table)
+            if jp:
+                logger.info("query_compiler | join path found via reverse | from={} to={}", from_table, to_table)
         if not jp:
-            logger.warning("query_compiler | no join path | from={} to={}", from_table, to_table)
+            logger.warning("query_compiler | no join_path | from={} to={} | using fallback ON id=id", from_table, to_table)
             all_join_clauses.append("id = id")
             all_path_tables.append(to_table)
             join_types.append("JOIN")
             continue
+
+        logger.info(
+            "query_compiler | join_path | from={} to={} | clauses={} | tables={}",
+            from_table, to_table, jp.get("join_clauses"), jp.get("path_tables"),
+        )
 
         join_path_ids.append(jp.get("id", ""))
         clauses = jp.get("join_clauses", [])
@@ -262,44 +281,86 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
     return join_path_ids, all_join_clauses, all_path_tables, join_types
 
 
-def _build_filter_specs(raw_filters: list[dict], semantic_context: dict) -> list[FilterSpec]:
+def _build_filter_specs(
+    raw_filters: list[dict],
+    raw_measures: list[dict] | None = None,
+) -> list[FilterSpec]:
+    _COMPARISON_OPS = {">", ">=", "<", "<=", "!="}
+
+    agg_measure_cols: set[tuple[str, str]] = set()
+    for m in (raw_measures or []):
+        if isinstance(m, dict) and m.get("aggregation") and m["aggregation"].upper() not in ("", "NONE"):
+            agg_measure_cols.add((m.get("table_fqn", ""), m.get("column_name", "")))
+
     filters = []
     for f in raw_filters:
         if not f.get("table_fqn") or not f.get("column"):
             continue
+        raw_op = (f.get("operator") or "=").strip()
+        raw_value = f.get("raw_value", "")
+        is_comparison = raw_op in _COMPARISON_OPS
+        is_having = (f["table_fqn"], f["column"]) in agg_measure_cols
         filters.append(FilterSpec(
             table_fqn=f["table_fqn"],
             column_name=f["column"],
-            operator="=",
-            value=f.get("raw_value", ""),
-            raw_user_value=f.get("raw_value", ""),
-            resolved=False,
+            operator=raw_op,
+            value=raw_value,
+            raw_user_value=raw_value,
+            resolved=is_comparison,
+            is_having=is_having,
         ))
     return filters
 
 
-def _build_time_filter(timeframe: str | None, anchor_tables: list[str]) -> FilterSpec | None:
+def _build_time_filter(timeframe: str | None, anchor_tables: list[str], semantic_context: dict) -> FilterSpec | None:
     if not timeframe:
         return None
+    table_fqn, date_col = _find_date_column(anchor_tables, semantic_context)
     from app.services.neo4j_analytics.filter_resolver_logic import resolve_tier3_temporal
     result = resolve_tier3_temporal(timeframe)
     if not result:
         return FilterSpec(
-            table_fqn=anchor_tables[0] if anchor_tables else "",
-            column_name="transaction_date",
+            table_fqn=table_fqn,
+            column_name=date_col,
             operator="=",
             value=timeframe,
             raw_user_value=timeframe,
             resolved=False,
         )
     return FilterSpec(
-        table_fqn=anchor_tables[0] if anchor_tables else "",
-        column_name="transaction_date",
+        table_fqn=table_fqn,
+        column_name=date_col,
         operator=result["operator"],
         value=result["value"],
         raw_user_value=timeframe,
         resolved=True,
     )
+
+
+def _find_date_column(anchor_tables: list[str], semantic_context: dict) -> tuple[str, str]:
+    """Return (table_fqn, column_name) for the best temporal column across anchor tables."""
+    columns = semantic_context.get("columns", [])
+    _DATE_TYPES = {"date", "timestamp", "datetime"}
+    _DATE_SEMANTICS = {"date", "datetime", "timestamp"}
+
+    for table in anchor_tables:
+        for col in columns:
+            if col.get("table_fqn") != table:
+                continue
+            name = col["name"]
+            if col.get("temporal_grain"):
+                logger.info("query_compiler | date_col resolved | table={} | col={} | via=temporal_grain", table, name)
+                return table, name
+            if col.get("semantic_type", "").lower() in _DATE_SEMANTICS:
+                logger.info("query_compiler | date_col resolved | table={} | col={} | via=semantic_type({})", table, name, col.get("semantic_type"))
+                return table, name
+            if col.get("data_type", "").lower() in _DATE_TYPES:
+                logger.info("query_compiler | date_col resolved | table={} | col={} | via=data_type({})", table, name, col.get("data_type"))
+                return table, name
+
+    fallback_table = anchor_tables[0] if anchor_tables else ""
+    logger.warning("query_compiler | date_col not found in context | anchor_tables={} | falling back to {}.transaction_date", anchor_tables, fallback_table)
+    return fallback_table, "transaction_date"
 
 
 def _get_cte_steps(template_id: str, semantic_context: dict) -> list[str]:
@@ -332,15 +393,14 @@ def _parse_decomposition(raw: str, thread_id: str) -> dict | None:
         return None
 
 
-def _fetch_anti_patterns(state: AnalyticsState) -> str:
+async def _fetch_anti_patterns(state: AnalyticsState) -> str:
     semantic_context = state.get("semantic_context") or {}
     templates = semantic_context.get("templates", [])
     if not templates:
         return "(none)"
     try:
         from app.services.neo4j_analytics.nodes.context_fetcher import _get_embedding
-        import asyncio
-        embedding = asyncio.get_event_loop().run_until_complete(_get_embedding(state["question"]))
+        embedding = await _get_embedding(state["question"])
         patterns = neo4j_client.search_anti_patterns(embedding)
         if not patterns:
             return "(none)"
@@ -349,11 +409,10 @@ def _fetch_anti_patterns(state: AnalyticsState) -> str:
         return "(none)"
 
 
-def _fetch_query_patterns(state: AnalyticsState) -> str:
+async def _fetch_query_patterns(state: AnalyticsState) -> str:
     try:
         from app.services.neo4j_analytics.nodes.context_fetcher import _get_embedding
-        import asyncio
-        embedding = asyncio.get_event_loop().run_until_complete(_get_embedding(state["question"]))
+        embedding = await _get_embedding(state["question"])
         patterns = neo4j_client.search_query_patterns(embedding)
         if not patterns:
             return "(none)"

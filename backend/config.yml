@@ -20,16 +20,21 @@ server:
     - "http://localhost:3000"
     - "http://127.0.0.1:3000"
 
-database:
+postgres:                            # PostgreSQL / PgBouncer connection settings
   port: 5432
   ssl_mode: disable                # disable | require | verify-ca | verify-full
   ssl_root_cert: ""                # Path to CA cert when ssl_mode is verify-ca or verify-full
 
-  pool:
+  pool:                            # SQLAlchemy pool (app ↔ PgBouncer sockets — NOT server connections)
     size: 2                        # Base connections kept open at all times
     max_overflow: 8                # Extra connections allowed above size (shed under peak load)
     recycle_seconds: 500           # Close and reopen connections older than N seconds
     timeout_seconds: 30            # Seconds to wait for a free connection before raising an error
+
+  checkpoint_pool:                 # psycopg pool used by LangGraph checkpointer ↔ PgBouncer
+    min_size: 1                    # Min connections to keep open
+    max_size: 5                    # Max connections
+    max_idle_seconds: 300          # Close idle connections after N seconds
 
 circuit_breaker:
   # Pybreaker settings for the Postgres health-check circuit.
@@ -56,3 +61,14 @@ prompt_cache:
 
 pipeline:
   recursion_limit: 80              # LangGraph recursion limit (advanced queries need headroom)
+
+neo4j:
+  pool:
+    max_connections: 10            # Bolt connection pool size (server bolt thread max is 40)
+    connection_timeout_seconds: 10 # Seconds before a connection attempt times out
+    acquisition_timeout_seconds: 10 # Seconds to wait for a free pool connection
+
+redis:
+  pool:
+    max_connections: 20            # Cap on pooled Redis connections
+    health_check_interval_seconds: 30  # Auto-PING idle connections; reconnects dead ones

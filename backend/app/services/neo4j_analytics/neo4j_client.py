@@ -23,9 +23,17 @@ def init_neo4j() -> None:
         _driver = GraphDatabase.driver(
             settings.NEO4J_URI,
             auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
+            max_connection_pool_size=settings.NEO4J_MAX_POOL_SIZE,
+            connection_timeout=settings.NEO4J_CONNECTION_TIMEOUT,
+            connection_acquisition_timeout=settings.NEO4J_ACQUISITION_TIMEOUT,
         )
         _driver.verify_connectivity()
-        logger.info("Neo4j driver initialized | uri={}", settings.NEO4J_URI)
+        with _driver.session(database=settings.NEO4J_DB) as _s:
+            _s.run("RETURN 1").consume()
+        logger.info(
+            "Neo4j driver initialized | uri={} | pool={}",
+            settings.NEO4J_URI, settings.NEO4J_MAX_POOL_SIZE,
+        )
         _bootstrap_indexes()
     except Exception as e:
         logger.error("Neo4j driver initialization failed: {}", e)
@@ -47,7 +55,7 @@ def get_driver():
 
 
 def _bootstrap_indexes() -> None:
-    """Create vector indexes for QueryPattern and AntiPattern if they don't exist."""
+    """Create vector indexes for QueryPattern, AntiPattern, Table, and Column if they don't exist."""
     queries = [
         """CREATE VECTOR INDEX querypattern_cohere_embedding IF NOT EXISTS
            FOR (n:QueryPattern) ON (n.cohere_embedding)
@@ -56,7 +64,7 @@ def _bootstrap_indexes() -> None:
            FOR (n:AntiPattern) ON (n.cohere_embedding)
            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}""",
     ]
-    with get_driver().session() as session:
+    with get_driver().session(database=settings.NEO4J_DB) as session:
         for q in queries:
             try:
                 session.run(q)
@@ -69,9 +77,13 @@ def _bootstrap_indexes() -> None:
 
 @neo4j_breaker
 def search_query_templates(embedding: list[float]) -> list[dict]:
-    query = """
-    CALL db.index.vector.queryNodes('querytemplate_cohere_embedding', 5, $embedding)
-    YIELD node AS qt, score
+    query = """CYPHER 25
+    MATCH (qt:QueryTemplate)
+    SEARCH qt IN (
+      VECTOR INDEX `querytemplate_cohere` FOR $embedding
+      LIMIT 5
+    )
+    SCORE AS score
     RETURN qt.id AS id, qt.question_text AS question_text,
            qt.primary_intent AS primary_intent, qt.anchor_table_fqns AS anchor_table_fqns,
            qt.cte_steps AS cte_steps, qt.required_aggregations AS required_aggregations,
@@ -79,8 +91,8 @@ def search_query_templates(embedding: list[float]) -> list[dict]:
            score
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        results = list(session.run(query, embedding=embedding, timeout=10))
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
     logger.debug("neo4j | fn=search_query_templates | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -88,9 +100,32 @@ def search_query_templates(embedding: list[float]) -> list[dict]:
 # ── Table search ─────────────────────────────────────────────────────────────
 
 @neo4j_breaker
+def search_tables_vector(embedding: list[float]) -> list[dict]:
+    query = """CYPHER 25
+    MATCH (t:Table)
+    SEARCH t IN (
+      VECTOR INDEX `tbl_cohere_embedding` FOR $embedding
+      LIMIT 10
+    )
+    SCORE AS score
+    RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.business_domain AS business_domain, t.community_id AS community_id,
+           t.typical_join_role AS typical_join_role,
+           t.natural_dimensions AS natural_dimensions,
+           t.natural_measures AS natural_measures,
+           score
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
+    logger.debug("neo4j | fn=search_tables_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
 def search_tables_fulltext(query_text: str) -> list[dict]:
-    query = """
-    CALL db.index.fulltext.queryNodes('Table_name_description_synonyms_text_intent_tags_text', $query)
+    cypher = """
+    CALL db.index.fulltext.queryNodes('table_ft_extended', $query)
     YIELD node AS t, score
     RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
            t.business_domain AS business_domain, t.community_id AS community_id,
@@ -100,8 +135,8 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
            score LIMIT 10
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        results = list(session.run(query, query=query_text, timeout=10))
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(cypher, {"query": query_text}))
     logger.debug("neo4j | fn=search_tables_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -109,9 +144,31 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
 # ── Column search ─────────────────────────────────────────────────────────────
 
 @neo4j_breaker
+def search_columns_vector(embedding: list[float]) -> list[dict]:
+    query = """CYPHER 25
+    MATCH (c:Column)
+    SEARCH c IN (
+      VECTOR INDEX `col_cohere_embedding` FOR $embedding
+      LIMIT 15
+    )
+    SCORE AS score
+    RETURN c.id AS id, c.name AS name, c.table_fqn AS table_fqn,
+           c.semantic_type AS semantic_type, c.default_aggregation AS default_aggregation,
+           c.is_measurable AS is_measurable, c.is_groupable AS is_groupable,
+           c.data_type AS data_type, c.filter_selectivity AS filter_selectivity,
+           score
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
+    logger.debug("neo4j | fn=search_columns_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
 def search_columns_fulltext(query_text: str) -> list[dict]:
-    query = """
-    CALL db.index.fulltext.queryNodes('Column_name_description_synonyms_text_top_values_text', $query)
+    cypher = """
+    CALL db.index.fulltext.queryNodes('col_ft_extended', $query)
     YIELD node AS c, score
     RETURN c.id AS id, c.name AS name, c.table_fqn AS table_fqn,
            c.semantic_type AS semantic_type, c.default_aggregation AS default_aggregation,
@@ -119,8 +176,8 @@ def search_columns_fulltext(query_text: str) -> list[dict]:
            score LIMIT 15
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        results = list(session.run(query, query=query_text, timeout=10))
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(cypher, {"query": query_text}))
     logger.debug("neo4j | fn=search_columns_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -138,8 +195,8 @@ def lookup_business_terms(tokens: list[str]) -> list[dict]:
            bt.term_type AS term_type, bt.description AS description
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        results = list(session.run(query, tokens=tokens, timeout=10))
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"tokens": tokens}))
     logger.debug("neo4j | fn=lookup_business_terms | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -148,14 +205,18 @@ def lookup_business_terms(tokens: list[str]) -> list[dict]:
 
 @neo4j_breaker
 def search_intents(embedding: list[float]) -> list[dict]:
-    query = """
-    CALL db.index.vector.queryNodes('intent_cohere_embedding', 3, $embedding)
-    YIELD node AS i, score
+    query = """CYPHER 25
+    MATCH (i:Intent)
+    SEARCH i IN (
+      VECTOR INDEX `intent_cohere` FOR $embedding
+      LIMIT 3
+    )
+    SCORE AS score
     RETURN i.name AS name, i.description AS description, score
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        results = list(session.run(query, embedding=embedding, timeout=10))
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
     logger.debug("neo4j | fn=search_intents | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -174,8 +235,8 @@ def load_join_path(from_fqn: str, to_fqn: str) -> dict | None:
     LIMIT 1
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        result = session.run(query, **{"from": from_fqn, "to": to_fqn}, timeout=10).single()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        result = session.run(query, {"from": from_fqn, "to": to_fqn}).single()
     logger.debug("neo4j | fn=load_join_path | from={} to={} | ms={:.0f} | found={}", from_fqn, to_fqn, (time.monotonic() - t0) * 1000, result is not None)
     return dict(result) if result else None
 
@@ -193,8 +254,8 @@ def load_join_path_yens(from_fqn: str, to_fqn: str, k_rank: int = 1) -> dict | N
     LIMIT 1
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        result = session.run(query, **{"from": from_fqn, "to": to_fqn, "k_rank": k_rank}, timeout=10).single()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        result = session.run(query, {"from": from_fqn, "to": to_fqn, "k_rank": k_rank}).single()
     logger.debug("neo4j | fn=load_join_path_yens | from={} to={} | k={} | ms={:.0f} | found={}", from_fqn, to_fqn, k_rank, (time.monotonic() - t0) * 1000, result is not None)
     return dict(result) if result else None
 
@@ -226,7 +287,7 @@ def write_join_path(path_data: dict) -> None:
     MERGE (jp:JoinPath {id: $id})
     SET jp += $props
     """
-    with get_driver().session() as session:
+    with get_driver().session(database=settings.NEO4J_DB) as session:
         session.run(query, id=path_data["id"], props=path_data)
     logger.debug("neo4j | fn=write_join_path | id={}", path_data.get("id"))
 
@@ -245,8 +306,8 @@ def resolve_columns(table_fqn: str, column_names: list[str]) -> list[dict]:
            c.filter_selectivity AS filter_selectivity, c.value_vocabulary AS value_vocabulary
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        results = list(session.run(query, table_fqn=table_fqn, column_names=column_names, timeout=10))
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"table_fqn": table_fqn, "column_names": column_names}))
     logger.debug("neo4j | fn=resolve_columns | table={} | ms={:.0f} | cols={}", table_fqn, (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -255,30 +316,40 @@ def resolve_columns(table_fqn: str, column_names: list[str]) -> list[dict]:
 
 @neo4j_breaker
 def search_query_patterns(embedding: list[float]) -> list[dict]:
-    query = """
-    CALL db.index.vector.queryNodes('querypattern_cohere_embedding', 2, $embedding)
-    YIELD node AS qp, score WHERE score > 0.75
+    query = """CYPHER 25
+    MATCH (qp:QueryPattern)
+    SEARCH qp IN (
+      VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding
+      LIMIT 2
+    )
+    SCORE AS score
+    WHERE score > 0.75
     RETURN qp.sql_cte_outline AS sql_cte_outline, qp.tables_used AS tables_used,
            qp.intent AS intent, score
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        results = list(session.run(query, embedding=embedding, timeout=10))
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
     logger.debug("neo4j | fn=search_query_patterns | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
 
 @neo4j_breaker
 def search_anti_patterns(embedding: list[float]) -> list[dict]:
-    query = """
-    CALL db.index.vector.queryNodes('antipattern_cohere_embedding', 2, $embedding)
-    YIELD node AS ap, score WHERE score > 0.75
+    query = """CYPHER 25
+    MATCH (ap:AntiPattern)
+    SEARCH ap IN (
+      VECTOR INDEX `antipattern_cohere_embedding` FOR $embedding
+      LIMIT 2
+    )
+    SCORE AS score
+    WHERE score > 0.75
     RETURN ap.error_type AS error_type, ap.error_summary AS error_summary,
            ap.sql_fragment AS sql_fragment, score
     """
     t0 = time.monotonic()
-    with get_driver().session() as session:
-        results = list(session.run(query, embedding=embedding, timeout=10))
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
     logger.debug("neo4j | fn=search_anti_patterns | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -289,7 +360,7 @@ def write_query_pattern(pattern_data: dict) -> None:
     MERGE (qp:QueryPattern {id: $id})
     SET qp += $props
     """
-    with get_driver().session() as session:
+    with get_driver().session(database=settings.NEO4J_DB) as session:
         session.run(query, id=pattern_data["id"], props=pattern_data)
     logger.debug("neo4j | fn=write_query_pattern | id={}", pattern_data.get("id"))
 
@@ -300,6 +371,6 @@ def write_anti_pattern(pattern_data: dict) -> None:
     MERGE (ap:AntiPattern {id: $id})
     SET ap += $props
     """
-    with get_driver().session() as session:
+    with get_driver().session(database=settings.NEO4J_DB) as session:
         session.run(query, id=pattern_data["id"], props=pattern_data)
     logger.debug("neo4j | fn=write_anti_pattern | id={}", pattern_data.get("id"))

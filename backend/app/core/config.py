@@ -36,7 +36,7 @@ def _load_yml() -> dict[str, Any]:
 _yml = _load_yml()
 _app = _yml.get("app", {})
 _server = _yml.get("server", {})
-_db = _yml.get("database", {})
+_db = _yml.get("postgres", {})
 _pool = _db.get("pool", {})
 _cb = _yml.get("circuit_breaker", {})
 _jwt = _yml.get("jwt", {})
@@ -47,6 +47,9 @@ _fuseki = _yml.get("fuseki", {})
 _tribal = _yml.get("tribal_graph", {})
 _pipeline = _yml.get("pipeline", {})
 _core_toggles = _yml.get("core_toggles", {})
+_ckpt_cfg = _db.get("checkpoint_pool", {})
+_neo4j_cfg = _yml.get("neo4j", {}).get("pool", {})
+_redis_cfg = _yml.get("redis", {}).get("pool", {})
 
 
 class Settings(BaseSettings):
@@ -129,6 +132,12 @@ class Settings(BaseSettings):
     NEO4J_URI: str = Field(default="bolt://localhost:7687")
     NEO4J_USER: str = Field(default="neo4j")
     NEO4J_PASSWORD: str = Field(default="", repr=False)
+    NEO4J_DB: str = Field(default="neo4j")
+
+    # ── Neo4j pool (config.yml → neo4j.pool) ─────────────────────────────────
+    NEO4J_MAX_POOL_SIZE: int          = Field(default=_neo4j_cfg.get("max_connections", 10))
+    NEO4J_CONNECTION_TIMEOUT: float   = Field(default=_neo4j_cfg.get("connection_timeout_seconds", 10.0))
+    NEO4J_ACQUISITION_TIMEOUT: float  = Field(default=_neo4j_cfg.get("acquisition_timeout_seconds", 10.0))
 
     # ── Redshift (analytics pipeline) ────────────────────────────────────────
     REDSHIFT_HOST: str = Field(default="")
@@ -142,6 +151,15 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = Field(default="", repr=False)
     REDIS_PORT: int = Field(default=6379)
     REDIS_DB: int = Field(default=1)
+
+    # ── Redis pool (config.yml → redis.pool) ─────────────────────────────────
+    REDIS_MAX_CONNECTIONS: int        = Field(default=_redis_cfg.get("max_connections", 20))
+    REDIS_HEALTH_CHECK_INTERVAL: int  = Field(default=_redis_cfg.get("health_check_interval_seconds", 30))
+
+    # ── Checkpoint pool (config.yml → postgres.checkpoint_pool) ──────────────
+    CHECKPOINT_POOL_MIN: int          = Field(default=_ckpt_cfg.get("min_size", 1))
+    CHECKPOINT_POOL_MAX: int          = Field(default=_ckpt_cfg.get("max_size", 5))
+    CHECKPOINT_POOL_MAX_IDLE: int     = Field(default=_ckpt_cfg.get("max_idle_seconds", 300))
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

@@ -21,18 +21,25 @@ def init_redis() -> None:
     global _redis
     try:
         import redis as redis_lib
+        from redis import ConnectionPool
         from app.core.config import settings
-        _redis = redis_lib.Redis(
+        pool = ConnectionPool(
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
             password=settings.REDIS_PASSWORD or None,
             db=settings.REDIS_DB,
             decode_responses=True,
+            max_connections=settings.REDIS_MAX_CONNECTIONS,
             socket_connect_timeout=2,
             socket_timeout=2,
+            health_check_interval=settings.REDIS_HEALTH_CHECK_INTERVAL,
         )
+        _redis = redis_lib.Redis(connection_pool=pool)
         _redis.ping()
-        logger.info("Redis client initialized")
+        logger.info(
+            "Redis client initialized | pool={} | health_check={}s",
+            settings.REDIS_MAX_CONNECTIONS, settings.REDIS_HEALTH_CHECK_INTERVAL,
+        )
     except Exception as e:
         logger.warning("Redis initialization failed (continuing without cache): {}", e)
         _redis = None

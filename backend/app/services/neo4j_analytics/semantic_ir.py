@@ -19,10 +19,12 @@ class ColumnRef(BaseModel):
 class FilterSpec(BaseModel):
     table_fqn: str
     column_name: str
-    operator: str              # =, >=, <=, IN, BETWEEN, LIKE
+    operator: str              # =, >=, <=, IN, BETWEEN, BETWEEN_SQL, LIKE
     value: str | list[str]
     raw_user_value: str
     resolved: bool
+    is_raw_sql: bool = False   # when True, value is a SQL expression — written unquoted
+    is_having: bool = False    # when True, condition goes in HAVING not WHERE
 
 
 class SemanticIR(BaseModel):

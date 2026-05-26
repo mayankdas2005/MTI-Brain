@@ -33,24 +33,20 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         response = await _call()
     except Exception as e:
         logger.error("intent_resolver LLM failed | thread={} | error={}", state["thread_id"], e)
-        return {"needs_clarification": True, "clarification_reason": "I couldn't process your question. Please try again."}
+        return {"error": "LLM unavailable", "needs_clarification": False}
 
     raw = response.content or ""
     resolved = _parse_response(raw, state["thread_id"])
 
     if resolved is None:
-        logger.warning("intent_resolver parse failed | thread={} | forcing clarification", state["thread_id"])
-        return {"needs_clarification": True, "clarification_reason": "I couldn't parse your question clearly. Could you rephrase it?"}
+        logger.warning("intent_resolver parse failed | thread={} | raw_len={}", state["thread_id"], len(raw))
+        return {"error": "intent_parse_failed", "needs_clarification": False}
 
     validation_error = _validate_identifiers(resolved, state.get("semantic_context") or {})
     if validation_error:
-        logger.warning("intent_resolver hallucination | thread={} | error={}", state["thread_id"], validation_error)
-        return {"needs_clarification": True, "clarification_reason": validation_error}
+        logger.warning("intent_resolver hallucination | thread={} | error={} | proceeding best-effort", state["thread_id"], validation_error)
 
     confidence = resolved.get("confidence", 0.0)
-    top_template_score = _get_top_template_score(state.get("semantic_context") or {})
-
-    needs_clarification = confidence < 0.65 or top_template_score < 0.60
     decompose_needed = _check_decompose_needed(resolved, state.get("semantic_context") or {})
 
     logger.info(
@@ -59,9 +55,9 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     )
     return {
         "resolved_intent": resolved,
-        "needs_clarification": needs_clarification,
+        "needs_clarification": False,
         "decompose_needed": decompose_needed,
-        "clarification_reason": "I need a bit more detail to answer accurately." if needs_clarification else None,
+        "clarification_reason": None,
         "execution_error": None,
         "repair_count": 0,
         "recompile_count": (state.get("recompile_count") or 0) + (1 if state.get("execution_error") else 0),

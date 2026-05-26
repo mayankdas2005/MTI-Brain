@@ -396,27 +396,40 @@ async def init_pipeline() -> None:
     await dp.init_data_pool()
 
     conninfo = settings.CHECKPOINT_CONNINFO
-    async with await AsyncConnection.connect(conninfo, autocommit=True) as conn:
-        try:
-            await AsyncPostgresSaver(conn).setup()
-        except UniqueViolation:
-            pass
+    conninfo_fast = conninfo + " connect_timeout=10"
 
-    _checkpoint_pool = AsyncConnectionPool(
-        conninfo=conninfo,
-        open=False,
-        min_size=2,
-        max_size=10,
-        check=AsyncConnectionPool.check_connection,
-        max_idle=300,
-        kwargs={
-            "keepalives": 1,
-            "keepalives_idle": 60,
-            "keepalives_interval": 10,
-            "keepalives_count": 3,
-        },
-    )
-    await _checkpoint_pool.open()
+    checkpointer = None
+    try:
+        async with await AsyncConnection.connect(
+            conninfo_fast, autocommit=True, prepare_threshold=0
+        ) as conn:
+            try:
+                await AsyncPostgresSaver(conn).setup()
+            except UniqueViolation:
+                pass
+
+        _checkpoint_pool = AsyncConnectionPool(
+            conninfo=conninfo_fast,
+            open=False,
+            min_size=settings.CHECKPOINT_POOL_MIN,
+            max_size=settings.CHECKPOINT_POOL_MAX * 2,
+            check=AsyncConnectionPool.check_connection,
+            max_idle=settings.CHECKPOINT_POOL_MAX_IDLE,
+            kwargs={
+                "prepare_threshold": 0,
+                "keepalives": 1,
+                "keepalives_idle": 60,
+                "keepalives_interval": 10,
+                "keepalives_count": 3,
+            },
+        )
+        await _checkpoint_pool.open()
+        checkpointer = AsyncPostgresSaver(_checkpoint_pool)
+        logger.info("Checkpoint store initialized")
+    except Exception as e:
+        logger.warning(f"Checkpoint store init failed (non-fatal — running without persistence): {e}")
+        from langgraph.checkpoint.memory import MemorySaver
+        checkpointer = MemorySaver()
 
     # ── Long-term memory store (cross-thread episodic memory) ──
     # PostgresStore.from_conn_string() returns a context manager — enter it and
@@ -429,7 +442,7 @@ async def init_pipeline() -> None:
         _memory_store_exit = ExitStack()
         _memory_store = _memory_store_exit.enter_context(
             PostgresStore.from_conn_string(
-                conninfo,
+                conninfo_fast,
                 index=IndexConfig(embed=embed_texts_sync, dims=1536),
             )
         )
@@ -442,7 +455,6 @@ async def init_pipeline() -> None:
             _memory_store_exit.close()
             _memory_store_exit = None
 
-    checkpointer = AsyncPostgresSaver(_checkpoint_pool)
     _main_graph = _build_main_graph().compile(checkpointer=checkpointer, store=_memory_store)
     _inner_graph = _build_inner_graph().compile(store=_memory_store)
 

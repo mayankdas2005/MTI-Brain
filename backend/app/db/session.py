@@ -155,8 +155,7 @@ async def warm_pool() -> None:
             f"DB pool ready — {target} client→PgBouncer sockets pre-opened"
         )
     except Exception as exc:
-        logger.error(f"DB pool warm-up failed: {exc}")
-        raise
+        logger.warning(f"DB pool warm-up failed (non-fatal — pool will connect on first request): {exc}")
 
 
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
