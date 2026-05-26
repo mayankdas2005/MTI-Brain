@@ -22,8 +22,11 @@ def init_redis() -> None:
     try:
         import redis as redis_lib
         from app.core.config import settings
-        _redis = redis_lib.Redis.from_url(
-            getattr(settings, "REDIS_URL", "redis://localhost:6379"),
+        _redis = redis_lib.Redis(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            password=settings.REDIS_PASSWORD or None,
+            db=settings.REDIS_DB,
             decode_responses=True,
             socket_connect_timeout=2,
             socket_timeout=2,

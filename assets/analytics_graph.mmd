@@ -23,6 +23,7 @@ graph TD;
 	error_response -.-> __end__;
 	error_response -.-> compress;
 	executor -.-> clarification;
+	executor -.-> intent_resolver;
 	executor -.-> sql_validator;
 	executor -.-> synthesis;
 	filter_resolver -.-> clarification;

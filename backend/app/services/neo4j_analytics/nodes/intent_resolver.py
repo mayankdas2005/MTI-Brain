@@ -62,6 +62,9 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         "needs_clarification": needs_clarification,
         "decompose_needed": decompose_needed,
         "clarification_reason": "I need a bit more detail to answer accurately." if needs_clarification else None,
+        "execution_error": None,
+        "repair_count": 0,
+        "recompile_count": (state.get("recompile_count") or 0) + (1 if state.get("execution_error") else 0),
     }
 
 
@@ -75,6 +78,15 @@ def _build_prompt(state: AnalyticsState) -> list:
         "intents": semantic_context.get("intents", [])[:3],
     }, indent=2)
 
+    execution_error = state.get("execution_error")
+    execution_error_section = (
+        f"\nPREVIOUS EXECUTION FAILURE — the SQL generated from your last interpretation "
+        f"was rejected by the database with this error. Re-interpret the question choosing "
+        f"different columns, joins, or tables to avoid the same failure:\n"
+        f"<execution_error>{execution_error}</execution_error>\n"
+        if execution_error else ""
+    )
+
     return INTENT_RESOLVE_PROMPT.format_messages(
         question=state["question"],
         persona=state.get("persona", "executive"),
@@ -83,6 +95,7 @@ def _build_prompt(state: AnalyticsState) -> list:
         conversation_context=semantic_context.get("session_summary", ""),
         memory_context=semantic_context.get("memory_context", ""),
         semantic_context=context_str,
+        execution_error_section=execution_error_section,
         reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
     )
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from backend.app.services.neo4j_analytics.helpers import _spread_sample
+from app.services.neo4j_analytics.helpers import _spread_sample
 
 _TABLE_CHAR_BUDGET = 5_000   # ~1,250 tokens — keeps total prompt lean
 _ID_SUFFIXES = ("_id", "_key", "_ref", "_uuid", "_hash", "_code")

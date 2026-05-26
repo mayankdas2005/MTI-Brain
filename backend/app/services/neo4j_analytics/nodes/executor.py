@@ -83,9 +83,25 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
     first_ir = SemanticIR(**ir_list[0]) if ir_list else None
 
     if all_errors and repair_count < 2:
-        repair_result = await _attempt_repair(state, sql_list, ir_list, all_errors, repair_count, config)
+        repair_result = await _attempt_repair(
+            state, sql_list, ir_list, all_errors, repair_count, config,
+            schema_context=state.get("semantic_context") or {},
+        )
         if repair_result:
             return repair_result
+
+    if all_errors:
+        combined_error = "; ".join(all_errors[:3])
+        logger.warning("executor | repairs exhausted | thread={} | error={}", state["thread_id"], combined_error)
+        asyncio.create_task(_write_audit_log(state, sql_list[0] if sql_list else "", 0, "failed"))
+        return {
+            "result_list": result_list,
+            "error": combined_error,
+            "execution_error": combined_error,
+            "no_data": True,
+            "repair_count": repair_count,
+            "_prev_repair_count": repair_count,
+        }
 
     total_rows = len(all_rows)
 
@@ -125,6 +141,8 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
         "no_data": False,
         "reliability_flags": reliability_flags,
         "error": None,
+        "execution_error": None,
+        "_prev_repair_count": repair_count,
     }
 
 
@@ -209,6 +227,7 @@ async def _attempt_repair(
     errors: list[str],
     repair_count: int,
     config: RunnableConfig,
+    schema_context: dict | None = None,
 ) -> dict | None:
     """Use Opus to repair broken SQL. Returns updated state dict or None."""
     import json
@@ -227,12 +246,25 @@ async def _attempt_repair(
     except Exception:
         pass
 
+    sc = schema_context or {}
+    schema_summary = json.dumps({
+        "tables": [
+            {"fqn": t.get("fqn"), "description": t.get("description", "")}
+            for t in sc.get("tables", [])[:8]
+        ],
+        "columns": [
+            {"table_fqn": c.get("table_fqn"), "name": c.get("name"), "data_type": c.get("data_type", "")}
+            for c in sc.get("columns", [])[:25]
+        ],
+    }, indent=2)
+
     first_sql = sql_list[0] if sql_list else ""
     first_ir = ir_list[0] if ir_list else {}
     error_msg = "; ".join(errors[:3])
 
     prompt = REPAIR_PROMPT.format_messages(
         semantic_ir=json.dumps(first_ir, indent=2),
+        schema_context=schema_summary,
         original_sql=first_sql,
         error_message=error_msg,
         prior_attempts=f"Attempt {repair_count}" if repair_count > 0 else "First attempt",

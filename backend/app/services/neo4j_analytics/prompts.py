@@ -121,7 +121,7 @@ SCHEMA CANDIDATES:
 <schema_candidates>
 {semantic_context}
 </schema_candidates>
-
+{execution_error_section}
 USER QUESTION: {question}
 
 {reasoning_directive}
@@ -241,12 +241,14 @@ Output your reasoning within <reasoning>...</reasoning> and then a strict JSON o
 # ─── Repair Node (Opus) ───────────────────────────────────────────────────────
 
 REPAIR_PROMPT = ChatPromptTemplate.from_template(
-    """You are fixing broken Redshift SQL. ONLY fix: syntax errors, bad aliases, schema drift, Redshift dialect issues.
+    """You are fixing broken Redshift SQL. ONLY fix: syntax errors, bad aliases, schema drift, column type mismatches, Redshift dialect issues.
 NEVER change: JOINs, aggregations, filters, metric definitions, or the semantic meaning of the query.
-
 
 SEMANTIC BOUNDARY (must be preserved):
 {semantic_ir}
+
+SCHEMA CONTEXT (authoritative table/column reference — use to fix column names and types):
+{schema_context}
 
 ORIGINAL SQL:
 {original_sql}
@@ -265,7 +267,7 @@ ANTI-PATTERNS (known failure patterns to avoid):
 Output your reasoning within <reasoning>...</reasoning> and the fixed SQL inside <sql>...</sql>. No JSON, no explanation outside the tags.
 
 <reasoning>
-{{Identify the exact cause of the error and the minimal fix needed.}}
+{{Identify the exact cause of the error and the minimal fix needed. Cross-reference column names and types against SCHEMA CONTEXT.}}
 </reasoning>
 <sql>
 {{fixed SQL here}}

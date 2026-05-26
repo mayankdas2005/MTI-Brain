@@ -19,7 +19,6 @@ from app.core.middleware import (
 )
 from app.core.rate_limit import limiter
 from app.db import dispose_engine, warm_pool
-from app.services.agents.graph import init_pipeline, shutdown_pipeline
 from app.services.neo4j_analytics.graph import init_analytics_pipeline, shutdown_analytics_pipeline
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,40 +34,23 @@ async def lifespan(app: FastAPI):
     init_langfuse()
     await warm_pool()
     try:
-        await init_pipeline()
-    except Exception as e:
-        logger.error(f"Pipeline init failed (continuing without pipeline): {e}")
-    try:
         await init_analytics_pipeline()
     except Exception as e:
         logger.error(f"Analytics pipeline init failed (continuing without it): {e}")
     try:
         yield
     finally:
-        # finally runs even when CancelledError is thrown at the yield point (Ctrl+C).
-        # asyncio.shield protects the cleanup coroutine from the already-cancelled task
-        # so pool.close() and dispose_engine() actually complete instead of aborting.
-        logger.info("Shutting down — forcing exit in ≤5s")
-
-        async def _cleanup() -> None:
-            try:
-                await asyncio.wait_for(shutdown_pipeline(), timeout=4.0)
-            except Exception:
-                logger.warning("Pipeline shutdown timed out or failed")
-            try:
-                await asyncio.wait_for(shutdown_analytics_pipeline(), timeout=3.0)
-            except Exception:
-                logger.warning("Analytics pipeline shutdown timed out or failed")
-            shutdown_langfuse()
-            try:
-                await asyncio.wait_for(dispose_engine(), timeout=1.0)
-            except Exception:
-                pass
-
+        logger.info("Shutting down")
         try:
-            await asyncio.shield(_cleanup())
-        except (asyncio.CancelledError, Exception):
+            await asyncio.wait_for(shutdown_analytics_pipeline(), timeout=4.0)
+        except Exception:
+            logger.warning("Analytics pipeline shutdown timed out or failed")
+        shutdown_langfuse()
+        try:
+            await asyncio.wait_for(dispose_engine(), timeout=1.0)
+        except Exception:
             pass
+        logger.info("Shutdown complete")
 
 
 app = FastAPI(

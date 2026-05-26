@@ -16,8 +16,8 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.db.session import async_read_session_factory
 from app.models.conversation import MTIBrainMessage
-from backend.app.services.neo4j_analytics.bedrock import _region_from_arn
-from backend.app.services.neo4j_analytics.helpers import _build_data_summary
+from app.services.neo4j_analytics.bedrock import _region_from_arn
+from app.services.neo4j_analytics.helpers import _build_data_summary
 from app.services.dashboard_prompt import DASHBOARD_SYSTEM_PROMPT, build_input_markdown
 from langchain_aws import ChatBedrock
 from langchain_core.messages import HumanMessage, SystemMessage

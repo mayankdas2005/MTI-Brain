@@ -138,7 +138,10 @@ class Settings(BaseSettings):
     REDSHIFT_PORT: int = Field(default=5439)
 
     # ── Redis (analytics pipeline) ────────────────────────────────────────────
-    REDIS_URL: str = Field(default="redis://localhost:6379")
+    REDIS_HOST: str = Field(default="redis://localhost:6379")
+    REDIS_PASSWORD: str = Field(default="", repr=False)
+    REDIS_PORT: int = Field(default=6379)
+    REDIS_DB: int = Field(default=1)
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

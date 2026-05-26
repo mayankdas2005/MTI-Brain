@@ -55,6 +55,8 @@ class AnalyticsState(TypedDict):
 
     # ── Error / control ──────────────────────────────────────────────────────
     error: str | None
+    execution_error: str | None          # DB-level error surfaced by executor; fed to intent_resolver for semantic re-interpretation
+    _prev_repair_count: int              # last repair_count at executor completion; detects new repairs in route_executor
     stopped: bool
     deep_analysis: bool
-    max_rows: int                         # user-configured SQL row limit (default 100, applied as LIMIT in executor)                   # True → use REASONING_DIRECTIVE_DEEP in Sonnet/Opus nodes
+    max_rows: int                         # user-configured SQL row limit (default 100, applied as LIMIT in executor)

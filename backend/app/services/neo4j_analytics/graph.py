@@ -140,6 +140,7 @@ def route_validator(state: AnalyticsState) -> str:
 
 def route_executor(state: AnalyticsState) -> str:
     repair_count = state.get("repair_count", 0)
+    recompile_count = state.get("recompile_count", 0)
     clarification_count = state.get("clarification_count", 0)
 
     if state.get("stopped"):
@@ -147,10 +148,13 @@ def route_executor(state: AnalyticsState) -> str:
         return N_SYNTHESIS
 
     if state.get("error") and repair_count >= MAX_REPAIR:
-        logger.info("route: executor → synthesis (max repairs) | thread={}", state["thread_id"])
+        if recompile_count < MAX_RECOMPILE:
+            logger.info("route: executor → intent_resolver (repairs exhausted, retry with error context) | thread={}", state["thread_id"])
+            return N_INTENT_RESOLVER
+        logger.info("route: executor → synthesis (repairs + recompiles exhausted) | thread={}", state["thread_id"])
         return N_SYNTHESIS
 
-    if state.get("repair_count", 0) > (state.get("_prev_repair_count", -1)):
+    if repair_count > state.get("_prev_repair_count", -1):
         logger.info("route: executor → sql_validator (after repair) | thread={}", state["thread_id"])
         return N_SQL_VALIDATOR
 
@@ -256,6 +260,7 @@ def compile_graph():
             N_SQL_VALIDATOR: N_SQL_VALIDATOR,
             N_CLARIFICATION: N_CLARIFICATION,
             N_SYNTHESIS: N_SYNTHESIS,
+            N_INTENT_RESOLVER: N_INTENT_RESOLVER,
         },
     )
 
@@ -464,6 +469,8 @@ async def stream_pipeline(
         "feedback_context": feedback_context,
         "summary": "",
         "error": None,
+        "execution_error": None,
+        "_prev_repair_count": -1,
         "stopped": False,
         "deep_analysis": deep_analysis,
         "max_rows": max_rows,
