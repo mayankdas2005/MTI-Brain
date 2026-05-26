@@ -5,6 +5,7 @@ Includes reliability flag instructions in the prompt context.
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 import json
 
@@ -29,7 +30,7 @@ _FLAG_INSTRUCTIONS = {
 }
 
 
-async def synthesis(state: AnalyticsState, config: dict) -> dict:
+async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("synthesis START | thread={} | persona={} | no_data={}", state["thread_id"], state.get("persona"), state.get("no_data"))
 
     query_summary = state.get("query_summary") or {}
@@ -46,6 +47,22 @@ async def synthesis(state: AnalyticsState, config: dict) -> dict:
 
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
 
+    semantic_context = state.get("semantic_context") or {}
+    session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
+    is_followup = semantic_context.get("is_followup", False)
+    feedback_context = state.get("feedback_context") or ""
+
+    if session_summary:
+        followup_note = " This is a follow-up — open by connecting to the prior finding before presenting new data." if is_followup else ""
+        conversation_section = f"CONVERSATION CONTEXT:{followup_note}\n<conversation_context>{session_summary}</conversation_context>"
+    else:
+        conversation_section = ""
+
+    feedback_section = (
+        f"USER PREFERENCES (past feedback — apply silently):\n<feedback_context>{feedback_context}</feedback_context>"
+        if feedback_context else ""
+    )
+
     prompt = SYNTHESIS_PROMPT.format_messages(
         persona=state.get("persona", "analyst"),
         question=state["question"],
@@ -57,6 +74,8 @@ async def synthesis(state: AnalyticsState, config: dict) -> dict:
         low_confidence_filters=json.dumps(low_confidence_filters) if low_confidence_filters else "none",
         query_summary=json.dumps(query_summary, indent=2, default=str)[:3000],
         reasoning_directive=reasoning_directive,
+        conversation_section=conversation_section,
+        feedback_section=feedback_section,
     )
 
     from app.services.neo4j_analytics.bedrock import get_llm

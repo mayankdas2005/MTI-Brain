@@ -6,6 +6,7 @@ Step 3: Programmatic Vega-Lite spec builder injects fixed fields and data rows.
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 import json
 
@@ -16,7 +17,7 @@ from app.services.neo4j_analytics.prompts import CHART_LABEL_PROMPT, REASONING_D
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
-async def chart_agent(state: AnalyticsState, config: dict) -> dict:
+async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
     query_summary = state.get("query_summary") or {}
     result_list = state.get("result_list") or []
     ir_list = state.get("semantic_ir_list") or []
@@ -35,7 +36,8 @@ async def chart_agent(state: AnalyticsState, config: dict) -> dict:
 
     result_shape = query_summary.get("result_shape", "flat")
     intent = ir_list[0].get("intent", "") if ir_list else ""
-    chart_type = select_chart_type(all_columns, all_rows, result_shape, intent)
+    persona = state.get("persona", "executive")
+    chart_type = select_chart_type(all_columns, all_rows, result_shape, intent, persona)
 
     logger.info("chart_agent | selected type={} | thread={} | rows={}", chart_type, state["thread_id"], len(all_rows))
 
@@ -55,7 +57,7 @@ async def _generate_labels(
     columns: list[str],
     query_summary: dict,
     state: AnalyticsState,
-    config: dict,
+    config: RunnableConfig,
     intent: str,
 ) -> dict:
     col_stats_text = ""

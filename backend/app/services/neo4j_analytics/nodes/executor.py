@@ -5,6 +5,7 @@ QueryPattern/AntiPattern nodes written as async background tasks.
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 import asyncio
 import time
@@ -21,7 +22,7 @@ from app.services.neo4j_analytics.sql_validator_logic import validate_sql
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
-async def executor(state: AnalyticsState, config: dict) -> dict:
+async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
     sql_list = state.get("sql_list", [])
     ir_list = state.get("semantic_ir_list", [])
     repair_count = state.get("repair_count", 0)
@@ -43,8 +44,10 @@ async def executor(state: AnalyticsState, config: dict) -> dict:
     independent_indices = [i for i, ir in enumerate(ir_list) if not ir.get("depends_on")]
     dependent_indices = [i for i, ir in enumerate(ir_list) if ir.get("depends_on") is not None]
 
+    max_rows = state.get("max_rows", 100)
+
     parallel_results = await asyncio.gather(
-        *[_execute_single(sql_list[i], ir_list[i], state, query_timeout) for i in independent_indices],
+        *[_execute_single(sql_list[i], ir_list[i], state, query_timeout, max_rows) for i in independent_indices],
         return_exceptions=True,
     )
 
@@ -67,7 +70,7 @@ async def executor(state: AnalyticsState, config: dict) -> dict:
             result_list.append({"index": idx, "error": "dependency failed", "columns": [], "rows": []})
             continue
         try:
-            res = await _execute_single(sql_list[idx], ir_list[idx], state, query_timeout)
+            res = await _execute_single(sql_list[idx], ir_list[idx], state, query_timeout, max_rows)
             result_list.append({"index": idx, **res})
             if not all_columns and res.get("columns"):
                 all_columns = res["columns"]
@@ -125,23 +128,51 @@ async def executor(state: AnalyticsState, config: dict) -> dict:
     }
 
 
-async def _execute_single(sql: str, ir_dict: dict, state: AnalyticsState, timeout_s: int) -> dict:
-    """Execute a single SQL query, checking Redis cache first."""
+async def _execute_single(sql: str, ir_dict: dict, state: AnalyticsState, timeout_s: int, max_rows: int = 100) -> dict:
+    """Execute a single SQL query, checking Redis cache first.
+
+    max_rows is enforced as a hard cap on the returned row count.
+    If the SQL already has a LIMIT clause it is preserved (Redshift applies it),
+    then we truncate the Python result to max_rows as a safety net.
+    If no LIMIT is present, we inject one before sending to Redshift.
+    """
     from app.services.neo4j_analytics.redshift_client import execute_query
 
-    if not is_time_sensitive_sql(sql):
-        cached = redis_client.get_redshift_result(sql)
+    bounded_sql = _apply_row_limit(sql, max_rows)
+
+    if not is_time_sensitive_sql(bounded_sql):
+        cached = redis_client.get_redshift_result(bounded_sql)
         if cached:
             columns, rows = cached
             logger.debug("executor | cache hit | thread={} | rows={}", state["thread_id"], len(rows))
-            return {"columns": columns, "rows": rows, "cached": True}
+            return {"columns": columns, "rows": rows[:max_rows], "cached": True}
 
-    columns, rows = await execute_query(sql, timeout_s=timeout_s, thread_id=state["thread_id"])
+    columns, rows = await execute_query(bounded_sql, timeout_s=timeout_s, thread_id=state["thread_id"])
+    rows = rows[:max_rows]
 
-    if not is_time_sensitive_sql(sql) and rows and 0 < len(rows) <= 5000:
-        redis_client.set_redshift_result(sql, columns, rows, ttl=14400)
+    if not is_time_sensitive_sql(bounded_sql) and rows and 0 < len(rows) <= 5000:
+        redis_client.set_redshift_result(bounded_sql, columns, rows, ttl=14400)
 
     return {"columns": columns, "rows": rows, "cached": False}
+
+
+def _apply_row_limit(sql: str, max_rows: int) -> str:
+    """Inject or tighten the LIMIT clause in the SQL.
+
+    Only touches the outermost LIMIT — never modifies subqueries.
+    Uses a simple regex on the final SELECT block (safe for CTE-style queries
+    where the outer SELECT * FROM final has the only top-level LIMIT).
+    """
+    import re
+    limit_pattern = re.compile(r"\bLIMIT\s+(\d+)\s*$", re.IGNORECASE)
+    match = limit_pattern.search(sql.rstrip())
+    if match:
+        existing = int(match.group(1))
+        if existing <= max_rows:
+            return sql
+        # Replace existing LIMIT with the smaller cap
+        return limit_pattern.sub(f"LIMIT {max_rows}", sql.rstrip())
+    return sql.rstrip() + f"\nLIMIT {max_rows}"
 
 
 async def _zero_row_probe(ir: SemanticIR | None, state: AnalyticsState) -> dict:
@@ -177,7 +208,7 @@ async def _attempt_repair(
     ir_list: list[dict],
     errors: list[str],
     repair_count: int,
-    config: dict,
+    config: RunnableConfig,
 ) -> dict | None:
     """Use Opus to repair broken SQL. Returns updated state dict or None."""
     import json

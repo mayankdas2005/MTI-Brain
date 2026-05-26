@@ -1,6 +1,7 @@
 """Error response node — surfaces user-friendly message on infrastructure failure."""
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.neo4j_analytics.state import AnalyticsState
@@ -21,7 +22,7 @@ _ERROR_MESSAGES = {
 }
 
 
-async def error_response(state: AnalyticsState, config: dict) -> dict:
+async def error_response(state: AnalyticsState, config: RunnableConfig) -> dict:
     error_code = state.get("error", "default")
     message = _ERROR_MESSAGES.get(error_code, _ERROR_MESSAGES["default"])
     logger.warning("error_response | thread={} | error_code={}", state["thread_id"], error_code)

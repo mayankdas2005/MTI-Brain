@@ -4,6 +4,7 @@ Max 2 clarifications per turn. Loops back to intent_resolver after response.
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.neo4j_analytics.helpers import parse_tag
@@ -11,7 +12,7 @@ from app.services.neo4j_analytics.prompts import CLARIFICATION_PROMPT, REASONING
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
-async def clarification(state: AnalyticsState, config: dict) -> dict:
+async def clarification(state: AnalyticsState, config: RunnableConfig) -> dict:
     count = state.get("clarification_count", 0)
     reason = state.get("clarification_reason", "The question needs more specificity.")
     logger.info("clarification START | thread={} | count={} | reason={}", state["thread_id"], count, reason)

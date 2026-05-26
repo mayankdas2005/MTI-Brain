@@ -6,6 +6,7 @@ Filter resolution happens BEFORE SQL compilation (routes to [F] if needed).
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 import json
 import uuid
@@ -19,7 +20,7 @@ from app.services.neo4j_analytics.sql_compiler import compile_sql
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
-async def query_compiler(state: AnalyticsState, config: dict) -> dict:
+async def query_compiler(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("query_compiler START | thread={} | decompose={}", state["thread_id"], state.get("decompose_needed"))
 
     resolved = state.get("resolved_intent") or {}
@@ -64,7 +65,7 @@ async def _handle_single(state: AnalyticsState, resolved: dict, semantic_context
         return {"error": str(e), "needs_clarification": True, "clarification_reason": "I couldn't generate a valid query."}
 
 
-async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_context: dict, config: dict) -> dict:
+async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_context: dict, config: RunnableConfig) -> dict:
     """Use Sonnet to decompose into sub-queries, then build an IR for each."""
     logger.info("query_compiler | decomposing | thread={}", state["thread_id"])
 
@@ -80,6 +81,19 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
     from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_DEEP
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
 
+    semantic_context_state = state.get("semantic_context") or {}
+    session_summary = semantic_context_state.get("session_summary") or state.get("summary") or ""
+    feedback_context = state.get("feedback_context") or ""
+
+    conversation_section = (
+        f"CONVERSATION CONTEXT:\n<conversation_context>{session_summary}</conversation_context>"
+        if session_summary else ""
+    )
+    feedback_section = (
+        f"USER PREFERENCES (apply silently):\n<feedback_context>{feedback_context}</feedback_context>"
+        if feedback_context else ""
+    )
+
     prompt = DECOMPOSE_PROMPT.format_messages(
         question=state["question"],
         resolved_intent=json.dumps(resolved, indent=2),
@@ -87,6 +101,8 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
         query_patterns=query_patterns,
         anti_patterns=anti_patterns,
         reasoning_directive=reasoning_directive,
+        conversation_section=conversation_section,
+        feedback_section=feedback_section,
     )
 
     from app.services.neo4j_analytics.bedrock import get_llm

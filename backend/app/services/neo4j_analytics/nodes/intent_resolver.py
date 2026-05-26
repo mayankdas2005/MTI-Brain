@@ -5,6 +5,7 @@ identifiers from SemanticContext. Validates every identifier post-LLM.
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 import json
 
@@ -14,7 +15,7 @@ from app.services.neo4j_analytics.prompts import INTENT_RESOLVE_PROMPT, REASONIN
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
-async def intent_resolver(state: AnalyticsState, config: dict) -> dict:
+async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("intent_resolver START | thread={}", state["thread_id"])
 
     prompt = _build_prompt(state)

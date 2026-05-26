@@ -18,6 +18,7 @@ import uuid
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import RetryPolicy
 from psycopg import AsyncConnection
 from psycopg.errors import UniqueViolation
 from psycopg_pool import AsyncConnectionPool
@@ -43,10 +44,14 @@ from app.services.neo4j_analytics.nodes.intake_classifier import intake_classifi
 from app.services.neo4j_analytics.nodes.intent_resolver import intent_resolver
 from app.services.neo4j_analytics.nodes.query_compiler import query_compiler
 from app.services.neo4j_analytics.nodes.sql_validator import sql_validator
+from app.services.neo4j_analytics.nodes.compress import compress, SUMMARIZE_THRESHOLD
 from app.services.neo4j_analytics.nodes.synthesis import synthesis
 from app.services.neo4j_analytics.node_names import (
+    NODE_MESSAGE,
+    NODE_STREAM,
     CHART_AGENT as N_CHART_AGENT,
     CLARIFICATION as N_CLARIFICATION,
+    COMPRESS as N_COMPRESS,
     CONTEXT_FETCHER as N_CONTEXT_FETCHER,
     ERROR_RESPONSE as N_ERROR_RESPONSE,
     EXECUTOR as N_EXECUTOR,
@@ -63,6 +68,7 @@ from app.services.neo4j_analytics.state import AnalyticsState
 MAX_RECOMPILE = 1
 MAX_REPAIR = 2
 MAX_CLARIFICATION = 2
+LLM_RETRY = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor=2.0)
 
 _checkpoint_pool: AsyncConnectionPool | None = None
 _compiled_graph = None
@@ -162,7 +168,18 @@ def route_synthesis(state: AnalyticsState) -> str:
     if has_rows and not state.get("no_data"):
         logger.info("route: synthesis → chart_agent | thread={}", state["thread_id"])
         return N_CHART_AGENT
-    logger.info("route: synthesis → END (no data for chart) | thread={}", state["thread_id"])
+    logger.info("route: synthesis → compress_check (no data for chart) | thread={}", state["thread_id"])
+    return N_COMPRESS if _should_compress(state) else END
+
+
+def _should_compress(state: AnalyticsState) -> bool:
+    return len(state.get("messages") or []) >= SUMMARIZE_THRESHOLD
+
+
+def route_should_compress(state: AnalyticsState) -> str:
+    if _should_compress(state):
+        logger.info("route: → compress | thread={} | messages={}", state["thread_id"], len(state.get("messages") or []))
+        return N_COMPRESS
     return END
 
 
@@ -172,18 +189,19 @@ def compile_graph():
     """Build and compile the analytics LangGraph."""
     b = StateGraph(AnalyticsState)
 
-    b.add_node(N_INTAKE, intake_classifier)
-    b.add_node(N_GENERAL_CHAT, general_chat)
+    b.add_node(N_INTAKE,          intake_classifier, retry_policy=LLM_RETRY)
+    b.add_node(N_GENERAL_CHAT,    general_chat,      retry_policy=LLM_RETRY)
     b.add_node(N_CONTEXT_FETCHER, context_fetcher)
-    b.add_node(N_INTENT_RESOLVER, intent_resolver)
-    b.add_node(N_CLARIFICATION, clarification)
-    b.add_node(N_QUERY_COMPILER, query_compiler)
-    b.add_node(N_FILTER_RESOLVER, filter_resolver)
-    b.add_node(N_SQL_VALIDATOR, sql_validator)
-    b.add_node(N_EXECUTOR, executor)
-    b.add_node(N_SYNTHESIS, synthesis)
-    b.add_node(N_CHART_AGENT, chart_agent)
-    b.add_node(N_ERROR_RESPONSE, error_response)
+    b.add_node(N_INTENT_RESOLVER, intent_resolver,   retry_policy=LLM_RETRY)
+    b.add_node(N_CLARIFICATION,   clarification,     retry_policy=LLM_RETRY)
+    b.add_node(N_QUERY_COMPILER,  query_compiler,    retry_policy=LLM_RETRY)
+    b.add_node(N_FILTER_RESOLVER, filter_resolver,   retry_policy=LLM_RETRY)
+    b.add_node(N_SQL_VALIDATOR,   sql_validator)
+    b.add_node(N_EXECUTOR,        executor,          retry_policy=LLM_RETRY)
+    b.add_node(N_SYNTHESIS,       synthesis,         retry_policy=LLM_RETRY)
+    b.add_node(N_CHART_AGENT,     chart_agent,       retry_policy=LLM_RETRY)
+    b.add_node(N_ERROR_RESPONSE,  error_response)
+    b.add_node(N_COMPRESS,        compress,          retry_policy=LLM_RETRY)
 
     b.add_edge(START, N_INTAKE)
 
@@ -193,7 +211,7 @@ def compile_graph():
         {N_GENERAL_CHAT: N_GENERAL_CHAT, N_CONTEXT_FETCHER: N_CONTEXT_FETCHER},
     )
 
-    b.add_edge(N_GENERAL_CHAT, END)
+    b.add_conditional_edges(N_GENERAL_CHAT, route_should_compress, {N_COMPRESS: N_COMPRESS, END: END})
 
     b.add_conditional_edges(
         N_CONTEXT_FETCHER,
@@ -247,8 +265,9 @@ def compile_graph():
         {N_CHART_AGENT: N_CHART_AGENT, END: END},
     )
 
-    b.add_edge(N_CHART_AGENT, END)
-    b.add_edge(N_ERROR_RESPONSE, END)
+    b.add_conditional_edges(N_CHART_AGENT, route_should_compress, {N_COMPRESS: N_COMPRESS, END: END})
+    b.add_conditional_edges(N_ERROR_RESPONSE, route_should_compress, {N_COMPRESS: N_COMPRESS, END: END})
+    b.add_edge(N_COMPRESS, END)
 
     return b
 
@@ -362,22 +381,8 @@ def cancel_stream(thread_id: str) -> bool:
     return False
 
 
-# ─── Node → SSE display config ───────────────────────────────────────────────
-
-_NODE_MESSAGE = {
-    N_INTAKE: "Understanding your question",
-    N_GENERAL_CHAT: "Responding",
-    N_CONTEXT_FETCHER: "Loading data catalog",
-    N_INTENT_RESOLVER: "Interpreting your question",
-    N_CLARIFICATION: "Requesting clarification",
-    N_QUERY_COMPILER: "Building query",
-    N_FILTER_RESOLVER: "Resolving filter values",
-    N_SQL_VALIDATOR: "Validating SQL",
-    N_EXECUTOR: "Querying data warehouse",
-    N_SYNTHESIS: "Preparing your answer",
-    N_CHART_AGENT: "Building chart",
-    N_ERROR_RESPONSE: "Error occurred",
-}
+# NODE_MESSAGE and NODE_STREAM are imported from node_names — single source of truth.
+# Nodes absent from NODE_MESSAGE are completely hidden from the UI (e.g. compress).
 
 _STATE_KEYS = {
     "question", "question_type", "persona", "needs_clarification", "clarification_count",
@@ -400,6 +405,7 @@ async def stream_pipeline(
     feedback_context: str = "",
     user_email: str | None = None,
     user_display_name: str = "",
+    max_rows: int = 100,
     **kwargs,
 ):
     """Run the analytics pipeline and yield SSE event dicts."""
@@ -432,7 +438,7 @@ async def stream_pipeline(
         "messages": [],
         "user_id": user_id or "",
         "thread_id": thread_id,
-        "persona": persona or "analyst",
+        "persona": persona or "executive",
         "question": question,
         "question_type": "",
         "decompose_needed": False,
@@ -460,18 +466,38 @@ async def stream_pipeline(
         "error": None,
         "stopped": False,
         "deep_analysis": deep_analysis,
+        "max_rows": max_rows,
     }
 
-    from app.services.neo4j_analytics.helpers import MultiSectionStreamer
+    from app.services.neo4j_analytics.helpers import MultiSectionStreamer, SectionStreamer
     from app.services.neo4j_analytics.token_tracker import NODE_TIER, aggregate_token_usage, extract_usage
 
     _pipeline_steps: list[dict] = []
-    _step_timers: dict[str, float] = {}
+    _step_by_visit: dict[str, int] = {}        # "node:visit" → index in _pipeline_steps
+    _visit_timers: dict[str, float] = {}       # "node:visit" → wall-clock start
     _token_records: list[dict] = []
-    _node_streamers: dict[str, MultiSectionStreamer] = {}
+    _per_call_streamers: dict[str, "MultiSectionStreamer | SectionStreamer | None"] = {}
+    _node_visit_count: dict[str, int] = {}
+    _reasoning_entries: list[dict] = []        # {node, label, tokens[]}
+    _reasoning_idx: dict[str, int] = {}        # call_run_id → index in _reasoning_entries
+    _step_reasoning_idx: dict[str, list[int]] = {}  # "node:visit" → list of reasoning entry indices
     state: dict = {}
     pipeline_start = time.perf_counter()
     stopped = False
+
+    def _get_streamer(call_run_id: str, node_name: str):
+        s = _per_call_streamers.get(call_run_id)
+        if s is not None:
+            return s
+        cfg = NODE_STREAM.get(node_name)
+        if cfg == "multi":
+            streamer = MultiSectionStreamer([("reasoning", "reasoning.delta"), ("answer", "answer.delta")])
+        elif cfg:
+            streamer = SectionStreamer(cfg[0])
+        else:
+            streamer = None
+        _per_call_streamers[call_run_id] = streamer
+        return streamer
 
     logger.info(
         "[{}] Analytics pipeline START | thread={} | persona={} | question={}",
@@ -489,48 +515,16 @@ async def stream_pipeline(
             if "|" in ev.get("metadata", {}).get("langgraph_checkpoint_ns", ""):
                 continue
 
-            kind = ev["event"]
-            node = ev.get("metadata", {}).get("langgraph_node")
+            kind      = ev["event"]
+            node      = ev.get("metadata", {}).get("langgraph_node")
+            call_rid  = str(ev.get("run_id", ""))
 
-            if node not in _NODE_MESSAGE:
-                continue
-
-            if kind == "on_chain_start":
-                _step_timers[node] = time.perf_counter()
-                elapsed = time.perf_counter() - pipeline_start
-                logger.info("[{}] {} START | +{:.1f}s", run_id, node, elapsed)
-                _pipeline_steps.append({
-                    "node": node,
-                    "message": _NODE_MESSAGE[node],
-                    "status": "active",
-                    "started_at_ms": int(elapsed * 1000),
-                    "duration_ms": None,
-                })
-                _node_streamers[node] = MultiSectionStreamer([
-                    ("reasoning", "reasoning.delta"),
-                    ("answer", "answer.delta"),
-                ])
-                yield {
-                    "event": "node.start",
-                    "data": {"node": node, "message": _NODE_MESSAGE[node]},
-                }
-                yield {"event": "reasoning.pending", "data": {"node": node}}
-
-            elif kind == "on_chat_model_stream":
-                if "no_stream" in ev.get("tags", []):
-                    continue
-                raw_content = ev["data"]["chunk"].content
-                token = raw_content if isinstance(raw_content, str) else ""
-                if token and node in _node_streamers:
-                    emitted, event_type = _node_streamers[node].feed(token)
-                    if emitted and event_type:
-                        yield {"event": event_type, "data": {"node": node, "text": emitted}}
-
-            elif kind == "on_chat_model_end":
-                ai_message = ev.get("data", {}).get("output")
-                if ai_message is not None:
-                    tier = NODE_TIER.get(node, "balanced")
-                    usage = extract_usage(ai_message, node=node, tier=tier)
+            # Token tracking runs before display filtering so all LLM calls are costed.
+            if kind == "on_chat_model_end":
+                ai_msg = ev.get("data", {}).get("output")
+                if ai_msg is not None:
+                    tier = NODE_TIER.get(node or "", "balanced")
+                    usage = extract_usage(ai_msg, node=node or "pipeline", tier=tier)
                     if usage:
                         _token_records.append(usage)
                         logger.debug(
@@ -538,32 +532,107 @@ async def stream_pipeline(
                             run_id, node, usage["input_tokens"], usage["output_tokens"], usage["cost_usd"],
                         )
 
+            if node not in NODE_MESSAGE:
+                continue
+
+            if kind == "on_chain_start":
+                visit      = _node_visit_count.get(node, 0)
+                visit_key  = f"{node}:{visit}"
+                is_retry   = visit > 0
+                t          = time.perf_counter()
+                _visit_timers[visit_key] = t
+                elapsed    = t - pipeline_start
+                logger.info("[{}] {} START{} | +{:.1f}s", run_id, node, " (retry)" if is_retry else "", elapsed)
+                _pipeline_steps.append({
+                    "node":           node,
+                    "message":        NODE_MESSAGE[node],
+                    "status":         "active",
+                    "started_at_ms":  int(elapsed * 1000),
+                    "duration_ms":    None,
+                    "is_retry":       is_retry,
+                    "reasoning":      "",
+                })
+                _step_by_visit[visit_key] = len(_pipeline_steps) - 1
+                yield {
+                    "event": "node.start",
+                    "data": {"node": node, "message": NODE_MESSAGE[node], "is_retry": is_retry},
+                }
+                if NODE_STREAM.get(node):
+                    yield {"event": "reasoning.pending", "data": {"node": node}}
+
+            elif kind == "on_chat_model_stream":
+                if "no_stream" in ev.get("tags", []):
+                    continue
+                raw = ev["data"]["chunk"].content
+                if isinstance(raw, list):
+                    token = "".join(
+                        b if isinstance(b, str) else (b.get("text", "") if isinstance(b, dict) else "")
+                        for b in raw
+                    )
+                else:
+                    token = raw if isinstance(raw, str) else ""
+                if not token:
+                    continue
+
+                streamer = _get_streamer(call_rid, node)
+                if not streamer:
+                    continue
+
+                visit = _node_visit_count.get(node, 0)
+
+                def _emit_token(text: str, etype: str) -> dict:
+                    if etype == "reasoning.delta":
+                        if call_rid not in _reasoning_idx:
+                            label = NODE_MESSAGE.get(node, node)
+                            if visit > 0:
+                                label += f" (attempt {visit + 1})"
+                            _reasoning_idx[call_rid] = len(_reasoning_entries)
+                            _reasoning_entries.append({"node": node, "label": label, "tokens": []})
+                            _step_reasoning_idx.setdefault(f"{node}:{visit}", []).append(_reasoning_idx[call_rid])
+                        _reasoning_entries[_reasoning_idx[call_rid]]["tokens"].append(text)
+                    return {"event": etype, "data": {"node": node, "text": text}}
+
+                if isinstance(streamer, MultiSectionStreamer):
+                    text, etype = streamer.feed(token)
+                    if text and etype:
+                        yield _emit_token(text, etype)
+                else:
+                    text = streamer.feed(token)
+                    if text:
+                        cfg = NODE_STREAM.get(node)
+                        etype = cfg[1] if isinstance(cfg, tuple) else "reasoning.delta"
+                        yield _emit_token(text, etype)
+
             elif kind == "on_chain_end":
                 output = ev.get("data", {}).get("output")
+                visit_before = _node_visit_count.get(node, 0)
                 if isinstance(output, dict):
                     state.update({k: v for k, v in output.items() if k in _STATE_KEYS})
 
-                node_dur = time.perf_counter() - _step_timers.get(node, pipeline_start)
-                elapsed = time.perf_counter() - pipeline_start
+                _node_visit_count[node] = visit_before + 1
+                visit_key  = f"{node}:{visit_before}"
+                node_dur   = time.perf_counter() - _visit_timers.get(visit_key, pipeline_start)
+                elapsed    = time.perf_counter() - pipeline_start
                 logger.info("[{}] {} DONE | {:.1f}s | +{:.1f}s", run_id, node, node_dur, elapsed)
 
-                for step in _pipeline_steps:
-                    if step["node"] == node and step["status"] == "active":
-                        step["status"] = "done"
-                        step["duration_ms"] = round(node_dur * 1000)
-                        break
-
-                yield {
-                    "event": "node.done",
-                    "data": {"node": node, "duration_ms": round(node_dur * 1000)},
-                }
+                if visit_key in _step_by_visit:
+                    step = _pipeline_steps[_step_by_visit[visit_key]]
+                    step["status"]      = "done"
+                    step["duration_ms"] = round(node_dur * 1000)
+                    step["reasoning"]   = "".join(
+                        "".join(_reasoning_entries[i]["tokens"])
+                        for i in _step_reasoning_idx.get(visit_key, [])
+                    )
+                    yield {
+                        "event": "node.done",
+                        "data": {"node": node, "duration_ms": step["duration_ms"]},
+                    }
 
                 if node == N_EXECUTOR:
-                    ir_list = state.get("semantic_ir_list") or []
-                    sql_list = state.get("sql_list") or []
+                    sql_list    = state.get("sql_list") or []
                     result_list = state.get("result_list") or []
-                    all_rows = []
-                    all_cols = []
+                    all_rows: list = []
+                    all_cols: list = []
                     for r in result_list:
                         if r.get("rows"):
                             all_rows.extend(r["rows"])
@@ -572,11 +641,11 @@ async def stream_pipeline(
                     yield {
                         "event": "execute.done",
                         "data": {
-                            "status": "error" if state.get("error") else "success",
-                            "sql": sql_list[0] if sql_list else "",
-                            "columns": all_cols,
-                            "rows": all_rows,
-                            "row_count": len(all_rows),
+                            "status":        "error" if state.get("error") else "success",
+                            "sql":           sql_list[0] if sql_list else "",
+                            "columns":       all_cols,
+                            "rows":          all_rows,
+                            "row_count":     len(all_rows),
                             "will_visualize": bool(all_rows),
                         },
                     }
@@ -587,36 +656,45 @@ async def stream_pipeline(
                 elif node == N_SYNTHESIS and state.get("follow_ups"):
                     yield {"event": "follow_ups", "data": {"questions": state["follow_ups"]}}
 
-        total = time.perf_counter() - pipeline_start
+        total       = time.perf_counter() - pipeline_start
         duration_ms = round(total * 1000)
         logger.info("[{}] Analytics pipeline DONE | {:.1f}s | stopped={}", run_id, total, stopped)
 
-        _lf_trace_id = lf_handler.last_trace_id if lf_handler else None
+        _lf_trace_id  = lf_handler.last_trace_id if lf_handler else None
         _lf_trace_url = _lf_make_public(_lf_trace_id) if _lf_trace_id else None
 
         try:
             yield {
                 "event": "done",
                 "data": {
-                    "run_id": run_id,
-                    "question": question,
-                    "question_type": state.get("question_type", "analytics"),
-                    "stopped": stopped,
-                    "persona": state.get("persona", ""),
-                    "sql": state.get("sql_list", [""])[0] if state.get("sql_list") else "",
-                    "columns": [],
-                    "rows": [],
-                    "row_count": 0,
-                    "chart_spec": state.get("chart_spec"),
-                    "answer": state.get("answer", ""),
-                    "follow_ups": state.get("follow_ups", []),
-                    "duration_ms": duration_ms,
+                    "run_id":            run_id,
+                    "question":          question,
+                    "question_type":     state.get("question_type", "analytics"),
+                    "stopped":           stopped,
+                    "persona":           state.get("persona", ""),
+                    "sql":               state.get("sql_list", [""])[0] if state.get("sql_list") else "",
+                    "columns":           [],
+                    "rows":              [],
+                    "row_count":         0,
+                    "chart_spec":        state.get("chart_spec"),
+                    "answer":            state.get("answer", ""),
+                    "follow_ups":        state.get("follow_ups", []),
+                    "duration_ms":       duration_ms,
                     "langfuse_trace_id": _lf_trace_id,
                     "langfuse_trace_url": _lf_trace_url,
-                    "pipeline_steps": _pipeline_steps,
-                    "no_data": state.get("no_data", False),
+                    "pipeline_steps":    _pipeline_steps,
+                    "reasoning": [
+                        {
+                            "node":  e["node"],
+                            "label": e["label"],
+                            "text":  "".join(e["tokens"]).strip(),
+                        }
+                        for e in _reasoning_entries
+                        if "".join(e["tokens"]).strip()
+                    ],
+                    "no_data":           state.get("no_data", False),
                     "reliability_flags": state.get("reliability_flags", []),
-                    "token_usage": aggregate_token_usage(_token_records) if _token_records else {},
+                    "token_usage":       aggregate_token_usage(_token_records) if _token_records else {},
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

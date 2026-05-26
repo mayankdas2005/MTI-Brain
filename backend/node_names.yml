@@ -1,0 +1,77 @@
+# ─── node_names.yml ─────────────────────────────────────────────────────────────
+# Pipeline node definitions — single source of truth for node IDs, UI labels,
+# LLM tiers, and streaming config.
+#
+# tier:   "fast" | "balanced" | "deep" | "none"
+# stream: "multi"              → MultiSectionStreamer (<reasoning> + <answer>)
+#         ["<tag>", "<event>"] → SectionStreamer for one XML tag
+#         null                 → deterministic node; no LLM tokens to stream
+#
+# label: null → node is hidden from the UI (e.g. compress)
+# ─────────────────────────────────────────────────────────────────────────────────
+
+nodes:
+  - id: intake_classifier
+    label: "Understanding your question"
+    tier: fast
+    stream: null
+
+  - id: general_chat
+    label: "Responding"
+    tier: fast
+    stream: multi
+
+  - id: context_fetcher
+    label: "Loading data catalog"
+    tier: none
+    stream: null
+
+  - id: intent_resolver
+    label: "Interpreting your question"
+    tier: balanced
+    stream: [reasoning, reasoning.delta]
+
+  - id: clarification
+    label: "Requesting clarification"
+    tier: fast
+    stream: [reasoning, reasoning.delta]
+
+  - id: query_compiler
+    label: "Building query"
+    tier: balanced
+    stream: [reasoning, reasoning.delta]
+
+  - id: filter_resolver
+    label: "Resolving filter values"
+    tier: fast
+    stream: [reasoning, reasoning.delta]
+
+  - id: sql_validator
+    label: "Validating SQL"
+    tier: none
+    stream: null
+
+  - id: executor
+    label: "Querying data warehouse"
+    tier: deep
+    stream: [reasoning, reasoning.delta]
+
+  - id: synthesis
+    label: "Preparing your answer"
+    tier: balanced
+    stream: multi
+
+  - id: chart_agent
+    label: "Building chart"
+    tier: fast
+    stream: [reasoning, reasoning.delta]
+
+  - id: error_response
+    label: "Error occurred"
+    tier: none
+    stream: null
+
+  - id: compress
+    label: null
+    tier: fast
+    stream: null

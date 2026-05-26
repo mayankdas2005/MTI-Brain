@@ -54,8 +54,11 @@ Classify the question. Output ONLY the JSON object — no explanation, no preamb
 question_type:
   "analytics"    — ANY question about financial data, treasury, payments, ACH, returns, balances,
                    exposure, settlements, fees, trends, or any data lookup. When in doubt → "analytics".
-  "general_chat" — ONLY for clear greetings, off-topic questions, help/capability questions,
-                   or explicit "explain X" with no data request.
+                   CRITICAL: A short affirmative ("yes", "sure", "go ahead", "show me", "please",
+                   "ok", "yeah") following an analytics conversation is ALWAYS "analytics" — the user
+                   is accepting a follow-up offer, not asking a new question.
+  "general_chat" — ONLY for clear greetings, off-topic questions, or help questions with
+                   NO prior analytics context in the conversation history.
 
 Output exactly this JSON (no other text):
 {{"type": "analytics"}}
@@ -70,11 +73,14 @@ GENERAL_CHAT_PROMPT = ChatPromptTemplate.from_template(
 
 {reasoning_directive}
 
+{conversation_section}
+
+{feedback_section}
+
 User: {question}
 
 Respond conversationally. If the user asks about your capabilities, describe what you can analyze:
 treasury data, payments, ACH returns, balances, exposures, trends, and more.
-
 
 <answer>
 {{your response here}}
@@ -171,6 +177,10 @@ DECOMPOSE_PROMPT = ChatPromptTemplate.from_template(
 CONSTRAINT: Use ONLY tables from the provided schema candidates. Each sub-question must be answerable by a single SQL query. Do NOT invent table or column names.
 
 {reasoning_directive}
+
+{conversation_section}
+
+{feedback_section}
 
 SCHEMA CANDIDATES: {semantic_context}
 
@@ -273,6 +283,10 @@ Persona format:
 - **Director**: risk concentration headline, limits vs. actuals, 3 prioritised recommendations with owners and timing. Use ## headers.
 - **Executive**: one-paragraph verdict, top-3 risks or opportunities, single recommended decision. No headers — flowing prose only.
 
+{conversation_section}
+
+{feedback_section}
+
 QUERY CONTEXT:
 <query_context>
 What was asked: {question}
@@ -296,12 +310,13 @@ RULES:
 - If no_data is true, explain WHY using zero_row_probe_result.
 - If reliability flags are present, mention uncertainty explicitly.
 - If low_confidence_filters are present, note that filter values were approximately matched.
+- If conversation_section shows this is a follow-up, open by connecting to the prior finding before presenting new data.
 
 Writing standards:
 - **Pyramid Principle**: open with the single most important finding. Everything that follows supports it.
 - **Quantify every claim**: never write "significant" without a number; never write "exposure is high" without the amount and what it is high relative to.
 - **Business implication, not data description**: explain what the data means for the business and what decision it informs. Exception: for Analyst persona with simple lookups (1-3 rows), a direct table + brief note is preferred.
-- **Zero/anomalous results**: if all values are zero or the result is a single row of zeros, state clearly that the metric cannot be reported reliably. Diagnose the most likely root cause (data ingestion gap, ontology mismatch, date filter, missing triples) and recommend the specific corrective action.
+- **Zero/anomalous results**: if all values are zero or the result is a single row of zeros, state clearly that the metric cannot be reported reliably. Diagnose the most likely root cause and recommend a specific corrective action.
 - **Data gaps**: if a question cannot be answered from available data, name what is missing, why it matters, and what interim workaround exists.
 
 {reasoning_directive}
@@ -315,7 +330,7 @@ Output your reasoning within <reasoning>...</reasoning> tags, then the answer wi
 {{Your answer here — appropriate length and detail for the persona}}
 </answer>
 
-Now output exactly 3 follow-up questions a {persona} would naturally ask next. Phrased as the user querying the system, not as the system offering to help. Specific to the data returned, not generic. Output ONLY the JSON array — no other text before or after.
+Now output exactly 3 follow-up questions a {persona} would naturally ask next. Phrased as the user querying the system, not as the system offering to help. Reference specific values or entities from the results — not generic questions. Output ONLY the JSON array — no other text before or after.
 <follow_ups>
 ["...", "...", "..."]
 </follow_ups>"""
@@ -357,12 +372,27 @@ Output your reasoning within <reasoning>...</reasoning> tags, then the label JSO
 # ─── Conversation Compress ───────────────────────────────────────────────────
 
 COMPRESS_PROMPT = ChatPromptTemplate.from_template(
-    """Summarize this conversation for an analytics assistant's memory.
-Focus on: what data was requested, what was found, any clarifications made, user preferences.
-Be concise — 2-4 sentences maximum.
+    """Summarize this treasury analytics conversation for a rolling context window.
+Keep the summary under 200 words. Prioritise precision over completeness.
 
-Conversation:
-{conversation}
+{existing_summary_section}
 
-Output a plain text summary (no tags, no markdown):"""
+Recent exchanges to summarize:
+{recent_exchanges}
+
+Capture — in order of priority:
+1. Entity identifiers mentioned: account codes, company codes, bank names, table names, filter values.
+   These are critical — preserve them verbatim so future SQL queries can reference them.
+2. Questions asked and their data intent (balance lookups, exposures, return rates, etc.)
+3. Key findings, anomalies, or policy flags that were surfaced
+4. Follow-up questions offered at the end of the last response — copy them verbatim.
+   Example format: "Offered follow-ups: ['Break down by bank?', 'Compare to last month?']"
+   This is essential: if the user next says 'yes' or 'show me', we must know what was offered.
+5. User's tone and persona preference (if evident)
+
+Do NOT summarise the SQL queries themselves — only the intent and findings.
+
+<summary>
+[Concise summary here. Max 200 words. Lead with entity identifiers, then intents, findings, and offered follow-ups.]
+</summary>"""
 )

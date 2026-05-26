@@ -1,6 +1,7 @@
 """Node G: general_chat — conversational response for non-analytics questions."""
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.neo4j_analytics.helpers import parse_tag
@@ -8,12 +9,27 @@ from app.services.neo4j_analytics.prompts import GENERAL_CHAT_PROMPT, REASONING_
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
-async def general_chat(state: AnalyticsState, config: dict) -> dict:
+async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("general_chat START | thread={}", state["thread_id"])
+
+    # summary is persisted in state by the compress node across turns
+    session_summary = state.get("summary") or ""
+    feedback_context = state.get("feedback_context") or ""
+
+    conversation_section = (
+        f"CONVERSATION CONTEXT:\n<conversation_context>{session_summary}</conversation_context>"
+        if session_summary else ""
+    )
+    feedback_section = (
+        f"USER PREFERENCES (apply silently):\n<feedback_context>{feedback_context}</feedback_context>"
+        if feedback_context else ""
+    )
 
     prompt = GENERAL_CHAT_PROMPT.format_messages(
         question=state["question"],
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        conversation_section=conversation_section,
+        feedback_section=feedback_section,
     )
 
     from app.services.neo4j_analytics.bedrock import get_llm

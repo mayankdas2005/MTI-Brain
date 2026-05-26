@@ -6,6 +6,7 @@ Tier 6 routes to clarification if all tiers fail.
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 import json
 
@@ -25,7 +26,7 @@ from app.services.neo4j_analytics.sql_compiler import compile_sql
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
-async def filter_resolver(state: AnalyticsState, config: dict) -> dict:
+async def filter_resolver(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("filter_resolver START | thread={}", state["thread_id"])
 
     ir_list = state.get("semantic_ir_list", [])
@@ -116,7 +117,7 @@ async def _resolve_filter(
     f: FilterSpec,
     ir: SemanticIR,
     state: AnalyticsState,
-    config: dict,
+    config: RunnableConfig,
 ) -> tuple[FilterSpec, bool, bool, str | None]:
     """Try all tiers for a single FilterSpec.
 
@@ -190,7 +191,7 @@ async def _run_redshift_probe(table_fqn: str, col_name: str, user_value: str, th
         return []
 
 
-async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: AnalyticsState, config: dict) -> str | None:
+async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: AnalyticsState, config: RunnableConfig) -> str | None:
     """Use Haiku to pick the best candidate."""
     from app.services.neo4j_analytics.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

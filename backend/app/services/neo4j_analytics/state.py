@@ -56,4 +56,5 @@ class AnalyticsState(TypedDict):
     # ── Error / control ──────────────────────────────────────────────────────
     error: str | None
     stopped: bool
-    deep_analysis: bool                   # True → use REASONING_DIRECTIVE_DEEP in Sonnet/Opus nodes
+    deep_analysis: bool
+    max_rows: int                         # user-configured SQL row limit (default 100, applied as LIMIT in executor)                   # True → use REASONING_DIRECTIVE_DEEP in Sonnet/Opus nodes

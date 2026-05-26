@@ -4,13 +4,14 @@ No LLM. Applies 4 gates, routes to recompile (max 1) or error_response on second
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.neo4j_analytics.sql_validator_logic import validate_sql
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
-async def sql_validator(state: AnalyticsState, config: dict) -> dict:
+async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
     sql_list = state.get("sql_list", [])
     recompile_count = state.get("recompile_count", 0)
     logger.info("sql_validator START | thread={} | sql_count={} | recompile_count={}", state["thread_id"], len(sql_list), recompile_count)

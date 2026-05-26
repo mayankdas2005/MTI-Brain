@@ -1,58 +1,93 @@
-"""Node name constants and model tier mapping for the analytics pipeline.
+"""Node name constants and configuration for the analytics pipeline.
 
-Single source of truth for node identifiers shared between graph.py (routing),
-token_tracker.py (cost attribution), and any other module that references nodes by name.
+Loads node definitions from backend/node_names.yml — edit that file to change
+node IDs, labels, tiers, or streaming config.
+
+Usage:
+    from app.services.neo4j_analytics.node_names import N, NODE_MESSAGE, NODE_STREAM
+
+    graph.add_node(N.INTAKE_CLASSIFIER, intake_classifier)
 """
 
 from __future__ import annotations
 
-# ── Node name constants ────────────────────────────────────────────────────────
+from pathlib import Path
+from typing import NamedTuple
 
-INTAKE = "intake_classifier"
-GENERAL_CHAT = "general_chat"
-CONTEXT_FETCHER = "context_fetcher"
-INTENT_RESOLVER = "intent_resolver"
-CLARIFICATION = "clarification"
-QUERY_COMPILER = "query_compiler"
-FILTER_RESOLVER = "filter_resolver"
-SQL_VALIDATOR = "sql_validator"
-EXECUTOR = "executor"
-SYNTHESIS = "synthesis"
-CHART_AGENT = "chart_agent"
-ERROR_RESPONSE = "error_response"
+import yaml
 
-ALL_NODES = (
-    INTAKE,
-    GENERAL_CHAT,
-    CONTEXT_FETCHER,
-    INTENT_RESOLVER,
-    CLARIFICATION,
-    QUERY_COMPILER,
-    FILTER_RESOLVER,
-    SQL_VALIDATOR,
-    EXECUTOR,
-    SYNTHESIS,
-    CHART_AGENT,
-    ERROR_RESPONSE,
-)
 
-# ── Model tier per node ────────────────────────────────────────────────────────
-# "fast"     → Haiku 4.5   (classification, simple text, chart labels)
-# "balanced" → Sonnet 4.6  (intent extraction, decomposition, synthesis)
-# "deep"     → Opus 4.7    (SQL repair — semantic boundary preservation)
-# "none"     → no LLM call (deterministic nodes)
+class NodeSpec(NamedTuple):
+    id: str
+    label: str | None
+    tier: str
+    stream: str | tuple | None
 
-NODE_TIER: dict[str, str] = {
-    INTAKE:           "fast",
-    GENERAL_CHAT:     "fast",
-    CLARIFICATION:    "fast",
-    CHART_AGENT:      "fast",
-    CONTEXT_FETCHER:  "none",
-    INTENT_RESOLVER:  "balanced",
-    QUERY_COMPILER:   "balanced",
-    FILTER_RESOLVER:  "fast",
-    SQL_VALIDATOR:    "none",
-    EXECUTOR:         "deep",
-    SYNTHESIS:        "balanced",
-    ERROR_RESPONSE:   "none",
+
+def _load_specs() -> tuple[NodeSpec, ...]:
+    yml_path = Path(__file__).parents[3] / "node_names.yml"
+    with yml_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    specs: list[NodeSpec] = []
+    for entry in data["nodes"]:
+        stream = entry.get("stream")
+        if isinstance(stream, list):
+            stream = tuple(stream)
+        specs.append(NodeSpec(
+            id=entry["id"],
+            label=entry.get("label"),
+            tier=entry["tier"],
+            stream=stream,
+        ))
+    return tuple(specs)
+
+
+_SPECS = _load_specs()
+
+# Build a lookup so N.<ATTR> == node id; attr name comes from the yml `attr` key
+# if present, otherwise the id uppercased.
+_id_map: dict[str, str] = {s.id: s.id for s in _SPECS}
+
+
+class N:
+    """Node identifier constants, sourced from node_names.yml."""
+
+
+for _s in _SPECS:
+    setattr(N, _s.id.upper(), _s.id)
+
+# ── Auto-generated collections ────────────────────────────────────────────────
+
+ALL_NODES: tuple[str, ...] = tuple(s.id for s in _SPECS)
+
+NODE_TIER: dict[str, str] = {s.id: s.tier for s in _SPECS}
+
+NODE_MESSAGE: dict[str, str] = {
+    s.id: s.label
+    for s in _SPECS
+    if s.label is not None
 }
+
+NODE_STREAM: dict[str, str | tuple | None] = {
+    s.id: s.stream
+    for s in _SPECS
+    if s.label is not None
+}
+
+# ── Backward-compatible module-level exports ──────────────────────────────────
+# Use string IDs directly so these never break if N attribute naming changes.
+
+INTAKE          = _id_map["intake_classifier"]
+GENERAL_CHAT    = _id_map["general_chat"]
+CONTEXT_FETCHER = _id_map["context_fetcher"]
+INTENT_RESOLVER = _id_map["intent_resolver"]
+CLARIFICATION   = _id_map["clarification"]
+QUERY_COMPILER  = _id_map["query_compiler"]
+FILTER_RESOLVER = _id_map["filter_resolver"]
+SQL_VALIDATOR   = _id_map["sql_validator"]
+EXECUTOR        = _id_map["executor"]
+SYNTHESIS       = _id_map["synthesis"]
+CHART_AGENT     = _id_map["chart_agent"]
+ERROR_RESPONSE  = _id_map["error_response"]
+COMPRESS        = _id_map["compress"]

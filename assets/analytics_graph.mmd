@@ -1,0 +1,46 @@
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	intake_classifier(intake_classifier)
+	general_chat(general_chat)
+	context_fetcher(context_fetcher)
+	intent_resolver(intent_resolver)
+	clarification(clarification)
+	query_compiler(query_compiler)
+	filter_resolver(filter_resolver)
+	sql_validator(sql_validator)
+	executor(executor)
+	synthesis(synthesis)
+	chart_agent(chart_agent)
+	error_response(error_response)
+	compress(compress)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> intake_classifier;
+	chart_agent -.-> __end__;
+	chart_agent -.-> compress;
+	clarification -.-> intent_resolver;
+	context_fetcher -.-> error_response;
+	context_fetcher -.-> intent_resolver;
+	error_response -.-> __end__;
+	error_response -.-> compress;
+	executor -.-> clarification;
+	executor -.-> sql_validator;
+	executor -.-> synthesis;
+	filter_resolver -.-> clarification;
+	filter_resolver -.-> sql_validator;
+	general_chat -.-> __end__;
+	general_chat -.-> compress;
+	intake_classifier -.-> context_fetcher;
+	intake_classifier -.-> general_chat;
+	intent_resolver -.-> clarification;
+	intent_resolver -.-> query_compiler;
+	query_compiler -.-> filter_resolver;
+	query_compiler -.-> sql_validator;
+	sql_validator -.-> error_response;
+	sql_validator -.-> executor;
+	sql_validator -.-> query_compiler;
+	synthesis -.-> __end__;
+	synthesis -.-> chart_agent;
+	compress --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
