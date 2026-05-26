@@ -63,6 +63,8 @@ def _bootstrap_indexes() -> None:
         """CREATE VECTOR INDEX antipattern_cohere_embedding IF NOT EXISTS
            FOR (n:AntiPattern) ON (n.cohere_embedding)
            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}""",
+        """CREATE FULLTEXT INDEX businessterm_ft IF NOT EXISTS
+           FOR (n:BusinessTerm) ON EACH [n.term, n.variants, n.description]""",
     ]
     with get_driver().session(database=settings.NEO4J_DB) as session:
         for q in queries:
@@ -109,8 +111,10 @@ def search_tables_vector(embedding: list[float]) -> list[dict]:
     )
     SCORE AS score
     RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.grain AS grain, t.synonyms AS synonyms,
            t.business_domain AS business_domain, t.community_id AS community_id,
-           t.typical_join_role AS typical_join_role,
+           t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+           t.is_time_series AS is_time_series,
            t.natural_dimensions AS natural_dimensions,
            t.natural_measures AS natural_measures,
            score
@@ -128,8 +132,10 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
     CALL db.index.fulltext.queryNodes('table_ft_extended', $query)
     YIELD node AS t, score
     RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.grain AS grain, t.synonyms AS synonyms,
            t.business_domain AS business_domain, t.community_id AS community_id,
-           t.typical_join_role AS typical_join_role,
+           t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+           t.is_time_series AS is_time_series,
            t.natural_dimensions AS natural_dimensions,
            t.natural_measures AS natural_measures,
            score LIMIT 10
@@ -179,6 +185,264 @@ def search_columns_fulltext(query_text: str) -> list[dict]:
     with get_driver().session(database=settings.NEO4J_DB) as session:
         results = list(session.run(cypher, {"query": query_text}))
     logger.debug("neo4j | fn=search_columns_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+# ── QueryTemplate fulltext ───────────────────────────────────────────────────
+
+@neo4j_breaker
+def search_query_templates_fulltext(query_text: str) -> list[dict]:
+    cypher = """
+    CALL db.index.fulltext.queryNodes('querytemplate_ft', $query)
+    YIELD node AS qt, score
+    RETURN qt.id AS id, qt.question_text AS question_text,
+           qt.primary_intent AS primary_intent, qt.anchor_table_fqns AS anchor_table_fqns,
+           qt.cte_steps AS cte_steps, qt.required_aggregations AS required_aggregations,
+           qt.required_filters AS required_filters, qt.complexity AS complexity,
+           qt.description AS description,
+           score LIMIT 5
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(cypher, {"query": query_text}))
+    logger.debug("neo4j | fn=search_query_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+# ── Table traversal paths ────────────────────────────────────────────────────
+
+@neo4j_breaker
+def search_tables_via_templates_vector(embedding: list[float]) -> list[dict]:
+    query = """CYPHER 25
+    MATCH (qt:QueryTemplate)
+    SEARCH qt IN (
+      VECTOR INDEX `querytemplate_cohere` FOR $embedding
+      LIMIT 5
+    )
+    SCORE AS template_score
+    WITH qt, template_score
+    MATCH (qt)-[:REQUIRES_TABLE]->(t:Table)
+    RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.grain AS grain, t.synonyms AS synonyms,
+           t.business_domain AS business_domain, t.community_id AS community_id,
+           t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+           t.is_time_series AS is_time_series,
+           t.natural_dimensions AS natural_dimensions,
+           t.natural_measures AS natural_measures,
+           template_score AS score, qt.id AS matched_via
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
+    logger.debug("neo4j | fn=search_tables_via_templates_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_templates_fulltext(query_text: str) -> list[dict]:
+    cypher = """
+    CALL db.index.fulltext.queryNodes('querytemplate_ft', $query)
+    YIELD node AS qt, score AS template_score
+    WITH qt, template_score
+    MATCH (qt)-[:REQUIRES_TABLE]->(t:Table)
+    RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.grain AS grain, t.synonyms AS synonyms,
+           t.business_domain AS business_domain, t.community_id AS community_id,
+           t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+           t.is_time_series AS is_time_series,
+           t.natural_dimensions AS natural_dimensions,
+           t.natural_measures AS natural_measures,
+           template_score AS score, qt.id AS matched_via
+    LIMIT 20
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(cypher, {"query": query_text}))
+    logger.debug("neo4j | fn=search_tables_via_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_intents(embedding: list[float]) -> list[dict]:
+    query = """CYPHER 25
+    MATCH (i:Intent)
+    SEARCH i IN (
+      VECTOR INDEX `intent_cohere` FOR $embedding
+      LIMIT 3
+    )
+    SCORE AS intent_score
+    WITH i, intent_score
+    MATCH (t:Table)-[:RELEVANT_TO]->(i)
+    RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.grain AS grain, t.synonyms AS synonyms,
+           t.business_domain AS business_domain, t.community_id AS community_id,
+           t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+           t.is_time_series AS is_time_series,
+           t.natural_dimensions AS natural_dimensions,
+           t.natural_measures AS natural_measures,
+           intent_score AS score, i.name AS matched_via
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
+    logger.debug("neo4j | fn=search_tables_via_intents | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_community(embedding: list[float]) -> list[dict]:
+    query = """CYPHER 25
+    MATCH (c:Community)
+    SEARCH c IN (
+      VECTOR INDEX `community_cohere` FOR $embedding
+      LIMIT 2
+    )
+    SCORE AS community_score
+    WITH c, community_score
+    MATCH (c)-[:CONTAINS_TABLE]->(t:Table)
+    RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.grain AS grain, t.synonyms AS synonyms,
+           t.business_domain AS business_domain, t.community_id AS community_id,
+           t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+           t.is_time_series AS is_time_series,
+           t.natural_dimensions AS natural_dimensions,
+           t.natural_measures AS natural_measures,
+           community_score AS score, c.dominant_domain AS matched_via
+    ORDER BY community_score DESC
+    LIMIT 15
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
+    logger.debug("neo4j | fn=search_tables_via_community | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_domain(embedding: list[float]) -> list[dict]:
+    query = """CYPHER 25
+    MATCH (d:Domain)
+    SEARCH d IN (
+      VECTOR INDEX `domain_cohere` FOR $embedding
+      LIMIT 2
+    )
+    SCORE AS domain_score
+    WITH d, domain_score
+    MATCH (t:Table)-[:BELONGS_TO]->(d)
+    RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.grain AS grain, t.synonyms AS synonyms,
+           t.business_domain AS business_domain, t.community_id AS community_id,
+           t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+           t.is_time_series AS is_time_series,
+           t.natural_dimensions AS natural_dimensions,
+           t.natural_measures AS natural_measures,
+           domain_score AS score, d.name AS matched_via
+    ORDER BY domain_score DESC
+    LIMIT 20
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
+    logger.debug("neo4j | fn=search_tables_via_domain | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def get_columns_for_tables(table_fqns: list[str]) -> list[dict]:
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+    WHERE t.fqn IN $table_fqns
+    RETURN c.name AS name, c.table_fqn AS table_fqn,
+           c.data_type AS data_type,
+           c.semantic_type AS semantic_type,
+           c.default_aggregation AS default_aggregation,
+           c.description AS description,
+           c.is_measurable AS is_measurable,
+           c.is_groupable AS is_groupable,
+           c.filter_selectivity AS filter_selectivity,
+           c.sample_values AS sample_values,
+           c.value_vocabulary AS value_vocabulary,
+           c.value_aliases AS value_aliases,
+           c.value_scale AS value_scale,
+           c.synonyms AS synonyms
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"table_fqns": table_fqns}))
+    logger.debug("neo4j | fn=get_columns_for_tables | ms={:.0f} | cols={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_business_terms_vector(embedding: list[float]) -> list[dict]:
+    query = """CYPHER 25
+    MATCH (bt:BusinessTerm)
+    SEARCH bt IN (
+      VECTOR INDEX `businessterm_cohere` FOR $embedding
+      LIMIT 5
+    )
+    SCORE AS score
+    WHERE score > 0.70
+    RETURN bt.term AS term, bt.variants AS variants,
+           bt.term_type AS term_type, bt.description AS description, score
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"embedding": embedding}))
+    logger.debug("neo4j | fn=search_business_terms_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_joinpaths(candidate_fqns: list[str]) -> list[dict]:
+    if not candidate_fqns:
+        return []
+    query = """
+    MATCH (jp:JoinPath)
+    WHERE (jp.from_fqn IN $fqns OR jp.to_fqn IN $fqns)
+      AND jp.quality_score >= 0.8
+      AND jp.hop_count <= 1
+    WITH jp,
+         CASE WHEN jp.from_fqn IN $fqns THEN jp.to_fqn ELSE jp.from_fqn END AS target_fqn,
+         CASE jp.algorithm WHEN 'dijkstra' THEN 0 ELSE jp.k_rank END AS path_priority
+    WHERE NOT target_fqn IN $fqns
+    ORDER BY path_priority ASC, jp.quality_score DESC
+    WITH target_fqn, COLLECT(jp)[0] AS best_jp
+    MATCH (t:Table {fqn: target_fqn})
+    RETURN t.fqn AS fqn, t.name AS name, t.description AS description,
+           t.grain AS grain, t.synonyms AS synonyms,
+           t.business_domain AS business_domain, t.community_id AS community_id,
+           t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+           t.is_time_series AS is_time_series,
+           t.natural_dimensions AS natural_dimensions,
+           t.natural_measures AS natural_measures,
+           best_jp.quality_score AS score,
+           (best_jp.from_fqn + ' -> ' + best_jp.to_fqn) AS matched_via
+    ORDER BY best_jp.quality_score DESC
+    LIMIT 10
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"fqns": candidate_fqns}))
+    logger.debug("neo4j | fn=search_tables_via_joinpaths | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_business_terms_fulltext(query_text: str) -> list[dict]:
+    cypher = """
+    CALL db.index.fulltext.queryNodes('businessterm_ft', $query)
+    YIELD node AS bt, score
+    RETURN bt.term AS term, bt.variants AS variants,
+           bt.term_type AS term_type, bt.description AS description,
+           score LIMIT 5
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(cypher, {"query": query_text}))
+    logger.debug("neo4j | fn=search_business_terms_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
 

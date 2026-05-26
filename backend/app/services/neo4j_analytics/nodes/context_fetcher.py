@@ -78,10 +78,34 @@ def _reconstruct_question(question: str, session_summary: str, previous_follow_u
 
 
 _STRIP_PROPS = {
-    "cohere_embedding", "source_hash", "version", "pagerank_score", "betweenness_score",
-    "wcc_component_id", "leiden_gamma", "modularity_contribution", "enrichment_status",
-    "description_model", "ordinal_position", "null_frac", "n_distinct",
-    "same_name_col_count", "encoded_pct", "size_mb", "type_confidence",
+    # Embeddings and hashes
+    "cohere_embedding", "source_hash",
+    # Graph analytics metrics
+    "pagerank_score", "betweenness_score", "wcc_component_id",
+    "leiden_gamma", "modularity_contribution",
+    # Generation metadata
+    "enrichment_status", "description_model", "embedding_model",
+    "embedding_generated_at", "description_generated_at", "created_at", "updated_at",
+    # Statistical internals
+    "ordinal_position", "null_frac", "n_distinct", "same_name_col_count",
+    # Redshift storage details
+    "encoded_pct", "size_mb", "type_confidence", "distkey_col", "diststyle",
+    "sortkey_type", "sortkey1",
+    # Denormalized FTS text fields (indexed separately, not for LLM)
+    "synonyms_text", "intent_tags_text", "top_values_text",
+    # PII / storage flags
+    "is_notnull", "is_nullable", "is_pii", "pii_type", "is_pk",
+    # Table graph topology flags
+    "is_isolated", "is_subquery_anchor", "is_weakly_bridged",
+    "ontology_class", "schema", "table_type_db", "version",
+    # Column — verbose count-suffixed frequency values (value_vocabulary is cleaner)
+    "top_freq_values",
+    # Community graph stats
+    "dominant_domain_confidence", "domain_distribution", "run_date",
+    # Column internal
+    "temporal_grain",
+    # Template internals
+    "anchor_ontology_classes", "intent_scores", "source_line", "time_windowed",
 }
 
 
@@ -108,24 +132,75 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
 
         embedding = await _get_embedding(search_query)
 
-        templates = neo4j_client.search_query_templates(embedding)
-        tables = neo4j_client.search_tables_vector(embedding)
-        columns = neo4j_client.search_columns_vector(embedding)
-        tokens = _tokenize_with_bigrams(search_query)
-        business_terms = neo4j_client.lookup_business_terms(tokens)
-        intents = neo4j_client.search_intents(embedding)
+        # ── Phase 1: Template search (hybrid: vector + FTS) ───────────────────
+        templates         = neo4j_client.search_query_templates(embedding)
+        templates_fts     = neo4j_client.search_query_templates_fulltext(search_query)
+        templates_merged  = _merge_template_results(templates, templates_fts)
 
-        tables = _apply_community_scoping(tables)
-        templates = _trim_objects(templates)
-        tables = _trim_objects(tables)
-        columns = _trim_objects(columns)
+        # ── Phase 2: 7-path table discovery ───────────────────────────────────
+        tables_direct_v      = neo4j_client.search_tables_vector(embedding)
+        tables_direct_fts    = neo4j_client.search_tables_fulltext(search_query)
+        tables_via_tmpl_v    = neo4j_client.search_tables_via_templates_vector(embedding)
+        tables_via_tmpl_fts  = neo4j_client.search_tables_via_templates_fulltext(search_query)
+        tables_via_intent    = neo4j_client.search_tables_via_intents(embedding)
+        tables_via_comm      = neo4j_client.search_tables_via_community(embedding)
+        tables_via_domain    = neo4j_client.search_tables_via_domain(embedding)
 
-        logger.info(
-            "context_fetcher | tables_fetched={} | cols_fetched={} | templates_fetched={}",
-            [t.get("fqn") for t in tables],
-            [f"{c.get('table_fqn')}.{c.get('name')}" for c in columns],
-            [(t.get("id"), round(t.get("score", 0), 3)) for t in templates],
-        )
+        logger.info("context_fetcher | path=direct_vector       | tables={}", [t.get("fqn") for t in tables_direct_v])
+        logger.info("context_fetcher | path=direct_fts          | tables={}", [t.get("fqn") for t in tables_direct_fts])
+        logger.info("context_fetcher | path=template_v→requires | tables={}", [(t.get("fqn"), t.get("matched_via")) for t in tables_via_tmpl_v])
+        logger.info("context_fetcher | path=template_fts→req    | tables={}", [(t.get("fqn"), t.get("matched_via")) for t in tables_via_tmpl_fts])
+        logger.info("context_fetcher | path=intent_traversal    | tables={}", [(t.get("fqn"), t.get("matched_via")) for t in tables_via_intent])
+        logger.info("context_fetcher | path=community_traversal | tables={}", [(t.get("fqn"), t.get("matched_via")) for t in tables_via_comm])
+        logger.info("context_fetcher | path=domain_traversal    | tables={}", [(t.get("fqn"), t.get("matched_via")) for t in tables_via_domain])
+
+        # ── Phase 3: Merge + score tables from 7 semantic paths ──────────────
+        tables = _merge_table_sources({
+            "direct_vector":    tables_direct_v,
+            "direct_fts":       tables_direct_fts,
+            "template_vector":  tables_via_tmpl_v,
+            "template_fts":     tables_via_tmpl_fts,
+            "intent":           tables_via_intent,
+            "community":        tables_via_comm,
+            "domain":           tables_via_domain,
+        })
+        logger.info("context_fetcher | merged_tables={} | path_counts={}",
+                    [t.get("fqn") for t in tables],
+                    {t.get("fqn"): t.get("retrieval_paths") for t in tables})
+
+        # ── Phase 3.5: JoinPath expansion ─────────────────────────────────────
+        semantic_fqns = {t["fqn"] for t in tables if t.get("fqn")}
+        tables_via_joins = neo4j_client.search_tables_via_joinpaths(list(semantic_fqns))
+        logger.info("context_fetcher | path=joinpath_expansion | new_tables={}",
+                    [(t.get("fqn"), t.get("matched_via")) for t in tables_via_joins])
+        existing_fqns = set(semantic_fqns)
+        for t in tables_via_joins:
+            if t.get("fqn") and t["fqn"] not in existing_fqns:
+                t["retrieval_paths"] = ["joinpath"]
+                tables.append(t)
+                existing_fqns.add(t["fqn"])
+
+        # ── Phase 4: Column loading — HAS_COLUMN (with enrichment) + hybrid rank
+        candidate_fqns = {t["fqn"] for t in tables if t.get("fqn")}
+        columns_graph  = neo4j_client.get_columns_for_tables(list(candidate_fqns))
+        columns_v      = neo4j_client.search_columns_vector(embedding)
+        columns_fts    = neo4j_client.search_columns_fulltext(search_query)
+        table_priority = {t["fqn"]: len(t.get("retrieval_paths") or []) for t in tables}
+        columns = _merge_column_sources(columns_graph, columns_v, columns_fts, candidate_fqns, table_priority)
+        logger.info("context_fetcher | cols_graph={} | cols_vector={} | cols_fts={} | cols_merged={}",
+                    len(columns_graph), len(columns_v), len(columns_fts), len(columns))
+
+        # ── Phase 5: Business terms (hybrid: vector + FTS) + intents ──────────
+        business_terms_v   = neo4j_client.search_business_terms_vector(embedding)
+        business_terms_fts = neo4j_client.search_business_terms_fulltext(search_query)
+        business_terms     = _merge_business_terms(business_terms_v, business_terms_fts)
+        intents            = neo4j_client.search_intents(embedding)
+        logger.info("context_fetcher | business_terms={} | intents={}",
+                    [b.get("term") for b in business_terms], [i.get("name") for i in intents])
+
+        templates = _trim_objects(templates_merged)
+        tables    = _trim_objects(tables)
+        columns   = _trim_objects(columns)
 
         memory_context = await long_term.retrieve_user_memory(state["user_id"], search_query)
 
@@ -195,15 +270,115 @@ def _apply_community_scoping(tables: list[dict]) -> list[dict]:
 
 
 def _trim_objects(objects: list[dict]) -> list[dict]:
-    """Remove internal/embedding properties and truncate long text fields."""
     trimmed = []
     for obj in objects:
         cleaned = {k: v for k, v in obj.items() if k not in _STRIP_PROPS}
         if "description" in cleaned and isinstance(cleaned["description"], str):
-            cleaned["description"] = cleaned["description"][:80]
-        if "synonyms" in cleaned and isinstance(cleaned["synonyms"], list):
-            cleaned["synonyms"] = cleaned["synonyms"][:3]
-        if "sample_values" in cleaned and isinstance(cleaned["sample_values"], list):
-            cleaned["sample_values"] = cleaned["sample_values"][:5]
+            cleaned["description"] = cleaned["description"][:120]
+        for list_field, limit in [
+            ("synonyms", 3), ("sample_values", 5),
+            ("value_vocabulary", 5), ("value_aliases", 5),
+            ("variants", 5), ("natural_dimensions", 6), ("natural_measures", 6),
+        ]:
+            if list_field in cleaned and isinstance(cleaned[list_field], list):
+                cleaned[list_field] = cleaned[list_field][:limit]
         trimmed.append(cleaned)
     return trimmed
+
+
+def _merge_template_results(vector_results: list[dict], fts_results: list[dict]) -> list[dict]:
+    seen: dict[str, dict] = {}
+    for t in vector_results:
+        tid = t.get("id")
+        if tid:
+            seen[tid] = dict(t)
+    for t in fts_results:
+        tid = t.get("id")
+        if not tid:
+            continue
+        if tid not in seen:
+            seen[tid] = dict(t)
+        else:
+            seen[tid]["score"] = max(seen[tid].get("score") or 0.0, t.get("score") or 0.0) + 0.05
+    return sorted(seen.values(), key=lambda x: x.get("score") or 0.0, reverse=True)[:5]
+
+
+def _merge_table_sources(sources: dict[str, list[dict]]) -> list[dict]:
+    seen: dict[str, dict] = {}
+    for path_name, table_list in sources.items():
+        for t in table_list:
+            fqn = t.get("fqn")
+            if not fqn:
+                continue
+            if fqn not in seen:
+                seen[fqn] = dict(t)
+                seen[fqn]["retrieval_paths"] = [path_name]
+            else:
+                seen[fqn]["retrieval_paths"].append(path_name)
+                cur_score = seen[fqn].get("score") or 0.0
+                new_score = t.get("score") or 0.0
+                seen[fqn]["score"] = max(cur_score, new_score) + 0.05
+    merged = sorted(
+        seen.values(),
+        key=lambda x: (len(x.get("retrieval_paths") or []), x.get("score") or 0.0),
+        reverse=True,
+    )
+    return merged[:15]
+
+
+def _merge_column_sources(
+    graph_cols: list[dict],
+    vector_cols: list[dict],
+    fts_cols: list[dict],
+    candidate_fqns: set[str],
+    table_priority: dict[str, int],
+) -> list[dict]:
+    relevant_keys: dict[tuple, float] = {}
+    for c in vector_cols:
+        key = (c.get("table_fqn"), c.get("name"))
+        if key[0] and key[1] and key[0] in candidate_fqns:
+            relevant_keys[key] = max(relevant_keys.get(key, 0.0), c.get("score") or 0.0)
+    for c in fts_cols:
+        key = (c.get("table_fqn"), c.get("name"))
+        if key[0] and key[1] and key[0] in candidate_fqns:
+            relevant_keys[key] = max(relevant_keys.get(key, 0.0), c.get("score") or 0.0) + 0.05
+
+    graph_by_key: dict[tuple, dict] = {}
+    for c in graph_cols:
+        key = (c.get("table_fqn"), c.get("name"))
+        if key[0] and key[1]:
+            graph_by_key[key] = c
+
+    result: list[dict] = []
+    seen: set[tuple] = set()
+    for key, _ in sorted(relevant_keys.items(), key=lambda x: x[1], reverse=True):
+        col = graph_by_key.get(key)
+        if col is not None:
+            result.append(col)
+            seen.add(key)
+
+    remaining = [
+        c for c in graph_cols
+        if (c.get("table_fqn"), c.get("name")) not in seen
+        and c.get("table_fqn") and c.get("name")
+    ]
+    remaining.sort(key=lambda c: table_priority.get(c.get("table_fqn", ""), 0), reverse=True)
+    result.extend(remaining)
+    return result[:40]
+
+
+def _merge_business_terms(vector_results: list[dict], fts_results: list[dict]) -> list[dict]:
+    seen: dict[str, dict] = {}
+    for bt in vector_results:
+        term = bt.get("term")
+        if term:
+            seen[term] = dict(bt)
+    for bt in fts_results:
+        term = bt.get("term")
+        if not term:
+            continue
+        if term not in seen:
+            seen[term] = dict(bt)
+        else:
+            seen[term]["score"] = max(seen[term].get("score") or 0.0, bt.get("score") or 0.0) + 0.05
+    return sorted(seen.values(), key=lambda x: x.get("score") or 0.0, reverse=True)[:5]
