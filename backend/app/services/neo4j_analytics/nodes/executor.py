@@ -57,7 +57,7 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
         dependent_indices = [i for i, ir in enumerate(ir_list) if ir.get("depends_on") is not None]
 
         for i in independent_indices:
-            logger.info("executor | running sub-query {} | thread={} | sql_preview={}", i, state["thread_id"], sql_list[i][:400])
+            logger.info("executor | running sub-query {} | thread={} | sql_preview={}", i, state["thread_id"], sql_list[i])
 
         parallel_results = await asyncio.gather(
             *[_execute_single(sql_list[i], ir_list[i], state, query_timeout, max_rows) for i in independent_indices],
