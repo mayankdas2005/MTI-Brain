@@ -13,8 +13,7 @@ import uuid
 
 from app.core.logger import logger
 from app.services.neo4j_analytics.helpers import parse_tag
-from app.services.neo4j_analytics import neo4j_client, redis_client
-from app.services.neo4j_analytics.filter_resolver_logic import is_time_sensitive_sql
+from app.services.neo4j_analytics import neo4j_client
 from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_DEEP, REPAIR_PROMPT
 from app.services.neo4j_analytics.result_summarizer import summarize_results
 from app.services.neo4j_analytics.semantic_ir import SemanticIR
@@ -191,30 +190,11 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
 
 
 async def _execute_single(sql: str, ir_dict: dict, state: AnalyticsState, timeout_s: int, max_rows: int = 100) -> dict:
-    """Execute a single SQL query, checking Redis cache first.
-
-    max_rows is enforced as a hard cap on the returned row count.
-    If the SQL already has a LIMIT clause it is preserved (Redshift applies it),
-    then we truncate the Python result to max_rows as a safety net.
-    If no LIMIT is present, we inject one before sending to Redshift.
-    """
     from app.services.neo4j_analytics.redshift_client import execute_query
 
     bounded_sql = _apply_row_limit(sql, max_rows)
-
-    if not is_time_sensitive_sql(bounded_sql):
-        cached = redis_client.get_redshift_result(bounded_sql)
-        if cached:
-            columns, rows = cached
-            logger.debug("executor | cache hit | thread={} | rows={}", state["thread_id"], len(rows))
-            return {"columns": columns, "rows": rows[:max_rows], "cached": True}
-
     columns, rows = await execute_query(bounded_sql, timeout_s=timeout_s, thread_id=state["thread_id"])
-    rows = rows[:max_rows]
-
-    if not is_time_sensitive_sql(bounded_sql) and rows and 0 < len(rows) <= 5000:
-        redis_client.set_redshift_result(bounded_sql, columns, rows, ttl=14400)
-
+    rows = _make_rows_json_safe(rows[:max_rows])
     return {"columns": columns, "rows": rows, "cached": False}
 
 
@@ -260,6 +240,26 @@ def _merge_sql_list(sql_list: list[str], ir_list: list[dict]) -> str | None:
     # union / labeled_sets / fallback
     parts = [f"({sql})" for sql in sql_list]
     return "\nUNION ALL\n".join(parts)
+
+
+def _make_rows_json_safe(rows: list[list]) -> list[list]:
+    """Convert datetime.date and Decimal values to JSON-serializable types."""
+    import datetime
+    import decimal
+    safe = []
+    for row in rows:
+        safe_row = []
+        for v in row:
+            if isinstance(v, datetime.datetime):
+                safe_row.append(v.isoformat())
+            elif isinstance(v, datetime.date):
+                safe_row.append(v.isoformat())
+            elif isinstance(v, decimal.Decimal):
+                safe_row.append(float(v))
+            else:
+                safe_row.append(v)
+        safe.append(safe_row)
+    return safe
 
 
 def _quote_scalar(v: str) -> str:
