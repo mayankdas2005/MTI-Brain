@@ -63,33 +63,50 @@ def _get_pool() -> queue.Queue:
     return _connection_pool
 
 
+def _run_cursor(conn, sql: str, params: list | None) -> tuple[list[str], list[list]]:
+    """Execute SQL on a connection and return (columns, rows)."""
+    cursor = conn.cursor()
+    try:
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        rows = cursor.fetchall()
+        return columns, [list(r) for r in rows]
+    finally:
+        cursor.close()
+
+
 def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 30) -> tuple[list[str], list[list]]:
-    """Borrow a connection from the pool, execute, return it. Runs in a thread."""
+    """Borrow a connection from the pool, execute, return it. Runs in a thread.
+
+    On BrokenPipe / stale connection: reconnects once and retries the query
+    before raising so the caller doesn't burn a repair slot on a network glitch.
+    """
     pool = _get_pool()
     try:
         conn = pool.get(timeout=timeout_s)
     except queue.Empty:
         raise TimeoutError("All Redshift connections busy — pool exhausted.")
 
+    logger.info("redshift | SQL preview | {}", sql[:400])
+
     try:
-        cursor = conn.cursor()
-        try:
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            rows = cursor.fetchall()
-            return columns, [list(r) for r in rows]
-        finally:
-            cursor.close()
-    except Exception:
+        columns, rows = _run_cursor(conn, sql, params)
+        logger.info("redshift | query OK | rows={} | columns={}", len(rows), columns)
+        return columns, rows
+    except Exception as first_err:
+        logger.warning("redshift | query failed, reconnecting | error={}", first_err)
         try:
             conn.close()
             conn = _make_connection()
-        except Exception as reconnect_err:
-            logger.error("Redshift reconnect failed: {}", reconnect_err)
-        raise
+            columns, rows = _run_cursor(conn, sql, params)
+            logger.info("redshift | query OK after reconnect | rows={} | columns={}", len(rows), columns)
+            return columns, rows
+        except Exception as retry_err:
+            logger.error("redshift | reconnect+retry failed | error={}", retry_err)
+            raise retry_err
     finally:
         try:
             pool.put_nowait(conn)
@@ -118,7 +135,7 @@ async def execute_query(
             timeout=timeout_s + 5,
         )
         elapsed_ms = (time.monotonic() - t0) * 1000
-        logger.info("redshift | thread={} | ms={:.0f} | rows={}", thread_id, elapsed_ms, len(rows))
+        logger.info("redshift | DONE | thread={} | ms={:.0f} | rows={} | columns={}", thread_id, elapsed_ms, len(rows), columns)
         return columns, rows
     except asyncio.TimeoutError:
         elapsed_ms = (time.monotonic() - t0) * 1000

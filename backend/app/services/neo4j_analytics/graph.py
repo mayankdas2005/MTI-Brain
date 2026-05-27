@@ -502,8 +502,14 @@ async def stream_pipeline(
         return streamer
 
     logger.info(
-        "[{}] Analytics pipeline START | thread={} | persona={} | question={}",
-        run_id, thread_id, persona, question[:80],
+        "[{}] Analytics pipeline START | thread={} | user={} | user_id={} | persona={} | max_rows={} | deep={} | question={}",
+        run_id, thread_id,
+        user_email or user_display_name or "unknown",
+        user_id or "unknown",
+        persona or "executive",
+        max_rows,
+        deep_analysis,
+        question[:120],
     )
 
     lf_ctx.__enter__()
@@ -665,6 +671,14 @@ async def stream_pipeline(
         _lf_trace_id  = lf_handler.last_trace_id if lf_handler else None
         _lf_trace_url = _lf_make_public(_lf_trace_id) if _lf_trace_id else None
 
+        _done_rows: list = []
+        _done_cols: list = []
+        for _r in (state.get("result_list") or []):
+            if _r.get("rows"):
+                _done_rows.extend(_r["rows"])
+            if not _done_cols and _r.get("columns"):
+                _done_cols = _r["columns"]
+
         try:
             yield {
                 "event": "done",
@@ -675,9 +689,9 @@ async def stream_pipeline(
                     "stopped":           stopped,
                     "persona":           state.get("persona", ""),
                     "sql":               state.get("sql_list", [""])[0] if state.get("sql_list") else "",
-                    "columns":           [],
-                    "rows":              [],
-                    "row_count":         0,
+                    "columns":           _done_cols,
+                    "rows":              _done_rows,
+                    "row_count":         len(_done_rows),
                     "chart_spec":        state.get("chart_spec"),
                     "answer":            state.get("answer", ""),
                     "follow_ups":        state.get("follow_ups", []),

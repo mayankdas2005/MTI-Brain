@@ -32,50 +32,70 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
         logger.warning("executor | no SQL to execute | thread={}", state["thread_id"])
         return {"error": "No SQL available to execute.", "no_data": True}
 
-    query_timeout = 60
+    query_timeout = 300
 
     result_list = []
     all_columns = []
     all_rows = []
     reliability_flags = list(state.get("reliability_flags") or [])
-
-    independent_indices = [i for i, ir in enumerate(ir_list) if ir.get("depends_on") is None]
-    dependent_indices = [i for i, ir in enumerate(ir_list) if ir.get("depends_on") is not None]
-
     max_rows = state.get("max_rows", 100)
 
-    parallel_results = await asyncio.gather(
-        *[_execute_single(sql_list[i], ir_list[i], state, query_timeout, max_rows) for i in independent_indices],
-        return_exceptions=True,
-    )
-
-    for i, idx in enumerate(independent_indices):
-        res = parallel_results[i]
-        if isinstance(res, Exception):
-            logger.error("executor | sub-query {} failed | thread={} | error={}", idx, state["thread_id"], res)
-            result_list.append({"index": idx, "error": str(res), "columns": [], "rows": []})
-        else:
-            result_list.append({"index": idx, **res})
-            if not all_columns and res.get("columns"):
-                all_columns = res["columns"]
-            if res.get("rows"):
-                all_rows.extend(res["rows"])
-
-    for idx in dependent_indices:
-        dep_idx = ir_list[idx].get("depends_on")
-        dep_result = next((r for r in result_list if r["index"] == dep_idx), None)
-        if dep_result and dep_result.get("error"):
-            result_list.append({"index": idx, "error": "dependency failed", "columns": [], "rows": []})
-            continue
+    merged_sql = _merge_sql_list(sql_list, ir_list)
+    if merged_sql:
+        logger.info("executor | running merged SQL | thread={} | sql_preview={}", state["thread_id"], merged_sql[:400])
         try:
-            res = await _execute_single(sql_list[idx], ir_list[idx], state, query_timeout, max_rows)
-            result_list.append({"index": idx, **res})
-            if not all_columns and res.get("columns"):
-                all_columns = res["columns"]
-            if res.get("rows"):
-                all_rows.extend(res["rows"])
+            res = await _execute_single(merged_sql, ir_list[0], state, query_timeout, max_rows)
+            result_list = [{"index": 0, **res}]
+            all_columns = res.get("columns", [])
+            all_rows = res.get("rows", [])
+            logger.info("executor | merged SQL result | thread={} | rows={} | columns={}", state["thread_id"], len(all_rows), all_columns)
         except Exception as e:
-            result_list.append({"index": idx, "error": str(e), "columns": [], "rows": []})
+            logger.warning("executor | merged SQL failed, fallback | thread={} | error={}", state["thread_id"], e)
+            merged_sql = None
+
+    if not merged_sql:
+        independent_indices = [i for i, ir in enumerate(ir_list) if ir.get("depends_on") is None]
+        dependent_indices = [i for i, ir in enumerate(ir_list) if ir.get("depends_on") is not None]
+
+        for i in independent_indices:
+            logger.info("executor | running sub-query {} | thread={} | sql_preview={}", i, state["thread_id"], sql_list[i][:400])
+
+        parallel_results = await asyncio.gather(
+            *[_execute_single(sql_list[i], ir_list[i], state, query_timeout, max_rows) for i in independent_indices],
+            return_exceptions=True,
+        )
+
+        for i, idx in enumerate(independent_indices):
+            res = parallel_results[i]
+            if isinstance(res, Exception):
+                logger.error("executor | sub-query {} FAILED | thread={} | error={}", idx, state["thread_id"], res)
+                result_list.append({"index": idx, "error": str(res), "columns": [], "rows": []})
+            else:
+                logger.info("executor | sub-query {} result | thread={} | rows={} | columns={}", idx, state["thread_id"], len(res.get("rows", [])), res.get("columns", []))
+                result_list.append({"index": idx, **res})
+                if not all_columns and res.get("columns"):
+                    all_columns = res["columns"]
+                if res.get("rows"):
+                    all_rows.extend(res["rows"])
+
+        for idx in dependent_indices:
+            dep_idx = ir_list[idx].get("depends_on")
+            dep_result = next((r for r in result_list if r["index"] == dep_idx), None)
+            if dep_result and dep_result.get("error"):
+                result_list.append({"index": idx, "error": "dependency failed", "columns": [], "rows": []})
+                continue
+            logger.info("executor | running dependent sub-query {} | thread={} | sql_preview={}", idx, state["thread_id"], sql_list[idx][:400])
+            try:
+                res = await _execute_single(sql_list[idx], ir_list[idx], state, query_timeout, max_rows)
+                logger.info("executor | dependent sub-query {} result | thread={} | rows={} | columns={}", idx, state["thread_id"], len(res.get("rows", [])), res.get("columns", []))
+                result_list.append({"index": idx, **res})
+                if not all_columns and res.get("columns"):
+                    all_columns = res["columns"]
+                if res.get("rows"):
+                    all_rows.extend(res["rows"])
+            except Exception as e:
+                logger.error("executor | dependent sub-query {} FAILED | thread={} | error={}", idx, state["thread_id"], e)
+                result_list.append({"index": idx, "error": str(e), "columns": [], "rows": []})
 
     all_errors = [r["error"] for r in result_list if r.get("error")]
     first_ir = SemanticIR(**ir_list[0]) if ir_list else None
@@ -89,17 +109,35 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
             return repair_result
 
     if all_errors:
-        combined_error = "; ".join(all_errors[:3])
-        logger.warning("executor | repairs exhausted | thread={} | error={}", state["thread_id"], combined_error)
-        asyncio.create_task(_write_audit_log(state, sql_list[0] if sql_list else "", 0, "failed"))
-        return {
-            "result_list": result_list,
-            "error": combined_error,
-            "execution_error": combined_error,
-            "no_data": True,
-            "repair_count": repair_count,
-            "_prev_repair_count": repair_count,
-        }
+        partial_rows = []
+        partial_cols: list = []
+        for r in result_list:
+            if r.get("rows"):
+                partial_rows.extend(r["rows"])
+            if not partial_cols and r.get("columns"):
+                partial_cols = r["columns"]
+
+        if partial_rows:
+            logger.warning(
+                "executor | repairs exhausted but partial data available | thread={} | rows={} | failed_errors={}",
+                state["thread_id"], len(partial_rows),
+                [r.get("error") for r in result_list if r.get("error")],
+            )
+            all_rows = partial_rows
+            all_columns = partial_cols
+            all_errors = []
+        else:
+            combined_error = "; ".join(all_errors[:3])
+            logger.warning("executor | repairs exhausted, no usable data | thread={} | error={}", state["thread_id"], combined_error)
+            asyncio.create_task(_write_audit_log(state, sql_list[0] if sql_list else "", 0, "failed"))
+            return {
+                "result_list": result_list,
+                "error": combined_error,
+                "execution_error": combined_error,
+                "no_data": True,
+                "repair_count": repair_count,
+                "_prev_repair_count": repair_count,
+            }
 
     total_rows = len(all_rows)
 
@@ -134,7 +172,10 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
     if not all_errors and total_rows > 0:
         asyncio.create_task(_write_query_pattern(state, sql_list[0] if sql_list else "", first_ir))
 
-    logger.info("executor DONE | thread={} | rows={} | flags={}", state["thread_id"], total_rows, reliability_flags)
+    logger.info(
+        "executor DONE | thread={} | total_rows={} | columns={} | no_data=False | flags={} | passing to synthesis",
+        state["thread_id"], total_rows, all_columns, reliability_flags,
+    )
     return {
         "result_list": result_list,
         "query_summary": query_summary.model_dump(),
@@ -143,6 +184,9 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
         "error": None,
         "execution_error": None,
         "_prev_repair_count": repair_count,
+        "zero_row_probe_result": None,
+        "needs_clarification": False,
+        "clarification_reason": None,
     }
 
 
@@ -191,6 +235,31 @@ def _apply_row_limit(sql: str, max_rows: int) -> str:
         # Replace existing LIMIT with the smaller cap
         return limit_pattern.sub(f"LIMIT {max_rows}", sql.rstrip())
     return sql.rstrip() + f"\nLIMIT {max_rows}"
+
+
+def _merge_sql_list(sql_list: list[str], ir_list: list[dict]) -> str | None:
+    """Combine multiple sub-query SQLs into one when merge_strategy is set.
+
+    Returns a single SQL string or None (fall back to sequential execution).
+    Redshift supports CTEs inside subquery expressions, so wrapping each
+    WITH…SELECT in (...) AS alias is valid.
+    """
+    if len(sql_list) <= 1:
+        return None
+    strategy = next((ir.get("merge_strategy") for ir in ir_list if ir.get("merge_strategy")), None)
+    if not strategy:
+        return None
+    if strategy == "join":
+        merge_key = next((ir.get("merge_key") for ir in ir_list if ir.get("merge_key")), None)
+        if merge_key and len(sql_list) == 2:
+            join_conds = " AND ".join(f"_sq0.{k} = _sq1.{k}" for k in merge_key)
+            return (
+                f"SELECT * FROM ({sql_list[0]}) AS _sq0\n"
+                f"JOIN ({sql_list[1]}) AS _sq1 ON {join_conds}"
+            )
+    # union / labeled_sets / fallback
+    parts = [f"({sql})" for sql in sql_list]
+    return "\nUNION ALL\n".join(parts)
 
 
 def _quote_scalar(v: str) -> str:

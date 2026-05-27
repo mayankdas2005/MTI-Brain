@@ -128,8 +128,11 @@ def _build_join_clause(ir: SemanticIR) -> str:
         left_table = ir.path_tables[i]
         right_table = ir.path_tables[i + 1]
         join_type = ir.join_types[i] if i < len(ir.join_types) else "JOIN"
-        left_col, right_col = _parse_join_clause(join_clause)
-        result += f"\n    {join_type} {right_table} ON {left_table}.{left_col} = {right_table}.{right_col}"
+        if "." in join_clause:
+            result += f"\n    {join_type} {right_table} ON {join_clause}"
+        else:
+            left_col, right_col = _parse_join_clause(join_clause)
+            result += f"\n    {join_type} {right_table} ON {left_table}.{left_col} = {right_table}.{right_col}"
     return result
 
 

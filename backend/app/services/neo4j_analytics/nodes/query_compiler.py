@@ -208,6 +208,9 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
             logger.error("query_compiler | sub-SQL generate failed | thread={} | error={}", state["thread_id"], e)
             sql_list.append("")
 
+    for idx, s in enumerate(sql_list):
+        logger.info("query_compiler | sub_query[{}] final SQL | thread={} | sql_preview={}", idx, state["thread_id"], s[:300])
+
     logger.info("query_compiler DONE (decomposed) | thread={} | sub_queries={}", state["thread_id"], len(ir_list))
     return {
         "semantic_ir_list": ir_list,
@@ -305,21 +308,10 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
 
         jp = neo4j_client.load_best_join_path(from_table, to_table)
         if not jp:
-            jp = neo4j_client.load_best_join_path(to_table, from_table)
-            if jp:
-                logger.info("query_compiler | join path found via reverse | from={} to={}", from_table, to_table)
-        if not jp:
-            # Try JOINS_TO direct edge as final fallback
-            direct = _load_direct_join(from_table, to_table)
-            if direct:
-                all_join_clauses.append(direct["clause"])
-                all_path_tables.append(to_table)
-                join_types.append(direct["join_type"])
-            else:
-                logger.warning("query_compiler | no join_path | from={} to={} | using fallback ON id=id", from_table, to_table)
-                all_join_clauses.append("id = id")
-                all_path_tables.append(to_table)
-                join_types.append("JOIN")
+            logger.warning("query_compiler | no join_path | from={} to={} | using fallback ON id=id", from_table, to_table)
+            all_join_clauses.append("id = id")
+            all_path_tables.append(to_table)
+            join_types.append("JOIN")
             continue
 
         logger.info(
@@ -632,8 +624,8 @@ async def _generate_sql_llm(
     response = await _call()
     sql = parse_tag(response.content or "", "sql")
     logger.info(
-        "query_compiler | sql_generated | thread={} | sql_len={} | anchor={}",
-        state["thread_id"], len(sql or ""), ir.anchor_tables,
+        "query_compiler | SQL generated | thread={} | anchor={} | sql_len={} | sql_preview={}",
+        state["thread_id"], ir.anchor_tables, len(sql or ""), (sql or "")[:300],
     )
     return (sql or "").strip()
 

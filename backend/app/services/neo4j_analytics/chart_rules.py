@@ -58,8 +58,8 @@ def select_chart_type(
         return "kpi_card"
 
     # ── Force table for very wide or text-heavy results ───────────────────────
-    if n_cols > 5 or _has_long_text(columns, rows):
-        return "table"
+    # if n_cols > 5 or _has_long_text(columns, rows):
+    #     return "table"
 
     # ── Waterfall — variance / attribution intent ─────────────────────────────
     # Skip for executives (too complex) and directors (borderline — allow).

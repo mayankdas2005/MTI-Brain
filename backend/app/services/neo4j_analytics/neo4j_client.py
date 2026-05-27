@@ -526,22 +526,59 @@ def load_join_path_yens(from_fqn: str, to_fqn: str, k_rank: int = 1) -> dict | N
 
 
 def load_best_join_path(from_fqn: str, to_fqn: str) -> dict | None:
-    """Load the best available JoinPath using a fallback sequence.
+    """Load the best available join path using a three-tier fallback.
 
-    Tries in order: Dijkstra k=1 → Yen's k=1 → Yen's k=2 → Yen's k=3.
-    Returns None only if no precomputed path exists at all.
+    Tier 1 — JoinPath forward  : dijkstra k=1, then yen's k=1/2/3
+    Tier 2 — JoinPath reverse  : same sequence with (to, from) args
+    Tier 3 — JOINS_TO edge     : direct JOINS_TO edge in either direction
+
+    Always returns a dict with keys: id, join_clauses, path_tables, hop_count.
+    Returns None only when all three tiers fail.
     """
+    # ── Tier 1: JoinPath forward ──────────────────────────────────────────────
     result = load_join_path(from_fqn, to_fqn)
     if result:
         return result
-
     for k in (1, 2, 3):
         result = load_join_path_yens(from_fqn, to_fqn, k_rank=k)
         if result:
-            logger.info("neo4j | join_path fallback | from={} to={} | yens k={}", from_fqn, to_fqn, k)
             return result
 
-    logger.warning("neo4j | no join_path found | from={} to={}", from_fqn, to_fqn)
+    # ── Tier 2: JoinPath reverse ──────────────────────────────────────────────
+    result = load_join_path(to_fqn, from_fqn)
+    if result:
+        logger.debug("neo4j | join_path via reverse | from={} to={}", from_fqn, to_fqn)
+        return result
+    for k in (1, 2, 3):
+        result = load_join_path_yens(to_fqn, from_fqn, k_rank=k)
+        if result:
+            logger.debug("neo4j | join_path via reverse yens k={} | from={} to={}", k, from_fqn, to_fqn)
+            return result
+
+    # ── Tier 3: JOINS_TO direct edge (bidirectional) ─────────────────────────
+    try:
+        edges = get_direct_joins([from_fqn, to_fqn])
+        for e in edges:
+            f, t = e.get("from_fqn"), e.get("to_fqn")
+            fc, tc = e.get("from_col"), e.get("to_col")
+            if not (f and t and fc and tc):
+                continue
+            if (f == from_fqn and t == to_fqn) or (f == to_fqn and t == from_fqn):
+                clause = f"{f}.{fc} = {t}.{tc}"
+                logger.debug("neo4j | join_path via JOINS_TO edge | from={} to={} | clause={}", from_fqn, to_fqn, clause)
+                return {
+                    "id": "",
+                    "join_clauses": [clause],
+                    "path_tables": [f, t],
+                    "hop_count": 1,
+                    "total_cost": None,
+                    "quality_score": None,
+                    "is_cross_community": False,
+                }
+    except Exception as exc:
+        logger.debug("neo4j | JOINS_TO edge lookup failed | from={} to={} | error={}", from_fqn, to_fqn, exc)
+
+    logger.debug("neo4j | no join_path found | from={} to={}", from_fqn, to_fqn)
     return None
 
 

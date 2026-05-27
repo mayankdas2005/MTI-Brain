@@ -37,9 +37,17 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     no_data = state.get("no_data", False)
     reliability_flags = state.get("reliability_flags") or []
     low_confidence_filters = state.get("low_confidence_filters") or []
-    zero_row_probe_result = state.get("zero_row_probe_result") or ""
+    zero_row_probe_result = (state.get("zero_row_probe_result") or "") if no_data else ""
     ir_list = state.get("semantic_ir_list") or []
     anchor_tables = ir_list[0].get("anchor_tables", []) if ir_list else []
+
+    result_list = state.get("result_list") or []
+    total_rows_received = sum(len(r.get("rows") or []) for r in result_list)
+    logger.info(
+        "synthesis | inputs | thread={} | no_data={} | total_rows={} | anchor_tables={} | query_summary_keys={} | zero_row_probe={}",
+        state["thread_id"], no_data, total_rows_received, anchor_tables,
+        list(query_summary.keys()), (zero_row_probe_result or "")[:120],
+    )
 
     flag_instructions = "\n".join(
         _FLAG_INSTRUCTIONS.get(flag, "") for flag in reliability_flags if flag in _FLAG_INSTRUCTIONS
@@ -64,7 +72,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     )
 
     prompt = SYNTHESIS_PROMPT.format_messages(
-        persona=state.get("persona", "analyst"),
+        persona=state.get("persona", "executive"),
         question=state["question"],
         anchor_tables=", ".join(anchor_tables),
         reliability_flags=", ".join(reliability_flags) if reliability_flags else "none",

@@ -10,7 +10,31 @@ import uuid
 def _json_serial(obj):
     if isinstance(obj, (datetime.date, datetime.datetime)):
         return obj.isoformat()
+    import decimal
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _make_json_safe(obj):
+    """Recursively convert datetime/Decimal to JSON primitives.
+
+    SQLAlchemy serializes JSONB columns with its own json.dumps (no custom
+    encoder), so we must sanitize the structure before handing it over.
+    Handles dicts, lists, tuples, datetime.date/datetime, decimal.Decimal.
+    """
+    import decimal
+    if isinstance(obj, dict):
+        return {k: _make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_make_json_safe(v) for v in obj]
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    if isinstance(obj, datetime.date):
+        return obj.isoformat()
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    return obj
 
 from app.api.v1.deps import CurrentUser, get_current_user
 from app.core.logger import logger
@@ -101,7 +125,7 @@ def _build_sse_generator(
             role="assistant",
             content=save_data.get("answer", ""),
             reasoning=reasoning,
-            metadata={
+            metadata=_make_json_safe({
                 "sql": save_data.get("sql", ""),
                 "columns": save_data.get("columns", []),
                 "rows": save_data.get("rows", []),
@@ -119,7 +143,7 @@ def _build_sse_generator(
                 "token_usage": save_data.get("token_usage"),
                 "langfuse_trace_id": save_data.get("langfuse_trace_id"),
                 "langfuse_trace_url": save_data.get("langfuse_trace_url"),
-            },
+            }),
         )
         try:
             async with async_session_factory() as save_db:

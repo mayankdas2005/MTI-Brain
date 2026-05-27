@@ -117,8 +117,8 @@ def _build_vega_lite_spec(chart_type: str, columns: list[str], rows: list[list],
     }
 
     if chart_type in ("bar", "bar_horizontal"):
-        x_col = columns[0] if columns else "x"
-        y_col = columns[1] if len(columns) > 1 else "y"
+        y_col = _find_numeric_col(columns, rows)
+        x_col = _find_string_col(columns, rows, exclude=y_col) or (columns[0] if columns else "x")
         spec["mark"] = "bar"
         spec["encoding"] = {
             "x" if chart_type == "bar" else "y": {

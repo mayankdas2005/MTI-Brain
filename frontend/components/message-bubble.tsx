@@ -410,11 +410,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       setDataView('sql');
     }
   }, [message.isStreaming, sql, hasTableData]);
-  // Show data skeleton once SQL generation step has begun but data hasn't arrived yet
-  const sqlStepStarted = message.isStreaming && !message.dataReady &&
-    (message.streamingSteps?.some((s) => ['query_compiler', 'sql_validator', 'executor', 'synthesis'].includes(s.node)) ?? false);
-  // Chart skeleton only shows after synthesis is done — visualization runs right after and is nearly instant.
-  // Without this gate the skeleton would show for the entire synthesis duration (often 20+ seconds).
+
   const answerSynthesisDone = message.streamingSteps?.some(
     (s) => s.node === 'synthesis' && s.status === 'done'
   ) ?? false;
@@ -434,36 +430,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         />
       )}
 
-      {/* Data skeleton — mirrors the SQL code-block that replaces it.
-          Height and structure intentionally match the real view so the
-          swap causes zero layout shift (only an opacity crossfade). */}
-      {sqlStepStarted && (
-        <div className="mb-2 animate-fade-in">
-          {/* Tab buttons — always shown, mirrors SQL + Data tabs */}
-          <div className="flex items-center gap-1 mb-2">
-            <Skeleton className="h-7 w-20 rounded-md" />
-            <Skeleton className="h-7 w-14 rounded-md" />
-          </div>
-          {/* Code-block skeleton — lines at realistic SQL widths */}
-          <div className="rounded-lg border border-border overflow-hidden">
-            <div className="flex items-center justify-end px-3 py-1.5 border-b border-border bg-muted/30">
-              <Skeleton className="h-5 w-5 rounded" />
-            </div>
-            <div className="p-3 space-y-[9px]">
-              {[80, 55, 70, 88, 60, 75, 50, 82, 65, 45].map((w, i) => (
-                <Skeleton
-                  key={i}
-                  className="h-[11px] rounded"
-                  style={{ width: `${w}%`, marginLeft: i > 0 && i < 9 ? '16px' : '0' }}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SQL / Data toggle — opacity-only fade so the height reserved
-          by the skeleton above doesn't cause a second layout shift */}
+      {/* SQL / Data toggle */}
       {hasDataView && (
         <div className="mb-2 space-y-2 animate-fade-only">
           <div className="flex items-center gap-1">
