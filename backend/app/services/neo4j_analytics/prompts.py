@@ -27,7 +27,7 @@ _REASONING_FORMAT = (
 
 REASONING_DIRECTIVE_NORMAL = (
     "Think out loud as a human analyst: notice ambiguity, question assumptions, explain each choice. "
-    "Do NOT narrate what you are doing — show the actual thinking. 2–5 sentences.\n\n"
+    "Do NOT narrate what you are doing — show the actual thinking. 2–4 sentences.\n\n"
     + _REASONING_FORMAT
 )
 
@@ -35,7 +35,7 @@ REASONING_DIRECTIVE_DEEP = (
     "Think out loud as a senior analyst doing deep due diligence: surface hidden assumptions, "
     "challenge the framing, consider alternative interpretations, flag data gaps, reason through "
     "each decision with precision. Do not narrate — think. Explore fully, do not cut short. "
-    "8–15 sentences.\n\n"
+    "8–10 sentences.\n\n"
     + _REASONING_FORMAT
 )
 
@@ -104,6 +104,15 @@ Schema rules:
 - Column format: table_fqn.column_name (e.g. lpp.ach_return.amount)
 - Measures need aggregation (SUM/AVG/COUNT). Dimensions go in GROUP BY. Dates become time filters.
 
+ANCHOR TABLE RULE:
+- `matched_templates` in schema_candidates lists QueryTemplates that match this question.
+  When a template has score > 0.70, its `anchor_table_fqns` are pre-validated primary tables for this query type.
+- Your output's `anchor_tables` field MUST list those FQNs (unless absent from the tables list).
+- All measures, dimensions, and aggregation filters MUST reference columns from `anchor_tables` only.
+- If you need a column from a non-anchor table (e.g. a display name from a dimension table),
+  that table MUST be a JOIN partner to an anchor table — never a standalone anchor.
+  Only add it to `anchor_tables` if it is explicitly in the matched template's `anchor_table_fqns`.
+
 TEMPORAL EXPRESSIONS — output as a standardized keyword, never as resolved ISO dates.
 The system translates keywords to Redshift SQL (CURRENT_DATE, DATEADD, DATE_TRUNC) at query time.
 Supported keywords:
@@ -153,6 +162,7 @@ Any identifier NOT in schema_candidates makes the entire output invalid.
 <output>
 {{
   "template_id": "...",
+  "anchor_tables": ["lpp.table_name"],
   "measures": [...],
   "dimensions": [...],
   "filters": [{{"table_fqn": "...", "column": "...", "operator": "=", "raw_value": "..."}}],
@@ -208,6 +218,7 @@ QUERY PATTERNS (reference SQL outlines for similar questions):
 ANTI-PATTERNS (known failures to avoid):
 <anti_patterns>{anti_patterns}</anti_patterns>
 
+{validation_error_section}
 CURRENT INTENT: {resolved_intent}
 
 USER QUESTION: {question}
@@ -261,6 +272,7 @@ Output your reasoning within <reasoning>...</reasoning> and then a strict JSON o
 REPAIR_PROMPT = ChatPromptTemplate.from_template(
     """You are fixing broken Redshift SQL. ONLY fix: syntax errors, bad aliases, schema drift, column type mismatches, Redshift dialect issues.
 NEVER change: JOINs, aggregations, filters, metric definitions, or the semantic meaning of the query.
+ALWAYS maintain CTE structure — the fixed SQL MUST use WITH ... AS (...) syntax, never a flat SELECT.
 
 SEMANTIC BOUNDARY (must be preserved):
 {semantic_ir}
@@ -289,6 +301,56 @@ Output your reasoning within <reasoning>...</reasoning> and the fixed SQL inside
 </reasoning>
 <sql>
 {{fixed SQL here}}
+</sql>"""
+)
+
+# ─── SQL Generator (replaces deterministic sql_compiler) ────────────────────
+
+SQL_GENERATE_PROMPT = ChatPromptTemplate.from_template(
+    """You are generating a Redshift SQL query from a semantic specification.
+
+INSTRUCTIONS:
+- Use ONLY the tables and column names listed in SCHEMA CONTEXT. Never invent column or table names.
+- Tables and columns: use ONLY names listed in SCHEMA CONTEXT. Never invent column or table names.
+- Primary joins: `semantic_spec.joins` lists the pre-loaded ON clauses for the primary table path — use them.
+- Additional joins: `schema_context.available_joins` lists all known join paths between candidate tables.
+  If you need to join a table not in `semantic_spec.joins`, look it up here and use the provided `join_clauses`.
+  Do not JOIN tables that have no entry in `semantic_spec.joins` or `available_joins`.
+- Time filter: apply `time_filter.table_fqn`.`time_filter.column` `time_filter.operator` `time_filter.value`
+  as a WHERE condition using the value verbatim. If time_filter is null, add no date range.
+- Filters: each filter has an `is_having` flag.
+  - `is_having: false` → WHERE clause (row-level, before aggregation)
+  - `is_having: true` → HAVING clause (post-aggregation; wrap column in its aggregation function)
+- Measures: if the measures list is empty, omit GROUP BY and HAVING — this is a lookup query.
+- CTE structure: ALWAYS write the query using WITH ... AS (...) CTEs. Every query MUST start with
+  WITH — never write a flat SELECT. Use `cte_steps` as the CTE names, adding more layers as needed.
+  Give every SELECT column a stable alias. In subsequent CTEs, reference columns by alias — never
+  by the original schema-qualified table.column once the table is out of scope.
+- LIMIT: apply `{limit}` rows in the final SELECT.
+- Output exactly ONE complete SQL statement. Do not use semicolons to separate multiple statements.
+
+SEMANTIC SPEC:
+<semantic_spec>
+{semantic_spec}
+</semantic_spec>
+
+SCHEMA CONTEXT:
+<schema_context>
+{schema_context}
+</schema_context>
+
+ANTI-PATTERNS (avoid these):
+<anti_patterns>{anti_patterns}</anti_patterns>
+
+{reasoning_directive}
+
+Output your reasoning within <reasoning>...</reasoning> and the complete Redshift SQL within <sql>...</sql>.
+
+<reasoning>
+{{Walk through each CTE layer, which filters go to WHERE vs HAVING (use is_having flag), and whether joinable_extras are needed.}}
+</reasoning>
+<sql>
+{{complete Redshift SQL here}}
 </sql>"""
 )
 

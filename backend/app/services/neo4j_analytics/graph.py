@@ -101,8 +101,8 @@ def route_intent(state: AnalyticsState) -> str:
 
 
 def route_after_clarification(state: AnalyticsState) -> str:
-    logger.info("route: clarification → intent_resolver | thread={}", state["thread_id"])
-    return N_INTENT_RESOLVER
+    logger.info("route: clarification → synthesis | thread={}", state["thread_id"])
+    return N_SYNTHESIS
 
 
 def route_compiler(state: AnalyticsState) -> str:
@@ -132,27 +132,18 @@ def route_validator(state: AnalyticsState) -> str:
 
 def route_executor(state: AnalyticsState) -> str:
     repair_count = state.get("repair_count", 0)
-    recompile_count = state.get("recompile_count", 0)
-    clarification_count = state.get("clarification_count", 0)
 
     if state.get("stopped"):
         logger.info("route: executor → synthesis (stopped) | thread={}", state["thread_id"])
         return N_SYNTHESIS
 
     if state.get("error") and repair_count >= MAX_REPAIR:
-        if recompile_count < MAX_RECOMPILE:
-            logger.info("route: executor → intent_resolver (repairs exhausted, retry with error context) | thread={}", state["thread_id"])
-            return N_INTENT_RESOLVER
-        logger.info("route: executor → synthesis (repairs + recompiles exhausted) | thread={}", state["thread_id"])
+        logger.info("route: executor → synthesis (repairs exhausted) | thread={}", state["thread_id"])
         return N_SYNTHESIS
 
     if repair_count > state.get("_prev_repair_count", -1):
         logger.info("route: executor → sql_validator (after repair) | thread={}", state["thread_id"])
         return N_SQL_VALIDATOR
-
-    if state.get("needs_clarification") and clarification_count < MAX_CLARIFICATION:
-        logger.info("route: executor → clarification | thread={}", state["thread_id"])
-        return N_CLARIFICATION
 
     logger.info("route: executor → synthesis | thread={}", state["thread_id"])
     return N_SYNTHESIS

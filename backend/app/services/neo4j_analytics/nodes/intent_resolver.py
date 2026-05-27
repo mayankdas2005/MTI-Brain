@@ -64,12 +64,36 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     }
 
 
+_LLM_STRIP = {"retrieval_paths", "score", "matched_via", "community_id"}
+
+
+def _clean_for_llm(objects: list[dict]) -> list[dict]:
+    """Remove pipeline-internal fields before serializing context for the LLM."""
+    return [{k: v for k, v in obj.items() if k not in _LLM_STRIP} for obj in objects]
+
+
 def _build_prompt(state: AnalyticsState) -> list:
     semantic_context = state.get("semantic_context") or {}
+
+    tables_for_llm  = _clean_for_llm(semantic_context.get("tables", [])[:8])
+    columns_for_llm = _clean_for_llm(semantic_context.get("columns", [])[:12])
+
+    matched_templates = [
+        {"id": t.get("id"), "score": t.get("score"), "anchor_table_fqns": t.get("anchor_table_fqns")}
+        for t in semantic_context.get("templates", [])[:2]
+    ]
+
+    logger.info(
+        "intent_resolver | llm_context | tables={} | columns={}",
+        [t.get("fqn") for t in tables_for_llm],
+        [(c.get("table_fqn"), c.get("name")) for c in columns_for_llm],
+    )
+
     context_str = json.dumps({
+        "matched_templates": matched_templates,
         "templates": semantic_context.get("templates", [])[:5],
-        "tables": semantic_context.get("tables", [])[:10],
-        "columns": semantic_context.get("columns", [])[:15],
+        "tables": tables_for_llm,
+        "columns": columns_for_llm,
         "business_terms": semantic_context.get("business_terms", [])[:5],
         "intents": semantic_context.get("intents", [])[:3],
     }, indent=2)

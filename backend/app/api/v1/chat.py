@@ -1,9 +1,16 @@
 """Chat API endpoints for thread management and Q&A streaming."""
 
 import asyncio
+import datetime
 import json
 import time
 import uuid
+
+
+def _json_serial(obj):
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 from app.api.v1.deps import CurrentUser, get_current_user
 from app.core.logger import logger
@@ -197,7 +204,7 @@ def _build_sse_generator(
                 if event_name == "stopped":
                     duration_ms = int((time.perf_counter() - _stream_start) * 1000)
                     data = {**data, "conversation_id": str(conversation_id), "duration_ms": duration_ms}
-                    yield {"event": event_name, "data": json.dumps(data)}
+                    yield {"event": event_name, "data": json.dumps(data, default=_json_serial)}
                     asyncio.create_task(_save_assistant_message({
                         "answer": "".join(_partial_answer),
                         "stopped": True,
@@ -207,14 +214,14 @@ def _build_sse_generator(
 
                 if event_name == "done":
                     data = {**data, "conversation_id": str(conversation_id)}
-                    yield {"event": event_name, "data": json.dumps(data)}
+                    yield {"event": event_name, "data": json.dumps(data, default=_json_serial)}
                     asyncio.create_task(_save_assistant_message(data))
                     break
 
                 if event_name == "answer.delta":
                     _partial_answer.append(data.get("text", ""))
 
-                yield {"event": event_name, "data": json.dumps(data)}
+                yield {"event": event_name, "data": json.dumps(data, default=_json_serial)}
 
                 if event_name == "error":
                     break

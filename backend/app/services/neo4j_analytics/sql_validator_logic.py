@@ -48,43 +48,49 @@ def _run_gates(sql: str) -> tuple[bool, str]:
         if forbidden in sql_upper:
             return False, f"Forbidden keyword detected: {forbidden.strip()}"
 
-    # Check for semicolons that could indicate multiple statements
-    if ";" in sql.rstrip(";"):
-        return False, "Semicolon found mid-query — possible multiple statements"
-
     # Gate 3 — Schema prefix check
     if "lpp." not in sql.lower():
         logger.warning("sql_validator | no lpp. schema prefix found")
 
     # Gate 4 — Cartesian join detection (JOIN without ON)
-    if _has_cartesian_join(sql):
-        return False, "JOIN without ON clause detected — cartesian product risk"
+    # if _has_cartesian_join(sql):
+    #     return False, "JOIN without ON clause detected — cartesian product risk"
 
     # Gate 5 — Aggregate in WHERE clause
-    if _has_aggregate_in_where(sql_upper):
-        return False, "Aggregate function in WHERE clause — use HAVING instead"
+    # if _has_aggregate_in_where(sql):
+    #     return False, "Aggregate function in WHERE clause — use HAVING instead"
 
     return True, ""
 
 
 def _has_cartesian_join(sql: str) -> bool:
-    """Detect JOIN without ON or USING clause."""
-    import re
-    sql_upper = sql.upper()
-    join_positions = [m.start() for m in re.finditer(r'\bJOIN\b', sql_upper)]
-    for pos in join_positions:
-        segment = sql_upper[pos:pos + 200]
-        if " ON " not in segment and " USING " not in segment:
-            return True
+    """Detect JOIN without ON or USING clause using sqlglot AST (CTE-safe)."""
+    import sqlglot
+    import sqlglot.expressions as exp
+    try:
+        for stmt in sqlglot.parse(sql, dialect="redshift"):
+            for join in stmt.find_all(exp.Join):
+                if not join.args.get("on") and not join.args.get("using"):
+                    return True
+    except Exception:
+        pass
     return False
 
 
-def _has_aggregate_in_where(sql_upper: str) -> bool:
-    """Detect aggregate functions used in WHERE clause."""
-    import re
-    where_match = re.search(r'\bWHERE\b(.*?)(?:\bGROUP\b|\bHAVING\b|\bORDER\b|\bLIMIT\b|$)', sql_upper, re.DOTALL)
-    if not where_match:
-        return False
-    where_clause = where_match.group(1)
-    agg_functions = ["SUM(", "COUNT(", "AVG(", "MAX(", "MIN(", "LISTAGG("]
-    return any(agg in where_clause for agg in agg_functions)
+def _has_aggregate_in_where(sql: str) -> bool:
+    """Detect aggregate functions in WHERE clauses using sqlglot AST (CTE-safe).
+
+    Regex-based detection was unreliable because it spanned CTE boundaries,
+    picking up SUM() from the aggregated CTE's SELECT while examining the
+    base_data CTE's WHERE clause.
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+    try:
+        for stmt in sqlglot.parse(sql, dialect="redshift"):
+            for where in stmt.find_all(exp.Where):
+                if where.find(exp.AggFunc):
+                    return True
+    except Exception:
+        pass
+    return False

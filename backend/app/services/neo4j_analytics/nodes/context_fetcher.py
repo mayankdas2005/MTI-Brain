@@ -137,6 +137,15 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         templates_fts     = neo4j_client.search_query_templates_fulltext(search_query)
         templates_merged  = _merge_template_results(templates, templates_fts)
 
+        # Build a virtual "template_anchor" source from the top-matched template's
+        # anchor_table_fqns. These are pre-validated primary tables for this query
+        # type — giving them one extra retrieval path breaks score ties vs. semantically
+        # similar but wrong tables (e.g. forecast_cash_flow vs forecast_vs_actual).
+        anchor_source: list[dict] = []
+        if templates_merged:
+            for fqn in (templates_merged[0].get("anchor_table_fqns") or []):
+                anchor_source.append({"fqn": fqn, "score": 0.95})
+
         # ── Phase 2: 7-path table discovery ───────────────────────────────────
         tables_direct_v      = neo4j_client.search_tables_vector(embedding)
         tables_direct_fts    = neo4j_client.search_tables_fulltext(search_query)
@@ -153,8 +162,9 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         logger.info("context_fetcher | path=intent_traversal    | tables={}", [(t.get("fqn"), t.get("matched_via")) for t in tables_via_intent])
         logger.info("context_fetcher | path=community_traversal | tables={}", [(t.get("fqn"), t.get("matched_via")) for t in tables_via_comm])
         logger.info("context_fetcher | path=domain_traversal    | tables={}", [(t.get("fqn"), t.get("matched_via")) for t in tables_via_domain])
+        logger.info("context_fetcher | path=template_anchor     | tables={}", [t.get("fqn") for t in anchor_source])
 
-        # ── Phase 3: Merge + score tables from 7 semantic paths ──────────────
+        # ── Phase 3: Merge + score tables from 8 paths (7 semantic + anchor) ─
         tables = _merge_table_sources({
             "direct_vector":    tables_direct_v,
             "direct_fts":       tables_direct_fts,
@@ -163,6 +173,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             "intent":           tables_via_intent,
             "community":        tables_via_comm,
             "domain":           tables_via_domain,
+            "template_anchor":  anchor_source,
         })
         logger.info("context_fetcher | merged_tables={} | path_counts={}",
                     [t.get("fqn") for t in tables],
@@ -323,7 +334,7 @@ def _merge_table_sources(sources: dict[str, list[dict]]) -> list[dict]:
         key=lambda x: (len(x.get("retrieval_paths") or []), x.get("score") or 0.0),
         reverse=True,
     )
-    return merged[:15]
+    return merged[:10]
 
 
 def _merge_column_sources(

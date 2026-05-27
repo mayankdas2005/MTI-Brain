@@ -33,7 +33,7 @@ class SemanticIR(BaseModel):
     complexity: str
     anchor_tables: list[str]
     join_path_ids: list[str]   # one per consecutive table pair — length = len(anchor_tables)-1
-    join_clauses: list[str]    # ["account_ref = code"] — col names only, no table prefix
+    join_clauses: list[str]    # ["lpp.t1.col = lpp.t2.col"] — fully-qualified ON clauses
     path_tables: list[str]     # full ordered list of tables across all join paths
     join_types: list[str]
     measures: list[ColumnRef]

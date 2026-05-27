@@ -16,7 +16,6 @@ from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics import neo4j_client
 from app.services.neo4j_analytics.prompts import DECOMPOSE_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.neo4j_analytics.semantic_ir import ColumnRef, FilterSpec, SemanticIR
-from app.services.neo4j_analytics.sql_compiler import compile_sql
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
@@ -29,11 +28,11 @@ async def query_compiler(state: AnalyticsState, config: RunnableConfig) -> dict:
     if state.get("decompose_needed"):
         return await _handle_decomposed(state, resolved, semantic_context, config)
     else:
-        return await _handle_single(state, resolved, semantic_context)
+        return await _handle_single(state, resolved, semantic_context, config)
 
 
-async def _handle_single(state: AnalyticsState, resolved: dict, semantic_context: dict) -> dict:
-    """Build a single SemanticIR and optionally compile SQL."""
+async def _handle_single(state: AnalyticsState, resolved: dict, semantic_context: dict, config: RunnableConfig) -> dict:
+    """Build a single SemanticIR and generate SQL via LLM."""
     try:
         ir = _build_semantic_ir(resolved, semantic_context, sub_query_index=None)
     except Exception as e:
@@ -53,7 +52,9 @@ async def _handle_single(state: AnalyticsState, resolved: dict, semantic_context
         }
 
     try:
-        sql = compile_sql(ir)
+        sql = await _generate_sql_llm(ir, semantic_context, state, config)
+        if not sql:
+            raise ValueError("LLM returned empty SQL")
         logger.info("query_compiler DONE (single) | thread={} | sql_len={}", state["thread_id"], len(sql))
         return {
             "semantic_ir_list": [ir.model_dump()],
@@ -61,12 +62,24 @@ async def _handle_single(state: AnalyticsState, resolved: dict, semantic_context
             "filter_resolution_needed": False,
         }
     except Exception as e:
-        logger.error("query_compiler | SQL compile failed | thread={} | error={}", state["thread_id"], e)
+        logger.error("query_compiler | SQL generate failed | thread={} | error={}", state["thread_id"], e)
         return {"error": str(e), "needs_clarification": True, "clarification_reason": "I couldn't generate a valid query."}
 
 
 async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_context: dict, config: RunnableConfig) -> dict:
     """Use Sonnet to decompose into sub-queries, then build an IR for each."""
+    # Skip decomposition when the primary anchor is a rollup table — it already has
+    # pre-computed aggregated columns (variance_pct, etc.), so one query suffices.
+    anchor_tables = resolved.get("anchor_tables") or _extract_anchor_tables(resolved)
+    if anchor_tables:
+        ctx_tables = {t["fqn"]: t for t in semantic_context.get("tables", []) if t.get("fqn")}
+        if ctx_tables.get(anchor_tables[0], {}).get("is_rollup"):
+            logger.info(
+                "query_compiler | anchor is rollup, skipping decomposition | thread={} | anchor={}",
+                state["thread_id"], anchor_tables[0],
+            )
+            return await _handle_single(state, resolved, semantic_context, config)
+
     logger.info("query_compiler | decomposing | thread={}", state["thread_id"])
 
     context_str = json.dumps({
@@ -94,6 +107,14 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
         if feedback_context else ""
     )
 
+    validation_error = state.get("error")
+    validation_error_section = (
+        f"\nPREVIOUS VALIDATION FAILURE — the SQL generated from the previous decomposition "
+        f"was rejected by the validator. Fix the sub-queries mentioned below:\n"
+        f"<validation_error>{validation_error}</validation_error>\n"
+        if validation_error else ""
+    )
+
     prompt = DECOMPOSE_PROMPT.format_messages(
         question=state["question"],
         resolved_intent=json.dumps(resolved, indent=2),
@@ -103,6 +124,7 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
         reasoning_directive=reasoning_directive,
         conversation_section=conversation_section,
         feedback_section=feedback_section,
+        validation_error_section=validation_error_section,
     )
 
     from app.services.neo4j_analytics.bedrock import get_llm
@@ -118,15 +140,32 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
         response = await _call()
     except Exception as e:
         logger.error("query_compiler decompose LLM failed | thread={} | error={}", state["thread_id"], e)
-        return await _handle_single(state, resolved, semantic_context)
+        return await _handle_single(state, resolved, semantic_context, config)
 
     decomposition = _parse_decomposition(response.content or "", state["thread_id"])
     if not decomposition:
         logger.warning("query_compiler | decomposition parse failed | falling back to single | thread={}", state["thread_id"])
-        return await _handle_single(state, resolved, semantic_context)
+        return await _handle_single(state, resolved, semantic_context, config)
+
+    # Partial recompile: if only some sub-queries failed validation, keep the
+    # passing IRs from the previous run and only regenerate the failing ones.
+    failed_indices = set(state.get("failed_sql_indices") or [])
+    previous_ir_list = state.get("semantic_ir_list") or []
+    sub_queries_from_llm = decomposition.get("sub_queries", [])
+    is_partial = bool(failed_indices and previous_ir_list and len(failed_indices) < len(previous_ir_list))
+    if is_partial:
+        logger.info(
+            "query_compiler | partial recompile | failed_indices={} | preserving {} passing IR(s)",
+            sorted(failed_indices), len(previous_ir_list) - len(failed_indices),
+        )
 
     ir_list = []
-    for i, sub_q in enumerate(decomposition.get("sub_queries", [])):
+    for i, sub_q in enumerate(sub_queries_from_llm):
+        # For partial recompile: skip LLM-suggested sub-queries for passing indices
+        if is_partial and i not in failed_indices and i < len(previous_ir_list):
+            ir_list.append(previous_ir_list[i])
+            continue
+
         sub_resolved = dict(resolved)
         sub_resolved["anchor_tables"] = sub_q.get("anchor_tables", resolved.get("anchor_tables", []))
         sub_resolved["intent"] = sub_q.get("intent", resolved.get("intent", ""))
@@ -134,7 +173,7 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
 
         if not _validate_anchor_tables(sub_resolved["anchor_tables"], semantic_context):
             logger.warning("query_compiler | decomposed sub-query {} has invalid tables | thread={}", i, state["thread_id"])
-            return await _handle_single(state, resolved, semantic_context)
+            return await _handle_single(state, resolved, semantic_context, config)
 
         try:
             ir = _build_semantic_ir(sub_resolved, semantic_context, sub_query_index=i)
@@ -148,7 +187,7 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
             ir_list.append(ir.model_dump())
         except Exception as e:
             logger.warning("query_compiler | sub-IR {} build failed | thread={} | error={}", i, state["thread_id"], e)
-            return await _handle_single(state, resolved, semantic_context)
+            return await _handle_single(state, resolved, semantic_context, config)
 
     has_unresolved = any(
         not f["resolved"]
@@ -163,9 +202,10 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
     for ir_dict in ir_list:
         ir = SemanticIR(**ir_dict)
         try:
-            sql_list.append(compile_sql(ir))
+            sql = await _generate_sql_llm(ir, semantic_context, state, config)
+            sql_list.append(sql or "")
         except Exception as e:
-            logger.error("query_compiler | sub-SQL compile failed | thread={} | error={}", state["thread_id"], e)
+            logger.error("query_compiler | sub-SQL generate failed | thread={} | error={}", state["thread_id"], e)
             sql_list.append("")
 
     logger.info("query_compiler DONE (decomposed) | thread={} | sub_queries={}", state["thread_id"], len(ir_list))
@@ -178,7 +218,21 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
 
 def _build_semantic_ir(resolved: dict, semantic_context: dict, sub_query_index: int | None) -> SemanticIR:
     """Build a SemanticIR from resolved intent and semantic context."""
-    anchor_tables = resolved.get("anchor_tables") or _extract_anchor_tables(resolved)
+    anchor_tables = list(resolved.get("anchor_tables") or _extract_anchor_tables(resolved))
+
+    # Ensure every table referenced in measures/dimensions is in anchor_tables so that
+    # _load_join_paths can resolve the correct ON clauses. This fixes decomposed sub-queries
+    # where DECOMPOSE_PROMPT sets anchor_tables=['lpp.company'] but measures still reference
+    # lpp.forecast_vs_actual — without this, joins: [] and the SQL generator hallucinates.
+    ref_tables = _extract_anchor_tables(resolved)
+    missing = [t for t in ref_tables if t not in anchor_tables]
+    if missing:
+        anchor_tables = anchor_tables + missing
+        logger.info(
+            "query_compiler | anchor_tables extended | added={} | final={}",
+            missing, anchor_tables,
+        )
+
     join_path_ids, join_clauses, path_tables, join_types = _load_join_paths(anchor_tables)
 
     measures = [ColumnRef(**m) for m in resolved.get("measures", []) if isinstance(m, dict) and "table_fqn" in m]
@@ -255,10 +309,17 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
             if jp:
                 logger.info("query_compiler | join path found via reverse | from={} to={}", from_table, to_table)
         if not jp:
-            logger.warning("query_compiler | no join_path | from={} to={} | using fallback ON id=id", from_table, to_table)
-            all_join_clauses.append("id = id")
-            all_path_tables.append(to_table)
-            join_types.append("JOIN")
+            # Try JOINS_TO direct edge as final fallback
+            direct = _load_direct_join(from_table, to_table)
+            if direct:
+                all_join_clauses.append(direct["clause"])
+                all_path_tables.append(to_table)
+                join_types.append(direct["join_type"])
+            else:
+                logger.warning("query_compiler | no join_path | from={} to={} | using fallback ON id=id", from_table, to_table)
+                all_join_clauses.append("id = id")
+                all_path_tables.append(to_table)
+                join_types.append("JOIN")
             continue
 
         logger.info(
@@ -271,7 +332,9 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
         path_tbls = jp.get("path_tables", [from_table, to_table])
 
         for j, clause in enumerate(clauses):
-            all_join_clauses.append(clause)
+            left_tbl = path_tbls[j] if j < len(path_tbls) else from_table
+            right_tbl = path_tbls[j + 1] if j + 1 < len(path_tbls) else to_table
+            all_join_clauses.append(_qualify_join_clause(clause, left_tbl, right_tbl))
             join_types.append("JOIN")
 
         for tbl in path_tbls[1:]:
@@ -334,6 +397,7 @@ def _build_time_filter(timeframe: str | None, anchor_tables: list[str], semantic
         value=result["value"],
         raw_user_value=timeframe,
         resolved=True,
+        is_raw_sql=result.get("is_raw_sql", False),
     )
 
 
@@ -372,6 +436,191 @@ def _get_cte_steps(template_id: str, semantic_context: dict) -> list[str]:
             if isinstance(steps, str):
                 return [s.split(":")[0].strip() for s in steps.split(",")]
     return []
+
+
+_COL_FIELDS_SQL = {
+    "name", "table_fqn", "data_type", "semantic_type", "default_aggregation",
+    "is_measurable", "is_groupable", "filter_selectivity",
+    "sample_values", "value_vocabulary", "value_aliases",
+}
+
+
+def _qualify_join_clause(clause: str, left_table: str, right_table: str) -> str:
+    """Prefix bare 'col1 = col2' join clauses with FQN table names.
+
+    JoinPath nodes store unqualified column pairs. The LLM needs
+    'lpp.t1.col = lpp.t2.col' to generate correct ON clauses.
+    If the clause already contains dots it is returned unchanged.
+    """
+    if not clause or "." in clause:
+        return clause
+    if "=" not in clause:
+        return clause
+    left_col, right_col = [x.strip() for x in clause.split("=", 1)]
+    return f"{left_table}.{left_col} = {right_table}.{right_col}"
+
+
+def _load_direct_join(from_fqn: str, to_fqn: str) -> dict | None:
+    """Check JOINS_TO edges between two tables and return the best join clause."""
+    try:
+        direct = neo4j_client.get_direct_joins([from_fqn, to_fqn])
+        for dj in direct:
+            f, t = dj.get("from_fqn"), dj.get("to_fqn")
+            fc, tc = dj.get("from_col"), dj.get("to_col")
+            if not (f and t and fc and tc):
+                continue
+            if (f == from_fqn and t == to_fqn) or (f == to_fqn and t == from_fqn):
+                clause = f"{f}.{fc} = {t}.{tc}"
+                jtype = dj.get("join_type") or "JOIN"
+                logger.info(
+                    "query_compiler | join via JOINS_TO edge | from={} to={} | clause={}",
+                    from_fqn, to_fqn, clause,
+                )
+                return {"clause": clause, "join_type": jtype}
+    except Exception:
+        pass
+    return None
+
+
+def _build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
+    """Build schema context for the SQL generation LLM call.
+
+    Passes ALL merged tables and columns from semantic_context (the full 7-path
+    retrieval result), not just anchor/path tables. The LLM needs the full picture
+    to choose the right columns and avoid hallucination.
+    Primary join clauses are already in the semantic_spec; this section gives the
+    LLM metadata for every candidate table so it can discover additional joins.
+    """
+    pinned_cols = {(m.table_fqn, m.column_name) for m in ir.measures + ir.dimensions}
+    all_ctx_fqns = {t["fqn"] for t in semantic_context.get("tables", []) if t.get("fqn")}
+
+    # All merged tables — full descriptions, grain, join role
+    tables = [
+        {k: v for k, v in t.items()
+         if k in {"fqn", "name", "description", "grain", "table_type",
+                  "is_time_series", "typical_join_role", "natural_measures", "natural_dimensions",
+                  "is_rollup"}}
+        for t in semantic_context.get("tables", [])
+    ]
+
+    # All columns for every candidate table; add description for pinned columns
+    columns = []
+    for c in semantic_context.get("columns", []):
+        if not c.get("table_fqn") or not c.get("name"):
+            continue
+        row = {k: v for k, v in c.items() if k in _COL_FIELDS_SQL}
+        if (c.get("table_fqn"), c.get("name")) in pinned_cols:
+            row["description"] = c.get("description", "")
+        columns.append(row)
+
+    # Available join paths — single batch JOINS_TO edge query (replaces O(n²) JoinPath calls).
+    # JOINS_TO edges are the authoritative source for direct join columns (from_col/to_col).
+    available_joins: list[dict] = []
+    candidate_fqns = list(set(ir.path_tables) | set(ir.anchor_tables) | all_ctx_fqns)
+    try:
+        direct_joins = neo4j_client.get_direct_joins(candidate_fqns)
+        seen_pairs: set[tuple] = set()
+        for dj in direct_joins:
+            f, t = dj.get("from_fqn"), dj.get("to_fqn")
+            fc, tc = dj.get("from_col"), dj.get("to_col")
+            if not (f and t and fc and tc):
+                continue
+            pair = (min(f, t), max(f, t))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            available_joins.append({
+                "from": f,
+                "to": t,
+                "join_clauses": [f"{f}.{fc} = {t}.{tc}"],
+                "join_type": dj.get("join_type") or "JOIN",
+                "confidence": dj.get("confidence"),
+            })
+            if len(available_joins) >= 15:
+                break
+    except Exception:
+        pass
+
+    return {
+        "tables": tables,
+        "columns": columns,
+        "available_joins": available_joins,
+        "business_terms": semantic_context.get("business_terms", [])[:5],
+    }
+
+
+async def _generate_sql_llm(
+    ir: SemanticIR,
+    semantic_context: dict,
+    state: AnalyticsState,
+    config: RunnableConfig,
+) -> str:
+    """Generate Redshift SQL from SemanticIR via LLM."""
+    spec = {
+        "anchor_tables": ir.anchor_tables,
+        "path_tables": ir.path_tables,
+        "joins": [
+            {
+                "from": ir.path_tables[i],
+                "to": ir.path_tables[i + 1],
+                "type": ir.join_types[i] if i < len(ir.join_types) else "JOIN",
+                "on": ir.join_clauses[i],
+            }
+            for i in range(len(ir.join_clauses))
+            if i + 1 < len(ir.path_tables)
+        ],
+        "measures": [m.model_dump() for m in ir.measures],
+        "dimensions": [d.model_dump() for d in ir.dimensions],
+        "filters": [
+            {
+                "table_fqn": f.table_fqn,
+                "column": f.column_name,
+                "operator": f.operator,
+                "value": f.value,
+                "is_having": f.is_having,
+                "is_raw_sql": f.is_raw_sql,
+            }
+            for f in ir.filters
+        ],
+        "time_filter": {
+            "table_fqn": ir.time_filter.table_fqn,
+            "column": ir.time_filter.column_name,
+            "operator": ir.time_filter.operator,
+            "value": ir.time_filter.value,
+        } if ir.time_filter else None,
+        "cte_steps": ir.cte_steps[:4],
+        "order_by": ir.order_by,
+        "limit": ir.limit,
+    }
+
+    schema_ctx = _build_schema_context(ir, semantic_context)
+    anti_patterns = await _fetch_anti_patterns(state)
+
+    from app.services.neo4j_analytics.prompts import SQL_GENERATE_PROMPT, REASONING_DIRECTIVE_NORMAL
+    prompt = SQL_GENERATE_PROMPT.format_messages(
+        semantic_spec=json.dumps(spec, indent=2),
+        schema_context=json.dumps(schema_ctx, indent=2),
+        anti_patterns=anti_patterns,
+        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        limit=ir.limit or state.get("max_rows") or 100,
+    )
+
+    from app.services.neo4j_analytics.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
+
+    llm = get_llm("balanced")
+
+    @llm_breaker
+    async def _call():
+        return await llm.ainvoke(prompt, config=config)
+
+    response = await _call()
+    sql = parse_tag(response.content or "", "sql")
+    logger.info(
+        "query_compiler | sql_generated | thread={} | sql_len={} | anchor={}",
+        state["thread_id"], len(sql or ""), ir.anchor_tables,
+    )
+    return (sql or "").strip()
 
 
 def _validate_anchor_tables(anchor_tables: list[str], semantic_context: dict) -> bool:

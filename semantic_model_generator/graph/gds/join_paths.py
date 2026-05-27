@@ -57,20 +57,29 @@ class JoinPathBuilder:
     def _get_join_clauses_for_path(self, path_tables: list[str]) -> list[str]:
         """
         Look up from_col/to_col for each consecutive pair in a path.
+        Returns fully-qualified SQL fragments like 'lpp.t1.col = lpp.t2.col'.
+        Uses startNode/endNode to determine correct table ownership per column
+        regardless of path traversal direction.
         GDS virtual path relationships only carry projected numeric properties
         (join_cost), not string properties — so we query the real edges here.
         """
-        clauses = []
+        clauses: list[str] = []
+        seen: set[str] = set()
         for i in range(len(path_tables) - 1):
             a, b = path_tables[i], path_tables[i + 1]
             rows = self._run("""
-                MATCH (a:Table {fqn: $a})-[r:JOINS_TO]-(b:Table {fqn: $b})
+                MATCH (ta:Table {fqn: $a})-[r:JOINS_TO]-(tb:Table {fqn: $b})
                 WHERE r.from_col IS NOT NULL AND r.to_col IS NOT NULL
-                RETURN r.from_col AS fc, r.to_col AS tc
+                RETURN r.from_col AS fc, r.to_col AS tc,
+                       startNode(r).fqn AS from_fqn, endNode(r).fqn AS to_fqn
                 LIMIT 1
             """, a=a, b=b)
             if rows:
-                clauses.append(f"{rows[0]['fc']} = {rows[0]['tc']}")
+                row = rows[0]
+                clause = f"{row['from_fqn']}.{row['fc']} = {row['to_fqn']}.{row['tc']}"
+                if clause not in seen:
+                    seen.add(clause)
+                    clauses.append(clause)
             else:
                 clauses.append("")
         return clauses

@@ -55,14 +55,15 @@ def get_driver():
 
 
 def _bootstrap_indexes() -> None:
-    """Create vector indexes for QueryPattern, AntiPattern, Table, and Column if they don't exist."""
+    """Create required FTS indexes on startup.
+
+    QueryPattern and AntiPattern vector indexes are NOT bootstrapped here because
+    those nodes have no data yet. Bootstrapping an index on an empty schema
+    causes Neo4j 01N52 property-key warnings on every query. The write_query_pattern
+    and write_anti_pattern functions will populate those nodes over time; the
+    indexes can be created then.
+    """
     queries = [
-        """CREATE VECTOR INDEX querypattern_cohere_embedding IF NOT EXISTS
-           FOR (n:QueryPattern) ON (n.cohere_embedding)
-           OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}""",
-        """CREATE VECTOR INDEX antipattern_cohere_embedding IF NOT EXISTS
-           FOR (n:AntiPattern) ON (n.cohere_embedding)
-           OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}""",
         """CREATE FULLTEXT INDEX businessterm_ft IF NOT EXISTS
            FOR (n:BusinessTerm) ON EACH [n.term, n.variants, n.description]""",
     ]
@@ -421,7 +422,7 @@ def search_tables_via_joinpaths(candidate_fqns: list[str]) -> list[dict]:
            best_jp.quality_score AS score,
            (best_jp.from_fqn + ' -> ' + best_jp.to_fqn) AS matched_via
     ORDER BY best_jp.quality_score DESC
-    LIMIT 10
+    LIMIT 5
     """
     t0 = time.monotonic()
     with get_driver().session(database=settings.NEO4J_DB) as session:
@@ -542,6 +543,31 @@ def load_best_join_path(from_fqn: str, to_fqn: str) -> dict | None:
 
     logger.warning("neo4j | no join_path found | from={} to={}", from_fqn, to_fqn)
     return None
+
+
+@neo4j_breaker
+def get_direct_joins(table_fqns: list[str]) -> list[dict]:
+    """Batch query JOINS_TO edges between the given tables.
+
+    Single round-trip: returns all direct join edges where both endpoints are in table_fqns.
+    Each row carries from_fqn, to_fqn, from_col, to_col, join_type, confidence.
+    """
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (t1:Table)-[r:JOINS_TO]->(t2:Table)
+    WHERE t1.fqn IN $fqns AND t2.fqn IN $fqns AND t1.fqn <> t2.fqn
+    RETURN t1.fqn AS from_fqn, t2.fqn AS to_fqn,
+           r.from_col AS from_col, r.to_col AS to_col,
+           r.recommended_join_type AS join_type,
+           r.confidence AS confidence
+    ORDER BY r.confidence DESC
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"fqns": table_fqns}))
+    logger.debug("neo4j | fn=get_direct_joins | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
 
 
 @neo4j_breaker

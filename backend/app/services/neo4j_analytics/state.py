@@ -32,6 +32,7 @@ class AnalyticsState(TypedDict):
     resolved_intent: dict | None          # output of intent_resolver
     semantic_ir_list: list[dict]          # list of SemanticIR (1 for simple, N for decomposed)
     sql_list: list[str]                   # compiled SQL per SemanticIR
+    failed_sql_indices: list[int]         # indices of sql_list entries that failed validation
     recompile_count: int                  # max 1
     repair_count: int                     # max 2 across all repair types
     filter_resolution_needed: bool

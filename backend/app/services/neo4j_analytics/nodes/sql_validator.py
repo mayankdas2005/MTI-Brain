@@ -18,22 +18,25 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     if not sql_list:
         logger.warning("sql_validator | no SQL to validate | thread={}", state["thread_id"])
-        return {"error": "No SQL was generated to validate.", "recompile_count": recompile_count}
+        return {"error": "No SQL was generated to validate.", "recompile_count": recompile_count, "failed_sql_indices": []}
 
     errors = []
+    failed_indices = []
     for i, sql in enumerate(sql_list):
         if not sql.strip():
             errors.append(f"SQL #{i+1} is empty")
+            failed_indices.append(i)
             continue
         is_valid, error_msg = validate_sql(sql)
         if not is_valid:
             errors.append(f"SQL #{i+1}: {error_msg}")
+            failed_indices.append(i)
 
     if not errors:
         logger.info("sql_validator DONE | thread={} | all {} SQL(s) valid", state["thread_id"], len(sql_list))
-        return {"error": None}
+        return {"error": None, "failed_sql_indices": []}
 
     combined_error = "; ".join(errors)
-    logger.warning("sql_validator | validation failed | thread={} | error={}", state["thread_id"], combined_error)
+    logger.warning("sql_validator | validation failed | thread={} | failed_indices={} | error={}", state["thread_id"], failed_indices, combined_error)
 
-    return {"error": combined_error, "recompile_count": recompile_count}
+    return {"error": combined_error, "recompile_count": recompile_count + 1, "failed_sql_indices": failed_indices}
