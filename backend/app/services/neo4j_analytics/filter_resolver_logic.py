@@ -1,15 +1,64 @@
 """Filter value resolution logic — pure functions, no I/O.
 
 The tiered resolution pipeline:
-  Tier 1: Exact match against Column.value_aliases and sample_values
-  Tier 2: Fuzzy match against Column.sample_values via rapidfuzz
+  Tier 1 Combined: aliases → exact match on filter_values → fuzzy (rapidfuzz WRatio)
+  Tier 2: Redshift DISTINCT probe — only when filter_values is empty (not in this file)
   Tier 3: Temporal expression parsing
-  Tier 4: Redshift DISTINCT probe (I/O — not in this file, called by filter_resolver node)
   Tier 5: LLM disambiguation (not in this file)
-  Tier 6: Clarification request
 """
 
 from __future__ import annotations
+
+
+def resolve_tier1_combined(
+    user_value: str,
+    filter_values: list[str],
+    value_aliases: dict[str, str] | None,
+) -> tuple[str | None, float, list[str]]:
+    """Single-pass: aliases → exact (case-insensitive) → fuzzy (rapidfuzz WRatio).
+
+    filter_values should be the Redshift-probed distinct values written by context_fetcher
+    enrichment — NOT Neo4j's sample_values (which are partial and truncated).
+
+    Returns (resolved_value, score, ambiguous_candidates).
+    - resolved_value + score >= 85 + empty candidates → confident match
+    - resolved_value + 70 <= score < 85 → low-confidence match
+    - None + candidates → ambiguous (multiple ≥85 matches)
+    - None + empty candidates → no match
+    """
+    user_lower = user_value.lower()
+
+    if isinstance(value_aliases, dict):
+        for alias, canonical in value_aliases.items():
+            if alias.lower() == user_lower:
+                return canonical, 100.0, []
+
+    for v in (filter_values or []):
+        if str(v).lower() == user_lower:
+            return v, 100.0, []
+
+    if not filter_values or len(filter_values) > 500:
+        return None, 0.0, []
+
+    try:
+        from rapidfuzz import fuzz, process
+        matches = process.extract(user_value, filter_values, scorer=fuzz.WRatio, limit=5)
+    except ImportError:
+        return None, 0.0, []
+
+    if not matches:
+        return None, 0.0, []
+
+    above_85 = [(m[0], m[1]) for m in matches if m[1] >= 85]
+    top_val, top_score = matches[0][0], matches[0][1]
+
+    if top_score >= 85 and len(above_85) == 1:
+        return top_val, top_score, []
+    if 70 <= top_score < 85:
+        return top_val, top_score, []
+    if len(above_85) > 1:
+        return None, top_score, [m[0] for m in above_85]
+    return None, top_score, []
 
 
 def resolve_tier1_exact(
@@ -17,7 +66,7 @@ def resolve_tier1_exact(
     sample_values: list[str],
     value_aliases: dict[str, str] | None,
 ) -> str | None:
-    """Tier 1: exact match against aliases and sample_values."""
+    """Tier 1: exact match against aliases and sample_values (legacy — kept for compatibility)."""
     if value_aliases and isinstance(value_aliases, dict):
         for alias, canonical in value_aliases.items():
             if alias.lower() == user_value.lower():
@@ -35,15 +84,10 @@ def resolve_tier2_fuzzy(
     user_value: str,
     sample_values: list[str],
 ) -> tuple[str | None, float, list[str]]:
-    """Tier 2: fuzzy match against sample_values.
-
-    Returns (resolved_value, score, candidates_above_85).
-    resolved_value is None if ambiguous or below threshold.
-    """
+    """Tier 2: fuzzy match against sample_values (legacy — kept for compatibility)."""
     if not sample_values:
         return None, 0.0, []
 
-    # Skip fuzzy matching for very large vocabularies — go to Tier 4
     if len(sample_values) > 500:
         return None, 0.0, []
 
@@ -180,12 +224,12 @@ def resolve_tier3_temporal(user_value: str) -> dict | None:
 
 
 def build_redshift_probe_sql(table_fqn: str, col_name: str, user_value: str) -> str:
-    """Build a fast probe SQL — fetches first 200 non-null values, no full scan."""
+    """Build a probe SQL — DISTINCT values, alphabetically sorted, up to 100."""
     return (
-        f"SELECT CAST({col_name} AS VARCHAR) AS val "
+        f'SELECT DISTINCT CAST("{col_name}" AS VARCHAR) AS val '
         f"FROM {table_fqn} "
-        f"WHERE {col_name} IS NOT NULL "
-        f"LIMIT 200"
+        f'WHERE "{col_name}" IS NOT NULL '
+        f"ORDER BY 1 LIMIT 100"
     )
 
 

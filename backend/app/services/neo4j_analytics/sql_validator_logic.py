@@ -52,6 +52,11 @@ def _run_gates(sql: str) -> tuple[bool, str]:
     if "lpp." not in sql.lower():
         logger.warning("sql_validator | no lpp. schema prefix found")
 
+    # Gate 3.5 — CTE table reference check
+    ok, msg = _check_cte_table_refs(stmt)
+    if not ok:
+        return False, msg
+
     # Gate 4 — Cartesian join detection (JOIN without ON)
     # if _has_cartesian_join(sql):
     #     return False, "JOIN without ON clause detected — cartesian product risk"
@@ -59,6 +64,54 @@ def _run_gates(sql: str) -> tuple[bool, str]:
     # Gate 5 — Aggregate in WHERE clause
     # if _has_aggregate_in_where(sql):
     #     return False, "Aggregate function in WHERE clause — use HAVING instead"
+
+    return True, ""
+
+
+def _check_cte_table_refs(parsed) -> tuple[bool, str]:
+    """Gate 3.5: catch table qualifiers referenced in a CTE's SELECT/WHERE but not JOINed.
+
+    Handles three-part names (lpp.currency.code → col.table = 'currency'),
+    aliases (added to from_tables), and nested subqueries (skipped via ancestor check).
+    """
+    import sqlglot.expressions as exp
+
+    for cte in parsed.find_all(exp.CTE):
+        cte_body = cte.this
+        # Unwrap Subquery wrapper present in some sqlglot versions
+        if isinstance(cte_body, exp.Subquery):
+            cte_body = cte_body.this
+        if not isinstance(cte_body, exp.Select):
+            continue
+
+        # Collect all tables/aliases that are directly FROM/JOIN of this CTE's select
+        # (not from nested subqueries inside it)
+        from_tables: set[str] = set()
+        for table in cte_body.find_all(exp.Table):
+            ancestor = table.find_ancestor(exp.Select)
+            if ancestor is not cte_body:
+                continue  # belongs to a nested subquery
+            if table.name:
+                from_tables.add(table.name.lower())
+            if table.alias:
+                from_tables.add(table.alias.lower())
+
+        cte_name = (cte.alias or "").lower()
+
+        # Check column qualifiers used directly in this CTE's scope
+        for col in cte_body.find_all(exp.Column):
+            col_scope = col.find_ancestor(exp.Select)
+            if col_scope is not cte_body:
+                continue  # belongs to a nested subquery
+            tbl = (col.table or "").lower()
+            if not tbl:
+                continue
+            if tbl in from_tables or tbl == cte_name:
+                continue
+            return False, (
+                f"CTE '{cte.alias}' references table '{col.table}' which is not in its FROM clause. "
+                f"Add the missing JOIN using the join_clause from available_joins in SCHEMA CONTEXT."
+            )
 
     return True, ""
 

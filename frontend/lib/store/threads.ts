@@ -999,9 +999,9 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           const update: Partial<typeof m> = {
             streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs),
           };
-          // Retry: sparql_gen starting again means a new execution cycle —
+          // Retry: executor starting again means a new execution cycle —
           // reset data/chart readiness so stale 0-row results are cleared.
-          if (data.node === 'sparql_gen' && m.dataReady) {
+          if (data.node === 'executor' && m.dataReady) {
             update.dataReady = false;
             update.chartReady = false;
           }
@@ -1117,8 +1117,6 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
                 metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
                 metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
-                sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
-                sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
                 token_usage: (data.token_usage as TokenUsage | undefined) ?? m.metadata_?.token_usage,
                 langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
                 langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
@@ -1371,9 +1369,9 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           const update: Partial<typeof m> = {
             streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs),
           };
-          // Retry: sparql_gen starting again means a new execution cycle —
+          // Retry: executor starting again means a new execution cycle —
           // reset data/chart readiness so stale 0-row results are cleared.
-          if (data.node === 'sparql_gen' && m.dataReady) {
+          if (data.node === 'executor' && m.dataReady) {
             update.dataReady = false;
             update.chartReady = false;
           }
@@ -1479,8 +1477,6 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
                 metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
                 metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
-                sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
-                sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
                 token_usage: (data.token_usage as TokenUsage | undefined) ?? m.metadata_?.token_usage,
                 langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
                 langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
@@ -1681,9 +1677,9 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           const update: Partial<typeof m> = {
             streamingSteps: appendActiveStep(m.streamingSteps, data.node, data.message, startedAtMs),
           };
-          // Retry: sparql_gen starting again means a new execution cycle —
+          // Retry: executor starting again means a new execution cycle —
           // reset data/chart readiness so stale 0-row results are cleared.
-          if (data.node === 'sparql_gen' && m.dataReady) {
+          if (data.node === 'executor' && m.dataReady) {
             update.dataReady = false;
             update.chartReady = false;
           }
@@ -1785,8 +1781,6 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               metric_name: (data.metric_name as string | undefined) ?? m.metadata_?.metric_name,
               metric_owner: (data.metric_owner as string | undefined) ?? m.metadata_?.metric_owner,
               metric_defined_at: (data.metric_defined_at as string | undefined) ?? m.metadata_?.metric_defined_at,
-              sparql_error: (data.sparql_error as string) ?? m.metadata_?.sparql_error,
-              sparql_retries: (data.sparql_retries as number) ?? m.metadata_?.sparql_retries,
               token_usage: (data.token_usage as TokenUsage | undefined) ?? m.metadata_?.token_usage,
               langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
               langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,

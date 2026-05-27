@@ -21,6 +21,7 @@ import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { useTheme } from 'next-themes';
 import { useStreamCompletionNotice } from '@/lib/hooks/use-stream-completion-notice';
 import { useDashboardNotice } from '@/lib/hooks/use-dashboard-notice';
+import { useGraphContextNotice } from '@/lib/hooks/use-graph-context-notice';
 import { CreditsOverlay } from '@/components/credits-overlay';
 import { OnboardingTour } from '@/components/onboarding-tour';
 import { InstallPrompt } from '@/components/install-prompt';
@@ -80,6 +81,7 @@ export default function AuthenticatedLayout({
   // in-app toast for same-tab nav, OS notification for hidden tabs.
   useStreamCompletionNotice();
   useDashboardNotice();
+  useGraphContextNotice();
 
   // Listen for 401s dispatched by the API client and redirect via the router
   // (avoids the full-page reload that window.location.href would trigger).

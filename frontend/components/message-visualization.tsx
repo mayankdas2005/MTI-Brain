@@ -11,6 +11,8 @@ import { CHART_PALETTE } from '@/components/charts/theme';
 type VegaView = {
   toCanvas: (scaleFactor?: number) => Promise<HTMLCanvasElement>;
   finalize: () => void;
+  height: (h: number) => VegaView;
+  run: () => void;
 };
 
 interface MessageVisualizationProps {
@@ -29,9 +31,11 @@ function getVegaThemeConfig(isDark: boolean): Record<string, unknown> {
 
   return {
     range:  { category: [...CHART_PALETTE] },
+    mark:   { tooltip: true },
+    view:   { stroke: 'transparent' },
     axis: {
       labelColor, titleColor: labelColor,
-      gridColor, gridOpacity: 0.6,
+      grid: false,
       domainColor: 'transparent', tickColor: 'transparent',
       labelFont: font, titleFont: font,
       labelFontSize: 11, titleFontSize: 11,
@@ -134,6 +138,44 @@ function normalizeSpec(
 
 // ─── Spec enrichment ──────────────────────────────────────────────────────────
 
+function toTitleCase(s: string): string {
+  return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function humanizeEncoding(spec: Record<string, unknown>): Record<string, unknown> {
+  const enc = spec.encoding as Record<string, unknown> | undefined;
+  if (!enc) return spec;
+
+  const newEnc: Record<string, unknown> = {};
+  let changed = false;
+
+  for (const [channel, ch] of Object.entries(enc)) {
+    if (!ch || typeof ch !== 'object' || typeof (ch as Record<string, unknown>).field !== 'string') {
+      newEnc[channel] = ch; continue;
+    }
+    const def   = ch as Record<string, unknown>;
+    const label = toTitleCase(def.field as string);
+    const base  = def.title == null ? { ...def, title: label } : def;
+    if (def.title == null) changed = true;
+
+    if (['color', 'size', 'shape'].includes(channel)) {
+      const raw = def.legend;
+      if (raw === false || raw === null) { newEnc[channel] = base; continue; }
+      newEnc[channel] = { ...base, legend: { title: label, ...((raw as Record<string, unknown>) ?? {}) } };
+      changed = true;
+    } else if (['x', 'y'].includes(channel)) {
+      const raw = def.axis;
+      if (raw === false || raw === null) { newEnc[channel] = base; continue; }
+      newEnc[channel] = { ...base, axis: { title: label, ...((raw as Record<string, unknown>) ?? {}) } };
+      changed = true;
+    } else {
+      newEnc[channel] = base;
+    }
+  }
+
+  return changed ? { ...spec, encoding: newEnc } : spec;
+}
+
 const ARC_MARKS = new Set(['arc']);
 
 function addZoomParams(spec: Record<string, unknown>): Record<string, unknown> {
@@ -145,17 +187,32 @@ function addZoomParams(spec: Record<string, unknown>): Record<string, unknown> {
   return { ...spec, params: [...existing, { name: 'grid', select: 'interval', bind: 'scales' }] };
 }
 
-function isTimeSeries(spec: Record<string, unknown>): boolean {
-  const values = (spec.data as Record<string, unknown>)?.values;
-  if (!Array.isArray(values) || values.length < 15) return false;
-  const mark     = spec.mark;
-  const markType = typeof mark === 'string' ? mark : (mark as Record<string, unknown>)?.type;
-  return markType === 'line' || markType === 'area';
+interface SliderInfo {
+  applicable: boolean;
+  xField: string | null;
+  uniqueXValues: unknown[];
 }
 
-function getXField(spec: Record<string, unknown>): string | null {
-  const enc = spec.encoding as Record<string, unknown> | undefined;
-  return ((enc?.x as Record<string, unknown>)?.field as string) || null;
+function getSliderInfo(spec: Record<string, unknown>): SliderInfo {
+  const mark     = spec.mark;
+  const markType = typeof mark === 'string' ? mark : (mark as Record<string, unknown>)?.type;
+  if (ARC_MARKS.has(markType as string)) return { applicable: false, xField: null, uniqueXValues: [] };
+
+  const enc    = spec.encoding as Record<string, unknown> | undefined;
+  const xField = ((enc?.x as Record<string, unknown>)?.field as string) || null;
+  if (!xField) return { applicable: false, xField: null, uniqueXValues: [] };
+
+  const values = (spec.data as Record<string, unknown>)?.values;
+  if (!Array.isArray(values) || values.length < 9) return { applicable: false, xField: null, uniqueXValues: [] };
+
+  const seen = new Set<unknown>();
+  const uniqueXValues: unknown[] = [];
+  for (const row of values as Record<string, unknown>[]) {
+    const v = row[xField];
+    if (!seen.has(v)) { seen.add(v); uniqueXValues.push(v); }
+  }
+
+  return { applicable: uniqueXValues.length > 8, xField, uniqueXValues };
 }
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
@@ -188,42 +245,6 @@ function KpiCard({ values }: { values: Record<string, unknown>[] }) {
       ))}
     </div>
   );
-}
-
-// ─── Vega Embed ───────────────────────────────────────────────────────────────
-
-function VegaChart({ spec, viewRef }: {
-  spec: Record<string, unknown>;
-  viewRef: React.MutableRefObject<VegaView | null>;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    let mounted  = true;
-    let localView: VegaView | null = null;
-
-    import('vega-embed').then(({ default: vegaEmbed }) => {
-      if (!mounted || !containerRef.current) return;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      vegaEmbed(containerRef.current, spec as any, { renderer: 'canvas', actions: false })
-        .then((result) => {
-          if (!mounted) { result.view.finalize(); return; }
-          localView = result.view as unknown as VegaView;
-          viewRef.current = localView;
-        })
-        .catch((err) => { if (!mounted) return; console.error('vega-embed:', err); });
-    });
-
-    return () => {
-      mounted = false;
-      if (localView) { localView.finalize(); viewRef.current = null; }
-    };
-  }, [spec]); // spec is a stable useMemo reference — re-embeds only when spec changes
-
-  return <div ref={containerRef} className="w-full" />;
 }
 
 // ─── Range Slider ─────────────────────────────────────────────────────────────
@@ -295,35 +316,78 @@ function VegaVisualization({ rawSpec, conversationId }: {
   conversationId?: string;
 }) {
   const { resolvedTheme } = useTheme();
-  const isDark   = resolvedTheme === 'dark';
-  const viewRef  = useRef<VegaView | null>(null);
+  const isDark       = resolvedTheme === 'dark';
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewRef      = useRef<VegaView | null>(null);
+  const heightRef    = useRef<number | null>(null);
   const [dataSlice, setDataSlice] = useState<Record<string, unknown>[] | null>(null);
 
-  useEffect(() => { setDataSlice(null); }, [rawSpec]);
+  useEffect(() => { setDataSlice(null); heightRef.current = null; }, [rawSpec]);
 
   const allData = useMemo(() => {
     return (rawSpec.data as Record<string, unknown>)?.values as Record<string, unknown>[] | undefined;
   }, [rawSpec]);
 
-  const baseSpec = useMemo(() => {
+  const sliderInfo = useMemo(() => getSliderInfo(rawSpec), [rawSpec]);
+
+  const embedSpec = useMemo(() => {
     const theme = getVegaThemeConfig(isDark);
-    return addZoomParams({ ...rawSpec, config: theme });
-  }, [rawSpec, isDark]);
+    const spec  = addZoomParams(humanizeEncoding({ ...rawSpec, config: theme }));
+    return dataSlice ? { ...spec, data: { values: dataSlice } } : spec;
+  }, [rawSpec, isDark, dataSlice]);
 
-  const displaySpec = useMemo(() => {
-    if (!dataSlice) return baseSpec;
-    return { ...baseSpec, data: { values: dataSlice } };
-  }, [baseSpec, dataSlice]);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let mounted  = true;
+    let localView: VegaView | null = null;
 
-  const showSlider = isTimeSeries(rawSpec);
-  const xField    = showSlider ? getXField(rawSpec) : null;
-  const startLabel = xField && allData ? String(allData[0]?.[xField] ?? '')                : '';
-  const endLabel   = xField && allData ? String(allData[allData.length - 1]?.[xField] ?? '') : '';
+    import('vega-embed').then(({ default: vegaEmbed }) => {
+      if (!mounted || !containerRef.current) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vegaEmbed(containerRef.current, embedSpec as any, { renderer: 'canvas', actions: false })
+        .then((result) => {
+          if (!mounted) { result.view.finalize(); return; }
+          localView = result.view as unknown as VegaView;
+          viewRef.current = localView;
+          if (heightRef.current != null) localView.height(heightRef.current).run();
+        })
+        .catch((err) => { if (!mounted) return; console.error('vega-embed:', err); });
+    });
+
+    return () => {
+      mounted = false;
+      if (localView) { localView.finalize(); viewRef.current = null; }
+    };
+  }, [embedSpec]);
+
+  // Scroll over the chart to resize its height — calls Vega view API directly to avoid re-embedding
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      const view = viewRef.current;
+      if (!view) return;
+      e.preventDefault();
+      const next = Math.max(150, Math.min(900, (heightRef.current ?? 350) - Math.sign(e.deltaY) * 30));
+      heightRef.current = next;
+      view.height(next).run();
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, []);
+
+  const startLabel = sliderInfo.uniqueXValues.length
+    ? String(sliderInfo.uniqueXValues[0] ?? '') : '';
+  const endLabel = sliderInfo.uniqueXValues.length
+    ? String(sliderInfo.uniqueXValues[sliderInfo.uniqueXValues.length - 1] ?? '') : '';
 
   const handleSliderCommit = useCallback((start: number, end: number) => {
-    if (!allData) return;
-    setDataSlice(allData.slice(start, end + 1));
-  }, [allData]);
+    if (!allData || !sliderInfo.xField) return;
+    const selected = new Set(sliderInfo.uniqueXValues.slice(start, end + 1));
+    const field    = sliderInfo.xField;
+    setDataSlice(allData.filter(row => selected.has(row[field])));
+  }, [allData, sliderInfo]);
 
   const handleDownload = useCallback(async () => {
     const view = viewRef.current;
@@ -359,8 +423,8 @@ function VegaVisualization({ rawSpec, conversationId }: {
   }, []);
 
   return (
-    <div className="group relative" data-chart-conv-id={conversationId}>
-      <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+    <div className="group" data-chart-conv-id={conversationId}>
+      <div className="flex justify-end gap-1 mb-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={handleCopy}
           className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground transition-colors"
@@ -375,12 +439,12 @@ function VegaVisualization({ rawSpec, conversationId }: {
         </button>
       </div>
 
-      <VegaChart spec={displaySpec} viewRef={viewRef} />
+      <div ref={containerRef} className="w-full" />
 
-      {showSlider && allData && (
+      {sliderInfo.applicable && allData && (
         <RangeSlider
-          key={allData.length}
-          total={allData.length}
+          key={sliderInfo.uniqueXValues.length}
+          total={sliderInfo.uniqueXValues.length}
           startLabel={startLabel}
           endLabel={endLabel}
           onCommit={handleSliderCommit}

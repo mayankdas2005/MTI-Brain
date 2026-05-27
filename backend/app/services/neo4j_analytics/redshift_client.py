@@ -90,7 +90,7 @@ def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 30) -> 
     except queue.Empty:
         raise TimeoutError("All Redshift connections busy — pool exhausted.")
 
-    logger.info("redshift | SQL preview | {}", sql[:400])
+    logger.info("redshift | SQL preview | {}", sql)
 
     try:
         columns, rows = _run_cursor(conn, sql, params)
@@ -115,6 +115,32 @@ def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 30) -> 
                 conn.close()
             except Exception:
                 pass
+
+
+async def get_table_columns(schema: str, table: str, col_names: list[str]) -> list[list]:
+    """Return [[col_name, data_type], ...] for the requested columns via information_schema.
+
+    Only returns rows for columns that actually exist in Redshift — caller can detect
+    missing columns (e.g. base_currency not in Neo4j) by comparing to the input list.
+    Uses individual %s placeholders — redshift_connector does not support list/array params.
+    """
+    if not col_names:
+        return []
+    placeholders = ", ".join(["%s"] * len(col_names))
+    sql = (
+        "SELECT column_name, data_type "
+        "FROM information_schema.columns "
+        f"WHERE table_schema = %s AND table_name = %s AND column_name IN ({placeholders})"
+    )
+    params = [schema, table] + list(col_names)
+    try:
+        _, rows = await asyncio.to_thread(
+            _execute_sync, sql, params, 15
+        )
+        return [list(r) for r in rows]
+    except Exception as e:
+        logger.warning("redshift | get_table_columns failed | {}.{} | error={}", schema, table, e)
+        return []
 
 
 async def execute_query(

@@ -110,6 +110,7 @@ def _build_sse_generator(
     prior_sql: str = "",
     user_display_name: str = "",
     user_email: str | None = None,
+    is_retry: bool = False,
 ):
     async def _save_assistant_message(save_data: dict) -> None:
         from app.db import async_session_factory
@@ -143,6 +144,7 @@ def _build_sse_generator(
                 "token_usage": save_data.get("token_usage"),
                 "langfuse_trace_id": save_data.get("langfuse_trace_id"),
                 "langfuse_trace_url": save_data.get("langfuse_trace_url"),
+                "graph_context": save_data.get("graph_context"),
             }),
         )
         try:
@@ -221,6 +223,7 @@ def _build_sse_generator(
                 prior_sql=prior_sql,
                 user_email=user_email,
                 user_display_name=user_display_name,
+                is_retry=is_retry,
             ):
                 event_name = sse_ev["event"]
                 data = sse_ev["data"]
@@ -615,6 +618,7 @@ async def retry_response(
         cancel_event=_cancel_ev,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
+        is_retry=True,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -683,6 +687,7 @@ async def edit_question(
         cancel_event=_cancel_ev,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
+        is_retry=True,
     )
     return EventSourceResponse(generator(), ping=15)
 

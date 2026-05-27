@@ -54,21 +54,18 @@ export interface MessageMetadata {
   interrupted?: boolean;
   pipeline_steps?: PipelineStep[];
   /** Trust-strip fields. Populated by the backend after executing the
-   *  Snowflake query - frontend never parses SQL. Order matters: the
+   *  Redshift query - frontend never parses SQL. Order matters: the
    *  primary fact table should come first; the TrustStrip shows the
    *  first table inline and rolls up the remainder behind "+N more".
    *
-   *  Backend should extract these via sqlglot (or Snowflake's
-   *  GET_QUERY_OPERATOR_STATS / INFORMATION_SCHEMA) once the data
-   *  source integration ships. Until then, these fields stay absent
-   *  and the TrustStrip silently hides the cells. */
+   *  Backend should extract these via sqlglot once the data source
+   *  integration ships. Until then, these fields stay absent and the
+   *  TrustStrip silently hides the cells. */
   source_tables?: string[];
   data_freshness_at?: string;
   metric_name?: string;
   metric_owner?: string;
   metric_defined_at?: string;
-  sparql_error?: string;
-  sparql_retries?: number;
   token_usage?: TokenUsage;
   langfuse_trace_id?: string;
   langfuse_trace_url?: string;

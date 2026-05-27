@@ -104,7 +104,7 @@ HARD CONSTRAINT: Select ONLY identifiers from <schema_candidates>. NEVER invent 
 FILTER RULES:
 - Every filter MUST include an `operator` field. Default is "=". Valid: = | != | > | >= | < | <= | IN | LIKE | BETWEEN
 - For numeric comparisons ("greater than 10%", "more than 5"), use the correct operator (>, >=, <, <=) — NEVER embed the operator symbol inside raw_value.
-- For categorical filters, raw_value MUST exactly match one of the column's sample_values shown in schema_candidates. If no matching value exists, OMIT the filter entirely.
+- For categorical filters, use `sample_values` as a guide for value format (case, spacing, abbreviation style). ALWAYS include a filter the user explicitly stated — downstream resolution validates and corrects the exact value against the full database vocabulary.
 
 Schema rules:
 - All tables use the lpp. schema prefix (e.g. lpp.ach_return, lpp.bank_account)
@@ -317,12 +317,15 @@ SQL_GENERATE_PROMPT = ChatPromptTemplate.from_template(
     """You are generating a Redshift SQL query from a semantic specification.
 
 INSTRUCTIONS:
-- Tables: `semantic_spec.anchor_tables` is the PRIMARY path identified by the compiler.
-  If the query requires additional tables not in `anchor_tables`, you MAY join them —
-  but ONLY if a valid join clause exists in `semantic_spec.joins` or `schema_context.available_joins`.
-  Use ALL tables from SCHEMA CONTEXT that are needed to answer the question correctly.
+- Tables: ALL tables in `semantic_spec.anchor_tables` MUST appear in the SQL — they are
+  the pre-validated primary tables for this query type. Never silently drop an anchor table.
   Never invent table or column names — use only names listed in SCHEMA CONTEXT.
-- Primary joins: `semantic_spec.joins` lists the pre-loaded ON clauses — use them exactly.
+- Primary joins: `semantic_spec.joins` lists pre-loaded ON clauses — use them exactly.
+- Unresolved anchor pairs: `semantic_spec.unresolved_anchor_pairs` lists anchor table pairs
+  where no Neo4j join path was found. For each pair, search `schema_context.available_joins`
+  by matching (from, to) in either direction. If found, use that ON clause. If not found in
+  available_joins either, omit the table and add a SQL comment
+  `-- WARNING: no join path found for <table>` rather than producing a CROSS JOIN.
 - Additional joins: `schema_context.available_joins` lists every known join between candidate tables.
   If you need a table not covered by `semantic_spec.joins`, find its clause here and JOIN it.
   Do NOT join a table with no entry in either join source.
@@ -341,6 +344,9 @@ INSTRUCTIONS:
 - CTE structure: ALWAYS start with WITH. Every query MUST use WITH ... AS (...) CTEs — never a flat SELECT.
   Use `cte_steps` as CTE names. Give every output column a stable alias. In downstream CTEs,
   reference columns by alias only — never re-qualify with the original schema.table prefix.
+- CTE SCOPING: Every table referenced in a CTE's SELECT or WHERE must appear in that same CTE's
+  FROM clause. Never write `schema.table.column` in SELECT or WHERE if `schema.table` is not
+  explicitly JOINed in that CTE's FROM clause. Each CTE is an isolated scope.
 - LIMIT: apply `{limit}` in the final SELECT.
 - ONE statement only. No semicolons.
 
@@ -418,34 +424,60 @@ Writing standards:
 
 {reasoning_directive}
 
-Output your reasoning within <reasoning>...</reasoning> tags, then the answer within <answer>...</answer> tags, then follow-ups within <follow_ups>...</follow_ups> tags.
+OUTPUT FORMAT — begin IMMEDIATELY with <reasoning>. No text before it.
 
 <reasoning>
-{{Think through what the data shows, what's significant, what's uncertain, and how to frame it for this persona.}}
+Think through what the data shows, what's significant, what's uncertain, and how to frame the answer.
 </reasoning>
 <answer>
-{{Your answer here — appropriate length and detail for the persona}}
+The final formatted answer for the {persona} — nothing else. Do NOT open with "Let me analyze", "Looking at the data", "Based on the results", or any meta-commentary. Start directly with the key finding.
 </answer>
-
-Now output exactly 3 follow-up questions a {persona} would naturally ask next. Phrased as the user querying the system, not as the system offering to help. Reference specific values or entities from the results — not generic questions. Output ONLY the JSON array — no other text before or after.
 <follow_ups>
-["...", "...", "..."]
-</follow_ups>"""
+["question 1", "question 2", "question 3"]
+</follow_ups>
+
+The <follow_ups> block must contain exactly 3 questions a {persona} would naturally query next. Phrased as direct queries to the system (not "Would you like to see..."). Reference specific values or entities from the results. Output ONLY the JSON array inside the tags."""
 )
 
-# ─── Node 5: Chart Label Generator ──────────────────────────────────────────
+# ─── Node 5: Chart Spec Generator (type + labels) ────────────────────────────
 
 CHART_LABEL_PROMPT = ChatPromptTemplate.from_template(
-    """You are generating chart labels for a financial data visualization.
+    """You are a financial data visualization expert. Given a user question, query results, and persona, choose the best chart type and generate labels.
 
-Chart type: {chart_type}
-Column names: {column_names}
-Column stats: {column_stats}
 User question: {question}
 Intent: {intent}
+Persona: {persona}
+Column names and types: {column_stats}
+Row count: {row_count}
+Sample rows (up to 5): {sample_rows}
 
-Generate concise, business-appropriate labels. Use financial terminology.
-The value_format should follow d3-format conventions (e.g. ",.0f" for integers, "$,.2f" for currency, ".1%" for percentages).
+AVAILABLE CHART TYPES:
+- kpi_card     : 1–5 single scalar values (e.g. "Total balance: $4.2M"). Best for point-in-time lookups and KPI summaries.
+- bar          : categorical × measure, vertical bars. ≤ 30 categories, short labels.
+- bar_horizontal: categorical × measure, horizontal bars. Use when labels are long (> 20 chars) or many categories.
+- line         : one date/time dimension + one numeric measure. Shows trend over time (precision over area feel).
+- area         : same as line but filled. Use for volume/cumulative feel. Prefer for executive persona.
+- multi_line   : one date dimension + one category dimension + one numeric measure. Multiple trend lines.
+- stacked_area : date + category + numeric. Shows composition over time.
+- pie          : categorical share of total. ≤ 7 slices, no time dimension.
+- donut        : same as pie, ≤ 7 slices. Prefer over pie for executive/director.
+- grouped_bar  : two categorical dimensions × one numeric. Side-by-side comparison.
+- stacked_bar  : two categoricals × one numeric showing composition/part-of-whole.
+- scatter      : two numeric dimensions, no date/string. Analyst persona only.
+- table        : anything with > 30 rows (non-time-series), wide data (> 5 columns), or text-heavy results.
+
+SELECTION RULES (apply in order):
+1. If row_count == 1 and there is a numeric column → always kpi_card.
+2. If row_count <= 5 and ALL columns are numeric → kpi_card.
+3. If row_count > 30 and result is NOT a time series → table.
+4. For executive persona: prefer kpi_card, donut, area, bar — never scatter, heatmap, grouped_bar.
+5. For director persona: prefer area, bar, donut — avoid scatter.
+6. Use time-based charts (line/area/multi_line) only when there is a date/datetime column.
+7. Choose based on what answers the question most directly — a "list" question → table; a "trend" question → line/area; a "compare" question → grouped_bar or bar; a "breakdown" question → stacked_bar or donut.
+
+Generate concise, business-appropriate labels using financial terminology.
+value_format follows d3-format: ",.0f" integers, "$,.2f" currency, ".1%" percentages, ",.2f" decimals.
+color_scheme: blues, oranges, greens, reds, purples, tealblues — pick one that fits the data mood.
 
 {reasoning_directive}
 
@@ -453,10 +485,11 @@ Begin your response IMMEDIATELY with the <reasoning> block. No text before it.
 Then output the <chart> JSON block. No text after </chart>.
 
 <reasoning>
-{{Consider the chart type and what labels would make it clear to a finance professional.}}
+{{Explain why you chose this chart type given the data shape, row count, question intent, and persona.}}
 </reasoning>
 <chart>
 {{
+  "chart_type": "bar",
   "chart_title": "...",
   "x_axis_label": "...",
   "y_axis_label": "...",

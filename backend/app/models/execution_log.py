@@ -13,7 +13,6 @@ from app.db.base import Base
 from sqlalchemy import (
     Boolean,
     DateTime,
-    Float,
     Index,
     Integer,
     String,
@@ -37,14 +36,11 @@ class MTIBrainExecutionLog(Base):
         row_count: Number of rows returned.
         retry_count: How many fix_query retries were needed (0 = first-try).
         fix_query_count: Number of fix_query node invocations.
-        valid: Whether validate_results said the output was correct.
         exec_error: Execution error message, if any.
         pattern_matched: Whether a QueryPattern influenced this query.
         pattern_name: Which pattern was matched, if any.
         duration_ms: Total pipeline duration in milliseconds.
-        implicit_positive: Set true when the next message is a follow-up.
-        implicit_negative: Set true when the next message is a rephrase.
-        liked: Explicit feedback (true=thumbs up, false=thumbs down, null=none).
+        langfuse_trace_id: Langfuse trace ID for deep audit trace-back.
         created_at: When this log entry was created.
     """
 
@@ -70,22 +66,13 @@ class MTIBrainExecutionLog(Base):
     fix_query_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0
     )
-    valid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     exec_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     pattern_matched: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
     pattern_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Phase 3: implicit feedback (updated async after next user message)
-    implicit_positive: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True
-    )
-    implicit_negative: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True
-    )
-    # Explicit feedback (updated async when user clicks thumbs up/down)
-    liked: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    langfuse_trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # User context
     user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     user_email: Mapped[str | None] = mapped_column(String(255), nullable=True)

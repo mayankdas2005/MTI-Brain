@@ -344,3 +344,48 @@ class MTIBrainDashboard(Base):
         Index("ix_mti_brain_dashboard_conversation", "conversation_id"),
         Index("ix_mti_brain_dashboard_user",         "user_id"),
     )
+
+
+class MTIBrainGraphContext(Base):
+    """Tracks generated knowledge-graph HTML visualizations stored in S3.
+
+    One row per conversation_id. Status progresses: pending → ready | failed.
+    Deleted automatically when the parent thread is deleted (CASCADE).
+    """
+
+    __tablename__ = "mti_brain_graph_context"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("mti_brain_thread.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("mti_brain_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    s3_key: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    s3_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_mti_brain_graph_context_thread",       "thread_id"),
+        Index("ix_mti_brain_graph_context_conversation", "conversation_id"),
+        Index("ix_mti_brain_graph_context_user",         "user_id"),
+    )

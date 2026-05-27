@@ -7,7 +7,7 @@ import { toast } from '@/lib/toast';
 import { playPing, notify, getPermission } from '@/lib/utils/notifications';
 import { usePreferencesStore } from '@/lib/store/preferences';
 
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 10_000;
 
 export function useDashboardNotice() {
   const getPending   = useDashboardStore((s) => s.getPending);

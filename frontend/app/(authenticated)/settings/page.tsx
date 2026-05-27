@@ -389,8 +389,8 @@ export default function SettingsPage() {
                 <div className="space-y-1">
                   {v('show sql queries display') && (
                     <ToggleRow
-                      label="Show SPARQL"
-                      description="Display the generated SPARQL alongside results."
+                      label="Show SQL"
+                      description="Display the generated SQL alongside results."
                       checked={showSQL}
                       onCheckedChange={setShowSQL}
                       isDefault={
@@ -454,7 +454,7 @@ export default function SettingsPage() {
                                   : 'bg-muted/50 hover:bg-accent text-muted-foreground'
                               }`}
                             >
-                              {view === 'sql' ? 'SPARQL' : 'Data'}
+                              {view === 'sql' ? 'SQL' : 'Data'}
                             </button>
                             <DefaultTag visible={isDefault} />
                           </div>

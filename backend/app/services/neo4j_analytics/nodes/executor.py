@@ -41,7 +41,7 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     merged_sql = _merge_sql_list(sql_list, ir_list)
     if merged_sql:
-        logger.info("executor | running merged SQL | thread={} | sql_preview={}", state["thread_id"], merged_sql[:400])
+        logger.info("executor | running merged SQL | thread={} | sql_preview={}", state["thread_id"], merged_sql)
         try:
             res = await _execute_single(merged_sql, ir_list[0], state, query_timeout, max_rows)
             result_list = [{"index": 0, **res}]
@@ -555,16 +555,29 @@ async def _write_audit_log(state: AnalyticsState, sql: str, row_count: int, stat
 
         ir_list = state.get("semantic_ir_list", [])
         anchor_tables = ir_list[0].get("anchor_tables", []) if ir_list else []
+        schema_fqn = anchor_tables[0].rsplit(".", 1)[0] if anchor_tables else None
+        elapsed_ms = round(
+            (time.perf_counter() - state.get("pipeline_start_ms", time.perf_counter())) * 1000
+        )
 
         log = MTIBrainExecutionLog(
+            thread_id=state.get("thread_id"),
             user_id=state.get("user_id"),
+            user_email=state.get("user_email"),
             question=state["question"],
-            question_type="data_query",
+            question_type=state.get("question_type", "data_query"),
+            schema_fqn=schema_fqn,
+            tables_used=anchor_tables,
             sql=sql[:4000] if sql else "",
-            tables_used=",".join(anchor_tables),
             row_count=row_count,
             fix_query_count=state.get("repair_count", 0),
             retry_count=state.get("recompile_count", 0),
+            exec_error=state.get("execution_error") if status == "failed" else None,
+            pattern_matched=state.get("pattern_matched", False),
+            pattern_name=state.get("pattern_name"),
+            duration_ms=elapsed_ms,
+            max_rows=state.get("max_rows"),
+            is_retry=state.get("is_retry", False),
             response_tone=state.get("persona", ""),
         )
         async with async_session_factory() as db:

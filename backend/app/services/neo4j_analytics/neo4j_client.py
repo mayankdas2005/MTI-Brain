@@ -608,6 +608,175 @@ def get_direct_joins(table_fqns: list[str]) -> list[dict]:
 
 
 @neo4j_breaker
+def get_tables_with_context(table_fqns: list[str]) -> list[dict]:
+    """Fetch Table nodes with their Domain and Community associations.
+
+    Returns rows with keys: t (table props), d (domain props or None), c (community props or None).
+    """
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (t:Table) WHERE t.fqn IN $fqns
+    OPTIONAL MATCH (t)-[:BELONGS_TO]->(d:Domain)
+    OPTIONAL MATCH (c:Community)-[:CONTAINS_TABLE]->(t)
+    RETURN properties(t) AS t, properties(d) AS d, properties(c) AS c
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"fqns": table_fqns}))
+    logger.debug("neo4j | fn=get_tables_with_context | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"t": dict(r["t"] or {}), "d": dict(r["d"]) if r["d"] else None, "c": dict(r["c"]) if r["c"] else None} for r in results]
+
+
+@neo4j_breaker
+def get_table_relevant_intents(table_fqns: list[str]) -> list[dict]:
+    """Fetch Table -[RELEVANT_TO]-> Intent edges for the given tables."""
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (t:Table)-[r:RELEVANT_TO]->(i:Intent)
+    WHERE t.fqn IN $fqns
+    RETURN t.fqn AS table_fqn, properties(i) AS intent, properties(r) AS rel
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"fqns": table_fqns}))
+    logger.debug("neo4j | fn=get_table_relevant_intents | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"table_fqn": r["table_fqn"], "intent": dict(r["intent"] or {}), "rel": dict(r["rel"] or {})} for r in results]
+
+
+@neo4j_breaker
+def get_structurally_similar_tables(table_fqns: list[str]) -> list[dict]:
+    """Fetch Table -[STRUCTURALLY_SIMILAR]-> Table edges within the given table set."""
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (t1:Table)-[r:STRUCTURALLY_SIMILAR]->(t2:Table)
+    WHERE t1.fqn IN $fqns AND t2.fqn IN $fqns
+    RETURN t1.fqn AS from_fqn, t2.fqn AS to_fqn, properties(r) AS rel
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"fqns": table_fqns}))
+    logger.debug("neo4j | fn=get_structurally_similar_tables | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"from_fqn": r["from_fqn"], "to_fqn": r["to_fqn"], "rel": dict(r["rel"] or {})} for r in results]
+
+
+@neo4j_breaker
+def get_semantically_similar_columns(table_fqns: list[str]) -> list[dict]:
+    """Fetch Column -[SEMANTICALLY_SIMILAR]-> Column edges for columns in the given tables."""
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (c1:Column)-[r:SEMANTICALLY_SIMILAR]->(c2:Column)
+    WHERE c1.table_fqn IN $fqns AND c2.table_fqn IN $fqns
+    RETURN c1.id AS from_id, c2.id AS to_id, properties(r) AS rel
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"fqns": table_fqns}))
+    logger.debug("neo4j | fn=get_semantically_similar_columns | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"from_id": r["from_id"], "to_id": r["to_id"], "rel": dict(r["rel"] or {})} for r in results]
+
+
+@neo4j_breaker
+def get_community_bridges(community_ids: list[str]) -> list[dict]:
+    """Fetch Community -[BRIDGES_TO]-> Community edges within the given community set."""
+    if not community_ids:
+        return []
+    query = """
+    MATCH (c1:Community)-[r:BRIDGES_TO]->(c2:Community)
+    WHERE c1.id IN $ids AND c2.id IN $ids
+    RETURN c1.id AS from_id, c2.id AS to_id, properties(r) AS rel
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"ids": community_ids}))
+    logger.debug("neo4j | fn=get_community_bridges | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"from_id": r["from_id"], "to_id": r["to_id"], "rel": dict(r["rel"] or {})} for r in results]
+
+
+@neo4j_breaker
+def get_join_paths_by_ids(path_ids: list[str]) -> list[dict]:
+    """Fetch JoinPath nodes by their IDs."""
+    if not path_ids:
+        return []
+    query = """
+    MATCH (jp:JoinPath) WHERE jp.id IN $ids
+    RETURN properties(jp) AS jp
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"ids": path_ids}))
+    logger.debug("neo4j | fn=get_join_paths_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r["jp"] or {}) for r in results]
+
+
+@neo4j_breaker
+def get_business_terms_by_terms(terms: list[str]) -> list[dict]:
+    """Fetch full BusinessTerm node properties by term name."""
+    if not terms:
+        return []
+    query = """
+    MATCH (bt:BusinessTerm) WHERE bt.term IN $terms
+    RETURN properties(bt) AS bt
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"terms": terms}))
+    logger.debug("neo4j | fn=get_business_terms_by_terms | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r["bt"] or {}) for r in results]
+
+
+@neo4j_breaker
+def get_query_patterns_by_ids(ids: list[str]) -> list[dict]:
+    """Fetch full QueryPattern node properties by ID."""
+    if not ids:
+        return []
+    query = """
+    MATCH (qp:QueryPattern) WHERE qp.id IN $ids
+    RETURN properties(qp) AS qp
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"ids": ids}))
+    logger.debug("neo4j | fn=get_query_patterns_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r["qp"] or {}) for r in results]
+
+
+@neo4j_breaker
+def get_anti_patterns_by_ids(ids: list[str]) -> list[dict]:
+    """Fetch full AntiPattern node properties by ID."""
+    if not ids:
+        return []
+    query = """
+    MATCH (ap:AntiPattern) WHERE ap.id IN $ids
+    RETURN properties(ap) AS ap
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"ids": ids}))
+    logger.debug("neo4j | fn=get_anti_patterns_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r["ap"] or {}) for r in results]
+
+
+@neo4j_breaker
+def get_query_templates_by_ids(ids: list[str]) -> list[dict]:
+    """Fetch full QueryTemplate node properties by ID."""
+    if not ids:
+        return []
+    query = """
+    MATCH (qt:QueryTemplate) WHERE qt.id IN $ids
+    RETURN properties(qt) AS qt
+    """
+    t0 = time.monotonic()
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        results = list(session.run(query, {"ids": ids}))
+    logger.debug("neo4j | fn=get_query_templates_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r["qt"] or {}) for r in results]
+
+
+@neo4j_breaker
 def write_join_path(path_data: dict) -> None:
     """Write a newly computed JoinPath back to Neo4j for future reuse."""
     query = """

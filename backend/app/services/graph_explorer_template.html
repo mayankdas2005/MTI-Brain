@@ -49,7 +49,7 @@
     /* ── Panel collapse ── */
     #panel-inner {
       position: absolute; top: 0; right: 0; bottom: 0;
-      width: 290px; background: #fff;
+      width: 480px; background: #fff;
       border-left: 1px solid #e5e7eb;
       box-shadow: -4px 0 16px rgba(0,0,0,0.08);
       overflow-y: auto; overflow-x: hidden;
@@ -93,7 +93,7 @@
     .rel-badge:hover { filter: brightness(0.88); }
 
     /* ── Properties table ── */
-    .prop-table { width: 100%; border-collapse: collapse; }
+    .prop-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     .prop-table thead th {
       text-align: left; font-size: 11px; font-weight: 700;
       color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em;
@@ -103,9 +103,15 @@
     .prop-table tbody tr { border-bottom: 1px solid #f3f4f6; }
     .prop-table tbody tr:last-child { border-bottom: none; }
     .prop-table tbody tr:hover { background: #f9fafb; }
-    .prop-table td { padding: 8px 8px; vertical-align: top; font-size: 13px; }
-    .prop-key { font-weight: 700; color: #111827; white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
-    .prop-value { color: #374151; word-break: break-all; line-height: 1.5; }
+    .prop-table td { padding: 10px 8px; vertical-align: top; font-size: 13px; }
+    .prop-key { font-weight: 700; color: #111827; width: 160px; min-width: 160px; word-break: break-word; overflow-wrap: anywhere; }
+    .prop-value { color: #374151; word-break: break-word; overflow-wrap: anywhere; line-height: 1.5; min-width: 0; }
+    .show-all-btn {
+      display: inline; margin-left: 4px; padding: 0;
+      background: none; border: none; cursor: pointer;
+      color: #7c3aed; font-size: 12px; font-weight: 600; line-height: 1;
+    }
+    .show-all-btn:hover { text-decoration: underline; }
     .prop-copy-td { width: 28px; text-align: right; }
     .copy-btn {
       display: inline-flex; align-items: center; justify-content: center;
@@ -178,7 +184,7 @@
       <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
         <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
       </svg>
-      Fit
+      Zoom to fit
     </button>
 
     <!-- Auto Layout -->
@@ -259,259 +265,8 @@
       return `rgb(${r},${g},${b})`;
     }
 
-    // ── MTI Brain mock instance data ────────────────────────────────
-    const cypherResult = [
-
-      // ── HAS_COLUMN: Table → Column ───────────────────────────────────
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact",table_type:"fact",is_time_series:true,business_domain:"Sales",community_id:"SalesCommunity"}},
-        r:{identity:101,start:1,end:11,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:11,labels:["Column"],properties:{name:"amount",semantic_type:"metric",is_measurable:true,is_pii:false,table_fqn:"sales.sales_fact"}} },
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:102,start:1,end:12,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:12,labels:["Column"],properties:{name:"customer_id",semantic_type:"foreign_key",is_pk:false,is_pii:false,table_fqn:"sales.sales_fact"}} },
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:103,start:1,end:13,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:13,labels:["Column"],properties:{name:"product_id",semantic_type:"foreign_key",is_pk:false,table_fqn:"sales.sales_fact"}} },
-      { n:{identity:2,labels:["Table"],properties:{name:"customer_dim",table_type:"dimension",is_time_series:false,business_domain:"Finance",community_id:"SalesCommunity"}},
-        r:{identity:104,start:2,end:14,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:14,labels:["Column"],properties:{name:"cust_name",semantic_type:"attribute",is_pii:true,table_fqn:"sales.customer_dim"}} },
-      { n:{identity:2,labels:["Table"],properties:{name:"customer_dim"}},
-        r:{identity:105,start:2,end:15,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:15,labels:["Column"],properties:{name:"email",semantic_type:"contact",is_pii:true,table_fqn:"sales.customer_dim"}} },
-      { n:{identity:3,labels:["Table"],properties:{name:"product_dim",table_type:"dimension",is_time_series:false,business_domain:"Finance",community_id:"FinanceCommunity"}},
-        r:{identity:106,start:3,end:16,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:16,labels:["Column"],properties:{name:"sku",semantic_type:"identifier",is_pk:true,table_fqn:"sales.product_dim"}} },
-      { n:{identity:3,labels:["Table"],properties:{name:"product_dim"}},
-        r:{identity:107,start:3,end:17,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:17,labels:["Column"],properties:{name:"price",semantic_type:"metric",is_measurable:true,table_fqn:"sales.product_dim"}} },
-      { n:{identity:4,labels:["Table"],properties:{name:"order_fact",table_type:"fact",is_time_series:true,business_domain:"Sales",community_id:"FinanceCommunity"}},
-        r:{identity:108,start:4,end:18,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:18,labels:["Column"],properties:{name:"order_date",semantic_type:"timestamp",temporal_grain:"day",table_fqn:"sales.order_fact"}} },
-      { n:{identity:5,labels:["Table"],properties:{name:"date_dim",table_type:"dimension",is_time_series:false,business_domain:"Sales",community_id:"SalesCommunity"}},
-        r:{identity:109,start:5,end:19,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:19,labels:["Column"],properties:{name:"date_key",semantic_type:"identifier",is_pk:true,table_fqn:"sales.date_dim"}} },
-
-      // ── BELONGS_TO: Table → Domain ────────────────────────────────────
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:110,start:1,end:21,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:21,labels:["Domain"],properties:{name:"Sales"}} },
-      { n:{identity:4,labels:["Table"],properties:{name:"order_fact"}},
-        r:{identity:111,start:4,end:21,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:21,labels:["Domain"],properties:{name:"Sales"}} },
-      { n:{identity:5,labels:["Table"],properties:{name:"date_dim"}},
-        r:{identity:112,start:5,end:21,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:21,labels:["Domain"],properties:{name:"Sales"}} },
-      { n:{identity:2,labels:["Table"],properties:{name:"customer_dim"}},
-        r:{identity:113,start:2,end:22,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:22,labels:["Domain"],properties:{name:"Finance"}} },
-      { n:{identity:3,labels:["Table"],properties:{name:"product_dim"}},
-        r:{identity:114,start:3,end:22,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:22,labels:["Domain"],properties:{name:"Finance"}} },
-
-      // ── CONTAINS_TABLE: Community → Table ────────────────────────────
-      { n:{identity:31,labels:["Community"],properties:{name:"SalesComm"}},
-        r:{identity:115,start:31,end:1,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:1,labels:["Table"],properties:{name:"sales_fact"}} },
-      { n:{identity:31,labels:["Community"],properties:{name:"SalesComm"}},
-        r:{identity:116,start:31,end:2,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:2,labels:["Table"],properties:{name:"customer_dim"}} },
-      { n:{identity:31,labels:["Community"],properties:{name:"SalesComm"}},
-        r:{identity:117,start:31,end:5,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:5,labels:["Table"],properties:{name:"date_dim"}} },
-      { n:{identity:32,labels:["Community"],properties:{name:"FinanceComm"}},
-        r:{identity:118,start:32,end:3,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:3,labels:["Table"],properties:{name:"product_dim"}} },
-      { n:{identity:32,labels:["Community"],properties:{name:"FinanceComm"}},
-        r:{identity:119,start:32,end:4,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:4,labels:["Table"],properties:{name:"order_fact"}} },
-
-      // ── BRIDGES_TO: Community → Community ────────────────────────────
-      { n:{identity:31,labels:["Community"],properties:{name:"SalesComm"}},
-        r:{identity:120,start:31,end:32,type:"BRIDGES_TO",properties:{name:"BRIDGES_TO",is_cross_community:true}},
-        m:{identity:32,labels:["Community"],properties:{name:"FinanceComm"}} },
-
-      // ── JOINS_TO + STRUCTURALLY_SIMILAR between same pair ────────────
-      // sales_fact → order_fact: TWO edges (different relationship types)
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:121,start:1,end:4,type:"JOINS_TO",properties:{name:"JOINS_TO",join_key:"order_id"}},
-        m:{identity:4,labels:["Table"],properties:{name:"order_fact"}} },
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:122,start:1,end:4,type:"STRUCTURALLY_SIMILAR",properties:{name:"STRUCTURALLY_SIMILAR",similarity_score:0.87}},
-        m:{identity:4,labels:["Table"],properties:{name:"order_fact"}} },
-      // Additional JOINS_TO edges
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:123,start:1,end:2,type:"JOINS_TO",properties:{name:"JOINS_TO",join_key:"customer_id"}},
-        m:{identity:2,labels:["Table"],properties:{name:"customer_dim"}} },
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:124,start:1,end:3,type:"JOINS_TO",properties:{name:"JOINS_TO",join_key:"product_id"}},
-        m:{identity:3,labels:["Table"],properties:{name:"product_dim"}} },
-      { n:{identity:4,labels:["Table"],properties:{name:"order_fact"}},
-        r:{identity:125,start:4,end:5,type:"JOINS_TO",properties:{name:"JOINS_TO",join_key:"date_key"}},
-        m:{identity:5,labels:["Table"],properties:{name:"date_dim"}} },
-
-      // ── SEMANTICALLY_SIMILAR: Column → Column ────────────────────────
-      { n:{identity:11,labels:["Column"],properties:{name:"amount"}},
-        r:{identity:126,start:11,end:17,type:"SEMANTICALLY_SIMILAR",properties:{name:"SEMANTICALLY_SIMILAR",score:0.92}},
-        m:{identity:17,labels:["Column"],properties:{name:"price"}} },
-      { n:{identity:12,labels:["Column"],properties:{name:"customer_id"}},
-        r:{identity:127,start:12,end:14,type:"SEMANTICALLY_SIMILAR",properties:{name:"SEMANTICALLY_SIMILAR",score:0.78}},
-        m:{identity:14,labels:["Column"],properties:{name:"cust_name"}} },
-
-      // ── RELEVANT_TO: Table → Intent ───────────────────────────────────
-      // Intent "RevenueAnalysis" receives edges from TWO tables
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:128,start:1,end:41,type:"RELEVANT_TO",properties:{name:"RELEVANT_TO"}},
-        m:{identity:41,labels:["Intent"],properties:{name:"RevenueAna"}} },
-      { n:{identity:4,labels:["Table"],properties:{name:"order_fact"}},
-        r:{identity:129,start:4,end:41,type:"RELEVANT_TO",properties:{name:"RELEVANT_TO"}},
-        m:{identity:41,labels:["Intent"],properties:{name:"RevenueAna"}} },
-      // Intent "CustomerInsights" receives edges from TWO tables
-      { n:{identity:2,labels:["Table"],properties:{name:"customer_dim"}},
-        r:{identity:130,start:2,end:42,type:"RELEVANT_TO",properties:{name:"RELEVANT_TO"}},
-        m:{identity:42,labels:["Intent"],properties:{name:"CustomerIns"}} },
-      { n:{identity:1,labels:["Table"],properties:{name:"sales_fact"}},
-        r:{identity:131,start:1,end:42,type:"RELEVANT_TO",properties:{name:"RELEVANT_TO"}},
-        m:{identity:42,labels:["Intent"],properties:{name:"CustomerIns"}} },
-      { n:{identity:3,labels:["Table"],properties:{name:"product_dim"}},
-        r:{identity:132,start:3,end:43,type:"RELEVANT_TO",properties:{name:"RELEVANT_TO"}},
-        m:{identity:43,labels:["Intent"],properties:{name:"Inventory"}} },
-
-      // ── CLASSIFIED_AS: QueryTemplate → Intent ────────────────────────
-      { n:{identity:51,labels:["QueryTemplate"],properties:{name:"RevenueQT",complexity:"high",primary_intent:"RevenueAnalysis"}},
-        r:{identity:133,start:51,end:41,type:"CLASSIFIED_AS",properties:{name:"CLASSIFIED_AS"}},
-        m:{identity:41,labels:["Intent"],properties:{name:"RevenueAna"}} },
-      { n:{identity:52,labels:["QueryTemplate"],properties:{name:"CustomerQT",complexity:"medium",primary_intent:"CustomerInsights"}},
-        r:{identity:134,start:52,end:42,type:"CLASSIFIED_AS",properties:{name:"CLASSIFIED_AS"}},
-        m:{identity:42,labels:["Intent"],properties:{name:"CustomerIns"}} },
-      { n:{identity:53,labels:["QueryTemplate"],properties:{name:"InventoryQT",complexity:"low",primary_intent:"InventoryCheck"}},
-        r:{identity:135,start:53,end:43,type:"CLASSIFIED_AS",properties:{name:"CLASSIFIED_AS"}},
-        m:{identity:43,labels:["Intent"],properties:{name:"Inventory"}} },
-
-      // ── REQUIRES_TABLE: QueryTemplate → Table ────────────────────────
-      // RevenueQT requires TWO tables (A-rel→B, A-rel→C)
-      { n:{identity:51,labels:["QueryTemplate"],properties:{name:"RevenueQT"}},
-        r:{identity:136,start:51,end:1,type:"REQUIRES_TABLE",properties:{name:"REQUIRES_TABLE"}},
-        m:{identity:1,labels:["Table"],properties:{name:"sales_fact"}} },
-      { n:{identity:51,labels:["QueryTemplate"],properties:{name:"RevenueQT"}},
-        r:{identity:137,start:51,end:4,type:"REQUIRES_TABLE",properties:{name:"REQUIRES_TABLE"}},
-        m:{identity:4,labels:["Table"],properties:{name:"order_fact"}} },
-      // CustomerQT also requires sales_fact (two QTs → same table)
-      { n:{identity:52,labels:["QueryTemplate"],properties:{name:"CustomerQT"}},
-        r:{identity:138,start:52,end:2,type:"REQUIRES_TABLE",properties:{name:"REQUIRES_TABLE"}},
-        m:{identity:2,labels:["Table"],properties:{name:"customer_dim"}} },
-      { n:{identity:52,labels:["QueryTemplate"],properties:{name:"CustomerQT"}},
-        r:{identity:139,start:52,end:1,type:"REQUIRES_TABLE",properties:{name:"REQUIRES_TABLE"}},
-        m:{identity:1,labels:["Table"],properties:{name:"sales_fact"}} },
-      { n:{identity:53,labels:["QueryTemplate"],properties:{name:"InventoryQT"}},
-        r:{identity:140,start:53,end:3,type:"REQUIRES_TABLE",properties:{name:"REQUIRES_TABLE"}},
-        m:{identity:3,labels:["Table"],properties:{name:"product_dim"}} },
-
-      // ── Additional Tables (Operations domain) ────────────────────────
-      { n:{identity:6,labels:["Table"],properties:{name:"returns_fact",table_type:"fact",is_time_series:true,business_domain:"Operations",community_id:"OpsComm"}},
-        r:{identity:141,start:6,end:20,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:20,labels:["Column"],properties:{name:"return_amt",semantic_type:"metric",is_measurable:true,table_fqn:"ops.returns_fact"}} },
-      { n:{identity:7,labels:["Table"],properties:{name:"inventory_fact",table_type:"fact",is_time_series:false,business_domain:"Operations",community_id:"OpsComm"}},
-        r:{identity:142,start:7,end:23,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:23,labels:["Column"],properties:{name:"stock_qty",semantic_type:"metric",is_measurable:true,table_fqn:"ops.inventory_fact"}} },
-      { n:{identity:7,labels:["Table"],properties:{name:"inventory_fact"}},
-        r:{identity:143,start:7,end:27,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:27,labels:["Column"],properties:{name:"cost_price",semantic_type:"metric",is_measurable:true,table_fqn:"ops.inventory_fact"}} },
-      { n:{identity:8,labels:["Table"],properties:{name:"employee_dim",table_type:"dimension",is_time_series:false,business_domain:"Operations",community_id:"OpsComm"}},
-        r:{identity:144,start:8,end:24,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:24,labels:["Column"],properties:{name:"emp_name",semantic_type:"attribute",is_pii:true,table_fqn:"ops.employee_dim"}} },
-      { n:{identity:9,labels:["Table"],properties:{name:"region_dim",table_type:"dimension",is_time_series:false,business_domain:"Sales",community_id:"SalesComm"}},
-        r:{identity:145,start:9,end:25,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:25,labels:["Column"],properties:{name:"region_id",semantic_type:"identifier",is_pk:true,table_fqn:"sales.region_dim"}} },
-      { n:{identity:10,labels:["Table"],properties:{name:"supplier_dim",table_type:"dimension",is_time_series:false,business_domain:"Operations",community_id:"OpsComm"}},
-        r:{identity:146,start:10,end:26,type:"HAS_COLUMN",properties:{name:"HAS_COLUMN"}},
-        m:{identity:26,labels:["Column"],properties:{name:"supplier_nm",semantic_type:"attribute",is_pii:false,table_fqn:"ops.supplier_dim"}} },
-
-      // ── BELONGS_TO: new tables → Domains ─────────────────────────────
-      { n:{identity:6,labels:["Table"],properties:{name:"returns_fact"}},
-        r:{identity:147,start:6,end:28,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:28,labels:["Domain"],properties:{name:"Operations"}} },
-      { n:{identity:7,labels:["Table"],properties:{name:"inventory_fact"}},
-        r:{identity:148,start:7,end:28,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:28,labels:["Domain"],properties:{name:"Operations"}} },
-      { n:{identity:8,labels:["Table"],properties:{name:"employee_dim"}},
-        r:{identity:149,start:8,end:28,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:28,labels:["Domain"],properties:{name:"Operations"}} },
-      { n:{identity:10,labels:["Table"],properties:{name:"supplier_dim"}},
-        r:{identity:150,start:10,end:28,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:28,labels:["Domain"],properties:{name:"Operations"}} },
-      { n:{identity:9,labels:["Table"],properties:{name:"region_dim"}},
-        r:{identity:151,start:9,end:21,type:"BELONGS_TO",properties:{name:"BELONGS_TO"}},
-        m:{identity:21,labels:["Domain"],properties:{name:"Sales"}} },
-
-      // ── CONTAINS_TABLE: OpsComm → new Tables ─────────────────────────
-      { n:{identity:33,labels:["Community"],properties:{name:"OpsComm"}},
-        r:{identity:152,start:33,end:6,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:6,labels:["Table"],properties:{name:"returns_fact"}} },
-      { n:{identity:33,labels:["Community"],properties:{name:"OpsComm"}},
-        r:{identity:153,start:33,end:7,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:7,labels:["Table"],properties:{name:"inventory_fact"}} },
-      { n:{identity:33,labels:["Community"],properties:{name:"OpsComm"}},
-        r:{identity:154,start:33,end:8,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:8,labels:["Table"],properties:{name:"employee_dim"}} },
-      { n:{identity:33,labels:["Community"],properties:{name:"OpsComm"}},
-        r:{identity:155,start:33,end:10,type:"CONTAINS_TABLE",properties:{name:"CONTAINS_TABLE"}},
-        m:{identity:10,labels:["Table"],properties:{name:"supplier_dim"}} },
-
-      // ── BRIDGES_TO: OpsComm ↔ SalesComm ──────────────────────────────
-      { n:{identity:33,labels:["Community"],properties:{name:"OpsComm"}},
-        r:{identity:156,start:33,end:31,type:"BRIDGES_TO",properties:{name:"BRIDGES_TO",is_cross_community:true}},
-        m:{identity:31,labels:["Community"],properties:{name:"SalesComm"}} },
-
-      // ── JOINS_TO: cross-table joins ───────────────────────────────────
-      { n:{identity:6,labels:["Table"],properties:{name:"returns_fact"}},
-        r:{identity:157,start:6,end:1,type:"JOINS_TO",properties:{name:"JOINS_TO",join_key:"customer_id"}},
-        m:{identity:1,labels:["Table"],properties:{name:"sales_fact"}} },
-      { n:{identity:7,labels:["Table"],properties:{name:"inventory_fact"}},
-        r:{identity:158,start:7,end:3,type:"JOINS_TO",properties:{name:"JOINS_TO",join_key:"sku"}},
-        m:{identity:3,labels:["Table"],properties:{name:"product_dim"}} },
-      { n:{identity:9,labels:["Table"],properties:{name:"region_dim"}},
-        r:{identity:159,start:9,end:1,type:"JOINS_TO",properties:{name:"JOINS_TO",join_key:"region_id"}},
-        m:{identity:1,labels:["Table"],properties:{name:"sales_fact"}} },
-
-      // ── RELEVANT_TO: new tables → new Intents ────────────────────────
-      { n:{identity:6,labels:["Table"],properties:{name:"returns_fact"}},
-        r:{identity:160,start:6,end:44,type:"RELEVANT_TO",properties:{name:"RELEVANT_TO"}},
-        m:{identity:44,labels:["Intent"],properties:{name:"ReturnAna"}} },
-      { n:{identity:7,labels:["Table"],properties:{name:"inventory_fact"}},
-        r:{identity:161,start:7,end:45,type:"RELEVANT_TO",properties:{name:"RELEVANT_TO"}},
-        m:{identity:45,labels:["Intent"],properties:{name:"InvAnalysis"}} },
-
-      // ── CLASSIFIED_AS: new QueryTemplates → new Intents ──────────────
-      { n:{identity:54,labels:["QueryTemplate"],properties:{name:"ReturnQT",complexity:"medium",primary_intent:"ReturnAnalysis"}},
-        r:{identity:162,start:54,end:44,type:"CLASSIFIED_AS",properties:{name:"CLASSIFIED_AS"}},
-        m:{identity:44,labels:["Intent"],properties:{name:"ReturnAna"}} },
-      { n:{identity:55,labels:["QueryTemplate"],properties:{name:"InventoryQT2",complexity:"high",primary_intent:"InventoryAnalysis"}},
-        r:{identity:163,start:55,end:45,type:"CLASSIFIED_AS",properties:{name:"CLASSIFIED_AS"}},
-        m:{identity:45,labels:["Intent"],properties:{name:"InvAnalysis"}} },
-
-      // ── REQUIRES_TABLE: new QueryTemplates → Tables ───────────────────
-      { n:{identity:54,labels:["QueryTemplate"],properties:{name:"ReturnQT"}},
-        r:{identity:164,start:54,end:6,type:"REQUIRES_TABLE",properties:{name:"REQUIRES_TABLE"}},
-        m:{identity:6,labels:["Table"],properties:{name:"returns_fact"}} },
-      { n:{identity:55,labels:["QueryTemplate"],properties:{name:"InventoryQT2"}},
-        r:{identity:165,start:55,end:7,type:"REQUIRES_TABLE",properties:{name:"REQUIRES_TABLE"}},
-        m:{identity:7,labels:["Table"],properties:{name:"inventory_fact"}} },
-      { n:{identity:55,labels:["QueryTemplate"],properties:{name:"InventoryQT2"}},
-        r:{identity:166,start:55,end:3,type:"REQUIRES_TABLE",properties:{name:"REQUIRES_TABLE"}},
-        m:{identity:3,labels:["Table"],properties:{name:"product_dim"}} },
-
-      // ── Standalone nodes ──────────────────────────────────────────────
-      { n:{identity:61,labels:["JoinPath"],properties:{name:"SalesCustJn",is_cross_community:false}} },
-      { n:{identity:62,labels:["JoinPath"],properties:{name:"ProdOrderJn",is_cross_community:true}} },
-      { n:{identity:63,labels:["JoinPath"],properties:{name:"RetOrdJn",is_cross_community:true}} },
-      { n:{identity:64,labels:["JoinPath"],properties:{name:"InvProdJn",is_cross_community:false}} },
-      { n:{identity:71,labels:["PipelineRun"],properties:{name:"Run_2024_Q1",run_id:"run_001",status:"completed"}} },
-      { n:{identity:72,labels:["PipelineRun"],properties:{name:"Run_2024_Q2",run_id:"run_002",status:"running"}} },
-      { n:{identity:81,labels:["BusinessTerm"],properties:{name:"Revenue",term:"Revenue"}} },
-      { n:{identity:82,labels:["BusinessTerm"],properties:{name:"CustomerLTV",term:"CustomerLifetimeValue"}} },
-      { n:{identity:83,labels:["BusinessTerm"],properties:{name:"ReturnRate",term:"ReturnRate"}} },
-      { n:{identity:84,labels:["BusinessTerm"],properties:{name:"StockLevel",term:"StockLevel"}} }
-    ];
+    // -- Graph context data (injected by graph_context_builder.py)
+    const cypherResult = /* GRAPH_DATA_PLACEHOLDER */ [];
 
     // ── Convert to vis.js ────────────────────────────────────────────
     function truncLabel(s, max = 11) {
@@ -541,7 +296,7 @@
         const rawLabel = nd.properties.name || nd.properties.title || primaryLabel;
         nodes.push({
           id:         nd.identity,
-          label:      truncLabel(rawLabel),
+          label:      rawLabel,
           title:      rawLabel,        // tooltip shows full name
           labels:     nd.labels,
           properties: nd.properties,
@@ -550,7 +305,8 @@
           borderWidth: 2,
           borderWidthSelected: 3,
           color:      colorObj,
-          font:       { color: 'rgba(0,0,0,0.82)', size: 12, face: 'Inter,system-ui,sans-serif', bold: false }
+          font:       { color: 'rgba(0,0,0,0.82)', size: 12, face: 'Inter,system-ui,sans-serif', bold: false, multi: false },
+          widthConstraint: { maximum: 100 }
         });
       }
 
@@ -718,8 +474,9 @@
     const container = document.getElementById('mynetwork');
     const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, visOptions);
 
-    // Fit after initial stabilization — keep physics ON so spring drag works
+    // Stop simulation after initial stabilization; vis.js auto-resumes on drag
     network.once('stabilizationIterationsDone', () => {
+      network.stopSimulation();
       network.fit({ animation: { duration: 600, easingFunction: 'easeOutQuad' } });
     });
 
@@ -742,7 +499,7 @@
       panelOpen = open;
       if (open) {
         panelInner.classList.remove('collapsed');
-        panelToggleBtn.style.right = '290px';
+        panelToggleBtn.style.right = '480px';
         toggleChevron.setAttribute('points', '9 18 15 12 9 6'); // ‹ close
       } else {
         panelInner.classList.add('collapsed');
@@ -777,10 +534,18 @@
       });
       let html = '<table class="prop-table"><thead><tr><th>Key</th><th>Value</th><th></th></tr></thead><tbody>';
       rows.forEach(({ key, value }) => {
-        const display = value.length > 180 ? value.slice(0,180) + '\u2026' : value;
+        if (!window._saCtr) window._saCtr = 0;
+        let valueHtml;
+        if (value.length > 180) {
+          const uid = 'sa' + (++window._saCtr);
+          valueHtml = '<span id="' + uid + '-s">' + escHtml(value.slice(0,180)) + '\u2026<button class="show-all-btn" data-sa="' + uid + '" data-role="short">Show all</button></span>'
+                    + '<span id="' + uid + '-f" style="display:none">' + escHtml(value) + '<button class="show-all-btn" data-sa="' + uid + '" data-role="full">Show less</button></span>';
+        } else {
+          valueHtml = escHtml(value);
+        }
         html += `<tr>
           <td class="prop-key">${escHtml(key)}</td>
-          <td class="prop-value">${escHtml(display)}</td>
+          <td class="prop-value">${valueHtml}</td>
           <td class="prop-copy-td">
             <button class="copy-btn" data-copykey="${escHtml(key)}" data-copyval="${escHtml(value)}" title="Copy">
               <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -884,6 +649,18 @@
 
     // Row copy via delegation — copies as { "key": value } JSON
     document.getElementById('panel-inner').addEventListener('click', e => {
+      // Show all / Show less toggle
+      const saBtn = e.target.closest('.show-all-btn');
+      if (saBtn) {
+        e.stopPropagation();
+        const uid = saBtn.getAttribute('data-sa');
+        const role = saBtn.getAttribute('data-role');
+        const sEl = document.getElementById(uid + '-s');
+        const fEl = document.getElementById(uid + '-f');
+        if (role === 'short') { sEl.style.display = 'none'; fEl.style.display = 'inline'; }
+        else { fEl.style.display = 'none'; sEl.style.display = 'inline'; }
+        return;
+      }
       const btn = e.target.closest('.copy-btn');
       if (btn) {
         e.stopPropagation();
@@ -964,13 +741,29 @@
       network.fit({ animation: { duration: 600, easingFunction: 'easeOutQuad' } });
     });
 
-    // ── Auto Layout (Fruchterman-Reingold via vis.js physics) ─────────
+    // ── Auto Layout (scatter → physics stabilization) ─────────────────
     document.getElementById('layout-btn').addEventListener('click', () => {
       const btn  = document.getElementById('layout-btn');
       const icon = document.getElementById('layout-icon');
       btn.disabled = true;
       icon.classList.add('spinning');
 
+      // Step 1: unpin any manually-dragged nodes and scatter all positions.
+      // Nodes at physics equilibrium have zero net force — startSimulation() on a
+      // stable graph does nothing. Scattering breaks the equilibrium so physics
+      // can find a genuinely new layout.
+      const allIds = nodesDS.getIds();
+      const spread = Math.max(600, allIds.length * 60);
+      nodesDS.update(allIds.map(id => ({
+        id,
+        x: (Math.random() - 0.5) * spread,
+        y: (Math.random() - 0.5) * spread,
+        fixed: false
+      })));
+
+      // Step 2: set physics params, then explicitly call stabilize().
+      // setOptions alone does not fire stabilizationIterationsDone —
+      // only network.stabilize() triggers that event.
       network.setOptions({
         physics: {
           enabled: true,
@@ -979,22 +772,22 @@
             gravitationalConstant: -80,
             centralGravity: 0.008,
             springLength: 140,
-            springConstant: 0.1,
-            damping: 0.5,
+            springConstant: 0.08,
+            damping: 0.45,
             avoidOverlap: 1
           },
-          stabilization: { enabled: false } // manual timer, not event-based
+          stabilization: { enabled: true, updateInterval: 30 }
         }
       });
-      network.startSimulation();
 
-      // Run physics for 2.5 s then pause — keep physics enabled so spring drag still works
-      setTimeout(() => {
+      network.once('stabilizationIterationsDone', () => {
         network.stopSimulation();
-        network.fit({ animation: { duration: 400, easingFunction: 'easeOutQuad' } });
+        network.fit({ animation: { duration: 500, easingFunction: 'easeOutQuad' } });
         btn.disabled = false;
         icon.classList.remove('spinning');
-      }, 2500);
+      });
+
+      network.stabilize(500);
     });
 
     // ── Init ─────────────────────────────────────────────────────────
@@ -1019,3 +812,5 @@
   </script>
 </body>
 </html>
+
+

@@ -394,6 +394,57 @@ _STATE_KEYS = {
     "decompose_needed",
 }
 
+# ─── Graph context snapshot ───────────────────────────────────────────────────
+
+def _build_graph_context_snapshot(state: "AnalyticsState") -> dict:
+    """Collect the minimal identifiers and context data needed to reconstruct the graph visualization."""
+    semantic_context = state.get("semantic_context") or {}
+    resolved_intent = state.get("resolved_intent") or {}
+    ir_list = state.get("semantic_ir_list") or []
+
+    path_tables: list[str] = list(dict.fromkeys(
+        fqn
+        for ir in ir_list
+        for fqn in (ir.get("path_tables") or []) + (ir.get("anchor_tables") or [])
+    ))
+    join_clauses: list[str] = [
+        clause
+        for ir in ir_list
+        for clause in (ir.get("join_clauses") or [])
+    ]
+    join_path_ids: list[str] = list(dict.fromkeys(
+        pid
+        for ir in ir_list
+        for pid in (ir.get("join_path_ids") or [])
+    ))
+    selected_columns: list[dict] = [
+        {
+            "table_fqn": c.get("table_fqn") if isinstance(c, dict) else getattr(c, "table_fqn", ""),
+            "column_name": c.get("column_name") if isinstance(c, dict) else getattr(c, "column_name", ""),
+            "aggregation": c.get("aggregation") if isinstance(c, dict) else getattr(c, "aggregation", None),
+            "alias": c.get("alias") if isinstance(c, dict) else getattr(c, "alias", None),
+        }
+        for ir in ir_list
+        for c in ((ir.get("measures") or []) + (ir.get("dimensions") or []))
+    ]
+
+    return {
+        "tables": semantic_context.get("tables") or [],
+        "business_terms": semantic_context.get("business_terms") or [],
+        "intents": semantic_context.get("intents") or [],
+        "templates": semantic_context.get("templates") or [],
+        "query_patterns": semantic_context.get("query_patterns") or [],
+        "anti_patterns": semantic_context.get("anti_patterns") or [],
+        "anchor_tables": resolved_intent.get("anchor_tables") or [],
+        "path_tables": path_tables,
+        "join_clauses": join_clauses,
+        "join_path_ids": join_path_ids,
+        "selected_columns": selected_columns,
+        "template_id": resolved_intent.get("template_id"),
+        "intent": resolved_intent.get("intent"),
+    }
+
+
 # ─── Streaming ────────────────────────────────────────────────────────────────
 
 async def stream_pipeline(
@@ -469,6 +520,11 @@ async def stream_pipeline(
         "stopped": False,
         "deep_analysis": deep_analysis,
         "max_rows": max_rows,
+        "user_email": user_email,
+        "pipeline_start_ms": time.perf_counter(),
+        "pattern_matched": False,
+        "pattern_name": None,
+        "is_retry": bool(kwargs.get("is_retry", False)),
     }
 
     from app.services.neo4j_analytics.helpers import MultiSectionStreamer, SectionStreamer
@@ -679,6 +735,8 @@ async def stream_pipeline(
             if not _done_cols and _r.get("columns"):
                 _done_cols = _r["columns"]
 
+        _graph_context = _build_graph_context_snapshot(state)
+
         try:
             yield {
                 "event": "done",
@@ -711,6 +769,7 @@ async def stream_pipeline(
                     "no_data":           state.get("no_data", False),
                     "reliability_flags": state.get("reliability_flags", []),
                     "token_usage":       aggregate_token_usage(_token_records) if _token_records else {},
+                    "graph_context":     _graph_context,
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

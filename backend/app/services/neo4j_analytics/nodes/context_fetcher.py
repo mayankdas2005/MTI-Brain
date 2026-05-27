@@ -8,6 +8,7 @@ and injects short/long-term memory context.
 from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
+import asyncio
 import hashlib
 import json
 import time
@@ -228,6 +229,8 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             "is_followup": is_followup,
         }
 
+        await _enrich_columns_from_redshift(semantic_context, str(state["thread_id"]))
+
         logger.info(
             "context_fetcher DONE | thread={} | is_followup={} | templates={} | tables={} | cols={}",
             state["thread_id"], is_followup, len(templates), len(tables), len(columns),
@@ -393,3 +396,170 @@ def _merge_business_terms(vector_results: list[dict], fts_results: list[dict]) -
         else:
             seen[term]["score"] = max(seen[term].get("score") or 0.0, bt.get("score") or 0.0) + 0.05
     return sorted(seen.values(), key=lambda x: x.get("score") or 0.0, reverse=True)[:5]
+
+
+# ── Column enrichment from Redshift ───────────────────────────────────────────
+
+_NON_CATEGORICAL = (
+    "int", "float", "double", "decimal", "numeric", "real",
+    "date", "timestamp", "bool", "bytea", "json", "jsonb",
+)
+_CATEGORICAL = ("char", "varchar", "text", "bpchar", "nchar", "nvarchar")
+
+
+def _should_probe(col_name: str, data_type: str) -> bool:
+    dtype = data_type.lower()
+    col = col_name.lower()
+    if "uuid" in dtype or "uuid" in col:
+        return False
+    if col == "id" or col.endswith("_id") or col.endswith("_ref"):
+        return False
+    if any(t in dtype for t in _NON_CATEGORICAL):
+        return False
+    return any(t in dtype for t in _CATEGORICAL)
+
+
+def _get_probe_candidates(semantic_context: dict) -> dict[str, set[str]]:
+    """Return {table_fqn: set(col_names)} for join key columns + low-selectivity Neo4j columns."""
+    table_fqns = [t["fqn"] for t in (semantic_context.get("tables") or []) if t.get("fqn")]
+    join_cols: dict[str, set[str]] = {fqn: set() for fqn in table_fqns}
+
+    try:
+        joins = neo4j_client.get_direct_joins(table_fqns)
+        for j in joins:
+            from_fqn = j.get("from_fqn", "")
+            to_fqn = j.get("to_fqn", "")
+            if j.get("from_col") and from_fqn in join_cols:
+                join_cols[from_fqn].add(j["from_col"])
+            if j.get("to_col") and to_fqn in join_cols:
+                join_cols[to_fqn].add(j["to_col"])
+    except Exception:
+        pass
+
+    for col in (semantic_context.get("columns") or []):
+        if col.get("filter_selectivity") == "low":
+            fqn = col.get("table_fqn", "")
+            if fqn in join_cols:
+                join_cols[fqn].add(col["name"])
+
+    return join_cols
+
+
+async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) -> None:
+    """Enrich semantic_context columns in-place with Redshift-probed distinct values.
+
+    For each table in context:
+    1. Discover join key columns missing from Neo4j via information_schema.columns.
+    2. Probe DISTINCT values for all probeable VARCHAR columns (join keys + low-selectivity).
+
+    Writes filter_values (full 100), sample_values (first 5), filter_selectivity into
+    column dicts in-memory — never touches Neo4j.
+    """
+    from app.services.neo4j_analytics.redshift_client import execute_query, get_table_columns
+
+    probe_candidates = _get_probe_candidates(semantic_context)
+    if not probe_candidates:
+        return
+
+    # Build an index of existing columns for fast lookup and mutation
+    col_index: dict[tuple[str, str], dict] = {}
+    for col in (semantic_context.get("columns") or []):
+        fqn = col.get("table_fqn", "")
+        name = col.get("name", "")
+        if fqn and name:
+            col_index[(fqn, name)] = col
+
+    # Step A — discover join key columns missing from Neo4j via information_schema
+    for fqn, col_names in probe_candidates.items():
+        if not col_names:
+            continue
+        parts = fqn.split(".")
+        if len(parts) != 2:
+            continue
+        schema_name, table_name = parts[0], parts[1]
+
+        # Which of these col_names are not already in semantic_context?
+        missing = [c for c in col_names if (fqn, c) not in col_index]
+        if missing:
+            cache_key = f"schema_cols:{fqn}"
+            cached = redis_client.get_json(cache_key)
+            if cached is not None:
+                rows = cached
+            else:
+                rows = await get_table_columns(schema_name, table_name, missing)
+                try:
+                    redis_client.set_json(cache_key, rows, ttl=86400)
+                except Exception:
+                    pass
+
+            for row in rows:
+                col_name, data_type = row[0], row[1]
+                key = (fqn, col_name)
+                if key not in col_index:
+                    new_col = {
+                        "table_fqn": fqn,
+                        "name": col_name,
+                        "data_type": data_type,
+                        "sample_values": [],
+                        "filter_values": [],
+                    }
+                    semantic_context.setdefault("columns", []).append(new_col)
+                    col_index[key] = new_col
+                    logger.info(
+                        "context_fetcher | discovered join col | {}.{} | dtype={}",
+                        fqn, col_name, data_type,
+                    )
+
+    # Step B — probe DISTINCT values for all probeable columns
+    async def _probe_col(fqn: str, col_name: str, col_dict: dict) -> None:
+        data_type = col_dict.get("data_type", "")
+        if not _should_probe(col_name, data_type):
+            return
+
+        cached = redis_client.get_filter_values(fqn, col_name)
+        if cached is not None:
+            col_dict["filter_values"] = cached
+            col_dict["sample_values"] = cached[:5]
+            col_dict["filter_selectivity"] = "low" if len(cached) <= 20 else "medium"
+            return
+
+        probe_sql = (
+            f'SELECT DISTINCT CAST("{col_name}" AS VARCHAR) AS val '
+            f"FROM {fqn} "
+            f'WHERE "{col_name}" IS NOT NULL '
+            f"ORDER BY 1 LIMIT 100"
+        )
+        try:
+            _, rows = await execute_query(probe_sql, timeout_s=10, thread_id=thread_id)
+            values = [str(r[0]) for r in rows if r and r[0] is not None]
+            redis_client.set_filter_values(fqn, col_name, values, ttl=86400)
+            col_dict["filter_values"] = values
+            col_dict["sample_values"] = values[:5]
+            col_dict["filter_selectivity"] = "low" if len(values) <= 20 else "medium"
+            logger.info(
+                "context_fetcher | probed distinct values | {}.{} | count={}",
+                fqn, col_name, len(values),
+            )
+        except Exception as e:
+            logger.warning(
+                "context_fetcher | probe failed | {}.{} | error={}", fqn, col_name, e
+            )
+
+    # Limit concurrent Redshift probes to 2 — pool has 3 connections; leave 1 for
+    # the actual query execution that follows. Without this, all probes compete for
+    # the same pool and time out waiting for a connection.
+    sem = asyncio.Semaphore(2)
+
+    async def _probe_guarded(fqn: str, col_name: str, col_dict: dict) -> None:
+        async with sem:
+            await _probe_col(fqn, col_name, col_dict)
+
+    tasks = []
+    for fqn, col_names in probe_candidates.items():
+        for col_name in col_names:
+            col_dict = col_index.get((fqn, col_name))
+            if col_dict is not None:
+                tasks.append(_probe_guarded(fqn, col_name, col_dict))
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)

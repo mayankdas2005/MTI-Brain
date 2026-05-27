@@ -89,7 +89,7 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
     }, indent=2)
 
     anti_patterns = await _fetch_anti_patterns(state)
-    query_patterns = await _fetch_query_patterns(state)
+    query_patterns, pattern_matched, pattern_name = await _fetch_query_patterns(state)
 
     from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_DEEP
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
@@ -209,13 +209,15 @@ async def _handle_decomposed(state: AnalyticsState, resolved: dict, semantic_con
             sql_list.append("")
 
     for idx, s in enumerate(sql_list):
-        logger.info("query_compiler | sub_query[{}] final SQL | thread={} | sql_preview={}", idx, state["thread_id"], s[:300])
+        logger.info("query_compiler | sub_query[{}] final SQL | thread={} | sql_preview={}", idx, state["thread_id"], s)
 
     logger.info("query_compiler DONE (decomposed) | thread={} | sub_queries={}", state["thread_id"], len(ir_list))
     return {
         "semantic_ir_list": ir_list,
         "sql_list": sql_list,
         "filter_resolution_needed": False,
+        "pattern_matched": pattern_matched,
+        "pattern_name": pattern_name,
     }
 
 
@@ -308,8 +310,8 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
 
         jp = neo4j_client.load_best_join_path(from_table, to_table)
         if not jp:
-            logger.warning("query_compiler | no join_path | from={} to={} | using fallback ON id=id", from_table, to_table)
-            all_join_clauses.append("id = id")
+            logger.warning("query_compiler | no join_path | from={} to={} | sentinel added, will resolve from available_joins", from_table, to_table)
+            all_join_clauses.append("")  # sentinel — LLM must resolve from available_joins
             all_path_tables.append(to_table)
             join_types.append("JOIN")
             continue
@@ -443,6 +445,7 @@ def _qualify_join_clause(clause: str, left_table: str, right_table: str) -> str:
     JoinPath nodes store unqualified column pairs. The LLM needs
     'lpp.t1.col = lpp.t2.col' to generate correct ON clauses.
     If the clause already contains dots it is returned unchanged.
+    Empty string sentinel is returned unchanged (no join path found).
     """
     if not clause or "." in clause:
         return clause
@@ -574,6 +577,16 @@ async def _generate_sql_llm(
                 "on": ir.join_clauses[i],
             }
             for i in range(len(ir.join_clauses))
+            if ir.join_clauses[i]  # skip empty sentinel — no known join path
+            if i + 1 < len(ir.path_tables)
+        ],
+        "unresolved_anchor_pairs": [
+            {
+                "from": ir.path_tables[i],
+                "to": ir.path_tables[i + 1],
+            }
+            for i in range(len(ir.join_clauses))
+            if not ir.join_clauses[i]  # empty sentinel = no Neo4j join path found
             if i + 1 < len(ir.path_tables)
         ],
         "measures": [m.model_dump() for m in ir.measures],
@@ -625,7 +638,7 @@ async def _generate_sql_llm(
     sql = parse_tag(response.content or "", "sql")
     logger.info(
         "query_compiler | SQL generated | thread={} | anchor={} | sql_len={} | sql_preview={}",
-        state["thread_id"], ir.anchor_tables, len(sql or ""), (sql or "")[:300],
+        state["thread_id"], ir.anchor_tables, len(sql or ""), (sql or "")
     )
     return (sql or "").strip()
 
@@ -660,18 +673,25 @@ async def _fetch_anti_patterns(state: AnalyticsState) -> str:
         patterns = neo4j_client.search_anti_patterns(embedding)
         if not patterns:
             return "(none)"
+        if state.get("semantic_context") is not None:
+            state["semantic_context"]["anti_patterns"] = patterns
         return "\n".join(f"- {p.get('error_type', '')}: {p.get('error_summary', '')}" for p in patterns)
     except Exception:
         return "(none)"
 
 
-async def _fetch_query_patterns(state: AnalyticsState) -> str:
+async def _fetch_query_patterns(state: AnalyticsState) -> tuple[str, bool, str | None]:
     try:
         from app.services.neo4j_analytics.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
         patterns = neo4j_client.search_query_patterns(embedding)
         if not patterns:
-            return "(none)"
-        return "\n".join(f"- intent: {p.get('intent', '')} | tables: {p.get('tables_used', '')}" for p in patterns)
+            return "(none)", False, None
+        if state.get("semantic_context") is not None:
+            state["semantic_context"]["query_patterns"] = patterns
+        top = patterns[0]
+        name = top.get("intent") or top.get("id") or ""
+        formatted = "\n".join(f"- intent: {p.get('intent', '')} | tables: {p.get('tables_used', '')}" for p in patterns)
+        return formatted, True, name
     except Exception:
-        return "(none)"
+        return "(none)", False, None

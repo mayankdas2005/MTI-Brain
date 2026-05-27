@@ -8,6 +8,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 import json
+import re
 
 from app.core.logger import logger
 from app.services.neo4j_analytics.helpers import parse_tag
@@ -101,8 +102,8 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         logger.error("synthesis LLM failed | thread={} | error={}", state["thread_id"], e)
         return {"answer": "I encountered an error preparing your answer. Please try again.", "follow_ups": []}
 
-    raw = response.content or ""
-    answer = parse_tag(raw, "answer") or raw.strip()
+    raw = response.content if isinstance(response.content, str) else ""
+    answer = parse_tag(raw, "answer") or _extract_answer_fallback(raw)
     follow_ups = _parse_follow_ups(raw)
 
     logger.info("synthesis DONE | thread={} | answer_len={} | follow_ups={}", state["thread_id"], len(answer), len(follow_ups))
@@ -121,3 +122,15 @@ def _parse_follow_ups(raw: str) -> list[str]:
     except Exception:
         pass
     return []
+
+
+def _extract_answer_fallback(raw: str) -> str:
+    """Fallback when <answer> tags are absent.
+
+    Strips <reasoning> and <follow_ups> blocks so leaked reasoning content
+    never reaches the user as the answer body.
+    """
+    cleaned = re.sub(r"<reasoning>.*?</reasoning>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<follow_ups>.*?</follow_ups>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", "", cleaned).strip()
+    return cleaned

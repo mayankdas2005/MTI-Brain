@@ -61,3 +61,10 @@ class AnalyticsState(TypedDict):
     stopped: bool
     deep_analysis: bool
     max_rows: int                         # user-configured SQL row limit (default 100, applied as LIMIT in executor)
+
+    # ── Audit / lineage ───────────────────────────────────────────────────────
+    user_email: str | None               # caller email — written to execution log
+    pipeline_start_ms: float             # time.perf_counter() at pipeline entry — used to compute duration_ms in audit log
+    pattern_matched: bool                # set True by query_compiler when a QueryPattern is found and used
+    pattern_name: str | None             # intent of the top matched pattern
+    is_retry: bool                       # True when triggered from /retry or /edit endpoint

@@ -16,8 +16,7 @@ from app.services.neo4j_analytics import neo4j_client, redis_client
 from app.services.neo4j_analytics.filter_resolver_logic import (
     build_redshift_probe_params,
     build_redshift_probe_sql,
-    resolve_tier1_exact,
-    resolve_tier2_fuzzy,
+    resolve_tier1_combined,
     resolve_tier3_temporal,
 )
 from app.services.neo4j_analytics.prompts import FILTER_DISAMBIGUATE_PROMPT, REASONING_DIRECTIVE_NORMAL
@@ -131,13 +130,16 @@ async def _resolve_filter(
         f.table_fqn, f.column_name, column_meta.get("data_type"), column_meta.get("semantic_type"),
     )
 
-    sample_values = column_meta.get("sample_values") or []
+    # filter_values = Redshift-probed distinct values written by context_fetcher enrichment
+    # Never use Neo4j value_vocabulary (always []) or partial sample_values for matching
+    filter_values = column_meta.get("filter_values") or []
     raw_aliases = column_meta.get("value_aliases")
     value_aliases = raw_aliases if isinstance(raw_aliases, dict) else {}
     filter_selectivity = column_meta.get("filter_selectivity", "medium")
 
-    # Tier 3 — temporal (date columns and time_filter)
-    if column_meta.get("data_type", "").lower() in ("date", "timestamp", "datetime") or f == ir.time_filter:
+    # Temporal (date columns and time_filter) — handle before value matching
+    data_type = column_meta.get("data_type", "").lower()
+    if data_type in ("date", "timestamp", "datetime") or f == ir.time_filter:
         temporal = resolve_tier3_temporal(f.raw_user_value)
         if temporal:
             return f.model_copy(update={
@@ -147,31 +149,25 @@ async def _resolve_filter(
                 "resolved": True,
             }), False
 
-    # Tier 1 — exact match
-    exact = resolve_tier1_exact(f.raw_user_value, sample_values, value_aliases)
-    if exact:
-        return f.model_copy(update={"value": exact, "resolved": True}), False
+    # Tier 1 Combined: aliases → exact → fuzzy (all against Redshift-probed filter_values)
+    resolved_val, score, candidates = resolve_tier1_combined(f.raw_user_value, filter_values, value_aliases)
+    if resolved_val and score >= 85 and not candidates:
+        return f.model_copy(update={"value": resolved_val, "resolved": True}), False
+    if resolved_val and 70 <= score < 85:
+        return f.model_copy(update={"value": resolved_val, "resolved": True}), True
 
-    # Tier 2 — fuzzy against sample_values
-    fuzzy_val, fuzzy_score, candidates = resolve_tier2_fuzzy(f.raw_user_value, sample_values)
-    if fuzzy_val and fuzzy_score >= 85 and not candidates:
-        return f.model_copy(update={"value": fuzzy_val, "resolved": True}), False
-    if fuzzy_val and 70 <= fuzzy_score < 85:
-        return f.model_copy(update={"value": fuzzy_val, "resolved": True}), True
-
-    # Tier 4 — Redshift probe (skip for high-cardinality)
-    if filter_selectivity != "high":
+    # Tier 2: Live Redshift probe — only when filter_values is empty (enrichment didn't run)
+    if not filter_values and filter_selectivity != "high":
         probe_result = await _run_redshift_probe(f.table_fqn, f.column_name, f.raw_user_value, state["thread_id"])
         if probe_result:
-            probe_fuzzy, probe_score, probe_candidates = resolve_tier2_fuzzy(f.raw_user_value, probe_result)
-            if probe_fuzzy and probe_score >= 85 and not probe_candidates:
-                return f.model_copy(update={"value": probe_fuzzy, "resolved": True}), False
-            # Use near-matches if available; otherwise pass all probe values for semantic mapping
-            candidates_for_t5 = probe_candidates[:5] if probe_candidates else probe_result[:8]
-            disambiguated = await _tier5_disambiguate(f, candidates_for_t5, state, config)
-            if disambiguated:
-                return f.model_copy(update={"value": disambiguated, "resolved": True}), False
-    elif candidates:
+            resolved_val, score, candidates = resolve_tier1_combined(f.raw_user_value, probe_result, value_aliases)
+            if resolved_val and score >= 85 and not candidates:
+                return f.model_copy(update={"value": resolved_val, "resolved": True}), False
+            if resolved_val and 70 <= score < 85:
+                return f.model_copy(update={"value": resolved_val, "resolved": True}), True
+
+    # Tier 3: LLM disambiguation for genuinely ambiguous candidates
+    if candidates:
         disambiguated = await _tier5_disambiguate(f, candidates[:5], state, config)
         if disambiguated:
             return f.model_copy(update={"value": disambiguated, "resolved": True}), False

@@ -201,3 +201,22 @@ def get_session_summary(thread_id: str) -> str | None:
 def set_session_summary(thread_id: str, summary: str, ttl: int = 1800) -> None:
     key = session_summary_key(thread_id)
     cache_set(key, summary, ttl)
+
+
+def get_json(key: str) -> object | None:
+    """Return a deserialized JSON value or None on miss/error."""
+    raw = cache_get(key)
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+    return None
+
+
+def set_json(key: str, value: object, ttl: int = 86400) -> None:
+    """Serialize value as JSON and cache it."""
+    try:
+        cache_set(key, json.dumps(value), ttl)
+    except Exception as e:
+        logger.warning("redis set_json failed | key={} | error={}", key[:60], e)

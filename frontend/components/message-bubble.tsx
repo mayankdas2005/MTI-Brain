@@ -25,6 +25,8 @@ import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
 import { generateDashboard, getDashboard, downloadDashboard } from '@/lib/api/dashboard';
 import { useDashboardStore, DASHBOARD_TIMEOUT_MS } from '@/lib/store/dashboard';
+import { generateGraphContext, getGraphContext, downloadGraphContext } from '@/lib/api/graph_context';
+import { useGraphContextStore, GRAPH_CONTEXT_TIMEOUT_MS } from '@/lib/store/graph_context';
 import { MarkdownRenderer } from './markdown-renderer';
 import { FeedbackWidget } from './feedback-widget';
 import { FollowUpChips } from './follow-up-chips';
@@ -395,6 +397,36 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId, showDashButton]);
 
+  // Graph Context state — persisted in Zustand
+  const gcEntry      = useGraphContextStore((s) => s.get(convId));
+  const setGC        = useGraphContextStore((s) => s.set);
+  const removeGC     = useGraphContextStore((s) => s.remove);
+  const gcStatus     = gcEntry?.status ?? 'idle';
+  const gcTimedOut   = gcStatus === 'pending' && !!gcEntry && (Date.now() - gcEntry.queuedAt) > GRAPH_CONTEXT_TIMEOUT_MS;
+  const showGCButton = !!convId && message.role === 'assistant' && !!message.content && !!sql;
+
+  const gcCheckFiredRef = useRef(false);
+  useEffect(() => {
+    if (!showGCButton) return;
+    if (gcStatus === 'pending' && !gcTimedOut) return;
+    if (gcCheckFiredRef.current) return;
+    gcCheckFiredRef.current = true;
+    getGraphContext(convId)
+      .then((res) => {
+        if (res.status === 'ready') {
+          setGC(convId, { status: 'ready',   url: res.url ?? null, queuedAt: Date.now() });
+        } else if (res.status === 'pending') {
+          setGC(convId, { status: 'pending', url: null,            queuedAt: Date.now() });
+        } else if (res.status === 'failed') {
+          setGC(convId, { status: 'failed',  url: null,            queuedAt: Date.now() });
+        }
+      })
+      .catch(() => {
+        if (gcStatus !== 'idle') removeGC(convId);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convId, showGCButton]);
+
   // User preferences
   const prefAutoCharts = usePreferencesStore((s) => s.autoShowCharts);
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
@@ -625,10 +657,54 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                   )}
                   {/* Knowledge Graph Context */}
                   {message.role === 'assistant' && !!message.content && (
-                    sql ? (
-                      <DropdownMenuItem className="gap-2">
-                        <Network className="w-4 h-4" />
-                        Graph Context
+                    showGCButton ? (
+                      <DropdownMenuItem
+                        disabled={gcStatus === 'pending' && !gcTimedOut}
+                        onClick={() => {
+                          if (gcStatus === 'ready') {
+                            void getGraphContext(convId).then((res) => {
+                              if (res.url) {
+                                window.open(res.url, '_blank', 'noopener');
+                                void downloadGraphContext(convId).then(({ blob, filename }) => {
+                                  const blobUrl = URL.createObjectURL(blob);
+                                  const a = document.createElement('a');
+                                  a.href = blobUrl;
+                                  a.download = filename;
+                                  document.body.appendChild(a);
+                                  a.click();
+                                  document.body.removeChild(a);
+                                  URL.revokeObjectURL(blobUrl);
+                                }).catch(() => {});
+                              } else {
+                                removeGC(convId);
+                                toast.info('Graph context no longer available. Click to rebuild.');
+                              }
+                            }).catch(() => {
+                              removeGC(convId);
+                              toast.info('Graph context no longer available. Click to rebuild.');
+                            });
+                            return;
+                          }
+                          setGC(convId, { status: 'pending', url: null, queuedAt: Date.now() });
+                          toast.info('Generating knowledge graph…', {
+                            id: `gc-${convId}`,
+                            description: 'This may take up to a minute.',
+                          });
+                          void generateGraphContext(convId).catch((err: unknown) => {
+                            setGC(convId, { status: 'failed', url: null, queuedAt: Date.now() });
+                            toast.error(err instanceof Error ? err.message : 'Graph context generation failed.', { id: `gc-${convId}` });
+                          });
+                        }}
+                        className="gap-2"
+                      >
+                        {gcStatus === 'pending' && !gcTimedOut
+                          ? <Loader2 className="w-4 h-4 animate-spin" />
+                          : <Network className="w-4 h-4" />
+                        }
+                        {gcStatus === 'ready'                     ? 'View Graph'        :
+                         gcStatus === 'pending' && !gcTimedOut    ? 'Generating…'       :
+                         gcStatus === 'failed'  || gcTimedOut     ? 'Rebuild'           :
+                                                                    'Graph Context'}
                       </DropdownMenuItem>
                     ) : (
                       <Tooltip>

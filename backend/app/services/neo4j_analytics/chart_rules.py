@@ -51,6 +51,12 @@ def select_chart_type(
     intent_lower = intent.lower()
     table_limit = _TABLE_THRESHOLD.get(persona, _DEFAULT_TABLE_THRESHOLD)
 
+    # ── Single-row lookup → KPI card ─────────────────────────────────────────
+    # A single data row (regardless of column mix) is always a point-in-time
+    # lookup, never a chart. Prevents single-point line/area specs.
+    if n_rows == 1 and n_numeric >= 1:
+        return "kpi_card"
+
     # ── KPI card ──────────────────────────────────────────────────────────────
     # Executives get a more aggressive KPI threshold (≤ 5 rows of pure numbers)
     kpi_row_limit = 5 if persona == "executive" else 3
