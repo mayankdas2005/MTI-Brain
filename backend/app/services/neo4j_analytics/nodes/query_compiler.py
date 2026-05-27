@@ -464,10 +464,18 @@ def _load_direct_join(from_fqn: str, to_fqn: str) -> dict | None:
     """Check JOINS_TO edges between two tables and return the best join clause."""
     try:
         direct = neo4j_client.get_direct_joins([from_fqn, to_fqn])
+        logger.debug(
+            "query_compiler | _load_direct_join | from={} to={} | raw_edges={}",
+            from_fqn, to_fqn, direct,
+        )
         for dj in direct:
             f, t = dj.get("from_fqn"), dj.get("to_fqn")
             fc, tc = dj.get("from_col"), dj.get("to_col")
             if not (f and t and fc and tc):
+                logger.debug(
+                    "query_compiler | _load_direct_join | skipping edge missing cols | edge={}",
+                    dj,
+                )
                 continue
             if (f == from_fqn and t == to_fqn) or (f == to_fqn and t == from_fqn):
                 clause = f"{f}.{fc} = {t}.{tc}"
@@ -477,8 +485,15 @@ def _load_direct_join(from_fqn: str, to_fqn: str) -> dict | None:
                     from_fqn, to_fqn, clause,
                 )
                 return {"clause": clause, "join_type": jtype}
-    except Exception:
-        pass
+        logger.warning(
+            "query_compiler | _load_direct_join | no matching JOINS_TO edge | from={} to={} | edges_returned={}",
+            from_fqn, to_fqn, len(direct),
+        )
+    except Exception as exc:
+        logger.warning(
+            "query_compiler | _load_direct_join | exception | from={} to={} | error={}",
+            from_fqn, to_fqn, exc,
+        )
     return None
 
 
