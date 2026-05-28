@@ -41,7 +41,7 @@ def _register_bedrock_model_pricing() -> None:
     exist (HTTP 409) so restarts are idempotent.
     """
     # Lazy import to avoid a core→services circular dependency at module level.
-    from app.services.neo4j_analytics.token_tracker import MODELS
+    from app.services.agents.token_tracker import MODELS
 
     auth = (settings.LANGFUSE_PUBLIC_KEY, settings.LANGFUSE_SECRET_KEY)
     base_url = settings.LANGFUSE_BASE_URL.rstrip("/")

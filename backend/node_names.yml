@@ -3,11 +3,16 @@
 # LLM tiers, and streaming config.
 #
 # tier:   "fast" | "balanced" | "deep" | "none"
+#           fast    → Haiku  (disambiguation, classification, chart spec)
+#           balanced → Sonnet (intent resolution, synthesis)
+#           deep    → Sonnet extended thinking / long context (SQL generation, execution repair)
+#           none    → no LLM call; token tracking ignored for this node
+#
 # stream: "multi"              → MultiSectionStreamer (<reasoning> + <answer>)
 #         ["<tag>", "<event>"] → SectionStreamer for one XML tag
-#         null                 → deterministic node; no LLM tokens to stream
+#         null                 → no LLM tokens to stream (deterministic or non-streaming LLM call)
 #
-# label: null → node is hidden from the UI (e.g. compress)
+# label: null → node is hidden from the UI progress bar (e.g. compress)
 # ─────────────────────────────────────────────────────────────────────────────────
 
 nodes:
@@ -18,11 +23,11 @@ nodes:
 
   - id: general_chat
     label: "Responding"
-    tier: fast
+    tier: balanced
     stream: multi
 
   - id: context_fetcher
-    label: "Loading data catalog"
+    label: "Loading schema"
     tier: none
     stream: null
 
@@ -37,22 +42,27 @@ nodes:
     stream: [reasoning, reasoning.delta]
 
   - id: query_compiler
-    label: "Building query"
-    tier: balanced
-    stream: [reasoning, reasoning.delta]
+    label: "Planning query"
+    tier: none
+    stream: null
 
   - id: filter_resolver
-    label: "Resolving filter values"
+    label: "Resolving filters"
     tier: fast
+    stream: null
+
+  - id: sql_generator
+    label: "Building query"
+    tier: deep
     stream: [reasoning, reasoning.delta]
 
   - id: sql_validator
-    label: "Validating SQL"
+    label: "Validating query"
     tier: none
     stream: null
 
   - id: executor
-    label: "Querying data warehouse"
+    label: "Fetching data"
     tier: deep
     stream: [reasoning, reasoning.delta]
 

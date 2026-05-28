@@ -170,7 +170,7 @@ async def generate_and_store(
         raise ValueError(f"No graph_context.path_tables for conversation_id={conversation_id}")
 
     # 2. Re-query Neo4j for full node/edge data
-    from app.services.neo4j_analytics import neo4j_client as nc
+    from app.services.agents import neo4j_client as nc
 
     loop = asyncio.get_event_loop()
 

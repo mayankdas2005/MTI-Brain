@@ -41,3 +41,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Claude
+.claude/worktrees/
+graphify-out/
+.github/

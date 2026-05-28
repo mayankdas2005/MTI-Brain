@@ -132,6 +132,8 @@ def _build_sse_generator(
                 "rows": save_data.get("rows", []),
                 "row_count": save_data.get("row_count", 0),
                 "chart_spec": save_data.get("chart_spec"),
+                "chart_type": save_data.get("chart_type"),
+                "alternative_chart_specs": save_data.get("alternative_chart_specs", []),
                 "follow_ups": save_data.get("follow_ups", []),
                 "run_id": save_data.get("run_id", ""),
                 "stopped": save_data.get("stopped", False),
@@ -156,7 +158,7 @@ def _build_sse_generator(
             logger.exception("Failed to save assistant message")
 
     async def event_generator():
-        from app.services.neo4j_analytics.pipeline import stream_pipeline
+        from app.services.agents.pipeline import stream_pipeline
         from app.services.chat.feedback import (
             build_feedback_context,
             find_similar_feedback,

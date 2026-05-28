@@ -1,4 +1,4 @@
-"""Render the neo4j_analytics LangGraph pipeline as a Mermaid diagram and PNG.
+"""Render the agents LangGraph pipeline as a Mermaid diagram and PNG.
 
 Compiles the analytics graph, exports it as a Mermaid definition file
 (``.mmd``), and fetches a PNG rendering via the mermaid.ink service.
@@ -18,7 +18,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.services.neo4j_analytics.graph import compile_graph
+from app.services.agents.graph import compile_graph
 
 OUT_DIR = Path(__file__).resolve().parent.parent.parent / "assets"
 OUT_DIR.mkdir(parents=True, exist_ok=True)

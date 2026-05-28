@@ -19,7 +19,7 @@ from app.core.middleware import (
 )
 from app.core.rate_limit import limiter
 from app.db import dispose_engine, warm_pool
-from app.services.neo4j_analytics.graph import init_analytics_pipeline, shutdown_analytics_pipeline
+from app.services.agents.graph import init_analytics_pipeline, shutdown_analytics_pipeline
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware

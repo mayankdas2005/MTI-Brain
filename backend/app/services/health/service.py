@@ -24,3 +24,27 @@ async def check_postgres(db: AsyncSession) -> dict:
     except Exception as e:
         logger.error(f"Postgres health check failed: {e}")
         return {"status": "down", "error": str(e)}
+
+
+async def check_neo4j() -> dict:
+    try:
+        from app.services.agents import neo4j_client
+        driver = neo4j_client.get_driver()
+        driver.verify_connectivity()
+        return {"status": "ok"}
+    except RuntimeError:
+        return {"status": "disabled"}
+    except Exception as e:
+        return {"status": "down", "error": str(e)}
+
+
+async def check_redis() -> dict:
+    try:
+        from app.services.agents import redis_client
+        client = redis_client._get_client()
+        if client is None:
+            return {"status": "disabled"}
+        client.ping()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "down", "error": str(e)}
