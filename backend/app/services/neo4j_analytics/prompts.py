@@ -19,7 +19,7 @@ _REASONING_FORMAT = (
     "Format for maximum readability — a reader should be able to eyeball this in seconds:\n"
     "- **Bold** every key term, entity name, decision, or finding\n"
     "- *Italic* for uncertainty, caveats, or emphasis ('*this might not hold if...*')\n"
-    "- `backtick` for every class name, property, variable, value, or SPARQL term\n"
+    "- `backtick` for every class name, property, variable, value, or SQL term\n"
     "- Bullet points (- item) for lists of options, observations, or reasoning steps\n"
     "- Blank line between distinct thoughts — never write a wall of text\n"
     "- NO markdown headers (##/###). No horizontal rules."
@@ -31,7 +31,7 @@ _REASONING_NO_LEAK = (
 )
 
 REASONING_DIRECTIVE_NORMAL = (
-    "Think out loud as a human analyst: notice ambiguity, question assumptions, explain each choice. "
+    "Think out loud as a senior analyst: notice ambiguity, question assumptions, explain each choice. "
     "Do NOT narrate what you are doing — show the actual thinking. 2–4 sentences.\n\n"
     + _REASONING_FORMAT
     + _REASONING_NO_LEAK
@@ -46,6 +46,10 @@ REASONING_DIRECTIVE_DEEP = (
     + _REASONING_NO_LEAK
 )
 
+REASONING_DIRECTIVE_BRIEF = (
+    "One sentence only: what specific information is missing or what the correct match is."
+)
+
 # ─── Node 0: Intake Classifier ───────────────────────────────────────────────
 
 INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
@@ -56,7 +60,7 @@ Conversation history:
 
 User question: "{question}"
 
-Classify the question. Output ONLY the JSON object — no explanation, no preamble.
+Classify the question. Output the classification inside <output>...</output> only.
 
 question_type:
   "analytics"    — ANY question about financial data, treasury, payments, ACH, returns, balances,
@@ -67,20 +71,20 @@ question_type:
   "general_chat" — ONLY for clear greetings, off-topic questions, or help questions with
                    NO prior analytics context in the conversation history.
 
-Output exactly this JSON (no other text):
-{{"type": "analytics"}}
+Output exactly this JSON inside the tags (no other text):
+<output>{{"type": "analytics"}}</output>
 OR
-{{"type": "general_chat"}}"""
+<output>{{"type": "general_chat"}}</output>"""
 )
 
 # ─── Node G: General Chat ────────────────────────────────────────────────────
 
 GENERAL_CHAT_PROMPT = ChatPromptTemplate.from_template(
-    """You are MTI Brain, an intelligent assistant for treasury and payments analytics.
-
-{reasoning_directive}
+    """You are MTI Brain, an intelligent assistant for treasury and payments analytics. Persona: {persona}.
 
 {conversation_section}
+
+{memory_section}
 
 {feedback_section}
 
@@ -91,7 +95,14 @@ treasury data, payments, ACH returns, balances, exposures, trends, and more.
 
 <answer>
 {{your response here}}
-</answer>"""
+</answer>
+<follow_ups>
+["natural follow-up 1", "natural follow-up 2", "natural follow-up 3"]
+</follow_ups>
+
+The <follow_ups> block must contain exactly 3 follow-up queries the user might naturally ask next,
+phrased as direct queries (not "Would you like..."). If the question was a greeting or help request,
+suggest 3 analytics topics they could explore."""
 )
 
 # ─── Node 1b: Intent Resolver ────────────────────────────────────────────────
@@ -136,10 +147,9 @@ Supported keywords:
 
 USER PROFILE:
 Persona: {persona}
-Domain preference: {domain_preference}
 Prior feedback: {feedback_context}
 
-CONVERSATION CONTEXT:
+CONVERSATION CONTEXT (use this to interpret follow-up questions like "show me", "break that down", "yes"):
 <conversation_context>{conversation_context}</conversation_context>
 
 LONG-TERM MEMORY:
@@ -148,7 +158,14 @@ LONG-TERM MEMORY:
 FEW-SHOT EXAMPLES:
 <examples>
 Q: "Show NSF return volume this month" →
-{{"template_id": "qt_018", "measures": [{{"table_fqn": "lpp.ach_return", "column_name": "amount", "alias": "return_amount", "aggregation": "COUNT", "semantic_type": "measure"}}], "dimensions": [{{"table_fqn": "lpp.ach_return", "column_name": "return_category", "alias": "return_category", "aggregation": null, "semantic_type": "dimension"}}], "filters": [], "timeframe": "this_month", "intent": "payment_operations", "complexity": "simple", "confidence": 0.92}}
+{{"template_id": "qt_018", "anchor_tables": ["lpp.ach_return"], "measures": [{{"table_fqn": "lpp.ach_return", "column_name": "amount", "alias": "return_amount", "aggregation": "COUNT", "semantic_type": "measure"}}], "dimensions": [{{"table_fqn": "lpp.ach_return", "column_name": "return_category", "alias": "return_category", "aggregation": null, "semantic_type": "dimension"}}], "filters": [], "timeframe": "this_month", "intent": "payment_operations", "complexity": "simple", "confidence": 0.92}}
+
+Q: "Show variance between forecast and actuals by entity for last quarter" →
+{{"template_id": "qt_042", "anchor_tables": ["lpp.forecast_vs_actual", "lpp.forecast_cash_flow"], "measures": [{{"table_fqn": "lpp.forecast_vs_actual", "column_name": "actual_amount", "alias": "actual_amount", "aggregation": "SUM", "semantic_type": "measure"}}, {{"table_fqn": "lpp.forecast_vs_actual", "column_name": "forecast_amount", "alias": "forecast_amount", "aggregation": "SUM", "semantic_type": "measure"}}], "dimensions": [{{"table_fqn": "lpp.forecast_vs_actual", "column_name": "entity_name", "alias": "entity_name", "aggregation": null, "semantic_type": "dimension"}}], "filters": [], "timeframe": "last_quarter", "intent": "forecast_variance", "complexity": "complex", "confidence": 0.87}}
+
+Q: "Break that down by bank" (follow-up after the NSF return volume query above) →
+Inherit anchor_tables and timeframe from conversation_context. Add bank as a new dimension.
+{{"template_id": "qt_018", "anchor_tables": ["lpp.ach_return"], "measures": [{{"table_fqn": "lpp.ach_return", "column_name": "amount", "alias": "return_amount", "aggregation": "COUNT", "semantic_type": "measure"}}], "dimensions": [{{"table_fqn": "lpp.ach_return", "column_name": "return_category", "alias": "return_category", "aggregation": null, "semantic_type": "dimension"}}, {{"table_fqn": "lpp.ach_return", "column_name": "bank_name", "alias": "bank_name", "aggregation": null, "semantic_type": "dimension"}}], "filters": [], "timeframe": "this_month", "intent": "payment_operations", "complexity": "simple", "confidence": 0.88}}
 </examples>
 
 SCHEMA CANDIDATES:
@@ -164,7 +181,7 @@ Output your reasoning within <reasoning>...</reasoning> and then a strict JSON o
 Any identifier NOT in schema_candidates makes the entire output invalid.
 
 <reasoning>
-{{Think through which template matches, which columns are measures vs dimensions, any filters needed, and which temporal keyword matches the user's time expression.}}
+{{Think through which template matches, which columns are measures vs dimensions, any filters needed, and which temporal keyword matches the user's time expression. If this is a follow-up (short/ambiguous question), check conversation_context first to inherit anchor_tables and timeframe.}}
 </reasoning>
 <output>
 {{
@@ -185,6 +202,9 @@ Any identifier NOT in schema_candidates makes the entire output invalid.
 
 CLARIFICATION_PROMPT = ChatPromptTemplate.from_template(
     """You are asking a targeted clarification question for a financial analytics query.
+Persona: {persona}.
+
+{conversation_section}
 
 The user asked: "{question}"
 
@@ -204,70 +224,31 @@ Output your reasoning within <reasoning>...</reasoning> and then one specific, c
 </question>"""
 )
 
-# ─── Node 2: Decomposition (for advanced questions) ──────────────────────────
-
-DECOMPOSE_PROMPT = ChatPromptTemplate.from_template(
-    """You are decomposing a complex financial question into ≤3 independent or sequentially dependent sub-questions.
-
-CONSTRAINT: Use ONLY tables from the provided schema candidates. Each sub-question must be answerable by a single SQL query. Do NOT invent table or column names.
-
-{reasoning_directive}
-
-{conversation_section}
-
-{feedback_section}
-
-SCHEMA CANDIDATES: {semantic_context}
-
-QUERY PATTERNS (reference SQL outlines for similar questions):
-<query_patterns>{query_patterns}</query_patterns>
-
-ANTI-PATTERNS (known failures to avoid):
-<anti_patterns>{anti_patterns}</anti_patterns>
-
-{validation_error_section}
-CURRENT INTENT: {resolved_intent}
-
-USER QUESTION: {question}
-
-Output your reasoning within <reasoning>...</reasoning> and then a strict JSON object within <output>...</output>.
-
-<reasoning>
-{{Think through how to split this into independent sub-questions. Identify merge keys if results need joining.}}
-</reasoning>
-
-<output>
-{{
-  "sub_queries": [
-    {{"description": "...", "intent": "...", "anchor_tables": ["..."], "merge_key": ["column_name"], "depends_on": null}},
-    {{"description": "...", "intent": "...", "anchor_tables": ["..."], "merge_key": ["column_name"], "depends_on": 0}}
-  ],
-  "merge_strategy": "join|union|labeled_sets"
-}}
-</output>"""
-)
-
 # ─── Node F: Filter Disambiguation (Tier 5) ──────────────────────────────────
 
 FILTER_DISAMBIGUATE_PROMPT = ChatPromptTemplate.from_template(
     """You are resolving an ambiguous filter value for a financial data query.
 
-
 The user said: "{raw_user_value}" for the column `{column_name}` in table `{table_fqn}`.
 
-Candidate values found in the database:
+Numbered list of known values in the database:
 {candidates}
 
 Context: {question}
 
-Pick the most likely match based on context. If none fit, output null.
+Pick the most likely match based on context. The resolved_value MUST be copied exactly as shown above (same casing and spacing).
+
+Example: user said "monthly", candidates: 1. "MONTHLY" 2. "QUARTERLY" 3. "ANNUAL"
+→ <output>{{"resolved_value": "MONTHLY"}}</output>
+
+If no candidate is a good match: <output>{{"resolved_value": null}}</output>
 
 {reasoning_directive}
 
 Output your reasoning within <reasoning>...</reasoning> and then a strict JSON object within <output>...</output>.
 
 <reasoning>
-{{Consider what the user likely meant given the question context and the available values.}}
+{{One sentence: which candidate best matches the user's intent and why.}}
 </reasoning>
 <output>
 {{"resolved_value": "..." }}
@@ -277,8 +258,15 @@ Output your reasoning within <reasoning>...</reasoning> and then a strict JSON o
 # ─── Repair Node (Opus) ───────────────────────────────────────────────────────
 
 REPAIR_PROMPT = ChatPromptTemplate.from_template(
-    """You are fixing broken Redshift SQL. ONLY fix: syntax errors, bad aliases, schema drift, column type mismatches, Redshift dialect issues.
-NEVER change: JOINs, aggregations, filters, metric definitions, or the semantic meaning of the query.
+    """You are fixing broken Redshift SQL.
+
+FIX ONLY: syntax errors, bad aliases, wrong schema prefix, column type mismatches,
+Redshift dialect issues, and invalid ON clauses (if the join column doesn't exist in one of
+the tables, find the nearest matching column from SCHEMA CONTEXT for that table pair).
+
+NEVER change: the SET OF TABLES being joined, the aggregation logic, metric definitions,
+or the semantic meaning of the query.
+
 ALWAYS maintain CTE structure — the fixed SQL MUST use WITH ... AS (...) syntax, never a flat SELECT.
 
 SEMANTIC BOUNDARY (must be preserved):
@@ -293,8 +281,9 @@ ORIGINAL SQL:
 ERROR:
 {error_message}
 
-PRIOR REPAIR ATTEMPTS:
-{prior_attempts}
+{prior_attempts_detail}
+
+{feedback_section}
 
 ANTI-PATTERNS (known failure patterns to avoid):
 <anti_patterns>{anti_patterns}</anti_patterns>
@@ -304,7 +293,7 @@ ANTI-PATTERNS (known failure patterns to avoid):
 Output your reasoning within <reasoning>...</reasoning> and the fixed SQL inside <sql>...</sql>. No JSON, no explanation outside the tags.
 
 <reasoning>
-{{Identify the exact cause of the error and the minimal fix needed. Cross-reference column names and types against SCHEMA CONTEXT.}}
+{{Identify the exact cause of the error and the minimal fix. Cross-reference column names and types against SCHEMA CONTEXT. For join errors, find which column in the table actually matches the intended join key.}}
 </reasoning>
 <sql>
 {{fixed SQL here}}
@@ -322,10 +311,13 @@ INSTRUCTIONS:
   Never invent table or column names — use only names listed in SCHEMA CONTEXT.
 - Primary joins: `semantic_spec.joins` lists pre-loaded ON clauses — use them exactly.
 - Unresolved anchor pairs: `semantic_spec.unresolved_anchor_pairs` lists anchor table pairs
-  where no Neo4j join path was found. For each pair, search `schema_context.available_joins`
-  by matching (from, to) in either direction. If found, use that ON clause. If not found in
-  available_joins either, omit the table and add a SQL comment
-  `-- WARNING: no join path found for <table>` rather than producing a CROSS JOIN.
+  where no Neo4j join path was found. For each pair:
+  1. Search `schema_context.available_joins` by matching (from, to) in either direction — use that ON clause if found.
+  2. If not in available_joins, use `candidate_join_columns`: columns that exist in BOTH tables.
+     Pick the most semantically specific column (prefer entity-specific IDs over generic 'id').
+     Write: ON lpp.table_a.col = lpp.table_b.col
+  3. If candidate_join_columns is empty too: add SQL comment `-- WARNING: no join path for <table>`.
+     NEVER produce a CROSS JOIN or silently omit the table.
 - Additional joins: `schema_context.available_joins` lists every known join between candidate tables.
   If you need a table not covered by `semantic_spec.joins`, find its clause here and JOIN it.
   Do NOT join a table with no entry in either join source.
@@ -333,12 +325,24 @@ INSTRUCTIONS:
 - Filters: use the `is_having` flag on each filter.
   - `is_having: false` → WHERE clause
   - `is_having: true` → HAVING clause (wrap column in its aggregate function, e.g. AVG(variance_pct) > 2)
+- Filter values (schema_context columns may include filter_values: distinct Redshift values):
+  - Match user filter values case-insensitively. Use exact casing from filter_values (e.g. 'MONTHLY' not 'monthly').
+  - Single exact match → col = 'EXACT_VALUE'
+  - Multiple exact matches → col IN ('VAL1', 'VAL2')
+  - Partial/fuzzy (no exact value found) → col ILIKE '%value%'
+  - Multiple partial → (col ILIKE '%val1%' OR col ILIKE '%val2%')
+  - NEVER use ILIKE for numeric or date columns.
+  - If filter_values is empty or no match: use the value as-is with =.
+- Aggregation (infer from data_type — do NOT use default_aggregation field):
+  - integer/decimal/numeric/float/double/real → SUM (for totals) or AVG (for rates)
+  - varchar/char/text/bpchar → COUNT DISTINCT
+  - Use semantic_type as hint: 'amount' → SUM, 'ratio/percentage' → AVG, 'identifier/code' → COUNT DISTINCT
 - GROUP BY (critical — Redshift is strict):
   Whenever any aggregate function (SUM, AVG, COUNT, MIN, MAX) appears in a CTE or SELECT,
   EVERY column in that SELECT that is NOT inside an aggregate function MUST be in GROUP BY.
   This applies to every CTE layer individually, not just the final SELECT.
   Columns with `is_groupable: true` are safe GROUP BY keys.
-  Columns with `is_measurable: true` should be wrapped in `default_aggregation`.
+  Columns with `is_measurable: true` should be aggregated using data_type rules above.
   A column cannot appear bare in SELECT alongside aggregates — it must be in GROUP BY or aggregated.
 - Measures: if the measures list is empty, this is a flat lookup — omit GROUP BY and HAVING entirely.
 - CTE structure: ALWAYS start with WITH. Every query MUST use WITH ... AS (...) CTEs — never a flat SELECT.
@@ -349,6 +353,14 @@ INSTRUCTIONS:
   explicitly JOINed in that CTE's FROM clause. Each CTE is an isolated scope.
 - LIMIT: apply `{limit}` in the final SELECT.
 - ONE statement only. No semicolons.
+
+{unresolved_joins_section}
+
+{prior_sql_section}
+
+{query_patterns_section}
+
+{feedback_section}
 
 SEMANTIC SPEC:
 <semantic_spec>
@@ -368,7 +380,7 @@ ANTI-PATTERNS (avoid these):
 Output your reasoning within <reasoning>...</reasoning> and the complete Redshift SQL within <sql>...</sql>.
 
 <reasoning>
-{{For each CTE: list which columns are aggregated vs grouped. Confirm GROUP BY is complete. Note any extra tables needed beyond anchor_tables and which available_join clause covers them.}}
+{{For each CTE: list which columns are aggregated vs grouped. Confirm GROUP BY is complete. Note any extra tables needed beyond anchor_tables and which available_join clause covers them. If unresolved_joins_section is present, explain your chosen ON clause.}}
 </reasoning>
 <sql>
 {{complete Redshift SQL here}}
@@ -382,11 +394,13 @@ SYNTHESIS_PROMPT = ChatPromptTemplate.from_template(
 
 Persona format:
 - **Analyst**: precise numbers, markdown table, column-level commentary, methodology notes. Use ## headers.
-- **Manager**: key aggregation, policy breach flags, variance vs. prior period, 2-3 concrete actions. Use ## headers.
+- **Manager**: key aggregation, flag values that appear anomalous or disproportionately large/small relative to peers in the data — do NOT infer policy thresholds not present in the data, variance vs. prior period, 2-3 concrete actions. Use ## headers.
 - **Director**: risk concentration headline, limits vs. actuals, 3 prioritised recommendations with owners and timing. Use ## headers.
 - **Executive**: one-paragraph verdict, top-3 risks or opportunities, single recommended decision. No headers — flowing prose only.
 
 {conversation_section}
+
+{memory_section}
 
 {feedback_section}
 
@@ -436,7 +450,12 @@ The final formatted answer for the {persona} — nothing else. Do NOT open with 
 ["question 1", "question 2", "question 3"]
 </follow_ups>
 
-The <follow_ups> block must contain exactly 3 questions a {persona} would naturally query next. Phrased as direct queries to the system (not "Would you like to see..."). Reference specific values or entities from the results. Output ONLY the JSON array inside the tags."""
+The <follow_ups> block must contain exactly 3 questions a {persona} would naturally query next. Phrased as direct queries to the system (not "Would you like to see...").
+- If no_data is false: reference specific values or entities from the results.
+- If no_data is true: suggest diagnostic queries to help the user understand why data is missing
+  (e.g. "Show me what time periods have data for this table?", "Broaden the date range to last 90 days?").
+  Do NOT reference data values that were not returned.
+Output ONLY the JSON array inside the tags."""
 )
 
 # ─── Node 5: Chart Spec Generator (type + labels) ────────────────────────────
@@ -444,12 +463,20 @@ The <follow_ups> block must contain exactly 3 questions a {persona} would natura
 CHART_LABEL_PROMPT = ChatPromptTemplate.from_template(
     """You are a financial data visualization expert. Given a user question, query results, and persona, choose the best chart type and generate labels.
 
+HARD OVERRIDES (applied by the system after your response — generate labels for these cases accordingly):
+- If row_count == 1 AND a numeric column exists → chart_type will be forced to kpi_card
+- If row_count <= 5 AND all columns are numeric → chart_type will be forced to kpi_card
+- For kpi_card: x_axis_label = "" and y_axis_label = "" (not used by this chart type)
+Generate your best chart_type. The system will apply these overrides automatically.
+
 User question: {question}
 Intent: {intent}
 Persona: {persona}
 Column names and types: {column_stats}
 Row count: {row_count}
 Sample rows (up to 5): {sample_rows}
+
+{feedback_section}
 
 AVAILABLE CHART TYPES:
 - kpi_card     : 1–5 single scalar values (e.g. "Total balance: $4.2M"). Best for point-in-time lookups and KPI summaries.
@@ -476,8 +503,21 @@ SELECTION RULES (apply in order):
 7. Choose based on what answers the question most directly — a "list" question → table; a "trend" question → line/area; a "compare" question → grouped_bar or bar; a "breakdown" question → stacked_bar or donut.
 
 Generate concise, business-appropriate labels using financial terminology.
-value_format follows d3-format: ",.0f" integers, "$,.2f" currency, ".1%" percentages, ",.2f" decimals.
-color_scheme: blues, oranges, greens, reds, purples, tealblues — pick one that fits the data mood.
+
+value_format (d3-format):
+- ",.0f"  → integers, counts, whole numbers (e.g. 1,234)
+- "$,.2f" → currency amounts (e.g. $1,234.56)
+- ".1%"   → percentages (e.g. 12.3%)
+- ",.2f"  → decimal numbers (e.g. 1,234.56)
+- ".2s"   → large numbers with SI suffix (e.g. 1.2M)
+
+color_scheme:
+- blues     → neutral reporting, balance lookups
+- reds      → negative metrics, losses, risk concentration, error rates
+- greens    → positive metrics, growth, successful payments
+- oranges   → warning/attention metrics, near-threshold values
+- tealblues → trend analysis, time-series data
+- purples   → comparative analysis, variance metrics
 
 {reasoning_directive}
 
@@ -504,7 +544,7 @@ Then output the <chart> JSON block. No text after </chart>.
 
 COMPRESS_PROMPT = ChatPromptTemplate.from_template(
     """Summarize this treasury analytics conversation for a rolling context window.
-Keep the summary under 200 words. Prioritise precision over completeness.
+Keep the summary under 350 words. Prioritise precision over completeness.
 
 {existing_summary_section}
 
@@ -513,17 +553,19 @@ Recent exchanges to summarize:
 
 Capture — in order of priority:
 1. Entity identifiers mentioned: account codes, company codes, bank names, table names, filter values.
-   These are critical — preserve them verbatim so future SQL queries can reference them.
+   These are CRITICAL — preserve them verbatim. Never shorten or paraphrase entity identifiers to meet
+   the word limit. Shorten narrative summaries instead.
 2. Questions asked and their data intent (balance lookups, exposures, return rates, etc.)
 3. Key findings, anomalies, or policy flags that were surfaced
-4. Follow-up questions offered at the end of the last response — copy them verbatim.
+4. Follow-up questions offered at the end of the MOST RECENT response — copy them verbatim.
    Example format: "Offered follow-ups: ['Break down by bank?', 'Compare to last month?']"
-   This is essential: if the user next says 'yes' or 'show me', we must know what was offered.
+   If the user's latest message accepted one of those offers (e.g. 'yes', 'show me', 'sure'),
+   note which offer was accepted: "User accepted: 'Break down by bank?'"
 5. User's tone and persona preference (if evident)
 
 Do NOT summarise the SQL queries themselves — only the intent and findings.
 
 <summary>
-[Concise summary here. Max 200 words. Lead with entity identifiers, then intents, findings, and offered follow-ups.]
+[Concise summary here. Max 350 words. Lead with entity identifiers, then intents, findings, and offered follow-ups.]
 </summary>"""
 )

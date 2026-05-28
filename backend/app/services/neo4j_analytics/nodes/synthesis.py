@@ -60,6 +60,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
     is_followup = semantic_context.get("is_followup", False)
     feedback_context = state.get("feedback_context") or ""
+    memory_context = semantic_context.get("memory_context") or ""
 
     if session_summary:
         followup_note = " This is a follow-up — open by connecting to the prior finding before presenting new data." if is_followup else ""
@@ -70,6 +71,10 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     feedback_section = (
         f"USER PREFERENCES (past feedback — apply silently):\n<feedback_context>{feedback_context}</feedback_context>"
         if feedback_context else ""
+    )
+    memory_section = (
+        f"USER MEMORY (preferences from prior sessions — apply silently):\n<memory_context>{memory_context}</memory_context>"
+        if memory_context else ""
     )
 
     prompt = SYNTHESIS_PROMPT.format_messages(
@@ -84,6 +89,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         query_summary=json.dumps(query_summary, indent=2, default=str)[:3000],
         reasoning_directive=reasoning_directive,
         conversation_section=conversation_section,
+        memory_section=memory_section,
         feedback_section=feedback_section,
     )
 

@@ -4,5 +4,5 @@ Replaces the SPARQL/Jena + 21-node system with a Neo4j semantic pipeline
 and a 10-node LangGraph orchestration layer.
 
 Entry point for the chat router:
-    from app.services.neo4j_analytics.graph import stream_pipeline
+    from app.services.neo4j_analytics.pipeline import stream_pipeline
 """

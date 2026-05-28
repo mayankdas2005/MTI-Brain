@@ -47,16 +47,14 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         logger.warning("intent_resolver hallucination | thread={} | error={} | proceeding best-effort", state["thread_id"], validation_error)
 
     confidence = resolved.get("confidence", 0.0)
-    decompose_needed = _check_decompose_needed(resolved, state.get("semantic_context") or {})
 
     logger.info(
-        "intent_resolver DONE | template={} | confidence={:.2f} | complexity={} | decompose={}",
-        resolved.get("template_id"), confidence, resolved.get("complexity"), decompose_needed,
+        "intent_resolver DONE | template={} | confidence={:.2f} | complexity={}",
+        resolved.get("template_id"), confidence, resolved.get("complexity"),
     )
     return {
         "resolved_intent": resolved,
         "needs_clarification": False,
-        "decompose_needed": decompose_needed,
         "clarification_reason": None,
         "execution_error": None,
         "repair_count": 0,
@@ -70,6 +68,17 @@ _LLM_STRIP = {"retrieval_paths", "score", "matched_via", "community_id"}
 def _clean_for_llm(objects: list[dict]) -> list[dict]:
     """Remove pipeline-internal fields before serializing context for the LLM."""
     return [{k: v for k, v in obj.items() if k not in _LLM_STRIP} for obj in objects]
+
+
+def _format_recent_messages(messages: list) -> str:
+    """Format last 3 messages as conversation context for turns without a session_summary."""
+    from langchain_core.messages import HumanMessage
+    lines = []
+    for m in messages[-3:]:
+        role = "User" if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human" else "Assistant"
+        content = (m.content or "")[:300]
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines) if lines else ""
 
 
 def _build_prompt(state: AnalyticsState) -> list:
@@ -98,21 +107,35 @@ def _build_prompt(state: AnalyticsState) -> list:
         "intents": semantic_context.get("intents", [])[:3],
     }, indent=2)
 
+    session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
+    recent_msgs = _format_recent_messages(state.get("messages", []))
+    conversation_context = session_summary if session_summary else recent_msgs
+
     execution_error = state.get("execution_error")
-    execution_error_section = (
-        f"\nPREVIOUS EXECUTION FAILURE — the SQL generated from your last interpretation "
-        f"was rejected by the database with this error. Re-interpret the question choosing "
-        f"different columns, joins, or tables to avoid the same failure:\n"
-        f"<execution_error>{execution_error}</execution_error>\n"
-        if execution_error else ""
-    )
+    prior_sql = state.get("prior_sql")
+    if execution_error:
+        if prior_sql:
+            execution_error_section = (
+                "\nPREVIOUS EXECUTION FAILURE — re-interpret to avoid repeating the same approach:\n"
+                f"SQL that failed:\n<prior_sql>{prior_sql}</prior_sql>\n"
+                f"Error: <execution_error>{execution_error}</execution_error>\n"
+                "Choose different tables, columns, or join strategy.\n"
+            )
+        else:
+            execution_error_section = (
+                f"\nPREVIOUS EXECUTION FAILURE — the SQL generated from your last interpretation "
+                f"was rejected by the database with this error. Re-interpret the question choosing "
+                f"different columns, joins, or tables to avoid the same failure:\n"
+                f"<execution_error>{execution_error}</execution_error>\n"
+            )
+    else:
+        execution_error_section = ""
 
     return INTENT_RESOLVE_PROMPT.format_messages(
         question=state["question"],
         persona=state.get("persona", "executive"),
-        domain_preference="",
         feedback_context=state.get("feedback_context", ""),
-        conversation_context=semantic_context.get("session_summary", ""),
+        conversation_context=conversation_context,
         memory_context=semantic_context.get("memory_context", ""),
         semantic_context=context_str,
         execution_error_section=execution_error_section,
@@ -151,29 +174,3 @@ def _validate_identifiers(resolved: dict, semantic_context: dict) -> str | None:
             return f"Column {col_ref} not found in available data catalog."
 
     return None
-
-
-def _get_top_template_score(semantic_context: dict) -> float:
-    templates = semantic_context.get("templates", [])
-    if not templates:
-        return 1.0
-    scores = [t.get("score", 1.0) for t in templates if t.get("score") is not None]
-    return max(scores) if scores else 1.0
-
-
-def _check_decompose_needed(resolved: dict, semantic_context: dict) -> bool:
-    """Apply three-signal decomposition logic from the plan."""
-    if resolved.get("complexity") == "advanced":
-        top_score = _get_top_template_score(semantic_context)
-        if top_score > 0.72:
-            return True
-
-    anchor_tables = resolved.get("anchor_tables", [])
-    if len(anchor_tables) >= 2:
-        tables = semantic_context.get("tables", [])
-        community_map = {t["fqn"]: t.get("community_id") for t in tables if t.get("fqn")}
-        anchor_communities = {community_map.get(t) for t in anchor_tables if community_map.get(t)}
-        if len(anchor_communities) >= 2:
-            return True
-
-    return False

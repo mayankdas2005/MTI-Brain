@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 import boto3
+from bs4 import BeautifulSoup
 from app.core.config import settings
 from app.core.logger import logger
 from app.db.session import async_read_session_factory
@@ -113,6 +114,15 @@ def _extract_main(html: str) -> str:
     return text[start : end + len("</main>")]
 
 
+def _repair_html(html: str) -> str:
+    """Parse with html5lib to auto-close any unclosed tags left by the LLM."""
+    soup = BeautifulSoup(html, "html5lib")
+    main = soup.find("main")
+    if main:
+        return str(main)
+    return html
+
+
 def _inject_into_template(body_html: str) -> str:
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
     return template.replace("${htmlContent}", body_html)
@@ -204,7 +214,7 @@ async def generate_and_store(
         api_key=settings.AWS_BEARER_TOKEN_BEDROCK or None,
         region=_region_from_arn(settings.AWS_BEDROCK_SONNET_ARN),
         streaming=True,
-        model_kwargs={"temperature": 0.0, "max_tokens": 8192},
+        model_kwargs={"temperature": 0.0, "max_tokens": 16384},
     )
 
     logger.info("[dashboard] STEP 4 — awaiting LLM (timeout=180s)")
@@ -235,6 +245,7 @@ async def generate_and_store(
 
     logger.info(f"[dashboard] STEP 4 — LLM responded | raw length={len(raw_html)} chars | preview={raw_html[:200].replace(chr(10),' ')!r}")
     body_html = _extract_main(raw_html)
+    body_html = _repair_html(body_html)
     logger.info(f"[dashboard] STEP 4 — extracted body | length={len(body_html)} chars | starts_with_main={'<main' in body_html[:20]}")
 
     # ── 5. Inject into template ──

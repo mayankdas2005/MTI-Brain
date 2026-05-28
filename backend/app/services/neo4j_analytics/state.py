@@ -22,7 +22,6 @@ class AnalyticsState(TypedDict):
 
     # ── Routing ──────────────────────────────────────────────────────────────
     question_type: str                    # general_chat | analytics
-    decompose_needed: bool
     needs_clarification: bool
     clarification_count: int              # max 2 per turn
     clarification_reason: str | None
@@ -30,9 +29,8 @@ class AnalyticsState(TypedDict):
     # ── Pipeline ─────────────────────────────────────────────────────────────
     semantic_context: dict | None         # output of context_fetcher
     resolved_intent: dict | None          # output of intent_resolver
-    semantic_ir_list: list[dict]          # list of SemanticIR (1 for simple, N for decomposed)
-    sql_list: list[str]                   # compiled SQL per SemanticIR
-    failed_sql_indices: list[int]         # indices of sql_list entries that failed validation
+    semantic_ir_list: list[dict]          # list of SemanticIR (always 1 — decomposition removed)
+    sql_list: list[str]                   # compiled SQL (always 1 entry)
     recompile_count: int                  # max 1
     repair_count: int                     # max 2 across all repair types
     filter_resolution_needed: bool
@@ -68,3 +66,4 @@ class AnalyticsState(TypedDict):
     pattern_matched: bool                # set True by query_compiler when a QueryPattern is found and used
     pattern_name: str | None             # intent of the top matched pattern
     is_retry: bool                       # True when triggered from /retry or /edit endpoint
+    prior_sql: str | None               # SQL from the immediately prior pipeline run; set by query_compiler; used by intent_resolver and sql_generator on retry/error

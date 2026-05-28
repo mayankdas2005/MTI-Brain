@@ -12,9 +12,10 @@ from app.services.neo4j_analytics.state import AnalyticsState
 async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("general_chat START | thread={}", state["thread_id"])
 
-    # summary is persisted in state by the compress node across turns
     session_summary = state.get("summary") or ""
     feedback_context = state.get("feedback_context") or ""
+    semantic_context = state.get("semantic_context") or {}
+    memory_context = semantic_context.get("memory_context") or ""
 
     conversation_section = (
         f"CONVERSATION CONTEXT:\n<conversation_context>{session_summary}</conversation_context>"
@@ -24,11 +25,16 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
         f"USER PREFERENCES (apply silently):\n<feedback_context>{feedback_context}</feedback_context>"
         if feedback_context else ""
     )
+    memory_section = (
+        f"USER MEMORY (preferences from prior sessions):\n<memory_context>{memory_context}</memory_context>"
+        if memory_context else ""
+    )
 
     prompt = GENERAL_CHAT_PROMPT.format_messages(
         question=state["question"],
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        persona=state.get("persona", "executive"),
         conversation_section=conversation_section,
+        memory_section=memory_section,
         feedback_section=feedback_section,
     )
 
@@ -47,7 +53,7 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
     answer = parse_tag(raw, "answer") or raw.strip()
     follow_ups = _parse_follow_ups(raw)
 
-    logger.info("general_chat DONE | thread={} | answer_len={}", state["thread_id"], len(answer))
+    logger.info("general_chat DONE | thread={} | answer_len={} | follow_ups={}", state["thread_id"], len(answer), len(follow_ups))
     return {"answer": answer, "follow_ups": follow_ups}
 
 

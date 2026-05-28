@@ -19,7 +19,7 @@ from app.services.neo4j_analytics.filter_resolver_logic import (
     resolve_tier1_combined,
     resolve_tier3_temporal,
 )
-from app.services.neo4j_analytics.prompts import FILTER_DISAMBIGUATE_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.neo4j_analytics.prompts import FILTER_DISAMBIGUATE_PROMPT
 from app.services.neo4j_analytics.semantic_ir import FilterSpec, SemanticIR
 from app.services.neo4j_analytics.sql_compiler import compile_sql
 from app.services.neo4j_analytics.state import AnalyticsState
@@ -203,13 +203,15 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
     from app.services.neo4j_analytics.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
 
+    from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_BRIEF
+    candidates_text = "\n".join(f'  {i + 1}. "{c}"' for i, c in enumerate(candidates))
     prompt = FILTER_DISAMBIGUATE_PROMPT.format_messages(
         raw_user_value=f.raw_user_value,
         column_name=f.column_name,
         table_fqn=f.table_fqn,
-        candidates="\n".join(f"- {c}" for c in candidates),
+        candidates=candidates_text,
         question=state["question"],
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        reasoning_directive=REASONING_DIRECTIVE_BRIEF,
     )
 
     llm = get_llm("fast")

@@ -156,7 +156,7 @@ def _build_sse_generator(
             logger.exception("Failed to save assistant message")
 
     async def event_generator():
-        from app.services.neo4j_analytics.graph import stream_pipeline
+        from app.services.neo4j_analytics.pipeline import stream_pipeline
         from app.services.chat.feedback import (
             build_feedback_context,
             find_similar_feedback,

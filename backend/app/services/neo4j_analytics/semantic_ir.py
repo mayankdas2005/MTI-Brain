@@ -12,7 +12,7 @@ class ColumnRef(BaseModel):
     table_fqn: str
     column_name: str
     alias: str
-    aggregation: str | None    # SUM/AVG/COUNT/NONE from Column.default_aggregation
+    aggregation: str | None    # SUM/AVG/COUNT/NONE — inferred from data_type, not Neo4j default_aggregation
     semantic_type: str         # amount/percentage/measure/dimension/date/identifier/code/flag/ratio
 
 
@@ -45,9 +45,6 @@ class SemanticIR(BaseModel):
     order_by: list[str]
     limit: int | None
     sub_query_index: int | None
-    depends_on: int | None
-    merge_key: list[str] | None
-    merge_strategy: str | None
 
 
 class ColumnStat(BaseModel):

@@ -231,9 +231,41 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
 
         await _enrich_columns_from_redshift(semantic_context, str(state["thread_id"]))
 
+        matched_templates = semantic_context.get("templates") or []
+        tables_found = [t["fqn"] for t in (semantic_context.get("tables") or []) if t.get("fqn")]
+        columns_found = len(semantic_context.get("columns") or [])
+
+        if not matched_templates:
+            logger.warning(
+                "context_fetcher | NO matched templates | thread={} | question={}",
+                state["thread_id"], state["question"][:80],
+            )
+        if not tables_found:
+            logger.warning(
+                "context_fetcher | NO tables in context | thread={} | question={}",
+                state["thread_id"], state["question"][:80],
+            )
+
+        anchor_fqns_from_top_template = (
+            matched_templates[0].get("anchor_table_fqns") or []
+            if matched_templates else []
+        )
+        missing_anchors = [f for f in anchor_fqns_from_top_template if f not in tables_found]
+        if missing_anchors:
+            logger.warning(
+                "context_fetcher | template anchor tables not in merged tables | missing={} | thread={}",
+                missing_anchors, state["thread_id"],
+            )
+
         logger.info(
-            "context_fetcher DONE | thread={} | is_followup={} | templates={} | tables={} | cols={}",
-            state["thread_id"], is_followup, len(templates), len(tables), len(columns),
+            "context_fetcher DONE | thread={} | is_followup={} | templates={} | tables={} | cols={} | top_template={} | joins={}",
+            state["thread_id"],
+            is_followup,
+            len(matched_templates),
+            tables_found,
+            columns_found,
+            matched_templates[0].get("id") if matched_templates else "none",
+            len(semantic_context.get("available_joins") or []),
         )
         return {"semantic_context": semantic_context, "error": None}
 

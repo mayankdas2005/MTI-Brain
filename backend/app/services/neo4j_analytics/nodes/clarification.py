@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.neo4j_analytics.helpers import parse_tag
-from app.services.neo4j_analytics.prompts import CLARIFICATION_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.neo4j_analytics.prompts import CLARIFICATION_PROMPT, REASONING_DIRECTIVE_BRIEF
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
@@ -17,10 +17,22 @@ async def clarification(state: AnalyticsState, config: RunnableConfig) -> dict:
     reason = state.get("clarification_reason", "The question needs more specificity.")
     logger.info("clarification START | thread={} | count={} | reason={}", state["thread_id"], count, reason)
 
+    semantic_context = state.get("semantic_context") or {}
+    session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
+    recent_msgs = _format_recent_messages(state.get("messages", []))
+    conversation_context = session_summary if session_summary else recent_msgs
+
+    conversation_section = (
+        f"CONVERSATION CONTEXT:\n<conversation_context>{conversation_context}</conversation_context>"
+        if conversation_context else ""
+    )
+
     prompt = CLARIFICATION_PROMPT.format_messages(
         question=state["question"],
+        persona=state.get("persona", "executive"),
         clarification_reason=reason,
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        conversation_section=conversation_section,
+        reasoning_directive=REASONING_DIRECTIVE_BRIEF,
     )
 
     from app.services.neo4j_analytics.bedrock import get_llm
@@ -43,3 +55,13 @@ async def clarification(state: AnalyticsState, config: RunnableConfig) -> dict:
         "clarification_count": count + 1,
         "needs_clarification": False,
     }
+
+
+def _format_recent_messages(messages: list) -> str:
+    from langchain_core.messages import HumanMessage
+    lines = []
+    for m in messages[-3:]:
+        role = "User" if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human" else "Assistant"
+        content = (m.content or "")[:300]
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines) if lines else ""

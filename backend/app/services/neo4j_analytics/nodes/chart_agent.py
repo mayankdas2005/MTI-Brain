@@ -106,6 +106,12 @@ async def _select_chart_and_labels(
 
     sample_rows = [dict(zip(columns, row)) for row in rows[:5]]
 
+    fb = state.get("feedback_context") or ""
+    feedback_section = (
+        f"USER CHART PREFERENCES (apply silently):\n<feedback_context>{fb}</feedback_context>"
+        if fb else ""
+    )
+
     prompt = CHART_LABEL_PROMPT.format_messages(
         question=state["question"],
         intent=intent,
@@ -113,6 +119,7 @@ async def _select_chart_and_labels(
         column_stats=col_stats_text,
         row_count=len(rows),
         sample_rows=json.dumps(sample_rows, default=str),
+        feedback_section=feedback_section,
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
     )
 
