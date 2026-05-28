@@ -16,6 +16,7 @@ _COL_FIELDS_SQL = {
     "name", "table_fqn", "data_type", "semantic_type",
     "is_measurable", "is_groupable", "filter_selectivity",
     "sample_values", "filter_values", "value_vocabulary", "value_aliases",
+    "description",
 }
 # Secondary (non-anchor) table columns: minimal fields only
 _COL_FIELDS_SECONDARY = {"name", "table_fqn", "data_type", "semantic_type"}
@@ -66,7 +67,6 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
             continue
         if c["table_fqn"] in primary_fqns:
             row = {k: v for k, v in c.items() if k in _COL_FIELDS_SQL}
-            row["description"] = c.get("description", "")
         else:
             row = {k: v for k, v in c.items() if k in _COL_FIELDS_SECONDARY}
         columns.append(row)
@@ -140,23 +140,30 @@ async def fetch_anti_patterns(state: AnalyticsState) -> str:
             return "(none)"
         if state.get("semantic_context") is not None:
             state["semantic_context"]["anti_patterns"] = patterns
-        return "\n".join(f"- {p.get('error_type', '')}: {p.get('error_summary', '')}" for p in patterns)
+        lines = []
+        for p in patterns:
+            element = p.get("failing_element")
+            line = f"- [{p.get('error_type', 'error')}]"
+            if element:
+                line += f" element={element} |"
+            line += f" {p.get('error_summary', '')}"
+            lines.append(line)
+        return "\n".join(lines)
     except Exception:
         return "(none)"
 
 
-async def fetch_query_patterns(state: AnalyticsState) -> tuple[str, bool, str | None]:
+async def fetch_query_patterns(state: AnalyticsState) -> tuple[list, bool, str | None]:
     try:
         from app.services.neo4j_analytics.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
         patterns = neo4j_client.search_query_patterns(embedding)
         if not patterns:
-            return "(none)", False, None
+            return [], False, None
         if state.get("semantic_context") is not None:
             state["semantic_context"]["query_patterns"] = patterns
         top = patterns[0]
         name = top.get("intent") or top.get("id") or ""
-        formatted = "\n".join(f"- intent: {p.get('intent', '')} | tables: {p.get('tables_used', '')}" for p in patterns)
-        return formatted, True, name
+        return patterns, True, name
     except Exception:
-        return "(none)", False, None
+        return [], False, None

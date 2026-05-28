@@ -51,7 +51,7 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
         time_filter=time_filter,
         temporal_grain=resolved.get("temporal_grain"),
         cte_steps=cte_steps,
-        order_by=resolved.get("order_by", []),
+        order_by=_coerce_list(resolved.get("order_by")),
         limit=resolved.get("limit"),
         sub_query_index=None,
     )
@@ -65,6 +65,14 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
         [(f.column_name, f.operator, str(f.value)[:20], f.is_having) for f in filters],
     )
     return ir
+
+
+def _coerce_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return list(value)
 
 
 def _extract_anchor_tables(resolved: dict) -> list[str]:
@@ -278,23 +286,26 @@ def _build_filter_specs(
 
     filters: list[FilterSpec] = []
     for f in raw_filters:
-        if not f.get("table_fqn") or not f.get("column"):
+        # Accept both "column_name" (new prompt output) and "column" (legacy fallback)
+        col_name = f.get("column_name") or f.get("column")
+        if not f.get("table_fqn") or not col_name:
             continue
         raw_op = (f.get("operator") or "=").strip()
         raw_value = f.get("raw_value", "")
         is_comparison = raw_op in _COMPARISON_OPS
-        is_having = (f["table_fqn"], f["column"]) in agg_measure_cols
+        is_having = (f["table_fqn"], col_name) in agg_measure_cols
 
-        if not is_comparison and raw_op in ("=", "IN", "LIKE", "ILIKE") and isinstance(raw_value, str):
+        already_a_pattern = raw_op in ("LIKE", "ILIKE") and isinstance(raw_value, str) and "%" in raw_value
+        if not is_comparison and not already_a_pattern and raw_op in ("=", "IN", "LIKE", "ILIKE") and isinstance(raw_value, str):
             raw_list = [raw_value]
             norm_op, norm_values = _resolve_filter_values(
-                f["column"], f["table_fqn"], raw_list, raw_op, semantic_context,
+                col_name, f["table_fqn"], raw_list, raw_op, semantic_context,
             )
             if norm_op == "ILIKE_MULTI":
                 for v in norm_values:
                     filters.append(FilterSpec(
                         table_fqn=f["table_fqn"],
-                        column_name=f["column"],
+                        column_name=col_name,
                         operator="ILIKE",
                         value=v,
                         raw_user_value=raw_value,
@@ -311,11 +322,11 @@ def _build_filter_specs(
 
         filters.append(FilterSpec(
             table_fqn=f["table_fqn"],
-            column_name=f["column"],
+            column_name=col_name,
             operator=final_op,
             value=final_value,
             raw_user_value=raw_value,
-            resolved=is_comparison,
+            resolved=is_comparison or already_a_pattern,
             is_having=is_having,
         ))
     return filters
@@ -373,11 +384,4 @@ def _find_date_column(anchor_tables: list[str], semantic_context: dict) -> tuple
 
 
 def _get_cte_steps(template_id: str, semantic_context: dict) -> list[str]:
-    for tmpl in semantic_context.get("templates", []):
-        if tmpl.get("id") == template_id and tmpl.get("cte_steps"):
-            steps = tmpl["cte_steps"]
-            if isinstance(steps, list):
-                return [s.split(":")[0].strip() for s in steps]
-            if isinstance(steps, str):
-                return [s.split(":")[0].strip() for s in steps.split(",")]
     return []

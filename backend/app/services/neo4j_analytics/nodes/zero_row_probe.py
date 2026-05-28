@@ -99,7 +99,7 @@ async def zero_row_probe(ir: SemanticIR | None, state: AnalyticsState) -> dict:
     try:
         _, rows = await execute_query(
             f"SELECT COUNT(*) AS cnt FROM {time_table} WHERE {s1_cond}",
-            timeout_s=10, thread_id=state["thread_id"],
+            timeout_s=60, thread_id=state["thread_id"],
         )
         count1 = int(rows[0][0]) if rows and rows[0] else 0
     except Exception as e:
@@ -136,7 +136,7 @@ async def zero_row_probe(ir: SemanticIR | None, state: AnalyticsState) -> dict:
         if where_parts:
             stage2_sql = f"SELECT COUNT(*) AS cnt\nFROM {from_clause}\nWHERE {' AND '.join(where_parts)}"
             try:
-                _, rows = await execute_query(stage2_sql, timeout_s=10, thread_id=state["thread_id"])
+                _, rows = await execute_query(stage2_sql, timeout_s=60, thread_id=state["thread_id"])
                 count2 = int(rows[0][0]) if rows and rows[0] else 0
             except Exception as e:
                 logger.warning("zero_row_probe | stage 2 failed | error={}", e)

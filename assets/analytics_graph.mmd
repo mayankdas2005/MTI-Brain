@@ -4,7 +4,6 @@ graph TD;
 	general_chat(general_chat)
 	context_fetcher(context_fetcher)
 	intent_resolver(intent_resolver)
-	clarification(clarification)
 	query_compiler(query_compiler)
 	filter_resolver(filter_resolver)
 	sql_validator(sql_validator)
@@ -17,22 +16,18 @@ graph TD;
 	__start__ --> intake_classifier;
 	chart_agent -.-> __end__;
 	chart_agent -.-> compress;
-	clarification -.-> intent_resolver;
 	context_fetcher -.-> error_response;
 	context_fetcher -.-> intent_resolver;
 	error_response -.-> __end__;
 	error_response -.-> compress;
-	executor -.-> clarification;
 	executor -.-> intent_resolver;
 	executor -.-> sql_validator;
 	executor -.-> synthesis;
-	filter_resolver -.-> clarification;
 	filter_resolver -.-> sql_validator;
 	general_chat -.-> __end__;
 	general_chat -.-> compress;
 	intake_classifier -.-> context_fetcher;
 	intake_classifier -.-> general_chat;
-	intent_resolver -.-> clarification;
 	intent_resolver -.-> query_compiler;
 	query_compiler -.-> filter_resolver;
 	query_compiler -.-> sql_validator;

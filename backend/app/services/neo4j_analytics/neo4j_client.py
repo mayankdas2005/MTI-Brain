@@ -11,6 +11,7 @@ import time
 from app.core.circuit_breaker import neo4j_breaker
 from app.core.config import settings
 from app.core.logger import logger
+from app.core.retry import retry_sync
 
 _driver = None
 
@@ -54,6 +55,56 @@ def get_driver():
     return _driver
 
 
+def _neo4j_run(cypher: str, params: dict) -> list:
+    """Execute a Cypher query, retrying on defunct-connection / transient errors.
+
+    Opens a fresh driver session on each attempt so a stale pooled connection
+    cannot be reused across retries. The @neo4j_breaker on the calling function
+    sees only one failure if all retries are exhausted.
+    """
+    return retry_sync(
+        lambda: _do_neo4j_run(cypher, params),
+        max_attempts=3,
+        backoff_base=0.5,
+        service="neo4j",
+    )
+
+
+def _do_neo4j_run(cypher: str, params: dict) -> list:
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        return list(session.run(cypher, params))
+
+
+def _neo4j_run_single(cypher: str, params: dict):
+    """Like _neo4j_run but returns a single Record (or None) with retry."""
+    return retry_sync(
+        lambda: _do_neo4j_run_single(cypher, params),
+        max_attempts=3,
+        backoff_base=0.5,
+        service="neo4j",
+    )
+
+
+def _do_neo4j_run_single(cypher: str, params: dict):
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        return session.run(cypher, params).single()
+
+
+def _neo4j_write(cypher: str, **kwargs) -> None:
+    """Execute a write Cypher query with retry."""
+    retry_sync(
+        lambda: _do_neo4j_write(cypher, **kwargs),
+        max_attempts=3,
+        backoff_base=0.5,
+        service="neo4j",
+    )
+
+
+def _do_neo4j_write(cypher: str, **kwargs) -> None:
+    with get_driver().session(database=settings.NEO4J_DB) as session:
+        session.run(cypher, **kwargs)
+
+
 def _bootstrap_indexes() -> None:
     """Create required FTS indexes on startup.
 
@@ -94,8 +145,7 @@ def search_query_templates(embedding: list[float]) -> list[dict]:
            score
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_query_templates | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -121,8 +171,7 @@ def search_tables_vector(embedding: list[float]) -> list[dict]:
            score
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_tables_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -142,8 +191,7 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
            score LIMIT 10
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(cypher, {"query": query_text}))
+    results = _neo4j_run(cypher, {"query": query_text})
     logger.debug("neo4j | fn=search_tables_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -166,8 +214,7 @@ def search_columns_vector(embedding: list[float]) -> list[dict]:
            score
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_columns_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -183,8 +230,7 @@ def search_columns_fulltext(query_text: str) -> list[dict]:
            score LIMIT 15
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(cypher, {"query": query_text}))
+    results = _neo4j_run(cypher, {"query": query_text})
     logger.debug("neo4j | fn=search_columns_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -204,8 +250,7 @@ def search_query_templates_fulltext(query_text: str) -> list[dict]:
            score LIMIT 5
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(cypher, {"query": query_text}))
+    results = _neo4j_run(cypher, {"query": query_text})
     logger.debug("neo4j | fn=search_query_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -233,8 +278,7 @@ def search_tables_via_templates_vector(embedding: list[float]) -> list[dict]:
            template_score AS score, qt.id AS matched_via
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_tables_via_templates_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -257,8 +301,7 @@ def search_tables_via_templates_fulltext(query_text: str) -> list[dict]:
     LIMIT 20
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(cypher, {"query": query_text}))
+    results = _neo4j_run(cypher, {"query": query_text})
     logger.debug("neo4j | fn=search_tables_via_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -284,8 +327,7 @@ def search_tables_via_intents(embedding: list[float]) -> list[dict]:
            intent_score AS score, i.name AS matched_via
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_tables_via_intents | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -313,8 +355,7 @@ def search_tables_via_community(embedding: list[float]) -> list[dict]:
     LIMIT 15
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_tables_via_community | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -342,8 +383,7 @@ def search_tables_via_domain(embedding: list[float]) -> list[dict]:
     LIMIT 20
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_tables_via_domain | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -370,8 +410,7 @@ def get_columns_for_tables(table_fqns: list[str]) -> list[dict]:
            c.synonyms AS synonyms
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"table_fqns": table_fqns}))
+    results = _neo4j_run(query, {"table_fqns": table_fqns})
     logger.debug("neo4j | fn=get_columns_for_tables | ms={:.0f} | cols={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -390,8 +429,7 @@ def search_business_terms_vector(embedding: list[float]) -> list[dict]:
            bt.term_type AS term_type, bt.description AS description, score
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_business_terms_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -425,8 +463,7 @@ def search_tables_via_joinpaths(candidate_fqns: list[str]) -> list[dict]:
     LIMIT 5
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"fqns": candidate_fqns}))
+    results = _neo4j_run(query, {"fqns": candidate_fqns})
     logger.debug("neo4j | fn=search_tables_via_joinpaths | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -441,8 +478,7 @@ def search_business_terms_fulltext(query_text: str) -> list[dict]:
            score LIMIT 5
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(cypher, {"query": query_text}))
+    results = _neo4j_run(cypher, {"query": query_text})
     logger.debug("neo4j | fn=search_business_terms_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -460,8 +496,7 @@ def lookup_business_terms(tokens: list[str]) -> list[dict]:
            bt.term_type AS term_type, bt.description AS description
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"tokens": tokens}))
+    results = _neo4j_run(query, {"tokens": tokens})
     logger.debug("neo4j | fn=lookup_business_terms | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -480,8 +515,7 @@ def search_intents(embedding: list[float]) -> list[dict]:
     RETURN i.name AS name, i.description AS description, score
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_intents | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -500,8 +534,7 @@ def load_join_path(from_fqn: str, to_fqn: str) -> dict | None:
     LIMIT 1
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        result = session.run(query, {"from": from_fqn, "to": to_fqn}).single()
+    result = _neo4j_run_single(query, {"from": from_fqn, "to": to_fqn})
     logger.debug("neo4j | fn=load_join_path | from={} to={} | ms={:.0f} | found={}", from_fqn, to_fqn, (time.monotonic() - t0) * 1000, result is not None)
     return dict(result) if result else None
 
@@ -519,8 +552,7 @@ def load_join_path_yens(from_fqn: str, to_fqn: str, k_rank: int = 1) -> dict | N
     LIMIT 1
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        result = session.run(query, {"from": from_fqn, "to": to_fqn, "k_rank": k_rank}).single()
+    result = _neo4j_run_single(query, {"from": from_fqn, "to": to_fqn, "k_rank": k_rank})
     logger.debug("neo4j | fn=load_join_path_yens | from={} to={} | k={} | ms={:.0f} | found={}", from_fqn, to_fqn, k_rank, (time.monotonic() - t0) * 1000, result is not None)
     return dict(result) if result else None
 
@@ -605,8 +637,7 @@ def get_direct_joins(table_fqns: list[str]) -> list[dict]:
     ORDER BY r.confidence DESC
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"fqns": table_fqns}))
+    results = _neo4j_run(query, {"fqns": table_fqns})
     logger.debug("neo4j | fn=get_direct_joins | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -626,8 +657,7 @@ def get_tables_with_context(table_fqns: list[str]) -> list[dict]:
     RETURN properties(t) AS t, properties(d) AS d, properties(c) AS c
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"fqns": table_fqns}))
+    results = _neo4j_run(query, {"fqns": table_fqns})
     logger.debug("neo4j | fn=get_tables_with_context | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [{"t": dict(r["t"] or {}), "d": dict(r["d"]) if r["d"] else None, "c": dict(r["c"]) if r["c"] else None} for r in results]
 
@@ -643,8 +673,7 @@ def get_table_relevant_intents(table_fqns: list[str]) -> list[dict]:
     RETURN t.fqn AS table_fqn, properties(i) AS intent, properties(r) AS rel
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"fqns": table_fqns}))
+    results = _neo4j_run(query, {"fqns": table_fqns})
     logger.debug("neo4j | fn=get_table_relevant_intents | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [{"table_fqn": r["table_fqn"], "intent": dict(r["intent"] or {}), "rel": dict(r["rel"] or {})} for r in results]
 
@@ -660,8 +689,7 @@ def get_structurally_similar_tables(table_fqns: list[str]) -> list[dict]:
     RETURN t1.fqn AS from_fqn, t2.fqn AS to_fqn, properties(r) AS rel
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"fqns": table_fqns}))
+    results = _neo4j_run(query, {"fqns": table_fqns})
     logger.debug("neo4j | fn=get_structurally_similar_tables | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [{"from_fqn": r["from_fqn"], "to_fqn": r["to_fqn"], "rel": dict(r["rel"] or {})} for r in results]
 
@@ -677,8 +705,7 @@ def get_semantically_similar_columns(table_fqns: list[str]) -> list[dict]:
     RETURN c1.id AS from_id, c2.id AS to_id, properties(r) AS rel
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"fqns": table_fqns}))
+    results = _neo4j_run(query, {"fqns": table_fqns})
     logger.debug("neo4j | fn=get_semantically_similar_columns | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [{"from_id": r["from_id"], "to_id": r["to_id"], "rel": dict(r["rel"] or {})} for r in results]
 
@@ -694,8 +721,7 @@ def get_community_bridges(community_ids: list[str]) -> list[dict]:
     RETURN c1.id AS from_id, c2.id AS to_id, properties(r) AS rel
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"ids": community_ids}))
+    results = _neo4j_run(query, {"ids": community_ids})
     logger.debug("neo4j | fn=get_community_bridges | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [{"from_id": r["from_id"], "to_id": r["to_id"], "rel": dict(r["rel"] or {})} for r in results]
 
@@ -710,8 +736,7 @@ def get_join_paths_by_ids(path_ids: list[str]) -> list[dict]:
     RETURN properties(jp) AS jp
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"ids": path_ids}))
+    results = _neo4j_run(query, {"ids": path_ids})
     logger.debug("neo4j | fn=get_join_paths_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r["jp"] or {}) for r in results]
 
@@ -726,8 +751,7 @@ def get_business_terms_by_terms(terms: list[str]) -> list[dict]:
     RETURN properties(bt) AS bt
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"terms": terms}))
+    results = _neo4j_run(query, {"terms": terms})
     logger.debug("neo4j | fn=get_business_terms_by_terms | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r["bt"] or {}) for r in results]
 
@@ -742,8 +766,7 @@ def get_query_patterns_by_ids(ids: list[str]) -> list[dict]:
     RETURN properties(qp) AS qp
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"ids": ids}))
+    results = _neo4j_run(query, {"ids": ids})
     logger.debug("neo4j | fn=get_query_patterns_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r["qp"] or {}) for r in results]
 
@@ -758,8 +781,7 @@ def get_anti_patterns_by_ids(ids: list[str]) -> list[dict]:
     RETURN properties(ap) AS ap
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"ids": ids}))
+    results = _neo4j_run(query, {"ids": ids})
     logger.debug("neo4j | fn=get_anti_patterns_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r["ap"] or {}) for r in results]
 
@@ -774,8 +796,7 @@ def get_query_templates_by_ids(ids: list[str]) -> list[dict]:
     RETURN properties(qt) AS qt
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"ids": ids}))
+    results = _neo4j_run(query, {"ids": ids})
     logger.debug("neo4j | fn=get_query_templates_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r["qt"] or {}) for r in results]
 
@@ -787,8 +808,7 @@ def write_join_path(path_data: dict) -> None:
     MERGE (jp:JoinPath {id: $id})
     SET jp += $props
     """
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        session.run(query, id=path_data["id"], props=path_data)
+    _neo4j_write(query, id=path_data["id"], props=path_data)
     logger.debug("neo4j | fn=write_join_path | id={}", path_data.get("id"))
 
 
@@ -806,8 +826,7 @@ def resolve_columns(table_fqn: str, column_names: list[str]) -> list[dict]:
            c.filter_selectivity AS filter_selectivity, c.value_vocabulary AS value_vocabulary
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"table_fqn": table_fqn, "column_names": column_names}))
+    results = _neo4j_run(query, {"table_fqn": table_fqn, "column_names": column_names})
     logger.debug("neo4j | fn=resolve_columns | table={} | ms={:.0f} | cols={}", table_fqn, (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -824,12 +843,13 @@ def search_query_patterns(embedding: list[float]) -> list[dict]:
     )
     SCORE AS score
     WHERE score > 0.75
-    RETURN qp.sql_cte_outline AS sql_cte_outline, qp.tables_used AS tables_used,
-           qp.intent AS intent, score
+    RETURN qp.sql_cte_outline AS sql_cte_outline, qp.join_outline AS join_outline,
+           qp.filter_summary AS filter_summary, qp.tables_used AS tables_used,
+           qp.intent AS intent, qp.complexity AS complexity,
+           qp.recompile_count AS recompile_count, qp.repair_count AS repair_count, score
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_query_patterns | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -845,11 +865,10 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
     SCORE AS score
     WHERE score > 0.75
     RETURN ap.error_type AS error_type, ap.error_summary AS error_summary,
-           ap.sql_fragment AS sql_fragment, score
+           ap.failing_element AS failing_element, ap.complexity AS complexity, score
     """
     t0 = time.monotonic()
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        results = list(session.run(query, {"embedding": embedding}))
+    results = _neo4j_run(query, {"embedding": embedding})
     logger.debug("neo4j | fn=search_anti_patterns | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -860,8 +879,7 @@ def write_query_pattern(pattern_data: dict) -> None:
     MERGE (qp:QueryPattern {id: $id})
     SET qp += $props
     """
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        session.run(query, id=pattern_data["id"], props=pattern_data)
+    _neo4j_write(query, id=pattern_data["id"], props=pattern_data)
     logger.debug("neo4j | fn=write_query_pattern | id={}", pattern_data.get("id"))
 
 
@@ -871,6 +889,5 @@ def write_anti_pattern(pattern_data: dict) -> None:
     MERGE (ap:AntiPattern {id: $id})
     SET ap += $props
     """
-    with get_driver().session(database=settings.NEO4J_DB) as session:
-        session.run(query, id=pattern_data["id"], props=pattern_data)
+    _neo4j_write(query, id=pattern_data["id"], props=pattern_data)
     logger.debug("neo4j | fn=write_anti_pattern | id={}", pattern_data.get("id"))

@@ -525,12 +525,16 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
 
       {/* Chart skeleton — only shown after answer_synthesis is done, right before visualization fires */}
       {message.isStreaming && answerSynthesisDone && !message.chartReady && prefAutoCharts && hasTableData && message.willVisualize !== false && (
-        <div className="mt-3 rounded-xl border border-border bg-sidebar px-4 pt-4 pb-3 animate-fade-in">
-          <Skeleton className="h-3 w-40 rounded mb-4" />
-          <div className="flex items-end gap-2 h-24">
-            {[55, 80, 45, 95, 65, 70, 40].map((h, i) => (
+        <div className="mt-3 rounded-xl border border-border bg-sidebar px-4 pt-5 pb-5 animate-fade-in">
+          <Skeleton className="h-3 w-48 rounded mb-1.5" />
+          <Skeleton className="h-2.5 w-28 rounded mb-5 opacity-60" />
+          <div className="flex items-end gap-2.5 h-56">
+            {[45, 72, 38, 88, 60, 95, 52, 78, 42, 68, 83, 35].map((h, i) => (
               <Skeleton key={i} className="flex-1 rounded-sm" style={{ height: `${h}%` }} />
             ))}
+          </div>
+          <div className="flex justify-center mt-4">
+            <Skeleton className="h-2.5 w-32 rounded opacity-50" />
           </div>
         </div>
       )}

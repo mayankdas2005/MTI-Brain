@@ -8,10 +8,8 @@ Step 3: Programmatic Vega-Lite spec builder injects fixed fields and data rows.
 from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
-import json
-
 from app.core.logger import logger
-from app.services.neo4j_analytics.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import _build_data_profile, parse_tag
 from app.services.neo4j_analytics.prompts import CHART_LABEL_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.neo4j_analytics.state import AnalyticsState
 
@@ -27,7 +25,11 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
     result_list = state.get("result_list") or []
     ir_list = state.get("semantic_ir_list") or []
 
-    all_columns: list[str] = query_summary.get("columns") and [c["name"] for c in query_summary["columns"]] or []
+    all_columns: list[str] = (
+        [c["name"] for c in query_summary["columns"]]
+        if query_summary.get("columns")
+        else []
+    )
     all_rows: list[list] = []
     for res in result_list:
         if res.get("rows"):
@@ -94,17 +96,8 @@ async def _select_chart_and_labels(
     intent: str,
     persona: str,
 ) -> tuple[str, dict]:
-    col_stats_text = ""
-    if query_summary.get("columns"):
-        col_stats_text = " | ".join(
-            f"{c['name']}({c.get('dtype', '?')})"
-            for c in query_summary["columns"][:8]
-        )
-    else:
-        col_types = _classify_column_types(columns, rows)
-        col_stats_text = " | ".join(f"{col}({t})" for col, t in zip(columns[:8], col_types))
-
-    sample_rows = [dict(zip(columns, row)) for row in rows[:5]]
+    # Build shared data profile (same builder as synthesis)
+    data_profile = _build_data_profile(columns, rows, query_summary)
 
     fb = state.get("feedback_context") or ""
     feedback_section = (
@@ -116,9 +109,7 @@ async def _select_chart_and_labels(
         question=state["question"],
         intent=intent,
         persona=persona,
-        column_stats=col_stats_text,
-        row_count=len(rows),
-        sample_rows=json.dumps(sample_rows, default=str),
+        data_profile=data_profile,
         feedback_section=feedback_section,
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
     )
@@ -182,6 +173,27 @@ def _fallback_chart_type(columns: list[str], rows: list[list], intent: str, pers
     return "bar"
 
 
+def _safe_value_format(fmt: str, rows: list[list], col_idx: int) -> str:
+    """Guard against .1% being applied to pre-converted percentage values.
+    Vega-Lite .1% multiplies by 100 — correct only for ratios between 0 and 1.
+    If values are in range 1–100 (already-converted %) → use ,.1f (e.g. 9.4 shows as "9.4").
+    If values are > 100 (dollar amounts, counts) → use ,.0f.
+    """
+    if "%" not in fmt:
+        return fmt
+    try:
+        sample = [float(rows[j][col_idx]) for j in range(min(10, len(rows))) if rows[j][col_idx] is not None]
+        if sample:
+            mx = max(abs(v) for v in sample)
+            if mx > 100:
+                return ",.0f"
+            if mx > 1:
+                return ",.1f"
+    except (TypeError, ValueError, IndexError):
+        pass
+    return fmt
+
+
 def _build_vega_lite_spec(chart_type: str, columns: list[str], rows: list[list], labels: dict) -> dict:
     spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
@@ -196,14 +208,26 @@ def _build_vega_lite_spec(chart_type: str, columns: list[str], rows: list[list],
         y_col = _find_numeric_col(columns, rows)
         x_col = _find_string_col(columns, rows, exclude=y_col) or (columns[0] if columns else "x")
         spec["mark"] = "bar"
+        # bar: category → x (horizontal label), values → y (vertical label)
+        # bar_horizontal: category → y (left label), values → x (bottom label)
+        # LLM always generates x_axis_label=bottom and y_axis_label=left, so for
+        # bar_horizontal the category axis gets y_axis_label and values get x_axis_label.
+        if chart_type == "bar":
+            cat_label = labels.get("x_axis_label", x_col)
+            val_label = labels.get("y_axis_label", y_col)
+        else:
+            cat_label = labels.get("y_axis_label", x_col)
+            val_label = labels.get("x_axis_label", y_col)
+        val_format = _safe_value_format(labels.get("value_format", ",.0f"), rows, columns.index(y_col) if y_col in columns else -1)
         spec["encoding"] = {
             "x" if chart_type == "bar" else "y": {
                 "field": x_col, "type": "nominal",
-                "axis": {"title": labels.get("x_axis_label", x_col)},
+                "axis": {"title": cat_label},
+                "sort": "-y" if chart_type == "bar" else "-x",
             },
             "y" if chart_type == "bar" else "x": {
                 "field": y_col, "type": "quantitative",
-                "axis": {"title": labels.get("y_axis_label", y_col), "format": labels.get("value_format", ",.0f")},
+                "axis": {"title": val_label, "format": val_format},
             },
         }
 

@@ -501,46 +501,62 @@ async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) 
         if fqn and name:
             col_index[(fqn, name)] = col
 
-    # Step A — discover join key columns missing from Neo4j via information_schema
-    for fqn, col_names in probe_candidates.items():
-        if not col_names:
-            continue
+    # Step A — validate ALL probe candidates against information_schema in parallel,
+    # then discover any join key columns that are missing from Neo4j.
+    #
+    # Querying ALL candidates (not just missing ones) catches stale Neo4j column names
+    # that don't exist in Redshift — those get filtered out of probe_candidates here
+    # rather than causing 42703 errors in Step B.
+    async def _validate_table(fqn: str, col_names: set) -> tuple[str, list]:
         parts = fqn.split(".")
         if len(parts) != 2:
-            continue
+            return fqn, []
         schema_name, table_name = parts[0], parts[1]
+        cache_key = f"schema_cols:{fqn}"
+        cached = redis_client.get_json(cache_key)
+        if cached is not None:
+            return fqn, cached
+        rows = await get_table_columns(schema_name, table_name, list(col_names))
+        try:
+            redis_client.set_json(cache_key, rows, ttl=86400)
+        except Exception:
+            pass
+        return fqn, rows
 
-        # Which of these col_names are not already in semantic_context?
-        missing = [c for c in col_names if (fqn, c) not in col_index]
-        if missing:
-            cache_key = f"schema_cols:{fqn}"
-            cached = redis_client.get_json(cache_key)
-            if cached is not None:
-                rows = cached
-            else:
-                rows = await get_table_columns(schema_name, table_name, missing)
-                try:
-                    redis_client.set_json(cache_key, rows, ttl=86400)
-                except Exception:
-                    pass
+    step_a_tasks = [
+        _validate_table(fqn, col_names)
+        for fqn, col_names in probe_candidates.items()
+        if col_names
+    ]
+    step_a_results = await asyncio.gather(*step_a_tasks, return_exceptions=True)
 
-            for row in rows:
-                col_name, data_type = row[0], row[1]
-                key = (fqn, col_name)
-                if key not in col_index:
-                    new_col = {
-                        "table_fqn": fqn,
-                        "name": col_name,
-                        "data_type": data_type,
-                        "sample_values": [],
-                        "filter_values": [],
-                    }
-                    semantic_context.setdefault("columns", []).append(new_col)
-                    col_index[key] = new_col
-                    logger.info(
-                        "context_fetcher | discovered join col | {}.{} | dtype={}",
-                        fqn, col_name, data_type,
-                    )
+    for result in step_a_results:
+        if isinstance(result, BaseException):
+            logger.warning("context_fetcher | step_a validation error | {}", result)
+            continue
+        fqn, rows = result
+        col_names = probe_candidates.get(fqn, set())
+
+        confirmed_in_redshift: set[str] = {row[0] for row in rows}
+        probe_candidates[fqn] = col_names & confirmed_in_redshift
+
+        for row in rows:
+            col_name, data_type = row[0], row[1]
+            key = (fqn, col_name)
+            if key not in col_index:
+                new_col = {
+                    "table_fqn": fqn,
+                    "name": col_name,
+                    "data_type": data_type,
+                    "sample_values": [],
+                    "filter_values": [],
+                }
+                semantic_context.setdefault("columns", []).append(new_col)
+                col_index[key] = new_col
+                logger.info(
+                    "context_fetcher | discovered join col | {}.{} | dtype={}",
+                    fqn, col_name, data_type,
+                )
 
     # Step B — probe DISTINCT values for all probeable columns
     async def _probe_col(fqn: str, col_name: str, col_dict: dict) -> None:
@@ -555,14 +571,21 @@ async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) 
             col_dict["filter_selectivity"] = "low" if len(cached) <= 20 else "medium"
             return
 
+        # Scan a bounded sample then group — avoids full-table sort.
+        # 5 000 rows is enough to surface representative distinct values on any
+        # table; 50 000 caused 60 s timeouts on wide fact tables (lpp.gl_balance).
+        # Probe timeout is intentionally short: a slow probe is skipped gracefully,
+        # not allowed to block the pipeline for a minute.
         probe_sql = (
-            f'SELECT DISTINCT CAST("{col_name}" AS VARCHAR) AS val '
-            f"FROM {fqn} "
+            f'SELECT val FROM ('
+            f'SELECT CAST("{col_name}" AS VARCHAR) AS val '
+            f'FROM {fqn} '
             f'WHERE "{col_name}" IS NOT NULL '
-            f"ORDER BY 1 LIMIT 100"
+            f'LIMIT 5000'
+            f') t GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 100'
         )
         try:
-            _, rows = await execute_query(probe_sql, timeout_s=10, thread_id=thread_id)
+            _, rows = await execute_query(probe_sql, timeout_s=12, thread_id=thread_id)
             values = [str(r[0]) for r in rows if r and r[0] is not None]
             redis_client.set_filter_values(fqn, col_name, values, ttl=86400)
             col_dict["filter_values"] = values
@@ -577,10 +600,10 @@ async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) 
                 "context_fetcher | probe failed | {}.{} | error={}", fqn, col_name, e
             )
 
-    # Limit concurrent Redshift probes to 2 — pool has 3 connections; leave 1 for
-    # the actual query execution that follows. Without this, all probes compete for
-    # the same pool and time out waiting for a connection.
-    sem = asyncio.Semaphore(2)
+    # Limit concurrent Redshift probes to 4 — pool has 6 connections; leave 2 for
+    # actual query execution and concurrent users. Without this, all probes compete
+    # for the same pool and time out waiting for a connection.
+    sem = asyncio.Semaphore(4)
 
     async def _probe_guarded(fqn: str, col_name: str, col_dict: dict) -> None:
         async with sem:

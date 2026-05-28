@@ -49,6 +49,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.logger import logger
+from app.core.retry import retry_async
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -189,6 +190,19 @@ async def dispose_engine() -> None:
     """Dispose the async engine and close all pooled connections."""
     logger.info("Disposing database engine")
     await engine.dispose()
+
+
+async def with_db_retry(fn, *, service: str = "postgres") -> object:
+    """Run an async callable with up to 3 attempts on transient DB errors.
+
+    Usage:
+        result = await with_db_retry(lambda: some_async_db_call())
+
+    pool_pre_ping=True already prevents stale connections from being checked
+    out. This layer catches the rare case where a connection dies mid-query
+    (e.g. PgBouncer server-idle-timeout during a long transaction).
+    """
+    return await retry_async(fn, max_attempts=3, backoff_base=0.5, service=service)
 
 
 def get_langgraph_dsn() -> str:

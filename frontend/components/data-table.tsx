@@ -262,8 +262,8 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
         </Table>
       </div>
 
-      {/* Footer: row count + anomaly toggle + pagination + download — hidden during streaming to prevent layout shift */}
-      {!isStreaming && <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
+      {/* Footer: row count + anomaly toggle + pagination + download — shown as soon as rows exist */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
         <span className="min-w-0 truncate">
           {totalRows > rows.length
             ? `Showing ${rows.length} of ${totalRows.toLocaleString('en-US')} rows`
@@ -313,7 +313,7 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
             </>
           )}
         </div>
-      </div>}
+      </div>
     </div>
   );
 }

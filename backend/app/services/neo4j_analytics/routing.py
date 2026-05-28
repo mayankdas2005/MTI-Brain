@@ -12,7 +12,6 @@ from app.core.logger import logger
 from app.services.neo4j_analytics.nodes.compress import SUMMARIZE_THRESHOLD
 from app.services.neo4j_analytics.node_names import (
     CHART_AGENT as N_CHART_AGENT,
-    CLARIFICATION as N_CLARIFICATION,
     COMPRESS as N_COMPRESS,
     CONTEXT_FETCHER as N_CONTEXT_FETCHER,
     ERROR_RESPONSE as N_ERROR_RESPONSE,
@@ -26,9 +25,8 @@ from app.services.neo4j_analytics.node_names import (
 )
 from app.services.neo4j_analytics.state import AnalyticsState
 
-MAX_RECOMPILE = 1
+MAX_RECOMPILE = 3
 MAX_REPAIR = 2
-MAX_CLARIFICATION = 2
 LLM_RETRY = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor=2.0)
 
 
@@ -52,11 +50,6 @@ def route_after_context_fetcher(state: AnalyticsState) -> str:
 def route_intent(state: AnalyticsState) -> str:
     logger.info("route: intent_resolver → query_compiler | thread={}", state["thread_id"])
     return N_QUERY_COMPILER
-
-
-def route_after_clarification(state: AnalyticsState) -> str:
-    logger.info("route: clarification → synthesis | thread={}", state["thread_id"])
-    return N_SYNTHESIS
 
 
 def route_compiler(state: AnalyticsState) -> str:

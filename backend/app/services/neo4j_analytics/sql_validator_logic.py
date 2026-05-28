@@ -110,10 +110,66 @@ def _check_cte_table_refs(parsed) -> tuple[bool, str]:
                 continue
             return False, (
                 f"CTE '{cte.alias}' references table '{col.table}' which is not in its FROM clause. "
-                f"Add the missing JOIN using the join_clause from available_joins in SCHEMA CONTEXT."
+                f"Downstream CTEs must reference column aliases from prior CTEs, not schema.table.column. "
+                f"Either move the JOIN into this CTE, or use the alias defined in the upstream CTE."
             )
 
     return True, ""
+
+
+def try_fix_cte_refs(sql: str) -> str | None:
+    """Strip illegal table qualifiers from downstream CTE column references.
+
+    When a downstream CTE writes lpp.bank_statement_balance.amount but
+    bank_statement_balance is not in that CTE's FROM, replace the qualified
+    reference with just the bare column name (amount). The upstream CTE already
+    selected that column — its name in the result set is the bare column name.
+
+    Returns the fixed SQL string, or None if no fix was applicable.
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+
+    try:
+        statements = sqlglot.parse(sql, dialect="redshift")
+        if not statements or len(statements) != 1:
+            return None
+
+        stmt = statements[0]
+        modified = False
+
+        for cte in stmt.find_all(exp.CTE):
+            cte_body = cte.this
+            if isinstance(cte_body, exp.Subquery):
+                cte_body = cte_body.this
+            if not isinstance(cte_body, exp.Select):
+                continue
+
+            from_tables: set[str] = set()
+            for table in cte_body.find_all(exp.Table):
+                ancestor = table.find_ancestor(exp.Select)
+                if ancestor is not cte_body:
+                    continue
+                if table.name:
+                    from_tables.add(table.name.lower())
+                if table.alias:
+                    from_tables.add(table.alias.lower())
+
+            for col in list(cte_body.find_all(exp.Column)):
+                col_scope = col.find_ancestor(exp.Select)
+                if col_scope is not cte_body:
+                    continue
+                tbl = (col.table or "").lower()
+                if not tbl or tbl in from_tables:
+                    continue
+                col.replace(exp.Column(this=exp.Identifier(this=col.name, quoted=col.this.quoted)))
+                modified = True
+
+        if not modified:
+            return None
+        return stmt.sql(dialect="redshift")
+    except Exception:
+        return None
 
 
 def _has_cartesian_join(sql: str) -> bool:

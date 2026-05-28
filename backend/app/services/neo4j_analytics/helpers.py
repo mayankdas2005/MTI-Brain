@@ -104,6 +104,123 @@ def _spread_sample(rows: list[list], cap: int = 50) -> list[list]:
     return sampled[:cap]
 
 
+# ─── Data profile builder (shared by synthesis and chart_agent) ───────────────
+
+def _build_data_profile(
+    columns: list[str],
+    rows: list[list],
+    query_summary: dict | None = None,
+) -> str:
+    """Build a structured QUERY RESULTS block for LLM prompts.
+
+    Used by both synthesis.py and chart_agent.py so both LLMs see identical
+    structured data: column stats + strategic DATA SAMPLE.
+    """
+    qs = query_summary or {}
+    total_rows = qs.get("total_rows", len(rows))
+    result_shape = qs.get("result_shape", "")
+
+    if total_rows == 0 or not columns:
+        return "--- QUERY RESULTS ---\n\nTotal rows: 0\n(no records match the query criteria)"
+
+    lines: list[str] = ["--- QUERY RESULTS ---", ""]
+    header = f"Total rows: {total_rows}"
+    if result_shape:
+        header += f"   Result shape: {result_shape}"
+    lines += [header, "", "COLUMN PROFILES:", ""]
+
+    qs_col_map = {c["name"]: c for c in qs.get("columns", [])}
+
+    for i, col in enumerate(columns):
+        meta = qs_col_map.get(col, {})
+        dtype = meta.get("dtype") or _infer_col_type_from_rows(rows, i)
+        lines.append(f"  {col}   {dtype}")
+
+        norm = (dtype or "").lower()
+        if any(t in norm for t in ("int", "float", "numeric", "decimal", "number")):
+            mn, mx = meta.get("min"), meta.get("max")
+            mean, median = meta.get("mean"), meta.get("median")
+            if mn is None and mx is None:
+                vals = [float(r[i]) for r in rows if i < len(r) and r[i] is not None]
+                if vals:
+                    mn, mx = min(vals), max(vals)
+                    mean = sum(vals) / len(vals)
+            if mn is not None:
+                parts = [f"Min: {mn}", f"Max: {mx}"]
+                if mean is not None:
+                    parts.append(f"Mean: {round(float(mean), 2)}")
+                if median is not None:
+                    parts.append(f"Median: {round(float(median), 2)}")
+                lines.append(f"    {'   '.join(parts)}")
+
+        elif any(t in norm for t in ("date", "time", "timestamp")):
+            mn, mx = meta.get("min"), meta.get("max")
+            if not mn:
+                vals = sorted(str(r[i]) for r in rows if i < len(r) and r[i] is not None)
+                mn, mx = (vals[0], vals[-1]) if vals else (None, None)
+            if mn:
+                lines.append(f"    Range: {mn}  →  {mx}")
+
+        else:  # varchar / text / string
+            distinct = meta.get("distinct_count")
+            top_vals = meta.get("top_values", [])
+            if distinct:
+                lines.append(f"    Distinct values: {distinct}")
+            if top_vals:
+                tv_text = "  |  ".join(f"{v} ({n} rows)" for v, n in top_vals[:5])
+                lines.append(f"    Top values:  {tv_text}")
+                lines.append("    Note: row counts above are category frequency — not the measure column value.")
+            elif not distinct:
+                vals_str = [str(r[i]) for r in rows if i < len(r) and r[i] is not None]
+                if vals_str:
+                    counts = Counter(vals_str).most_common(5)
+                    lines.append(f"    Distinct values: {len(set(vals_str))}")
+                    lines.append(f"    Top values:  " + "  |  ".join(f"{v} ({n} rows)" for v, n in counts))
+                    lines.append("    Note: row counts above are category frequency — not the measure column value.")
+
+        lines.append("")
+
+    # Strategic sampling: ≤ 15 rows → show all; > 15 → top 3 · middle 2 · bottom 2
+    non_null = [r for r in rows if any(v is not None and v != "" for v in r)]
+    if not non_null:
+        lines.append("DATA SAMPLE: (all returned rows contain only null values)")
+    elif len(non_null) <= 15:
+        lines.append(f"DATA SAMPLE (all {len(non_null)} rows):")
+        for r in non_null:
+            lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
+    else:
+        n = len(non_null)
+        mid = n // 2
+        top = non_null[:3]
+        middle = non_null[max(0, mid - 1): mid + 1]
+        bottom = non_null[-2:]
+        lines.append(f"DATA SAMPLE (top 3 · middle 2 · bottom 2 of {n} rows):")
+        for r in top:
+            lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
+        lines.append("  ···")
+        for r in middle:
+            lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
+        lines.append("  ···")
+        for r in bottom:
+            lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
+
+    return "\n".join(lines)
+
+
+def _infer_col_type_from_rows(rows: list[list], col_idx: int) -> str:
+    sample = [r[col_idx] for r in rows[:20] if col_idx < len(r) and r[col_idx] is not None]
+    if not sample:
+        return "unknown"
+    try:
+        [float(v) for v in sample]
+        return "number"
+    except (TypeError, ValueError):
+        pass
+    if re.match(r"\d{4}-\d{2}-\d{2}", str(sample[0])):
+        return "date"
+    return "varchar"
+
+
 # ─── Tag parsing ──────────────────────────────────────────────────────────────
 
 def parse_tag(text: str, tag: str) -> str:

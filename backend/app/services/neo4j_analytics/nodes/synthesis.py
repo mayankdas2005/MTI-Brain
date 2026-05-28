@@ -11,7 +11,7 @@ import json
 import re
 
 from app.core.logger import logger
-from app.services.neo4j_analytics.helpers import parse_tag
+from app.services.neo4j_analytics.helpers import _build_data_profile, parse_tag
 from app.services.neo4j_analytics.prompts import REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP, SYNTHESIS_PROMPT
 from app.services.neo4j_analytics.state import AnalyticsState
 
@@ -44,6 +44,20 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     result_list = state.get("result_list") or []
     total_rows_received = sum(len(r.get("rows") or []) for r in result_list)
+
+    # Collect flat column list and all rows (same pattern as chart_agent)
+    all_columns: list[str] = (
+        [c["name"] for c in query_summary["columns"]]
+        if query_summary.get("columns")
+        else []
+    )
+    all_rows: list[list] = []
+    for res in result_list:
+        if res.get("rows"):
+            if not all_columns and res.get("columns"):
+                all_columns = res["columns"]
+            all_rows.extend(res["rows"])
+
     logger.info(
         "synthesis | inputs | thread={} | no_data={} | total_rows={} | anchor_tables={} | query_summary_keys={} | zero_row_probe={}",
         state["thread_id"], no_data, total_rows_received, anchor_tables,
@@ -77,16 +91,28 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         if memory_context else ""
     )
 
+    # Build structured data profile (shared builder with chart_agent)
+    data_profile = _build_data_profile(all_columns, all_rows, query_summary)
+
+    # Build low-confidence filters text (keys from filter_resolver: column, raw_value, resolved_value)
+    if low_confidence_filters:
+        lc_text = "\n".join(
+            f"  {f.get('column')}: matched '{f.get('resolved_value')}' for user input '{f.get('raw_value')}'"
+            for f in low_confidence_filters
+        )
+    else:
+        lc_text = "none"
+
     prompt = SYNTHESIS_PROMPT.format_messages(
         persona=state.get("persona", "executive"),
         question=state["question"],
         anchor_tables=", ".join(anchor_tables),
         reliability_flags=", ".join(reliability_flags) if reliability_flags else "none",
         reliability_flag_instructions=flag_instructions or "No special reliability concerns.",
-        no_data=str(no_data),
+        no_data="YES" if no_data else "NO",
         zero_row_probe_result=zero_row_probe_result,
-        low_confidence_filters=json.dumps(low_confidence_filters) if low_confidence_filters else "none",
-        query_summary=json.dumps(query_summary, indent=2, default=str)[:3000],
+        low_confidence_filters_text=lc_text,
+        data_profile=data_profile,
         reasoning_directive=reasoning_directive,
         conversation_section=conversation_section,
         memory_section=memory_section,

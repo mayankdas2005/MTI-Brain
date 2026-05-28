@@ -12,6 +12,7 @@ import time
 
 from app.core.circuit_breaker import redis_breaker
 from app.core.logger import logger
+from app.core.retry import is_transient
 
 _redis = None
 
@@ -100,24 +101,39 @@ def cache_get(key: str) -> str | None:
     if not client:
         return None
     t0 = time.monotonic()
-    try:
-        val = _do_get(client, key)
-        logger.debug("redis get | key={} | hit={} | ms={:.0f}", key[:60], val is not None, (time.monotonic() - t0) * 1000)
-        return val
-    except Exception as e:
-        logger.warning("redis get failed | key={} | error={}", key[:60], e)
-        return None
+    for attempt in range(3):
+        try:
+            val = _do_get(client, key)
+            logger.debug("redis get | key={} | hit={} | ms={:.0f}", key[:60], val is not None, (time.monotonic() - t0) * 1000)
+            return val
+        except Exception as e:
+            if is_transient(e) and attempt < 2:
+                delay = 0.2 * (attempt + 1)
+                logger.warning("redis get transient error attempt {}/3 — retrying in {:.1f}s | key={} | error={}", attempt + 1, delay, key[:60], e)
+                time.sleep(delay)
+            else:
+                logger.warning("redis get failed | key={} | error={}", key[:60], e)
+                return None
+    return None
 
 
 def cache_set(key: str, value: str, ttl_seconds: int) -> None:
     client = _get_client()
     if not client:
         return
-    try:
-        _do_set(client, key, ttl_seconds, value)
-        logger.debug("redis set | key={} | ttl={}s", key[:60], ttl_seconds)
-    except Exception as e:
-        logger.warning("redis set failed | key={} | error={}", key[:60], e)
+    for attempt in range(3):
+        try:
+            _do_set(client, key, ttl_seconds, value)
+            logger.debug("redis set | key={} | ttl={}s", key[:60], ttl_seconds)
+            return
+        except Exception as e:
+            if is_transient(e) and attempt < 2:
+                delay = 0.2 * (attempt + 1)
+                logger.warning("redis set transient error attempt {}/3 — retrying in {:.1f}s | key={} | error={}", attempt + 1, delay, key[:60], e)
+                time.sleep(delay)
+            else:
+                logger.warning("redis set failed | key={} | error={}", key[:60], e)
+                return
 
 
 def cache_delete_pattern(pattern: str) -> int:
@@ -220,3 +236,24 @@ def set_json(key: str, value: object, ttl: int = 86400) -> None:
         cache_set(key, json.dumps(value), ttl)
     except Exception as e:
         logger.warning("redis set_json failed | key={} | error={}", key[:60], e)
+
+
+def flush_table_cache(table_fqn: str) -> int:
+    """Delete all filter_vals and schema_cols cache entries for a table.
+
+    Call this when Redshift schema changes (column added/dropped) or when
+    filter value distributions change and you want fresh probes next request.
+    Returns number of keys deleted.
+    """
+    n = cache_delete_pattern(f"filter_vals:{table_fqn}:*")
+    n += cache_delete_pattern(f"schema_cols:{table_fqn}")
+    logger.info("redis flush_table_cache | table={} | deleted={}", table_fqn, n)
+    return n
+
+
+def flush_all_probe_cache() -> int:
+    """Delete all filter_vals and schema_cols cache entries across all tables."""
+    n = cache_delete_pattern("filter_vals:*")
+    n += cache_delete_pattern("schema_cols:*")
+    logger.info("redis flush_all_probe_cache | deleted={}", n)
+    return n

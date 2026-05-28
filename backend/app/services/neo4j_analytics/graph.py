@@ -1,6 +1,6 @@
 """LangGraph graph wiring for the Neo4j analytics pipeline.
 
-13-node graph: intake → context_fetcher → intent_resolver → query_compiler
+12-node graph: intake → context_fetcher → intent_resolver → query_compiler
                → filter_resolver → sql_validator → executor → synthesis → chart_agent
 
 Lifecycle (init/shutdown) and graph compilation live here.
@@ -26,7 +26,6 @@ from app.services.neo4j_analytics import neo4j_client, redis_client
 from app.services.neo4j_analytics.memory import long_term as lt_memory
 from app.services.neo4j_analytics.node_names import (
     CHART_AGENT as N_CHART_AGENT,
-    CLARIFICATION as N_CLARIFICATION,
     COMPRESS as N_COMPRESS,
     CONTEXT_FETCHER as N_CONTEXT_FETCHER,
     ERROR_RESPONSE as N_ERROR_RESPONSE,
@@ -40,7 +39,6 @@ from app.services.neo4j_analytics.node_names import (
     SYNTHESIS as N_SYNTHESIS,
 )
 from app.services.neo4j_analytics.nodes.chart_agent import chart_agent
-from app.services.neo4j_analytics.nodes.clarification import clarification
 from app.services.neo4j_analytics.nodes.compress import compress
 from app.services.neo4j_analytics.nodes.context_fetcher import context_fetcher
 from app.services.neo4j_analytics.nodes.error_response import error_response
@@ -54,7 +52,6 @@ from app.services.neo4j_analytics.nodes.sql_validator import sql_validator
 from app.services.neo4j_analytics.nodes.synthesis import synthesis
 from app.services.neo4j_analytics.routing import (
     LLM_RETRY,
-    route_after_clarification,
     route_after_context_fetcher,
     route_compiler,
     route_executor,
@@ -87,7 +84,6 @@ def compile_graph():
     b.add_node(N_GENERAL_CHAT,    general_chat,      retry_policy=LLM_RETRY)
     b.add_node(N_CONTEXT_FETCHER, context_fetcher)
     b.add_node(N_INTENT_RESOLVER, intent_resolver,   retry_policy=LLM_RETRY)
-    b.add_node(N_CLARIFICATION,   clarification,     retry_policy=LLM_RETRY)
     b.add_node(N_QUERY_COMPILER,  query_compiler,    retry_policy=LLM_RETRY)
     b.add_node(N_FILTER_RESOLVER, filter_resolver)
     b.add_node(N_SQL_VALIDATOR,   sql_validator)
@@ -116,13 +112,7 @@ def compile_graph():
     b.add_conditional_edges(
         N_INTENT_RESOLVER,
         route_intent,
-        {N_CLARIFICATION: N_CLARIFICATION, N_QUERY_COMPILER: N_QUERY_COMPILER},
-    )
-
-    b.add_conditional_edges(
-        N_CLARIFICATION,
-        route_after_clarification,
-        {N_INTENT_RESOLVER: N_INTENT_RESOLVER},
+        {N_QUERY_COMPILER: N_QUERY_COMPILER},
     )
 
     b.add_conditional_edges(
@@ -134,7 +124,7 @@ def compile_graph():
     b.add_conditional_edges(
         N_FILTER_RESOLVER,
         route_filter_resolver,
-        {N_CLARIFICATION: N_CLARIFICATION, N_SQL_VALIDATOR: N_SQL_VALIDATOR},
+        {N_SQL_VALIDATOR: N_SQL_VALIDATOR},
     )
 
     b.add_conditional_edges(
@@ -148,7 +138,6 @@ def compile_graph():
         route_executor,
         {
             N_SQL_VALIDATOR: N_SQL_VALIDATOR,
-            N_CLARIFICATION: N_CLARIFICATION,
             N_SYNTHESIS: N_SYNTHESIS,
             N_INTENT_RESOLVER: N_INTENT_RESOLVER,
         },

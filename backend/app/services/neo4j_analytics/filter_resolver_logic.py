@@ -211,14 +211,71 @@ def resolve_tier3_temporal(user_value: str) -> dict | None:
         start, end = q_map[q]
         return {"operator": "BETWEEN", "value": [f"{year}-{start}", f"{year}-{end}"]}
 
-    # Single ISO date YYYY-MM-DD
-    if re.match(r"^\d{4}-\d{2}-\d{2}$", user_value.strip()):
-        return {"operator": "=", "value": user_value.strip()}
+    # ── Generic date / datetime / timestamp parser ───────────────────────────
+    # This function is only called for date/timestamp/datetime columns, so it
+    # is safe to be aggressive. Handles every format dateutil supports:
+    #
+    #   Date-only:   YYYY-MM-DD  YYYYMMDD  DD/MM/YYYY  MM/DD/YYYY
+    #                DD-MM-YYYY  MM-DD-YYYY  YYYY/MM/DD  YYYY.MM.DD  DD.MM.YYYY
+    #                "January 15, 2026"  "15 Jan 2026"  "Jan 2026"
+    #   Datetime:    all of the above + HH:MM  HH:MM:SS  HH:MM:SS.mmm
+    #                T-separator (ISO 8601): 2026-01-15T14:30:00
+    #   Timezone:    +05:30  Z  UTC  EST  (stripped to naive UTC for Redshift)
+    #   Short dates: "Jan 15"  "15th January"  "Q1 2026" → handled by earlier cases
+    #
+    # Range separators (any whitespace + keyword + whitespace, or symbol):
+    #   AND  TO  THROUGH  THRU  UNTIL  UPTO  ->  ~  –  —  (spaced hyphen)
+    #
+    # Ambiguous day/month order: tries month-first (US) then day-first (EU).
+    # "04/02/2026" → April 2 (US). "31/01/2026" → month-first fails (no 31st month)
+    # → day-first succeeds → Jan 31.
 
-    # ISO range: YYYY-MM-DD TO YYYY-MM-DD (LLM may still produce this)
-    m = re.match(r"^(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})$", v)
-    if m:
-        return {"operator": "BETWEEN", "value": [m.group(1), m.group(2)]}
+    _RANGE_SEP = re.compile(
+        r'\s+(?:and|to|through|thru|until|upto)\s+'
+        r'|\s*(?:->|–|—)\s*'
+        r'|\s+~\s+'
+        r'|\s+-\s+',
+        re.IGNORECASE,
+    )
+
+    def _parse_dt(s: str):
+        """Parse any date/datetime string. Tries month-first then day-first."""
+        s = s.strip()
+        if not s or not re.search(r'\d', s):
+            return None
+        try:
+            from dateutil import parser as _dp
+            try:
+                return _dp.parse(s, dayfirst=False, fuzzy=False)
+            except Exception:
+                return _dp.parse(s, dayfirst=True, fuzzy=False)
+        except Exception:
+            return None
+
+    def _fmt(d) -> str:
+        """Format to the most precise string that contains actual data."""
+        if d.tzinfo is not None:
+            d = d.replace(tzinfo=None)
+        if d.microsecond:
+            ms = d.microsecond // 1000
+            return d.strftime("%Y-%m-%d %H:%M:%S.") + f"{ms:03d}"
+        if d.hour or d.minute or d.second:
+            return d.strftime("%Y-%m-%d %H:%M:%S")
+        return d.strftime("%Y-%m-%d")
+
+    raw = user_value.strip()
+
+    # Try range split first
+    parts = _RANGE_SEP.split(raw, maxsplit=1)
+    if len(parts) == 2:
+        d1, d2 = _parse_dt(parts[0]), _parse_dt(parts[1])
+        if d1 and d2:
+            return {"operator": "BETWEEN", "value": [_fmt(d1), _fmt(d2)]}
+
+    # Try single date / datetime / timestamp
+    d = _parse_dt(raw)
+    if d:
+        return {"operator": "=", "value": _fmt(d)}
 
     return None
 

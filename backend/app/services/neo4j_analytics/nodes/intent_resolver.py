@@ -7,8 +7,6 @@ identifiers from SemanticContext. Validates every identifier post-LLM.
 from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
-import json
-
 from app.core.logger import logger
 from app.services.neo4j_analytics.helpers import parse_tag
 from app.services.neo4j_analytics.prompts import INTENT_RESOLVE_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
@@ -65,11 +63,6 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
 _LLM_STRIP = {"retrieval_paths", "score", "matched_via", "community_id"}
 
 
-def _clean_for_llm(objects: list[dict]) -> list[dict]:
-    """Remove pipeline-internal fields before serializing context for the LLM."""
-    return [{k: v for k, v in obj.items() if k not in _LLM_STRIP} for obj in objects]
-
-
 def _format_recent_messages(messages: list) -> str:
     """Format last 3 messages as conversation context for turns without a session_summary."""
     from langchain_core.messages import HumanMessage
@@ -81,31 +74,116 @@ def _format_recent_messages(messages: list) -> str:
     return "\n".join(lines) if lines else ""
 
 
+def _build_schema_candidates_text(semantic_context: dict) -> str:
+    """Build structured SCHEMA CANDIDATES text replacing json.dumps(context_str).
+
+    Uses filter_values (Redshift DISTINCT probe) as primary samples source,
+    with sample_values (Neo4j) as fallback. Neo4j nodes may have empty sample_values.
+    """
+    templates = semantic_context.get("templates", [])[:5]
+    tables = [
+        {k: v for k, v in t.items() if k not in _LLM_STRIP}
+        for t in semantic_context.get("tables", [])[:10]
+    ]
+    columns = [
+        {k: v for k, v in c.items() if k not in _LLM_STRIP}
+        for c in semantic_context.get("columns", [])[:40]
+    ]
+    business_terms = semantic_context.get("business_terms", [])[:5]
+    intents = semantic_context.get("intents", [])[:3]
+
+    lines = ["--- SCHEMA CANDIDATES ---", ""]
+
+    # Template matches
+    lines.append("TEMPLATE MATCHES:")
+    high_conf = [t for t in templates if (t.get("score") or 0) > 0.70]
+    low_conf = [t for t in templates if (t.get("score") or 0) <= 0.70 and t.get("id")]
+
+    if high_conf:
+        lines.append("  [HIGH CONFIDENCE — use these anchor tables for your output]")
+        for t in high_conf:
+            anchors = ", ".join(t.get("anchor_table_fqns") or [])
+            lines.append(f"  {t.get('id', '')}  score: {t.get('score', 0):.2f}   anchor tables: {anchors}")
+    else:
+        lines.append("  [No template scored above 0.70 — choose anchor tables from TABLES below]")
+
+    if low_conf:
+        lines.append("")
+        lines.append("  [LOWER CONFIDENCE — reference only if no high-confidence match fits]")
+        for t in low_conf:
+            anchors = ", ".join(t.get("anchor_table_fqns") or [])
+            lines.append(f"  {t.get('id', '')}  score: {t.get('score', 0):.2f}   anchor tables: {anchors}")
+
+    lines += ["", "---", "", "TABLES (up to 10 — ranked by how many independent retrieval paths found each):"]
+    for t in tables:
+        fqn = t.get("fqn", "")
+        role = t.get("typical_join_role", "") or t.get("table_type", "")
+        desc = t.get("description", "")
+        grain = t.get("grain", "")
+        role_str = f" {role:<12}" if role else "             "
+        desc_str = f" — {desc}" if desc else ""
+        grain_str = f"   grain: {grain}" if grain else ""
+        lines.append(f"  {fqn:<40}{role_str}{desc_str}{grain_str}".rstrip())
+
+    lines += ["", "---", "", "COLUMNS (up to 40 — from all candidate tables above, ranked by relevance score):"]
+    for c in columns:
+        table_fqn = c.get("table_fqn", "")
+        name = c.get("name", "")
+        dtype = c.get("data_type", c.get("semantic_type", ""))
+        desc = c.get("description", "")
+        # Prefer Redshift-probed filter_values; fall back to Neo4j sample_values
+        samples = c.get("filter_values") or c.get("sample_values") or []
+        is_measurable = c.get("is_measurable", False)
+
+        col_ref = f"{table_fqn}.{name}"
+        line = f"  {col_ref:<52} {dtype:<10}"
+        if desc:
+            line += f'  "{desc}"'
+
+        norm_dtype = (dtype or "").lower()
+        if samples:
+            if any(t in norm_dtype for t in ("date", "time", "timestamp")):
+                line += f"   sample: {samples[0]}"
+            else:
+                line += "   samples: " + " | ".join(str(v) for v in samples[:5])
+        elif is_measurable or any(t in norm_dtype for t in ("int", "float", "numeric", "decimal", "double", "real", "money", "bigint")):
+            line += "   (SUM / AVG)"
+
+        lines.append(line)
+
+    if business_terms:
+        lines += ["", "---", "", "BUSINESS TERMS:"]
+        for bt in business_terms:
+            if isinstance(bt, dict):
+                term = bt.get("term", "")
+                definition = bt.get("definition", "") or bt.get("description", "")
+                if term:
+                    lines.append(f'  "{term}"  →  {definition}')
+
+    if intents:
+        lines += ["", "INTENT PATTERNS:"]
+        for intent in intents:
+            if isinstance(intent, dict):
+                name = intent.get("name", "")
+                desc = intent.get("description", "")
+                if name:
+                    lines.append(f"  {name:<25} — {desc}" if desc else f"  {name}")
+            elif isinstance(intent, str) and intent:
+                lines.append(f"  {intent}")
+
+    return "\n".join(lines)
+
+
 def _build_prompt(state: AnalyticsState) -> list:
     semantic_context = state.get("semantic_context") or {}
 
-    tables_for_llm  = _clean_for_llm(semantic_context.get("tables", [])[:8])
-    columns_for_llm = _clean_for_llm(semantic_context.get("columns", [])[:12])
-
-    matched_templates = [
-        {"id": t.get("id"), "score": t.get("score"), "anchor_table_fqns": t.get("anchor_table_fqns")}
-        for t in semantic_context.get("templates", [])[:2]
-    ]
-
     logger.info(
         "intent_resolver | llm_context | tables={} | columns={}",
-        [t.get("fqn") for t in tables_for_llm],
-        [(c.get("table_fqn"), c.get("name")) for c in columns_for_llm],
+        [t.get("fqn") for t in semantic_context.get("tables", [])[:10]],
+        [(c.get("table_fqn"), c.get("name")) for c in semantic_context.get("columns", [])[:40]],
     )
 
-    context_str = json.dumps({
-        "matched_templates": matched_templates,
-        "templates": semantic_context.get("templates", [])[:5],
-        "tables": tables_for_llm,
-        "columns": columns_for_llm,
-        "business_terms": semantic_context.get("business_terms", [])[:5],
-        "intents": semantic_context.get("intents", [])[:3],
-    }, indent=2)
+    schema_candidates_text = _build_schema_candidates_text(semantic_context)
 
     session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
     recent_msgs = _format_recent_messages(state.get("messages", []))
@@ -137,7 +215,7 @@ def _build_prompt(state: AnalyticsState) -> list:
         feedback_context=state.get("feedback_context", ""),
         conversation_context=conversation_context,
         memory_context=semantic_context.get("memory_context", ""),
-        semantic_context=context_str,
+        schema_candidates_text=schema_candidates_text,
         execution_error_section=execution_error_section,
         reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
     )

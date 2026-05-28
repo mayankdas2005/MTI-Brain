@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.neo4j_analytics.helpers import parse_tag
-from app.services.neo4j_analytics.prompts import CLARIFICATION_PROMPT, REASONING_DIRECTIVE_BRIEF
+from app.services.neo4j_analytics.prompts import CLARIFICATION_PROMPT
 from app.services.neo4j_analytics.state import AnalyticsState
 
 
@@ -32,7 +32,6 @@ async def clarification(state: AnalyticsState, config: RunnableConfig) -> dict:
         persona=state.get("persona", "executive"),
         clarification_reason=reason,
         conversation_section=conversation_section,
-        reasoning_directive=REASONING_DIRECTIVE_BRIEF,
     )
 
     from app.services.neo4j_analytics.bedrock import get_llm

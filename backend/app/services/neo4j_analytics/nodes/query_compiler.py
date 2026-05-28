@@ -43,7 +43,7 @@ async def query_compiler(state: AnalyticsState, config: RunnableConfig) -> dict:
         anchor_tables,
         [(m.get("table_fqn", "").rsplit(".", 1)[-1] + "." + m.get("column_name", ""), m.get("aggregation")) for m in resolved.get("measures", [])],
         [d.get("column_name") for d in resolved.get("dimensions", [])],
-        [(f.get("column"), f.get("operator"), str(f.get("raw_value", ""))[:20]) for f in resolved.get("filters", [])],
+        [(f.get("column_name") or f.get("column"), f.get("operator"), str(f.get("raw_value", ""))[:20]) for f in resolved.get("filters", [])],
         resolved.get("timeframe"),
     )
 
@@ -81,5 +81,5 @@ async def _handle_single(state: AnalyticsState, resolved: dict, semantic_context
             "prior_sql": sql,
         }
     except Exception as e:
-        logger.error("query_compiler | SQL generate failed | thread={} | error={}", state["thread_id"], e)
+        logger.exception("query_compiler | SQL generate failed | thread={} | error={}", state["thread_id"], e)
         return {"error": str(e), "needs_clarification": True, "clarification_reason": "I couldn't generate a valid query."}

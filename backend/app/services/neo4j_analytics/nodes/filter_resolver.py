@@ -189,7 +189,7 @@ async def _run_redshift_probe(table_fqn: str, col_name: str, user_value: str, th
         from app.services.neo4j_analytics.redshift_client import execute_query
         sql = build_redshift_probe_sql(table_fqn, col_name, user_value)
         params = build_redshift_probe_params(user_value)
-        columns, rows = await execute_query(sql, params=params, timeout_s=25, thread_id=thread_id)
+        columns, rows = await execute_query(sql, params=params, timeout_s=60, thread_id=thread_id)
         values = list(dict.fromkeys(str(r[0]) for r in rows if r and r[0] is not None))
         redis_client.set_filter_values(table_fqn, col_name, values, ttl=86400)
         return values
