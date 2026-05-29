@@ -135,7 +135,7 @@ def compile_graph():
     b.add_conditional_edges(
         N_SQL_VALIDATOR,
         route_validator,
-        {N_QUERY_COMPILER: N_QUERY_COMPILER, N_EXECUTOR: N_EXECUTOR, N_ERROR_RESPONSE: N_ERROR_RESPONSE},
+        {N_SQL_GENERATOR: N_SQL_GENERATOR, N_EXECUTOR: N_EXECUTOR, N_ERROR_RESPONSE: N_ERROR_RESPONSE},
     )
 
     b.add_conditional_edges(

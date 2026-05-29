@@ -27,7 +27,7 @@ from app.services.agents.node_names import (
 from app.services.agents.state import AnalyticsState
 
 MAX_RECOMPILE = 3
-MAX_REPAIR = 2
+MAX_REPAIR = 3
 LLM_RETRY = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor=2.0)
 
 
@@ -81,10 +81,10 @@ def route_validator(state: AnalyticsState) -> str:
             return N_ERROR_RESPONSE
         if recompile_count < MAX_RECOMPILE:
             logger.info(
-                "route: sql_validator → query_compiler (recompile #{}) | thread={}",
+                "route: sql_validator → sql_generator (recompile #{}) | thread={}",
                 recompile_count + 1, state["thread_id"],
             )
-            return N_QUERY_COMPILER
+            return N_SQL_GENERATOR
         logger.info("route: sql_validator → error_response (max recompiles reached) | thread={}", state["thread_id"])
         return N_ERROR_RESPONSE
     logger.info("route: sql_validator → executor | thread={}", state["thread_id"])

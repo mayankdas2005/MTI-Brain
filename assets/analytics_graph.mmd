@@ -6,6 +6,7 @@ graph TD;
 	intent_resolver(intent_resolver)
 	query_compiler(query_compiler)
 	filter_resolver(filter_resolver)
+	sql_generator(sql_generator)
 	sql_validator(sql_validator)
 	executor(executor)
 	synthesis(synthesis)
@@ -23,14 +24,16 @@ graph TD;
 	executor -.-> intent_resolver;
 	executor -.-> sql_validator;
 	executor -.-> synthesis;
-	filter_resolver -.-> sql_validator;
+	filter_resolver -.-> sql_generator;
 	general_chat -.-> __end__;
 	general_chat -.-> compress;
 	intake_classifier -.-> context_fetcher;
 	intake_classifier -.-> general_chat;
 	intent_resolver -.-> query_compiler;
+	query_compiler -.-> error_response;
 	query_compiler -.-> filter_resolver;
-	query_compiler -.-> sql_validator;
+	query_compiler -.-> sql_generator;
+	sql_generator --> sql_validator;
 	sql_validator -.-> error_response;
 	sql_validator -.-> executor;
 	sql_validator -.-> query_compiler;

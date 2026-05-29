@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.core.retry import is_transient
 
-_POOL_SIZE = 6
+_POOL_SIZE = 10
 _connection_pool: queue.Queue | None = None
 
 
@@ -73,9 +73,11 @@ def _run_cursor(conn, sql: str, params: list | None) -> tuple[list[str], list[li
             cursor.execute(sql, params)
         else:
             cursor.execute(sql)
-        columns = [desc[0] for desc in cursor.description] if cursor.description else []
-        rows = cursor.fetchall()
-        return columns, [list(r) for r in rows]
+        if cursor.description:
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+            return columns, [list(r) for r in rows]
+        return [], []
     finally:
         cursor.close()
 
@@ -139,30 +141,67 @@ def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60) -> 
     return columns, rows
 
 
-async def get_table_columns(schema: str, table: str, col_names: list[str]) -> list[list]:
-    """Return [[col_name, data_type], ...] for the requested columns via information_schema.
+async def fetch_table_schema(schema: str, table: str) -> list[list]:
+    """Return [[col_name, data_type], ...] for ALL columns in the table.
 
-    Only returns rows for columns that actually exist in Redshift — caller can detect
-    missing columns (e.g. base_currency not in Neo4j) by comparing to the input list.
-    Uses individual %s placeholders — redshift_connector does not support list/array params.
+    Always returns the full schema regardless of which specific columns the caller
+    needs. Caches via set_schema_cols (TTL 1 day). Use this when you need to know
+    whether a specific column exists — passing it to get_table_columns with an empty
+    list returns [] immediately without fetching anything.
     """
-    if not col_names:
-        return []
-    placeholders = ", ".join(["%s"] * len(col_names))
+    from app.services.agents.redis_client import get_schema_cols, set_schema_cols
+
+    cached = get_schema_cols(schema, table)
+    if cached is not None:
+        return cached
+
+    logger.info("schema_cols | CACHE MISS | {}.{} | fetching full schema from information_schema", schema, table)
     sql = (
         "SELECT column_name, data_type "
         "FROM information_schema.columns "
-        f"WHERE table_schema = %s AND table_name = %s AND column_name IN ({placeholders})"
+        "WHERE table_schema = %s AND table_name = %s "
+        "ORDER BY ordinal_position"
     )
-    params = [schema, table] + list(col_names)
     try:
-        _, rows = await asyncio.to_thread(
-            _execute_sync, sql, params, 15
-        )
-        return [list(r) for r in rows]
+        _, rows = await asyncio.to_thread(_execute_sync, sql, [schema, table], 15)
+        all_cols = [list(r) for r in rows]
+        set_schema_cols(schema, table, all_cols)
+        logger.info("schema_cols | FETCHED | {}.{} | total_cols={}", schema, table, len(all_cols))
+        return all_cols
     except Exception as e:
-        logger.warning("redshift | get_table_columns failed | {}.{} | error={}", schema, table, e)
+        logger.warning("redshift | fetch_table_schema failed | {}.{} | error={}", schema, table, e)
         return []
+
+
+async def get_table_columns(schema: str, table: str, col_names: list[str]) -> list[list]:
+    """Return [[col_name, data_type], ...] for the requested columns.
+
+    Results for the full table are cached in Redis for 1 day so repeated calls
+    for the same table (column validation, filter probing, context_fetcher) never
+    hit Redshift more than once per day per table.
+
+    Only returns rows for columns that actually exist — caller detects missing
+    columns by comparing the returned set against the input list.
+    """
+    from app.services.agents.redis_client import get_schema_cols
+
+    if not col_names:
+        return []
+
+    # Try Redis first — full column list for the table
+    cached = get_schema_cols(schema, table)
+    if cached is not None:
+        requested = set(col_names)
+        matched = [row for row in cached if row[0] in requested]
+        logger.info("schema_cols | CACHE HIT | {}.{} | total_cols={} | requested={} | found={}", schema, table, len(cached), len(col_names), len(matched))
+        return matched
+
+    # Cache miss — use fetch_table_schema which handles Redis write
+    all_cols = await fetch_table_schema(schema, table)
+    requested = set(col_names)
+    matched = [row for row in all_cols if row[0] in requested]
+    logger.info("schema_cols | CACHED | {}.{} | total_cols={} | requested={} | found={}", schema, table, len(all_cols), len(col_names), len(matched))
+    return matched
 
 
 async def execute_query(

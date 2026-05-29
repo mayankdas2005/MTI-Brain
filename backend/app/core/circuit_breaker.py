@@ -85,7 +85,7 @@ neo4j_breaker = pybreaker.CircuitBreaker(
 )
 
 redis_breaker = pybreaker.CircuitBreaker(
-    fail_max=5,
+    fail_max=10,
     reset_timeout=10,
     name="redis",
     listeners=[LoggingListener()],

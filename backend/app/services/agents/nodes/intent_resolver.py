@@ -94,25 +94,14 @@ def _build_schema_candidates_text(semantic_context: dict) -> str:
 
     lines = ["--- SCHEMA CANDIDATES ---", ""]
 
-    # Template matches
-    lines.append("TEMPLATE MATCHES:")
-    high_conf = [t for t in templates if (t.get("score") or 0) > 0.70]
-    low_conf = [t for t in templates if (t.get("score") or 0) <= 0.70 and t.get("id")]
-
-    if high_conf:
-        lines.append("  [HIGH CONFIDENCE — use these anchor tables for your output]")
-        for t in high_conf:
+    # Template matches — no scores shown; treat as hints only
+    lines.append("TEMPLATES (suggested anchor table patterns — hints only, not constraints):")
+    if templates:
+        for t in templates:
             anchors = ", ".join(t.get("anchor_table_fqns") or [])
-            lines.append(f"  {t.get('id', '')}  score: {t.get('score', 0):.2f}   anchor tables: {anchors}")
+            lines.append(f"  {t.get('id', '')}   anchor tables: {anchors}")
     else:
-        lines.append("  [No template scored above 0.70 — choose anchor tables from TABLES below]")
-
-    if low_conf:
-        lines.append("")
-        lines.append("  [LOWER CONFIDENCE — reference only if no high-confidence match fits]")
-        for t in low_conf:
-            anchors = ", ".join(t.get("anchor_table_fqns") or [])
-            lines.append(f"  {t.get('id', '')}  score: {t.get('score', 0):.2f}   anchor tables: {anchors}")
+        lines.append("  [No templates found — choose anchor tables from TABLES below]")
 
     lines += ["", "---", "", "TABLES (up to 10 — ranked by how many independent retrieval paths found each):"]
     for t in tables:

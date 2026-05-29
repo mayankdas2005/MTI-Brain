@@ -13,6 +13,7 @@ from app.core.logger import logger
 _memory_store = None
 _conninfo: str | None = None
 _embed_fn = None
+_store_exit = None  # kept alive so the store connection isn't GC'd
 
 
 def set_memory_store(store, conninfo: str | None = None, embed_fn=None) -> None:
@@ -30,20 +31,29 @@ def get_memory_store():
 
 def _try_reconnect() -> bool:
     """Attempt to reinitialize the store when the connection has closed."""
-    global _memory_store
+    global _memory_store, _store_exit
     if not _conninfo or not _embed_fn:
         return False
     try:
         from contextlib import ExitStack
         from langgraph.store.postgres import PostgresStore
         from langgraph.store.base import IndexConfig
-        store = ExitStack().enter_context(
+
+        old_exit = _store_exit
+        exit_stack = ExitStack()
+        store = exit_stack.enter_context(
             PostgresStore.from_conn_string(
                 _conninfo,
                 index=IndexConfig(embed=_embed_fn, dims=1536),
             )
         )
+        _store_exit = exit_stack   # keep alive — prevents GC from closing the connection
         _memory_store = store
+        if old_exit:
+            try:
+                old_exit.close()
+            except Exception:
+                pass
         logger.info("long_term | reconnected to memory store")
         return True
     except Exception as e:

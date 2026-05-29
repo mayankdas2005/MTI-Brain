@@ -32,7 +32,9 @@ def init_redis() -> None:
             decode_responses=True,
             max_connections=settings.REDIS_MAX_CONNECTIONS,
             socket_connect_timeout=2,
-            socket_timeout=2,
+            socket_timeout=5,
+            socket_keepalive=True,
+            retry_on_timeout=True,
             health_check_interval=settings.REDIS_HEALTH_CHECK_INTERVAL,
         )
         _redis = redis_lib.Redis(connection_pool=pool)
@@ -238,6 +240,31 @@ def set_json(key: str, value: object, ttl: int = 86400) -> None:
         logger.warning("redis set_json failed | key={} | error={}", key[:60], e)
 
 
+def schema_cols_cache_key(schema: str, table: str) -> str:
+    return f"schema_cols:{schema}.{table}"
+
+
+def get_schema_cols(schema: str, table: str) -> list[list] | None:
+    """Return [[col_name, data_type], ...] for the table, or None on miss."""
+    key = schema_cols_cache_key(schema, table)
+    raw = cache_get(key)
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+    return None
+
+
+def set_schema_cols(schema: str, table: str, cols: list[list], ttl: int = 86400) -> None:
+    """Cache full column list for a table. Default TTL 1 day — schema changes rarely."""
+    key = schema_cols_cache_key(schema, table)
+    try:
+        cache_set(key, json.dumps(cols), ttl)
+    except Exception as e:
+        logger.warning("redis set_schema_cols failed | {}.{} | error={}", schema, table, e)
+
+
 def flush_table_cache(table_fqn: str) -> int:
     """Delete all filter_vals and schema_cols cache entries for a table.
 
@@ -257,3 +284,22 @@ def flush_all_probe_cache() -> int:
     n += cache_delete_pattern("schema_cols:*")
     logger.info("redis flush_all_probe_cache | deleted={}", n)
     return n
+
+
+def flush_all_keys() -> int:
+    """Delete every key in the current Redis DB (FLUSHDB).
+
+    Use for cache poisoning incidents or post-deploy resets.
+    Returns approximate key count deleted (DBSIZE before flush).
+    """
+    client = _get_client()
+    if not client:
+        return 0
+    try:
+        count = client.dbsize()
+        client.flushdb(asynchronous=True)
+        logger.warning("redis flush_all_keys | flushed entire DB | approx_keys={}", count)
+        return count
+    except Exception as e:
+        logger.warning("redis flush_all_keys failed | error={}", e)
+        return 0

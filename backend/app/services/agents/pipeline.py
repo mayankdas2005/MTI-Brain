@@ -67,7 +67,10 @@ def _build_graph_context_snapshot(state: AnalyticsState) -> dict:
     join_path_ids: list[str] = list(dict.fromkeys(
         pid
         for ir in ir_list
-        for pid in (ir.get("join_path_ids") or [])
+        for pid in (
+            list(ir.get("join_path_ids") or []) +
+            [p.get("id", "") for p in (ir.get("candidate_join_paths") or []) if p.get("id")]
+        )
     ))
     selected_columns: list[dict] = [
         {

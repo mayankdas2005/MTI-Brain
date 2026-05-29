@@ -13,7 +13,7 @@ from langchain_core.runnables import RunnableConfig
 from app.core.logger import logger
 from app.services.agents.helpers import parse_tag
 from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns
-from app.services.agents.prompts import REASONING_DIRECTIVE_DEEP, CTE_COLUMN_PLANNER_PROMPT
+from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, REASONING_DIRECTIVE_NORMAL, CTE_COLUMN_PLANNER_PROMPT
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
@@ -66,6 +66,7 @@ async def generate_sql_llm(
         "result_shape": ir.result_shape,
         "order_by": ir.order_by,
         "limit": ir.limit or state.get("max_rows", 100),
+        "temporal_grain": ir.temporal_grain,
     }
 
     logger.info(
@@ -99,7 +100,16 @@ async def generate_sql_llm(
     feedback_section = _build_feedback_section(state)
     query_patterns_section = _build_query_patterns_section(query_patterns)
     prior_sql_section = _build_prior_sql_section(state)
-    reasoning_directive = REASONING_DIRECTIVE_DEEP
+    col_lookup = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("filter_values") or c.get("sample_values") or []
+        for c in schema_ctx.get("columns", [])
+        if c.get("table_fqn") and c.get("name")
+    }
+    recompile_count = state.get("recompile_count", 0)
+    candidate_join_paths_section = (
+        _build_candidate_join_paths_section(ir, col_lookup) if recompile_count > 0 else ""
+    )
+    reasoning_directive = REASONING_DIRECTIVE_SQL
 
     cte_plan = await _plan_cte_columns(spec, query_blueprint, schema_reference, state, config)
     cte_column_plan = _build_cte_plan_section(cte_plan)
@@ -115,6 +125,7 @@ async def generate_sql_llm(
         query_patterns_section=query_patterns_section,
         prior_sql_section=prior_sql_section,
         cte_column_plan=cte_column_plan,
+        candidate_join_paths_section=candidate_join_paths_section,
     )
 
     from app.services.agents.bedrock import get_llm
@@ -127,12 +138,12 @@ async def generate_sql_llm(
         return await llm.ainvoke(prompt, config=config)
 
     response = await _call()
-    sql = parse_tag(response.content or "", "sql")
+    sql = _format_sql(parse_tag(response.content or "", "sql") or "")
     logger.info(
         "sql_generator | SQL generated | thread={} | anchor={} | sql_len={} | pattern_matched={} | pattern={} | reasoning=DEEP",
-        state["thread_id"], ir.anchor_tables, len(sql or ""), pattern_matched, pattern_name,
+        state["thread_id"], ir.anchor_tables, len(sql), pattern_matched, pattern_name,
     )
-    return (sql or "").strip()
+    return sql
 
 
 async def _plan_cte_columns(
@@ -156,6 +167,7 @@ async def _plan_cte_columns(
         prompt = CTE_COLUMN_PLANNER_PROMPT.format_messages(
             query_blueprint=query_blueprint,
             schema_reference=schema_reference,
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         )
         response = await llm.ainvoke(prompt, config=config)
         plan = parse_tag(response.content or "", "plan").strip()
@@ -206,9 +218,37 @@ def _build_cte_plan_section(plan: str) -> str:
     )
 
 
+def _get_join_overlap_evidence(on_clause: str, col_lookup: dict) -> str:
+    """Return value overlap evidence for a single ON clause, or '' if not probed."""
+    import re
+    fqn_re = re.compile(
+        r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_$]*)"
+    )
+    cols = fqn_re.findall(on_clause)
+    if len(cols) < 2:
+        return ""
+    col_a = f"{cols[0][0]}.{cols[0][1]}.{cols[0][2]}"
+    col_b = f"{cols[1][0]}.{cols[1][1]}.{cols[1][2]}"
+    vals_a = set(str(v) for v in (col_lookup.get(col_a) or []))
+    vals_b = set(str(v) for v in (col_lookup.get(col_b) or []))
+    if not vals_a or not vals_b:
+        return ""
+    overlap = vals_a & vals_b
+    if not overlap:
+        return f"⚠ NO VALUE OVERLAP ({len(vals_a)} A-side vs {len(vals_b)} B-side samples — join will return 0 rows)"
+    sample = sorted(overlap)[:3]
+    return f"✓ {len(overlap)} shared values (e.g. {', '.join(sample)})"
+
+
 def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
     """Build structured QUERY SPECIFICATION text replacing json.dumps(spec)."""
     lines = ["--- QUERY SPECIFICATION ---", ""]
+
+    col_lookup = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("filter_values") or c.get("sample_values") or []
+        for c in schema_ctx.get("columns", [])
+        if c.get("table_fqn") and c.get("name")
+    }
 
     anchor_tables = spec.get("anchor_tables") or []
     lines.append("ANCHOR TABLES (every one must appear in the SQL — do not drop or add):")
@@ -247,12 +287,19 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
         lines.append("")
 
         if dimensions:
+            temporal_grain = spec.get("temporal_grain")
             lines.append("DIMENSIONS (must be in GROUP BY):")
             for d in dimensions:
                 fqn = d.get("table_fqn", "")
                 col = d.get("column_name", "")
                 alias = d.get("alias", col)
-                lines.append(f"  {fqn}.{col}          alias: {alias}")
+                if temporal_grain and alias != col:
+                    lines.append(
+                        f"  {fqn}.{col}   alias: {alias}"
+                        f"   [base CTE: DATE_TRUNC('{temporal_grain}', {col}) AS {alias}]"
+                    )
+                else:
+                    lines.append(f"  {fqn}.{col}          alias: {alias}")
             lines.append("")
     else:
         lines.append("RESULT TYPE: flat lookup — no GROUP BY")
@@ -323,6 +370,9 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
             on_clause = j.get("on", "")
             lines.append(f"  {jtype} {to_t}")
             lines.append(f"    ON {on_clause}")
+            evidence = _get_join_overlap_evidence(on_clause, col_lookup)
+            if evidence:
+                lines.append(f"    -- {evidence}")
         lines.append("")
     elif anchor_tables:
         lines.append("BASE TABLE (must be in the FROM clause of the first CTE):")
@@ -341,6 +391,16 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
     limit = spec.get("limit")
     if limit:
         lines.append(f"LIMIT:  {limit}")
+
+    lines.append(f"""
+--- PERFORMANCE DIRECTIVES ---
+Write this query as a senior Redshift DBA. Non-negotiable:
+  a. Filter early — push WHERE into CTEs, not the outer SELECT.
+  b. Aggregate before joining — one aggregation CTE per table, then join small results.
+  c. No SELECT * anywhere — name only columns used downstream.
+  d. GROUP BY instead of DISTINCT on large result sets.
+  e. Apply LIMIT {limit or 100} on the outer SELECT — never omit it.
+  f. Include only tables that the question requires.""")
 
     return "\n".join(lines)
 
@@ -368,6 +428,12 @@ def _build_schema_reference(schema_ctx: dict) -> str:
     tables = schema_ctx.get("tables", [])
     columns = schema_ctx.get("columns", [])
     available_joins = schema_ctx.get("available_joins", [])
+
+    col_lookup = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("filter_values") or c.get("sample_values") or []
+        for c in columns
+        if c.get("table_fqn") and c.get("name")
+    }
 
     lines = ["--- SCHEMA REFERENCE ---", ""]
 
@@ -431,6 +497,9 @@ def _build_schema_reference(schema_ctx: dict) -> str:
             lines.append(f"  {from_t} → {to_t}")
             for clause in clauses:
                 lines.append(f"    {join_type} {to_t} ON {clause}")
+                evidence = _get_join_overlap_evidence(clause, col_lookup)
+                if evidence:
+                    lines.append(f"    -- {evidence}")
 
     return "\n".join(lines)
 
@@ -451,6 +520,57 @@ def _build_unresolved_joins_section(unresolved_pairs: list[dict]) -> str:
         else:
             lines.append("    → No candidate columns found. Check ADDITIONAL JOINS in SCHEMA REFERENCE.")
         lines.append("    → NEVER produce a CROSS JOIN or omit the table.\n")
+    return "\n".join(lines)
+
+
+def _build_candidate_join_paths_section(ir: SemanticIR, col_lookup: dict | None = None) -> str:
+    """Format all collected join path alternatives for the SQL LLM prompt.
+
+    col_lookup: maps "schema.table.col" → list[str] of sampled values.
+    When provided, each clause is annotated with value overlap evidence.
+    """
+    paths = ir.candidate_join_paths
+    if not paths:
+        return ""
+
+    _col_lookup = col_lookup or {}
+
+    # Group by (from_fqn, to_fqn) pair
+    pairs: dict[tuple[str, str], list[dict]] = {}
+    for p in paths:
+        key = (p.get("from_fqn", ""), p.get("to_fqn", ""))
+        pairs.setdefault(key, []).append(p)
+
+    if not pairs:
+        return ""
+
+    lines = ["CANDIDATE JOIN PATHS (primary path pre-selected in PRE-COMPUTED JOIN CHAIN; override only when semantically required):"]
+    for (from_fqn, to_fqn), path_list in pairs.items():
+        lines.append(f"  {from_fqn} → {to_fqn}:")
+        for p in path_list:
+            tier = p.get("tier", "unknown")
+            direction = p.get("direction", "forward")
+            hop_count = p.get("hop_count", "?")
+            path_tables = p.get("path_tables") or []
+            clauses = p.get("join_clauses") or []
+            intermediate = [t for t in path_tables if t not in (from_fqn, to_fqn)]
+            hops_label = f"{hop_count} hop{'s' if hop_count != 1 else ''}"
+            via_label = f" via {', '.join(intermediate)}" if intermediate else ""
+            dir_label = f" [{direction}]" if direction != "forward" else ""
+            if clauses:
+                clause_str = "  AND  ".join(clauses)
+                lines.append(f"    [{tier}, {hops_label}{via_label}{dir_label}]  {clause_str}")
+                for clause in clauses:
+                    evidence = _get_join_overlap_evidence(clause, _col_lookup)
+                    if evidence:
+                        lines.append(f"      -- {evidence}")
+            else:
+                lines.append(f"    [{tier}, {hops_label}{via_label}{dir_label}]  (no clause)")
+    lines.append("")
+    lines.append("Use a longer path only when the question semantically requires going through intermediate tables.")
+    lines.append("hop_count and intermediate tables indicate which path covers the full relationship.")
+    lines.append("Prefer paths with ✓ overlap evidence over paths with no comment or ⚠ warning.")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -517,6 +637,16 @@ def _build_prior_sql_section(state: AnalyticsState) -> str:
         f"<prior_sql>{prior_sql}</prior_sql>\n\n"
         "Fix the specific validation error above. Do not repeat the structural mistake that caused it."
     )
+
+
+def _format_sql(sql: str) -> str:
+    if not sql.strip():
+        return sql
+    try:
+        import sqlglot
+        return sqlglot.transpile(sql, read="redshift", write="redshift", pretty=True)[0]
+    except Exception:
+        return sql.strip()
 
 
 def parse_decomposition(raw: str, thread_id: str) -> dict | None:

@@ -46,6 +46,7 @@ class SemanticIR(BaseModel):
     order_by: list[str] = Field(default_factory=list)
     limit: int | None = None
     sub_query_index: int | None = None
+    candidate_join_paths: list[dict] | None = None  # all tiers per table pair: {from_fqn, to_fqn, tier, direction, join_clauses, path_tables, hop_count}
 
 
 class ColumnStat(BaseModel):

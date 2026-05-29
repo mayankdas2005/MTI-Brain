@@ -33,9 +33,9 @@ export function useDashboardNotice() {
               const visible = typeof document !== 'undefined' && document.visibilityState === 'visible';
 
               if (visible) {
-                toast.info('Dashboard ready', {
+                toast.info('Report ready', {
                   id: `dash-ready-${convId}`,
-                  description: 'Your executive dashboard has been generated.',
+                  description: 'Your executive report is ready to view.',
                   duration: 12_000,
                   action: {
                     label: 'Open',
@@ -49,8 +49,8 @@ export function useDashboardNotice() {
               } else {
                 // Tab hidden — fire OS notification
                 if (getPermission() === 'granted') {
-                  notify('Dashboard ready', {
-                    body: 'Your executive dashboard has been generated.',
+                  notify('Report ready', {
+                    body: 'Your executive report is ready to view.',
                     silent: true,
                   });
                 } else {
@@ -74,9 +74,9 @@ export function useDashboardNotice() {
               if (notifySound) playPing();
             } else if (res.status === 'failed') {
               set(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-              toast.error('Dashboard generation failed', {
+              toast.warning('Failed to build report', {
                 id: `dash-fail-${convId}`,
-                description: 'Please try generating again.',
+                description: 'Please try again.',
               });
             }
           } catch {

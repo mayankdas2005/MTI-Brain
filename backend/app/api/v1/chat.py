@@ -38,7 +38,7 @@ def _make_json_safe(obj):
 
 from app.api.v1.deps import CurrentUser, get_current_user
 from app.core.logger import logger
-from app.db import get_async_session, get_read_session
+from app.db import async_session_factory, get_async_session, get_read_session
 from app.schemas.chat import (
     AskRequest,
     BulkDeleteRequest,
@@ -492,7 +492,6 @@ async def ask_question(
     thread_id: uuid.UUID,
     body: AskRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session),
 ):
     request_time = time.perf_counter()
     # Register the cancel event BEFORE any DB work so stop works immediately
@@ -511,25 +510,30 @@ async def ask_question(
         if body.prior_sql:
             user_meta["is_refinement"] = True
 
-    # Single round-trip: the thread UPDATE inside save_message_and_touch
-    # filters by user_id, so it doubles as the ownership check. No separate
-    # thread_exists query needed — saves ~1.3s of pre-SSE DB latency.
+    # Use a manual session block so the DB connection is returned to the pool
+    # BEFORE the SSE stream starts. FastAPI's Depends(get_async_session) holds
+    # the connection open until the response body is complete — for a long-lived
+    # SSE stream that means minutes, which causes asyncpg close(timeout=2)
+    # timeouts when the pool tries to recycle the idle connection mid-stream.
     _t1 = time.perf_counter()
-    save_result = await conv_service.save_message_and_touch(
-        db,
-        thread_id=thread_id,
-        conversation_id=conversation_id,
-        role="user",
-        content=body.question,
-        auto_title=body.question[:200],
-        metadata=user_meta,
-        user_id=current_user.id,
-    )
-    if save_result is None:
-        _active_streams.pop(str(thread_id), None)
-        raise HTTPException(status_code=404, detail="Thread not found")
-    _, is_first_message = save_result
-    await db.commit()
+    is_first_message = False
+    async with async_session_factory() as db:
+        save_result = await conv_service.save_message_and_touch(
+            db,
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            role="user",
+            content=body.question,
+            auto_title=body.question[:200],
+            metadata=user_meta,
+            user_id=current_user.id,
+        )
+        if save_result is None:
+            _active_streams.pop(str(thread_id), None)
+            raise HTTPException(status_code=404, detail="Thread not found")
+        _, is_first_message = save_result
+        await db.commit()
+    # Connection returned to pool here — before SSE starts
     _t_save = (time.perf_counter() - _t1) * 1000
 
     if is_first_message:
@@ -572,40 +576,44 @@ async def retry_response(
     thread_id: uuid.UUID,
     body: RetryRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session),
 ):
     request_time = time.perf_counter()
     _cancel_ev = asyncio.Event()
     _active_streams[str(thread_id)] = _cancel_ev
 
-    question, existing_parent = await conv_service.get_question_and_parent(
-        db, body.conversation_id
-    )
-    if not question:
-        _active_streams.pop(str(thread_id), None)
-        raise HTTPException(status_code=404, detail="Original conversation not found")
-
     new_conversation_id = uuid.uuid4()
-    root = existing_parent or body.conversation_id
+    question: str = ""
+    root: uuid.UUID | None = None
 
-    user_meta = None
-    if body.source_conversation_id:
-        user_meta = {"source_conversation_id": str(body.source_conversation_id)}
+    async with async_session_factory() as db:
+        _question, existing_parent = await conv_service.get_question_and_parent(
+            db, body.conversation_id
+        )
+        if not _question:
+            _active_streams.pop(str(thread_id), None)
+            raise HTTPException(status_code=404, detail="Original conversation not found")
+        question = _question
+        root = existing_parent or body.conversation_id
 
-    save_result = await conv_service.save_message_and_touch(
-        db,
-        thread_id=thread_id,
-        conversation_id=new_conversation_id,
-        parent_conversation_id=root,
-        role="user",
-        content=question,
-        metadata=user_meta,
-        user_id=current_user.id,
-    )
-    if save_result is None:
-        _active_streams.pop(str(thread_id), None)
-        raise HTTPException(status_code=404, detail="Thread not found")
-    await db.commit()
+        user_meta = None
+        if body.source_conversation_id:
+            user_meta = {"source_conversation_id": str(body.source_conversation_id)}
+
+        save_result = await conv_service.save_message_and_touch(
+            db,
+            thread_id=thread_id,
+            conversation_id=new_conversation_id,
+            parent_conversation_id=root,
+            role="user",
+            content=question,
+            metadata=user_meta,
+            user_id=current_user.id,
+        )
+        if save_result is None:
+            _active_streams.pop(str(thread_id), None)
+            raise HTTPException(status_code=404, detail="Thread not found")
+        await db.commit()
+    # Connection returned to pool before SSE starts
 
     generator = _build_sse_generator(
         question=question,
@@ -635,45 +643,47 @@ async def edit_question(
     thread_id: uuid.UUID,
     body: EditRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session),
 ):
     request_time = time.perf_counter()
     _cancel_ev = asyncio.Event()
     _active_streams[str(thread_id)] = _cancel_ev
 
-    original, existing_parent = await conv_service.get_question_and_parent(
-        db, body.conversation_id
-    )
-    if original is None:
-        _active_streams.pop(str(thread_id), None)
-        raise HTTPException(status_code=404, detail="Original conversation not found")
-
-    regen_title = await conv_service.is_first_conversation(
-        db, thread_id, body.conversation_id
-    )
-
     new_conversation_id = uuid.uuid4()
-    root = existing_parent or body.conversation_id
+    regen_title = False
+    root: uuid.UUID | None = None
 
-    user_meta = None
-    if body.source_conversation_id:
-        user_meta = {"source_conversation_id": str(body.source_conversation_id)}
+    async with async_session_factory() as db:
+        original, existing_parent = await conv_service.get_question_and_parent(
+            db, body.conversation_id
+        )
+        if original is None:
+            _active_streams.pop(str(thread_id), None)
+            raise HTTPException(status_code=404, detail="Original conversation not found")
 
-    save_result = await conv_service.save_message_and_touch(
-        db,
-        thread_id=thread_id,
-        conversation_id=new_conversation_id,
-        parent_conversation_id=root,
-        role="user",
-        content=body.question,
-        metadata=user_meta,
-        user_id=current_user.id,
-    )
-    if save_result is None:
-        _active_streams.pop(str(thread_id), None)
-        raise HTTPException(status_code=404, detail="Thread not found")
+        regen_title = await conv_service.is_first_conversation(
+            db, thread_id, body.conversation_id
+        )
+        root = existing_parent or body.conversation_id
 
-    await db.commit()
+        user_meta = None
+        if body.source_conversation_id:
+            user_meta = {"source_conversation_id": str(body.source_conversation_id)}
+
+        save_result = await conv_service.save_message_and_touch(
+            db,
+            thread_id=thread_id,
+            conversation_id=new_conversation_id,
+            parent_conversation_id=root,
+            role="user",
+            content=body.question,
+            metadata=user_meta,
+            user_id=current_user.id,
+        )
+        if save_result is None:
+            _active_streams.pop(str(thread_id), None)
+            raise HTTPException(status_code=404, detail="Thread not found")
+        await db.commit()
+    # Connection returned to pool before SSE starts
 
     generator = _build_sse_generator(
         question=body.question,

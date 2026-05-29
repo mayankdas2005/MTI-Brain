@@ -24,3 +24,8 @@ logs/
 *.crt
 *.cert
 secrets/
+
+# Claude
+.claude/worktrees/
+graphify-out/
+.github/

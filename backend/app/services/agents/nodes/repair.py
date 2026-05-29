@@ -13,9 +13,29 @@ from langchain_core.runnables import RunnableConfig
 from app.core.logger import logger
 from app.services.agents import neo4j_client
 from app.services.agents.helpers import parse_tag
-from app.services.agents.prompts import REASONING_DIRECTIVE_DEEP, REPAIR_PROMPT
+from app.services.agents.prompts import REASONING_DIRECTIVE_REPAIR, REPAIR_PROMPT
+
+_PERFORMANCE_DIRECTIVE = """--- PERFORMANCE DIRECTIVES ---
+If the error is a timeout or the query is slow, rewrite for Redshift performance as a senior DBA.
+Business logic, tables, filters, and metric definitions must stay identical. Apply in order:
+  a. Push WHERE filters into CTEs — never scan full tables and filter at the outer level.
+  b. Aggregate before joining — one aggregation CTE per table, then join small results.
+  c. Drop SELECT * and unused CTE columns.
+  d. Replace DISTINCT with GROUP BY on explicit columns.
+  e. Apply the LIMIT from the original QUERY SPECIFICATION; add LIMIT 100 if absent.
+  f. Flatten CTEs that read the same source into one."""
 from app.services.agents.sql_validator_logic import validate_sql
 from app.services.agents.state import AnalyticsState
+
+
+def _format_sql(sql: str) -> str:
+    if not sql.strip():
+        return sql
+    try:
+        import sqlglot
+        return sqlglot.transpile(sql, read="redshift", write="redshift", pretty=True)[0]
+    except Exception:
+        return sql.strip()
 
 
 async def attempt_repair(
@@ -58,6 +78,14 @@ async def attempt_repair(
 
     semantic_ir_text = _build_semantic_ir_text(first_ir)
     schema_reference = _build_schema_reference_for_repair(sc)
+    candidate_paths_section = _build_candidate_paths_section(first_ir)
+
+    invalid_cols = _extract_invalid_columns(error_msg)
+    invalid_cols_section = (
+        f"\nINVALID COLUMNS — these do NOT exist in Redshift, do not use them under any name:\n"
+        + "\n".join(f"  ✗ {c}" for c in invalid_cols)
+        if invalid_cols else ""
+    )
 
     prior_attempts_detail = ""
     if repair_count > 0 and state.get("execution_error"):
@@ -69,6 +97,9 @@ async def attempt_repair(
         )
     else:
         prior_attempts_detail = f"PRIOR REPAIR ATTEMPTS:\nThis is repair attempt {repair_count + 1}."
+
+    if invalid_cols_section:
+        prior_attempts_detail += invalid_cols_section
 
     fb = state.get("feedback_context") or ""
     feedback_section = (
@@ -83,8 +114,10 @@ async def attempt_repair(
         error_message=error_msg,
         prior_attempts_detail=prior_attempts_detail,
         feedback_section=feedback_section,
+        performance_directive="",
         anti_patterns=anti_patterns,
-        reasoning_directive=REASONING_DIRECTIVE_DEEP,
+        candidate_paths_section=candidate_paths_section,
+        reasoning_directive=REASONING_DIRECTIVE_REPAIR,
     )
 
     llm = get_llm("deep")
@@ -100,7 +133,7 @@ async def attempt_repair(
         return None
 
     raw = response.content or ""
-    repaired_sql = parse_tag(raw, "sql")
+    repaired_sql = _format_sql(parse_tag(raw, "sql") or "")
     if not repaired_sql:
         logger.warning("repair | produced no SQL | thread={}", state["thread_id"])
         return None
@@ -112,7 +145,7 @@ async def attempt_repair(
         asyncio.create_task(write_anti_pattern(state, first_sql, first_ir, error_msg, error_type="validation_error"))
         return None
 
-    new_sql_list = [repaired_sql] + sql_list[1:]
+    new_sql_list = [repaired_sql, *sql_list[1:]]
     logger.info("repair | succeeded | thread={}", state["thread_id"])
     from app.services.agents.nodes.audit import write_anti_pattern, write_audit_log
     asyncio.create_task(write_anti_pattern(state, first_sql, first_ir, error_msg, error_type="repair_input"))
@@ -122,6 +155,41 @@ async def attempt_repair(
         "repair_count": repair_count + 1,
         "error": None,
     }
+
+
+def _build_candidate_paths_section(ir_dict: dict) -> str:
+    """Build CANDIDATE JOIN PATHS section from valid paths in the IR.
+
+    Gives the repair LLM pre-validated ON clauses to use instead of guessing
+    column names. Only includes paths that have non-empty join_clauses.
+    """
+    candidate_paths = ir_dict.get("candidate_join_paths") or []
+    valid_paths = [p for p in candidate_paths if p.get("join_clauses")]
+    if not valid_paths:
+        return ""
+
+    lines = ["CANDIDATE JOIN PATHS (use these for replacement ON clauses when the original is invalid):"]
+    for p in valid_paths[:8]:
+        clauses = " AND ".join(p.get("join_clauses") or [])
+        tier = p.get("tier", "?")
+        hops = p.get("hop_count", 1)
+        from_fqn = p.get("from_fqn", "")
+        to_fqn = p.get("to_fqn", "")
+        lines.append(f"  [{tier}, {hops} hop] {from_fqn} → {to_fqn} | {clauses}")
+    return "\n".join(lines)
+
+
+def _extract_invalid_columns(error_msg: str) -> list[str]:
+    """Parse Redshift/Postgres 'column X does not exist' errors and return the bad column names."""
+    import re
+    cols = []
+    # Redshift: "column bank_account.bank_code does not exist"
+    # Postgres: "column \"bank_code\" does not exist"
+    for m in re.finditer(r'column\s+"?([^\s"]+)"?\s+does not exist', error_msg, re.IGNORECASE):
+        col = m.group(1).strip('"')
+        if col and col not in cols:
+            cols.append(col)
+    return cols
 
 
 def _build_semantic_ir_text(ir_dict: dict) -> str:
@@ -184,7 +252,12 @@ def _build_semantic_ir_text(ir_dict: dict) -> str:
 
 
 def _build_schema_reference_for_repair(sc: dict) -> str:
-    """Build structured SCHEMA REFERENCE for repair (minimal — tables + column types only)."""
+    """Build structured SCHEMA REFERENCE for repair.
+
+    Intentionally minimal: table FQNs + column names + data types only.
+    Neo4j catalog descriptions are omitted — repair is a SQL correction task,
+    not a comprehension task. Descriptions add noise and may be stale.
+    """
     tables = sc.get("tables", [])
     columns = sc.get("columns", [])
 
@@ -194,9 +267,7 @@ def _build_schema_reference_for_repair(sc: dict) -> str:
         lines.append("TABLES:")
         for t in tables[:8]:
             fqn = t.get("fqn", "")
-            desc = t.get("description", "")
-            desc_str = f" — {desc}" if desc else ""
-            lines.append(f"  {fqn}{desc_str}")
+            lines.append(f"  {fqn}")
         lines.append("")
 
     if columns:

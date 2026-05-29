@@ -138,14 +138,9 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         templates_fts     = neo4j_client.search_query_templates_fulltext(search_query)
         templates_merged  = _merge_template_results(templates, templates_fts)
 
-        # Build a virtual "template_anchor" source from the top-matched template's
-        # anchor_table_fqns. These are pre-validated primary tables for this query
-        # type — giving them one extra retrieval path breaks score ties vs. semantically
-        # similar but wrong tables (e.g. forecast_cash_flow vs forecast_vs_actual).
+        # Template anchor tables are surfaced via template_vector / template_fts paths;
+        # no synthetic 0.95 score boost — avoid biasing table ranking toward templates.
         anchor_source: list[dict] = []
-        if templates_merged:
-            for fqn in (templates_merged[0].get("anchor_table_fqns") or []):
-                anchor_source.append({"fqn": fqn, "score": 0.95})
 
         # ── Phase 2: 7-path table discovery ───────────────────────────────────
         tables_direct_v      = neo4j_client.search_tables_vector(embedding)
@@ -487,11 +482,19 @@ async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) 
     Writes filter_values (full 100), sample_values (first 5), filter_selectivity into
     column dicts in-memory — never touches Neo4j.
     """
-    from app.services.agents.redshift_client import execute_query, get_table_columns
+    from app.services.agents.redshift_client import execute_query, fetch_table_schema
 
     probe_candidates = _get_probe_candidates(semantic_context)
     if not probe_candidates:
         return
+
+    # Collect direct joins for FK candidate discovery after Step A
+    table_fqns = list(probe_candidates.keys())
+    direct_joins: list[dict] = []
+    try:
+        direct_joins = neo4j_client.get_direct_joins(table_fqns)
+    except Exception:
+        pass
 
     # Build an index of existing columns for fast lookup and mutation
     col_index: dict[tuple[str, str], dict] = {}
@@ -501,45 +504,61 @@ async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) 
         if fqn and name:
             col_index[(fqn, name)] = col
 
-    # Step A — validate ALL probe candidates against information_schema in parallel,
-    # then discover any join key columns that are missing from Neo4j.
-    #
-    # Querying ALL candidates (not just missing ones) catches stale Neo4j column names
-    # that don't exist in Redshift — those get filtered out of probe_candidates here
-    # rather than causing 42703 errors in Step B.
+    # Step A — fetch the FULL Redshift schema for each table (via fetch_table_schema which
+    # writes to Redis and never overwrites with a partial match-subset).
+    # Returns all real columns — caller builds confirmed_in_redshift from this.
     async def _validate_table(fqn: str, col_names: set) -> tuple[str, list]:
         parts = fqn.split(".")
         if len(parts) != 2:
             return fqn, []
         schema_name, table_name = parts[0], parts[1]
-        cache_key = f"schema_cols:{fqn}"
-        cached = redis_client.get_json(cache_key)
-        if cached is not None:
-            return fqn, cached
-        rows = await get_table_columns(schema_name, table_name, list(col_names))
-        try:
-            redis_client.set_json(cache_key, rows, ttl=86400)
-        except Exception:
-            pass
-        return fqn, rows
+        all_cols = await fetch_table_schema(schema_name, table_name)
+        return fqn, all_cols
+
+    # Cap concurrent schema fetches — pool has 6 connections; leave 2 for actual
+    # query execution. fetch_table_schema hits Redis first so only cache misses
+    # consume pool connections, but on first run all tables can miss simultaneously.
+    sem = asyncio.Semaphore(3)
+
+    async def _validate_table_guarded(fqn: str, col_names: set) -> tuple[str, list]:
+        async with sem:
+            return await _validate_table(fqn, col_names)
 
     step_a_tasks = [
-        _validate_table(fqn, col_names)
+        _validate_table_guarded(fqn, col_names)
         for fqn, col_names in probe_candidates.items()
         if col_names
     ]
     step_a_results = await asyncio.gather(*step_a_tasks, return_exceptions=True)
+
+    # fqn → [[col_name, data_type], ...] for all real columns — used by FK discovery below
+    step_a_all_cols_map: dict[str, list[list]] = {}
 
     for result in step_a_results:
         if isinstance(result, BaseException):
             logger.warning("context_fetcher | step_a validation error | {}", result)
             continue
         fqn, rows = result
+        step_a_all_cols_map[fqn] = rows
         col_names = probe_candidates.get(fqn, set())
 
         confirmed_in_redshift: set[str] = {row[0] for row in rows}
         probe_candidates[fqn] = col_names & confirmed_in_redshift
 
+        # Remove stale Neo4j columns for this table — keep only what Redshift confirms.
+        # All downstream agents only see valid column names.
+        before = len(semantic_context.get("columns") or [])
+        semantic_context["columns"] = [
+            c for c in (semantic_context.get("columns") or [])
+            if not (c.get("table_fqn") == fqn and c.get("name") not in confirmed_in_redshift)
+        ]
+        dropped = before - len(semantic_context.get("columns") or [])
+        if dropped:
+            logger.info("context_fetcher | stale_cols_removed | fqn={} | dropped={}", fqn, dropped)
+
+        # Add ALL real Redshift columns missing from Neo4j catalog to semantic_context.
+        # This includes potential FK columns (e.g., bank_account.bank_code) that Neo4j
+        # may have stored under a wrong name or never catalogued.
         for row in rows:
             col_name, data_type = row[0], row[1]
             key = (fqn, col_name)
@@ -553,10 +572,70 @@ async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) 
                 }
                 semantic_context.setdefault("columns", []).append(new_col)
                 col_index[key] = new_col
-                logger.info(
-                    "context_fetcher | discovered join col | {}.{} | dtype={}",
+                logger.debug(
+                    "context_fetcher | discovered col | {}.{} | dtype={}",
                     fqn, col_name, data_type,
                 )
+
+    # FK candidate discovery: for each JOINS_TO edge where the recorded join column was
+    # stripped (not in Redshift), find name-pattern candidates from the full schema.
+    # These get added to probe_candidates so Step B probes their distinct values.
+    # After Step B, overlap confirmation tells us which candidate is the real FK.
+    fk_discoveries: list[tuple[str, str, str, str]] = []  # (from_fqn, cand_col, to_fqn, to_col)
+
+    for j in direct_joins:
+        from_fqn = j.get("from_fqn", "")
+        to_fqn = j.get("to_fqn", "")
+        from_col = j.get("from_col", "")
+        to_col = j.get("to_col", "")
+
+        if not from_fqn or not from_col or not to_fqn:
+            continue
+
+        # Skip if from_col is still valid (not stripped)
+        if from_col in probe_candidates.get(from_fqn, set()):
+            continue
+
+        all_cols_for_from = step_a_all_cols_map.get(from_fqn, [])
+        if not all_cols_for_from:
+            continue
+
+        to_table = to_fqn.rsplit(".", 1)[-1]
+        already_probed = probe_candidates.get(from_fqn, set())
+        col_names_available = {r[0] for r in all_cols_for_from}
+
+        # Pattern candidates: starts with {to_table}_ or ends with _{to_table}
+        candidates = [
+            c for c in col_names_available
+            if (c.startswith(to_table + "_") or c.endswith("_" + to_table))
+            and c not in already_probed
+        ]
+
+        if candidates:
+            logger.info(
+                "context_fetcher | fk_candidates | from={} | stripped_col={} | to={} | candidates={}",
+                from_fqn, from_col, to_fqn, candidates,
+            )
+
+        for candidate in candidates:
+            probe_candidates.setdefault(from_fqn, set()).add(candidate)
+            key = (from_fqn, candidate)
+            if key not in col_index:
+                dtype = next(
+                    (r[1] for r in all_cols_for_from if r[0] == candidate),
+                    "character varying",
+                )
+                new_col = {
+                    "table_fqn": from_fqn,
+                    "name": candidate,
+                    "data_type": dtype,
+                    "sample_values": [],
+                    "filter_values": [],
+                }
+                semantic_context.setdefault("columns", []).append(new_col)
+                col_index[key] = new_col
+            if to_col:
+                fk_discoveries.append((from_fqn, candidate, to_fqn, to_col))
 
     # Step B — probe DISTINCT values for all probeable columns
     probe_stats = {"hits": 0, "misses": 0, "errors": 0}
@@ -610,11 +689,6 @@ async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) 
                 "context_fetcher | probe failed | {}.{} | error={}", fqn, col_name, e
             )
 
-    # Limit concurrent Redshift probes to 4 — pool has 6 connections; leave 2 for
-    # actual query execution and concurrent users. Without this, all probes compete
-    # for the same pool and time out waiting for a connection.
-    sem = asyncio.Semaphore(4)
-
     async def _probe_guarded(fqn: str, col_name: str, col_dict: dict) -> None:
         async with sem:
             await _probe_col(fqn, col_name, col_dict)
@@ -633,3 +707,24 @@ async def _enrich_columns_from_redshift(semantic_context: dict, thread_id: str) 
             "context_fetcher | probe summary | total={} | cache_hits={} | redshift={} | errors={}",
             total, probe_stats["hits"], probe_stats["misses"], probe_stats["errors"],
         )
+
+    # FK overlap confirmation: for each FK candidate column probed above, check whether
+    # its distinct values overlap with the referenced table's join column values.
+    # Overlap confirms the FK relationship — store as suggested_join on the table entry
+    # so sql_generator can include it in UNRESOLVED JOIN PAIRS.
+    for from_fqn, candidate_col, to_fqn, to_col in fk_discoveries:
+        from_vals = set(redis_client.get_filter_values(from_fqn, candidate_col) or [])
+        to_vals = set(redis_client.get_filter_values(to_fqn, to_col) or [])
+        if not (from_vals and to_vals):
+            continue
+        overlap = from_vals & to_vals
+        if overlap:
+            suggested = f"{from_fqn}.{candidate_col} = {to_fqn}.{to_col}"
+            for t in (semantic_context.get("tables") or []):
+                if t.get("fqn") == from_fqn:
+                    t.setdefault("suggested_joins", []).append(suggested)
+                    break
+            logger.info(
+                "context_fetcher | fk_confirmed | {}.{} → {}.{} | overlap={}",
+                from_fqn, candidate_col, to_fqn, to_col, len(overlap),
+            )

@@ -18,9 +18,9 @@ from app.services.agents.prompts import CHART_LABEL_PROMPT, REASONING_DIRECTIVE_
 from app.services.agents.state import AnalyticsState
 
 _VALID_CHART_TYPES = {
-    "kpi_card", "bar", "bar_horizontal", "line", "area", "multi_line",
+    "kpi_card", "bar", "line", "area", "multi_line",
     "stacked_area", "pie", "donut", "grouped_bar", "stacked_bar",
-    "scatter", "bubble", "heatmap", "waterfall", "dual_axis", "table",
+    "scatter", "bubble", "heatmap", "waterfall", "dual_axis",
 }
 
 # ─── SQL column source extraction (sqlglot) ──────────────────────────────────
@@ -170,12 +170,13 @@ def _build_column_metadata(columns: list[str], state: AnalyticsState) -> str:
         if key[0] or key[1]:
             col_meta[key] = c
 
-    lines = ["COLUMN METADATA (catalog descriptions — use to pick format, axis labels, color scheme):"]
+    lines = ["COLUMN METADATA (semantic type and data type — use to pick format, axis labels, color scheme):"]
     for col in columns:
         src = col_sources.get(col)
         meta = col_meta.get(src) if src else None
 
-        desc = (meta.get("description") or "") if meta else ""
+        # Descriptions are omitted — they are verbose and confuse axis/format selection.
+        # Only semantic_type and data_type are passed to the chart LLM.
         sem_type = (meta.get("semantic_type") or "") if meta else ""
         data_type = (meta.get("data_type") or "") if meta else ""
 
@@ -184,8 +185,6 @@ def _build_column_metadata(columns: list[str], state: AnalyticsState) -> str:
             parts.append(f"type={data_type}")
         if sem_type:
             parts.append(f"semantic={sem_type}")
-        if desc:
-            parts.append(f'"{desc}"')
 
         suffix = "   " + "   ".join(parts) if parts else "   (no catalog entry)"
         lines.append(f"  {col}{suffix}")
@@ -383,17 +382,23 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
         all_columns, all_rows, labels,
     )
 
-    # Build alternative specs from LLM-suggested types
+    # Collect guardrailed alternative type names (specs are built client-side from primary data)
     raw_alternatives = labels.get("alternative_types") or []
-    alternative_chart_specs = _build_alternative_specs(
-        raw_alternatives, chart_type, all_columns, all_rows, labels
-    )
+    seen_types = {chart_type}
+    alternative_types: list[str] = []
+    for alt in raw_alternatives[:3]:
+        if not isinstance(alt, str):
+            continue
+        guarded = _apply_guardrails(alt, all_columns, all_rows)
+        if guarded not in seen_types and guarded in _VALID_CHART_TYPES:
+            seen_types.add(guarded)
+            alternative_types.append(guarded)
 
     logger.info(
         "chart_agent DONE | thread={} | type={} | alternatives={}",
-        state["thread_id"], chart_type, [a["chart_type"] for a in alternative_chart_specs],
+        state["thread_id"], chart_type, alternative_types,
     )
-    return {"chart_spec": spec, "chart_type": chart_type, "alternative_chart_specs": alternative_chart_specs}
+    return {"chart_spec": spec, "chart_type": chart_type, "alternative_chart_specs": alternative_types}
 
 
 def _build_alternative_specs(
@@ -451,7 +456,7 @@ def _apply_guardrails(chart_type: str, columns: list[str], rows: list[list]) -> 
         return "bar"
 
     if chart_type not in _VALID_CHART_TYPES:
-        return "table"
+        return "bar"
 
     return chart_type
 
@@ -516,6 +521,9 @@ async def _select_chart_and_labels(
             parsed = json_loads(output)
             if isinstance(parsed, dict):
                 chart_type = parsed.get("chart_type", fallback_type)
+                # Strip d3 trim-zeros prefix (~) — not supported in all Vega-Lite builds
+                if "value_format" in parsed and isinstance(parsed["value_format"], str):
+                    parsed["value_format"] = parsed["value_format"].replace("~", "")
                 return chart_type, parsed
     except Exception as e:
         logger.warning("chart_agent | LLM selection failed | error={}", e)
@@ -570,7 +578,7 @@ def _safe_value_format(fmt: str, rows: list[list], col_idx: int) -> str:
 
 def _build_vega_lite_spec(chart_type: str, columns: list[str], rows: list[list], labels: dict) -> dict:
     spec = {
-        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
         "width": "container",
         "height": 350,
         "background": "transparent",
@@ -578,28 +586,20 @@ def _build_vega_lite_spec(chart_type: str, columns: list[str], rows: list[list],
         "data": {"values": [dict(zip(columns, row)) for row in rows[:500]]},
     }
 
-    if chart_type in ("bar", "bar_horizontal"):
+    if chart_type == "bar":
         y_col = _find_numeric_col(columns, rows)
         x_col = _find_string_col(columns, rows, exclude=y_col) or (columns[0] if columns else "x")
         spec["mark"] = "bar"
-        # bar: category → x (horizontal label), values → y (vertical label)
-        # bar_horizontal: category → y (left label), values → x (bottom label)
-        # LLM always generates x_axis_label=bottom and y_axis_label=left, so for
-        # bar_horizontal the category axis gets y_axis_label and values get x_axis_label.
-        if chart_type == "bar":
-            cat_label = labels.get("x_axis_label", x_col)
-            val_label = labels.get("y_axis_label", y_col)
-        else:
-            cat_label = labels.get("y_axis_label", x_col)
-            val_label = labels.get("x_axis_label", y_col)
+        cat_label = labels.get("x_axis_label", x_col)
+        val_label = labels.get("y_axis_label", y_col)
         val_format = _safe_value_format(labels.get("value_format", ",.0f"), rows, columns.index(y_col) if y_col in columns else -1)
         spec["encoding"] = {
-            "x" if chart_type == "bar" else "y": {
+            "x": {
                 "field": x_col, "type": "nominal",
                 "axis": {"title": cat_label},
-                "sort": "-y" if chart_type == "bar" else "-x",
+                "sort": "-y",
             },
-            "y" if chart_type == "bar" else "x": {
+            "y": {
                 "field": y_col, "type": "quantitative",
                 "axis": {"title": val_label, "format": val_format},
             },

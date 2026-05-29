@@ -27,6 +27,8 @@ def init_neo4j() -> None:
             max_connection_pool_size=settings.NEO4J_MAX_POOL_SIZE,
             connection_timeout=settings.NEO4J_CONNECTION_TIMEOUT,
             connection_acquisition_timeout=settings.NEO4J_ACQUISITION_TIMEOUT,
+            max_connection_lifetime=300,
+            keep_alive=True,
         )
         _driver.verify_connectivity()
         with _driver.session(database=settings.NEO4J_DB) as _s:
@@ -557,6 +559,93 @@ def load_join_path_yens(from_fqn: str, to_fqn: str, k_rank: int = 1) -> dict | N
     return dict(result) if result else None
 
 
+@neo4j_breaker
+def load_join_path_dijkstra(from_fqn: str, to_fqn: str, k_rank: int = 1) -> dict | None:
+    """Fetch a pre-computed dijkstra JoinPath for the given k_rank (1, 2, or 3)."""
+    query = """
+    MATCH (jp:JoinPath)
+    WHERE jp.from_fqn = $from AND jp.to_fqn = $to
+      AND jp.algorithm = 'dijkstra' AND jp.k_rank = $k_rank
+    RETURN jp.id AS id, jp.join_clauses AS join_clauses, jp.path_tables AS path_tables,
+           jp.hop_count AS hop_count, jp.total_cost AS total_cost,
+           jp.quality_score AS quality_score, jp.is_cross_community AS is_cross_community
+    LIMIT 1
+    """
+    t0 = time.monotonic()
+    result = _neo4j_run_single(query, {"from": from_fqn, "to": to_fqn, "k_rank": k_rank})
+    logger.debug("neo4j | fn=load_join_path_dijkstra | from={} to={} | k={} | ms={:.0f} | found={}", from_fqn, to_fqn, k_rank, (time.monotonic() - t0) * 1000, result is not None)
+    return dict(result) if result else None
+
+
+def collect_all_join_paths(from_fqn: str, to_fqn: str) -> list[dict]:
+    """Collect ALL available join paths between two tables — no early exit.
+
+    Returns paths from every tier and k-rank in priority order:
+      1. JOINS_TO direct FK edges (forward + reverse)
+      2. dijkstra k=1,2,3 forward
+      3. dijkstra k=1,2,3 reverse
+      4. yens k=1,2,3 forward
+      5. yens k=1,2,3 reverse
+
+    Each result is tagged with 'tier' and 'direction'.
+    Deduplicates by normalized join_clauses content.
+    load_best_join_path is unchanged and still used when a single best path is needed.
+    """
+    paths: list[dict] = []
+    seen_clauses: set[str] = set()
+
+    def _dedup_key(p: dict) -> str:
+        return "|".join(sorted(str(c) for c in (p.get("join_clauses") or [])))
+
+    def _add(path: dict | None, tier: str, direction: str = "forward") -> None:
+        if not path:
+            return
+        key = _dedup_key(path)
+        if key and key not in seen_clauses:
+            seen_clauses.add(key)
+            paths.append({**path, "tier": tier, "direction": direction})
+
+    # ── JOINS_TO direct FK edges ──────────────────────────────────────────────
+    try:
+        edges = get_direct_joins([from_fqn, to_fqn])
+        for e in edges:
+            f, t = e.get("from_fqn"), e.get("to_fqn")
+            fc, tc = e.get("from_col"), e.get("to_col")
+            if not (f and t and fc and tc):
+                continue
+            direction = "forward" if f == from_fqn else "reverse"
+            clause = f"{f}.{fc} = {t}.{tc}"
+            key = clause
+            if key not in seen_clauses:
+                seen_clauses.add(key)
+                paths.append({
+                    "id": "",
+                    "join_clauses": [clause],
+                    "path_tables": [f, t],
+                    "hop_count": 1,
+                    "total_cost": None,
+                    "quality_score": None,
+                    "is_cross_community": False,
+                    "tier": "joins_to",
+                    "direction": direction,
+                })
+    except Exception as exc:
+        logger.warning("neo4j | collect_all_join_paths | JOINS_TO failed | from={} to={} | error={}", from_fqn, to_fqn, exc)
+
+    # ── dijkstra k=1,2,3 forward + reverse ───────────────────────────────────
+    for k in (1, 2, 3):
+        _add(load_join_path_dijkstra(from_fqn, to_fqn, k_rank=k), tier=f"dijkstra_k{k}", direction="forward")
+        _add(load_join_path_dijkstra(to_fqn, from_fqn, k_rank=k), tier=f"dijkstra_k{k}", direction="reverse")
+
+    # ── yens k=1,2,3 forward + reverse ───────────────────────────────────────
+    for k in (1, 2, 3):
+        _add(load_join_path_yens(from_fqn, to_fqn, k_rank=k), tier=f"yens_k{k}", direction="forward")
+        _add(load_join_path_yens(to_fqn, from_fqn, k_rank=k), tier=f"yens_k{k}", direction="reverse")
+
+    logger.info("neo4j | collect_all_join_paths | from={} to={} | total_paths={}", from_fqn, to_fqn, len(paths))
+    return paths
+
+
 def load_best_join_path(from_fqn: str, to_fqn: str) -> dict | None:
     """Load the best available join path using a three-tier cascade.
 
@@ -843,7 +932,7 @@ def search_query_patterns(embedding: list[float]) -> list[dict]:
     )
     SCORE AS score
     WHERE score > 0.75
-    RETURN qp.question_text AS question_text, qp.sql_cte_outline AS sql_cte_outline,
+    RETURN qp.id AS id, qp.question_text AS question_text, qp.sql_cte_outline AS sql_cte_outline,
            qp.join_outline AS join_outline, qp.filter_summary AS filter_summary,
            qp.tables_used AS tables_used, qp.intent AS intent, qp.complexity AS complexity,
            qp.recompile_count AS recompile_count, qp.repair_count AS repair_count, score
@@ -864,7 +953,7 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
     )
     SCORE AS score
     WHERE score > 0.75
-    RETURN ap.error_type AS error_type, ap.error_summary AS error_summary,
+    RETURN ap.id AS id, ap.error_type AS error_type, ap.error_summary AS error_summary,
            ap.failing_element AS failing_element, ap.complexity AS complexity, score
     """
     t0 = time.monotonic()

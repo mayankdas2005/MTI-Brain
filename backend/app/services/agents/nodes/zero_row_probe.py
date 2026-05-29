@@ -8,6 +8,9 @@ Four-stage progressive probe when execution returns 0 rows:
 
 Each stage that returns rows runs a small sample SELECT so we confirm real data
 exists and can report the actual row count.
+
+Uses sqlglot to extract FROM + JOINs from the actual generated SQL so probe
+queries are always structurally valid — no custom join-clause reconstruction.
 """
 
 from __future__ import annotations
@@ -44,29 +47,6 @@ def _quote_scalar(v) -> str:
         return str(v)
     except (ValueError, TypeError):
         return f"'{v}'"
-
-
-def _rewrite_table_aliases(text: str, aliases: dict[str, str]) -> str:
-    result = text
-    for fqn, alias in sorted(aliases.items(), key=lambda x: -len(x[0])):
-        result = result.replace(f"{fqn}.", f"{alias}.")
-    return result
-
-
-def _build_probe_from_clause(ir: SemanticIR) -> tuple[str, dict[str, str]] | None:
-    tables = ir.path_tables if ir.path_tables else ir.anchor_tables
-    if not tables:
-        return None
-    aliases = {t: f"t{i}" for i, t in enumerate(tables)}
-    parts = [f"{tables[0]} AS t0"]
-    for i in range(1, len(tables)):
-        if i - 1 >= len(ir.join_clauses) or i - 1 >= len(ir.join_types):
-            break
-        raw_jt = (ir.join_types[i - 1] or "INNER JOIN").upper().strip()
-        join_kw = raw_jt if "JOIN" in raw_jt else f"{raw_jt} JOIN"
-        rewritten = _rewrite_table_aliases(ir.join_clauses[i - 1], aliases)
-        parts.append(f"{join_kw} {tables[i]} AS t{i} ON {rewritten}")
-    return "\n".join(parts), aliases
 
 
 def _describe_filters(filters: list) -> str:
@@ -109,6 +89,79 @@ def _or_conditions(filter_list: list, aliases: dict[str, str]) -> str:
     return f"({' OR '.join(conds)})" if conds else ""
 
 
+def _get_probe_base(sql: str) -> tuple | None:
+    """Parse the generated SQL and return (base_select_expr, aliases_map).
+
+    Finds the first real SELECT (first CTE body if CTEs present, else the main
+    SELECT) that contains the actual table FROM+JOINs.  Building probe queries
+    from the parsed AST means join conditions are always syntactically valid.
+
+    aliases_map: {table_fqn: alias_used_in_sql}
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+
+    if not sql or not sql.strip():
+        return None
+
+    try:
+        stmt = sqlglot.parse_one(sql, dialect="redshift")
+    except Exception:
+        return None
+
+    # For CTE queries the first CTE body has the real table joins; the outer
+    # SELECT just references CTE names which are not useful for probing.
+    with_clause = stmt.args.get("with")
+    if with_clause and with_clause.expressions:
+        first_body = with_clause.expressions[0].this
+        if isinstance(first_body, exp.Subquery):
+            first_body = first_body.this
+        real_select = first_body if isinstance(first_body, exp.Select) else stmt
+    else:
+        real_select = stmt
+
+    if not isinstance(real_select, exp.Select):
+        return None
+
+    if not real_select.args.get("from"):
+        return None
+
+    aliases: dict[str, str] = {}
+
+    def _register(node) -> None:
+        if isinstance(node, exp.Alias):
+            tbl, alias = node.this, node.alias
+        elif isinstance(node, exp.Table):
+            tbl, alias = node, node.alias or ""
+        else:
+            return
+        if not isinstance(tbl, exp.Table):
+            return
+        db = tbl.args.get("db")
+        fqn = f"{db.name}.{tbl.name}" if db else tbl.name
+        if fqn:
+            aliases[fqn] = alias or tbl.name
+
+    _register(real_select.args["from"].this)
+    for join in (real_select.args.get("joins") or []):
+        _register(join.this)
+
+    return real_select, aliases
+
+
+def _apply_where(probe, where_clause: str) -> None:
+    """Set or clear the WHERE clause on a sqlglot Select expression in place."""
+    import sqlglot
+    if where_clause:
+        try:
+            dummy = sqlglot.parse_one(f"SELECT 1 WHERE {where_clause}", dialect="redshift")
+            probe.set("where", dummy.args.get("where"))
+        except Exception:
+            probe.set("where", None)
+    else:
+        probe.set("where", None)
+
+
 # ── Main probe ────────────────────────────────────────────────────────────────
 
 async def zero_row_probe(ir: SemanticIR | None, state: AnalyticsState) -> dict:
@@ -116,21 +169,31 @@ async def zero_row_probe(ir: SemanticIR | None, state: AnalyticsState) -> dict:
         return {"needs_clarification": False, "reason": "No data found for the requested query."}
 
     from app.services.agents.redshift_client import execute_query
+    import sqlglot.expressions as exp
+
+    sql_list = state.get("sql_list") or []
+    generated_sql = sql_list[0] if sql_list else ""
+
+    probe_info = _get_probe_base(generated_sql)
+    if not probe_info:
+        return {"needs_clarification": False, "reason": "No data found matching the query criteria."}
+
+    base_select, aliases = probe_info
 
     where_filters = [f for f in (ir.filters or []) if not f.is_having and f.resolved]
     having_filters = [f for f in (ir.filters or []) if f.is_having and f.resolved]
     time_filter = ir.time_filter if (ir.time_filter and ir.time_filter.resolved) else None
     sample_limit = min(ir.limit or 5, 5)
 
-    from_info = _build_probe_from_clause(ir)
-    if not from_info:
-        return {"needs_clarification": False, "reason": "No data found matching the query criteria."}
-    from_clause, aliases = from_info
-
     async def _count(where_clause: str) -> int:
-        sql = f"SELECT COUNT(*) AS cnt\nFROM {from_clause}"
-        if where_clause:
-            sql += f"\nWHERE {where_clause}"
+        probe = base_select.copy()
+        probe.set("expressions", [exp.alias_(exp.Count(this=exp.Star()), "cnt")])
+        probe.set("group", None)
+        probe.set("having", None)
+        probe.set("order", None)
+        probe.set("limit", None)
+        _apply_where(probe, where_clause)
+        sql = probe.sql(dialect="redshift", pretty=False)
         try:
             _, rows = await execute_query(sql, timeout_s=30, thread_id=state["thread_id"])
             return int(rows[0][0]) if rows and rows[0] else 0
@@ -139,11 +202,16 @@ async def zero_row_probe(ir: SemanticIR | None, state: AnalyticsState) -> dict:
             return -1
 
     async def _sample(where_clause: str) -> int:
-        """Run SELECT with limit to confirm actual fetchable rows, returns row count."""
-        sql = f"SELECT *\nFROM {from_clause}"
-        if where_clause:
-            sql += f"\nWHERE {where_clause}"
-        sql += f"\nLIMIT {sample_limit}"
+        import sqlglot
+        probe = base_select.copy()
+        probe.set("expressions", [exp.Star()])
+        probe.set("group", None)
+        probe.set("having", None)
+        probe.set("order", None)
+        limit_expr = sqlglot.parse_one(f"SELECT 1 LIMIT {sample_limit}", dialect="redshift")
+        probe.set("limit", limit_expr.args.get("limit"))
+        _apply_where(probe, where_clause)
+        sql = probe.sql(dialect="redshift", pretty=False)
         try:
             _, rows = await execute_query(sql, timeout_s=30, thread_id=state["thread_id"])
             return len(rows)

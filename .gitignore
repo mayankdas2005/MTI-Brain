@@ -96,6 +96,10 @@ next.user-config.*
 
 # Claude
 .claude/worktrees/
+graphify-out/
+.github/
 
 # SSL certificates
 nginx/ssl/*.pem
+
+

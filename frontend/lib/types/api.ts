@@ -44,6 +44,8 @@ export interface MessageMetadata {
   rows?: unknown[][];
   row_count?: number;
   chart_spec?: Record<string, unknown>;
+  chart_type?: string;
+  alternative_chart_specs?: string[];  // type names only — specs built client-side
   follow_ups?: string[];
   run_id?: string;
   stopped?: boolean;
@@ -277,7 +279,7 @@ export interface SSEExecuteDone {
 
 export interface SSEChart {
   event: 'chart';
-  data: { spec: Record<string, unknown> };
+  data: { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[] };
 }
 
 export interface SSEFollowUps {

@@ -14,6 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 router = APIRouter()
 
 
+@router.post("/admin/cache/flush", summary="Flush entire Redis cache (all keys)")
+async def flush_cache():
+    from app.services.agents.redis_client import flush_all_keys
+    deleted = flush_all_keys()
+    return {"status": "ok", "keys_flushed": deleted}
+
+
 def _breaker_status(breaker: pybreaker.CircuitBreaker) -> dict:
     state = breaker.current_state
     result = {"status": "ok" if state == "closed" else "circuit_open", "state": state}

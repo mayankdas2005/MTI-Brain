@@ -1,7 +1,8 @@
 """SemanticIR construction for the query_compiler node.
 
-Builds the SemanticIR from resolved_intent, loading join paths, validating
-column refs, and normalizing filter values.
+Builds the SemanticIR from resolved_intent, loading join paths, and normalizing
+filter values. Column validation (fuzzy Redshift check) is handled by ir_utils
+after build_semantic_ir returns — not here.
 Aggregation (SUM/AVG/COUNT) is left null when not set by the intent resolver —
 the SQL LLM decides from the question context and column name.
 """
@@ -13,7 +14,47 @@ from app.services.agents import neo4j_client
 from app.services.agents.semantic_ir import ColumnRef, FilterSpec, SemanticIR
 
 
+def _normalize_fqn(fqn: str) -> str:
+    """Trim 3-part FQNs to schema.table.
+
+    The intent resolver occasionally leaks a column name into the table FQN
+    (e.g. 'lpp.bank.description1' instead of 'lpp.bank').  Valid table FQNs
+    are always exactly 2 parts — anything longer is a hallucination artifact.
+    """
+    parts = fqn.split(".")
+    if len(parts) > 2:
+        normalized = f"{parts[0]}.{parts[1]}"
+        logger.warning("ir_builder | 3-part FQN normalized | {} → {}", fqn, normalized)
+        return normalized
+    return fqn
+
+
+def _normalize_resolved_fqns(resolved: dict) -> dict:
+    """Apply _normalize_fqn to every table_fqn in the resolved intent dict."""
+    changes: dict = {}
+
+    if resolved.get("anchor_tables"):
+        changes["anchor_tables"] = [_normalize_fqn(t) for t in resolved["anchor_tables"]]
+
+    for key in ("measures", "dimensions", "filters"):
+        items = resolved.get(key)
+        if items:
+            changes[key] = [
+                {**item, "table_fqn": _normalize_fqn(item["table_fqn"])}
+                if isinstance(item, dict) and item.get("table_fqn") else item
+                for item in items
+            ]
+
+    if resolved.get("timeframe") and isinstance(resolved.get("timeframe"), dict):
+        tf = resolved["timeframe"]
+        if tf.get("table_fqn"):
+            changes["timeframe"] = {**tf, "table_fqn": _normalize_fqn(tf["table_fqn"])}
+
+    return {**resolved, **changes} if changes else resolved
+
+
 def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
+    resolved = _normalize_resolved_fqns(resolved)
     anchor_tables = list(resolved.get("anchor_tables") or _extract_anchor_tables(resolved))
 
     ref_tables = _extract_anchor_tables(resolved)
@@ -22,14 +63,13 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
         anchor_tables = anchor_tables + missing
         logger.info("ir_builder | anchor_tables extended | added={} | final={}", missing, anchor_tables)
 
-    join_path_ids, join_clauses, path_tables, join_types = _load_join_paths(anchor_tables)
+    join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths = _load_join_paths(anchor_tables)
 
     raw_measures = resolved.get("measures", [])
     raw_dimensions = resolved.get("dimensions", [])
     measures = [ColumnRef(**m) for m in raw_measures if isinstance(m, dict) and "table_fqn" in m]
     dimensions = [ColumnRef(**d) for d in raw_dimensions if isinstance(d, dict) and "table_fqn" in d]
 
-    measures, dimensions = _validate_column_refs(measures, dimensions, semantic_context)
     measures = _enrich_aggregations(measures, semantic_context)
 
     filters = _build_filter_specs(resolved.get("filters", []), raw_measures, semantic_context)
@@ -57,6 +97,7 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
         order_by=_coerce_list(resolved.get("order_by")),
         limit=resolved.get("limit"),
         sub_query_index=None,
+        candidate_join_paths=candidate_join_paths or None,
     )
     logger.info(
         "ir_builder | ir_built | template={} | anchor_tables={} | measures={} | time_filter={}.{} | filters={}",
@@ -92,28 +133,80 @@ def _extract_anchor_tables(resolved: dict) -> list[str]:
     return list(tables)
 
 
-def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
+import re as _re
+_JOIN_COL_RE = _re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_$]*)")
+
+
+def _pick_valid_primary_path(paths: list[dict]) -> dict | None:
+    """Return the first path whose join columns are confirmed valid in the Redis schema cache.
+
+    Only checks Redis (synchronous) — no Redshift round-trips. Paths for tables whose
+    schema isn't cached yet are treated as valid (can't prove otherwise).
+    Falls back to the first path if none pass or all are uncacheable.
+    """
+    from app.services.agents.redis_client import get_schema_cols
+
+    def _cols_valid(path: dict) -> bool:
+        for clause in (path.get("join_clauses") or []):
+            for m in _JOIN_COL_RE.finditer(clause):
+                schema, table, col = m.group(1), m.group(2), m.group(3)
+                cached = get_schema_cols(schema, table)
+                if cached is None:
+                    continue  # not in cache — can't validate, assume ok
+                real_cols = {r[0] for r in cached}
+                if col not in real_cols:
+                    logger.info(
+                        "ir_builder | path_skip | tier={} | col {}.{}.{} not in Redshift schema",
+                        path.get("tier"), schema, table, col,
+                    )
+                    return False
+        return True
+
+    # Try each path in order; return first confirmed-valid one
+    for path in paths:
+        if _cols_valid(path):
+            return path
+
+    # All paths failed validation (or no paths) — return first as fallback
+    return next(iter(paths), None)
+
+
+def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list, list]:
     """Load join paths for consecutive table pairs.
 
-    Calls load_best_join_path() which tries: JOINS_TO → dijkstra → yens.
-    Logs which tier resolved each pair so a junior dev can trace the cascade.
+    Collects ALL available paths via collect_all_join_paths (JOINS_TO + dijkstra k1-3
+    forward/reverse + yens k1-3 forward/reverse). Primary join_clauses are set from the
+    first-priority path (JOINS_TO → dijkstra k=1 → yens k=1) for backward compat.
+    All paths are stored in candidate_join_paths for the SQL generator to choose from.
     """
     if len(anchor_tables) <= 1:
-        return [], [], list(anchor_tables), []
+        return [], [], list(anchor_tables), [], []
 
     join_path_ids: list[str] = []
     all_join_clauses: list[str] = []
     all_path_tables: list[str] = [anchor_tables[0]]
     join_types: list[str] = []
+    candidate_join_paths: list[dict] = []
 
     for i in range(len(anchor_tables) - 1):
         from_table = anchor_tables[i]
         to_table = anchor_tables[i + 1]
 
-        jp = neo4j_client.load_best_join_path(from_table, to_table)
+        all_paths = neo4j_client.collect_all_join_paths(from_table, to_table)
+
+        # Tag each path with from/to for SQL generator context
+        for p in all_paths:
+            p.setdefault("from_fqn", from_table)
+            p.setdefault("to_fqn", to_table)
+        candidate_join_paths.extend(all_paths)
+
+        # Primary path: first path whose join columns are confirmed valid in Redis cache.
+        # Redis is already populated by context_fetcher for semantic_context tables.
+        # If no path passes sync validation (e.g. cache miss), fall back to first path.
+        jp = _pick_valid_primary_path(all_paths)
         if not jp:
             logger.warning(
-                "ir_builder | NO join found (tried JOINS_TO + JoinPath dijkstra + yens) | from={} to={} | sentinel added",
+                "ir_builder | NO join found | from={} to={} | sentinel added",
                 from_table, to_table,
             )
             all_join_clauses.append("")
@@ -122,11 +215,11 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
             continue
 
         logger.info(
-            "ir_builder | join resolved | from={} to={} | tier={} | hops={} | tables={} | clauses={}",
+            "ir_builder | join resolved | from={} to={} | primary_tier={} | hops={} | total_paths={} | clauses={}",
             from_table, to_table,
             jp.get("tier", "unknown"),
             jp.get("hop_count"),
-            jp.get("path_tables"),
+            len(all_paths),
             jp.get("join_clauses"),
         )
 
@@ -144,7 +237,7 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list]:
             if tbl not in all_path_tables:
                 all_path_tables.append(tbl)
 
-    return join_path_ids, all_join_clauses, all_path_tables, join_types
+    return join_path_ids, all_join_clauses, all_path_tables, join_types, candidate_join_paths
 
 
 def _qualify_join_clause(clause: str, left_table: str, right_table: str) -> str:
@@ -155,32 +248,6 @@ def _qualify_join_clause(clause: str, left_table: str, right_table: str) -> str:
     left_col, right_col = [x.strip() for x in clause.split("=", 1)]
     return f"{left_table}.{left_col} = {right_table}.{right_col}"
 
-
-def _validate_column_refs(
-    measures: list[ColumnRef],
-    dimensions: list[ColumnRef],
-    semantic_context: dict,
-) -> tuple[list[ColumnRef], list[ColumnRef]]:
-    known = {
-        (c.get("table_fqn"), c.get("name"))
-        for c in (semantic_context.get("columns") or [])
-        if c.get("table_fqn") and c.get("name")
-    }
-    if not known:
-        return measures, dimensions
-
-    valid_measures, valid_dims = [], []
-    for m in measures:
-        if (m.table_fqn, m.column_name) in known:
-            valid_measures.append(m)
-        else:
-            logger.warning("ir_builder | DROPPED measure (not in schema) | {}.{}", m.table_fqn, m.column_name)
-    for d in dimensions:
-        if (d.table_fqn, d.column_name) in known:
-            valid_dims.append(d)
-        else:
-            logger.warning("ir_builder | DROPPED dimension (not in schema) | {}.{}", d.table_fqn, d.column_name)
-    return valid_measures, valid_dims
 
 
 def _enrich_aggregations(measures: list[ColumnRef], semantic_context: dict) -> list[ColumnRef]:

@@ -33,9 +33,9 @@ export function useGraphContextNotice() {
               const visible = typeof document !== 'undefined' && document.visibilityState === 'visible';
 
               if (visible) {
-                toast.info('Graph context ready', {
+                toast.info('Query context ready', {
                   id: `gc-ready-${convId}`,
-                  description: 'The knowledge graph for your query is ready to view.',
+                  description: 'The knowledge graph context for this answer is ready to view.',
                   duration: 12_000,
                   action: {
                     label: 'Open',
@@ -60,8 +60,8 @@ export function useGraphContextNotice() {
                 });
               } else {
                 if (getPermission() === 'granted') {
-                  notify('Graph context ready', {
-                    body: 'The knowledge graph for your query is ready to view.',
+                  notify('Query context ready', {
+                    body: 'The knowledge graph context for this answer is ready to view.',
                     silent: true,
                   });
                 } else {
@@ -96,9 +96,9 @@ export function useGraphContextNotice() {
               if (notifySound) playPing();
             } else if (res.status === 'failed') {
               set(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-              toast.error('Graph context generation failed', {
+              toast.warning('Failed to fetch query context', {
                 id: `gc-fail-${convId}`,
-                description: 'Please try generating again.',
+                description: 'Please try again.',
               });
             }
           } catch {

@@ -1,10 +1,41 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, ClipboardCopy } from 'lucide-react';
+import {
+  Download, ClipboardCopy,
+  TrendingUp, Activity, Layers,
+  BarChart2, BarChart3, PieChart,
+  Table2, ScatterChart,
+} from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useTheme } from 'next-themes';
 import { CHART_PALETTE } from '@/components/charts/theme';
+
+// ─── Chart type switcher metadata ─────────────────────────────────────────────
+
+const CHART_ICONS: Record<string, React.ElementType> = {
+  line:         TrendingUp,
+  area:         Activity,
+  multi_line:   TrendingUp,
+  stacked_area: Layers,
+  bar:          BarChart2,
+  stacked_bar:  BarChart3,
+  grouped_bar:  BarChart3,
+  pie:          PieChart,
+  donut:        PieChart,
+  scatter:      ScatterChart,
+  waterfall:    BarChart2,
+  dual_axis:    BarChart2,
+  kpi_card:     BarChart2,
+};
+
+const CHART_LABELS: Record<string, string> = {
+  line: 'Line', area: 'Area', multi_line: 'Multi-line',
+  stacked_area: 'Stacked area', bar: 'Bar',
+  stacked_bar: 'Stacked bar', grouped_bar: 'Grouped bar',
+  pie: 'Pie', donut: 'Donut', scatter: 'Scatter',
+  waterfall: 'Waterfall', dual_axis: 'Dual axis', kpi_card: 'KPI',
+};
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -19,6 +50,8 @@ interface MessageVisualizationProps {
   columns?: string[];
   rows?: unknown[][];
   chartSpec?: Record<string, unknown>;
+  primaryChartType?: string;
+  alternativeChartSpecs?: string[];      // type names only — specs built by buildSpecForType
   conversationId?: string;
 }
 
@@ -56,7 +89,7 @@ function oldFormatToVegaLite(raw: Record<string, unknown>): Record<string, unkno
 
   const keys = Object.keys(data[0]);
   const base: Record<string, unknown> = {
-    $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+    $schema: 'https://vega.github.io/schema/vega-lite/v6.json',
     width: 'container',
     height: 350,
     background: 'transparent',
@@ -122,8 +155,11 @@ function normalizeSpec(
 ): NormalizedSpec {
   if (raw.type === 'kpi_card') return 'kpi_card';
   if (raw.type === 'table')    return 'table';
-  if (raw.$schema)             return raw;
   if (raw.values && Array.isArray(raw.values)) return 'kpi_card';
+  if (raw.$schema) {
+    if (!raw.mark) return null;  // spec missing mark — vega-embed would throw 'marktype' error
+    return raw;
+  }
 
   if (raw.data && Array.isArray(raw.data)) return oldFormatToVegaLite(raw);
 
@@ -184,6 +220,13 @@ function addZoomParams(spec: Record<string, unknown>): Record<string, unknown> {
   if (ARC_MARKS.has(markType as string)) return spec;
   const existing = (spec.params as unknown[]) || [];
   if (existing.some((p) => (p as Record<string, unknown>).name === 'grid')) return spec;
+  // bind:'scales' only works on continuous (quantitative/temporal) axes.
+  // For nominal/ordinal x-axis (bar, grouped_bar, etc.) it triggers a Vega warning and does nothing.
+  const enc  = spec.encoding as Record<string, unknown> | undefined;
+  const xDef = enc?.x as Record<string, unknown> | undefined;
+  const xType = xDef?.type as string | undefined;
+  const isContinuous = xType === 'quantitative' || xType === 'temporal';
+  if (!isContinuous) return spec;
   return { ...spec, params: [...existing, { name: 'grid', select: 'interval', bind: 'scales' }] };
 }
 
@@ -311,9 +354,12 @@ function RangeSlider({ total, startLabel, endLabel, onCommit }: {
 
 // ─── Vega Visualization wrapper ────────────────────────────────────────────────
 
-function VegaVisualization({ rawSpec, conversationId }: {
+type ChartActions = { copy: () => Promise<void>; download: () => Promise<void> };
+
+function VegaVisualization({ rawSpec, conversationId, onActionsReady }: {
   rawSpec: Record<string, unknown>;
   conversationId?: string;
+  onActionsReady?: (actions: ChartActions) => void;
 }) {
   const { resolvedTheme } = useTheme();
   const isDark       = resolvedTheme === 'dark';
@@ -335,6 +381,44 @@ function VegaVisualization({ rawSpec, conversationId }: {
     const spec  = addZoomParams(humanizeEncoding({ ...rawSpec, config: theme }));
     return dataSlice ? { ...spec, data: { values: dataSlice } } : spec;
   }, [rawSpec, isDark, dataSlice]);
+
+  const handleDownload = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view) return;
+    try {
+      const canvas = await view.toCanvas(2);
+      const a = document.createElement('a');
+      a.download = `chart-${(conversationId ?? '').slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.png`;
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+      toast.success('Chart downloaded');
+    } catch {
+      toast.error('Failed to export chart');
+    }
+  }, [conversationId]);
+
+  const handleCopy = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view) return;
+    try {
+      const canvas = await view.toCanvas(2);
+      await new Promise<void>((resolve, reject) =>
+        canvas.toBlob(async (blob) => {
+          if (!blob) { reject(new Error('no blob')); return; }
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          resolve();
+        }, 'image/png')
+      );
+      toast.success('Chart copied');
+    } catch {
+      toast.error('Failed to copy chart');
+    }
+  }, []);
+
+  // Expose copy/download to parent toolbar as soon as handlers are stable
+  useEffect(() => {
+    onActionsReady?.({ copy: handleCopy, download: handleDownload });
+  }, [onActionsReady, handleCopy, handleDownload]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -389,58 +473,9 @@ function VegaVisualization({ rawSpec, conversationId }: {
     setDataSlice(allData.filter(row => selected.has(row[field])));
   }, [allData, sliderInfo]);
 
-  const handleDownload = useCallback(async () => {
-    const view = viewRef.current;
-    if (!view) return;
-    try {
-      const canvas = await view.toCanvas(2);
-      const a = document.createElement('a');
-      a.download = `chart-${(conversationId ?? '').slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.png`;
-      a.href = canvas.toDataURL('image/png');
-      a.click();
-      toast.success('Chart downloaded');
-    } catch {
-      toast.error('Failed to export chart');
-    }
-  }, [conversationId]);
-
-  const handleCopy = useCallback(async () => {
-    const view = viewRef.current;
-    if (!view) return;
-    try {
-      const canvas = await view.toCanvas(2);
-      await new Promise<void>((resolve, reject) =>
-        canvas.toBlob(async (blob) => {
-          if (!blob) { reject(new Error('no blob')); return; }
-          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-          resolve();
-        }, 'image/png')
-      );
-      toast.success('Chart copied');
-    } catch {
-      toast.error('Failed to copy chart');
-    }
-  }, []);
-
   return (
-    <div className="group" data-chart-conv-id={conversationId}>
-      <div className="flex justify-end gap-1 mb-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          onClick={handleCopy}
-          className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ClipboardCopy className="w-3.5 h-3.5" />
-        </button>
-        <button
-          onClick={handleDownload}
-          className="p-1.5 rounded-md bg-background/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <Download className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
+    <div data-chart-conv-id={conversationId}>
       <div ref={containerRef} className="w-full" />
-
       {sliderInfo.applicable && allData && (
         <RangeSlider
           key={sliderInfo.uniqueXValues.length}
@@ -454,31 +489,375 @@ function VegaVisualization({ rawSpec, conversationId }: {
   );
 }
 
+// ─── Inline table renderer ────────────────────────────────────────────────────
+
+function InlineTable({ columns, rows }: { columns: string[]; rows: unknown[][] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr>
+            {columns.map((col, i) => (
+              <th key={i} className="text-left px-3 py-2 text-muted-foreground font-medium border-b border-border whitespace-nowrap">
+                {toTitleCase(col)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={ri} className="border-b border-border/40 hover:bg-muted/20">
+              {(row as unknown[]).map((cell, ci) => (
+                <td key={ci} className="px-3 py-2 text-foreground whitespace-nowrap">
+                  {cell == null ? '—' : String(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Build alternative spec from primary spec + type string ──────────────────
+
+function buildSpecForType(
+  primary: Record<string, unknown>,
+  altType: string,
+): Record<string, unknown> | null {
+  const data = primary.data as Record<string, unknown> | undefined;
+  if (!data?.values) return null;
+
+  const enc      = primary.encoding as Record<string, unknown> | undefined;
+  if (!enc) return null;
+
+  const xEnc     = enc.x      as Record<string, unknown> | undefined;
+  const yEnc     = enc.y      as Record<string, unknown> | undefined;
+  const colEnc   = enc.color  as Record<string, unknown> | undefined;
+  const thetaEnc = enc.theta  as Record<string, unknown> | undefined;
+
+  // Determine if primary is arc-based (pie/donut) or cartesian
+  const isArc = !!thetaEnc;
+
+  // Extract canonical field names from whatever encoding the primary uses
+  const xField   = xEnc?.field as string | undefined;
+  const yField   = yEnc?.field as string | undefined;
+  const catField = (colEnc?.field ?? xEnc?.field) as string | undefined;
+  const valField = isArc ? (thetaEnc?.field as string | undefined) : yField;
+  const arcCat   = isArc ? (colEnc?.field as string | undefined) : catField;
+
+  // Canonical encodings for cartesian output — strip internal-only fields
+  const outX: Record<string, unknown> = xEnc
+    ? { ...xEnc }
+    : { field: arcCat ?? xField, type: 'nominal' };
+  const outY: Record<string, unknown> = {
+    field: valField ?? yField,
+    type: 'quantitative',
+    ...(yEnc?.axis ? { axis: yEnc.axis } : {}),
+    ...(yEnc?.title ? { title: yEnc.title } : {}),
+  };
+  // Never forward stack/xOffset into the base — each case applies it explicitly
+  delete outX.xOffset;
+  delete (outY as Record<string, unknown>).stack;
+
+  const base: Record<string, unknown> = {
+    $schema: 'https://vega.github.io/schema/vega-lite/v6.json',
+    width: 'container', height: 350, background: 'transparent',
+    title: primary.title ?? '',
+    data,
+  };
+
+  switch (altType) {
+    // ── Simple bar — keep color encoding so each category stays distinguishable
+    case 'bar':
+      return {
+        ...base, mark: 'bar',
+        encoding: {
+          x: { ...outX, sort: '-y' },
+          y: outY,
+          ...(colEnc ? { color: colEnc } : {}),
+        },
+      };
+
+    // ── Grouped bar ───────────────────────────────────────────────────────────
+    case 'grouped_bar': {
+      const gcol = colEnc ?? (catField ? { field: catField, type: 'nominal' } : undefined);
+      return {
+        ...base, mark: 'bar',
+        encoding: { x: outX, y: outY, ...(gcol ? { color: gcol, xOffset: gcol } : {}) },
+      };
+    }
+
+    // ── Stacked bar ───────────────────────────────────────────────────────────
+    case 'stacked_bar': {
+      const scol = colEnc ?? (catField ? { field: catField, type: 'nominal' } : undefined);
+      return {
+        ...base, mark: 'bar',
+        encoding: { x: outX, y: { ...outY, stack: 'zero' }, ...(scol ? { color: scol } : {}) },
+      };
+    }
+
+    // ── Waterfall (running-sum bar) ───────────────────────────────────────────
+    case 'waterfall': {
+      const wX = xField ?? (arcCat as string | undefined);
+      const wY = valField;
+      if (!wX || !wY) return null;
+      return {
+        ...base,
+        transform: [
+          { sort: [{ field: wX }], window: [{ op: 'sum', field: wY, as: '_wsum' }] },
+          { calculate: `datum._wsum - datum['${wY}']`, as: '_wlead' },
+        ],
+        mark: { type: 'bar' },
+        encoding: {
+          x: { field: wX, type: 'nominal', axis: { title: (outX.axis as Record<string, unknown>)?.title ?? wX } },
+          y: { field: '_wlead', type: 'quantitative', title: '' },
+          y2: { field: '_wsum' },
+        },
+      };
+    }
+
+    // ── Line / Area ───────────────────────────────────────────────────────────
+    case 'line':
+    case 'area':
+      return {
+        ...base, mark: altType,
+        encoding: { x: outX, y: outY, ...(colEnc ? { color: colEnc } : {}) },
+      };
+
+    // ── Multi-line ────────────────────────────────────────────────────────────
+    case 'multi_line': {
+      const mlCol = colEnc ?? (catField ? { field: catField, type: 'nominal' } : undefined);
+      return {
+        ...base, mark: 'line',
+        encoding: { x: outX, y: outY, ...(mlCol ? { color: mlCol } : {}) },
+      };
+    }
+
+    // ── Stacked area ──────────────────────────────────────────────────────────
+    case 'stacked_area': {
+      const saCol = colEnc ?? (catField ? { field: catField, type: 'nominal' } : undefined);
+      return {
+        ...base, mark: 'area',
+        encoding: { x: outX, y: { ...outY, stack: 'zero' }, ...(saCol ? { color: saCol } : {}) },
+      };
+    }
+
+    // ── Pie / Donut ───────────────────────────────────────────────────────────
+    case 'pie':
+    case 'donut': {
+      const pCat = arcCat ?? catField ?? xField;
+      const pVal = valField ?? yField;
+      if (!pCat || !pVal) return null;
+      return {
+        ...base,
+        mark: { type: 'arc', innerRadius: altType === 'donut' ? 50 : 0 },
+        encoding: {
+          theta: { field: pVal, type: 'quantitative' },
+          color: { field: pCat, type: 'nominal' },
+        },
+      };
+    }
+
+    // ── Scatter ───────────────────────────────────────────────────────────────
+    case 'scatter':
+      return {
+        ...base, mark: 'point',
+        encoding: { x: { ...outX, type: 'quantitative' }, y: outY, ...(colEnc ? { color: colEnc } : {}) },
+      };
+
+    default:
+      return null;
+  }
+}
+
+// ─── Chart Type Switcher ──────────────────────────────────────────────────────
+
+function ChartTypeSwitcher({ types, activeType, onSelect }: {
+  types: string[];
+  activeType: string;
+  onSelect: (type: string) => void;
+}) {
+  if (types.length < 2) return null;
+  return (
+    <div className="flex gap-1 flex-wrap">
+      {types.map((t) => {
+        const Icon = CHART_ICONS[t] ?? BarChart2;
+        const label = CHART_LABELS[t] ?? t;
+        const isActive = t === activeType;
+        return (
+          <button
+            key={t}
+            onClick={() => onSelect(t)}
+            title={label}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors border ${
+              isActive
+                ? 'bg-foreground/10 border-border text-foreground'
+                : 'bg-transparent border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/30'
+            }`}
+          >
+            <Icon className="w-3 h-3" />
+            <span>{label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Chart Toolbar (switcher + copy/download) ─────────────────────────────────
+
+function ChartToolbar({ types, activeType, onSelect, actions }: {
+  types: string[];
+  activeType: string;
+  onSelect: (t: string) => void;
+  actions: ChartActions | null;
+}) {
+  const hasActions = !!actions;
+  const hasSwitcher = types.length > 1;
+  if (!hasSwitcher && !hasActions) return null;
+  return (
+    <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-border/40">
+      <div className="flex-1">
+        {hasSwitcher && (
+          <ChartTypeSwitcher types={types} activeType={activeType} onSelect={onSelect} />
+        )}
+      </div>
+      {hasActions && (
+        <div className="flex gap-1 shrink-0">
+          <button
+            onClick={() => actions.copy()}
+            title="Copy chart"
+            className="p-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+          >
+            <ClipboardCopy className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => actions.download()}
+            title="Download chart"
+            className="p-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Detect primary chart type from Vega-Lite spec encoding ──────────────────
+// Used when chart_type is not stored in metadata (historical messages).
+
+function detectPrimaryType(
+  spec: Record<string, unknown> | undefined,
+  explicitType: string | undefined,
+): string {
+  if (explicitType) return explicitType;
+  if (!spec) return '';
+  const mark = typeof spec.mark === 'string'
+    ? spec.mark
+    : (spec.mark as Record<string, unknown> | undefined)?.type as string | undefined;
+  const enc = spec.encoding as Record<string, unknown> | undefined;
+  if (!mark) return '';
+  if (mark === 'arc') return 'donut';
+  if (mark === 'bar') {
+    if (enc?.xOffset) return 'grouped_bar';
+    if ((enc?.y as Record<string, unknown> | undefined)?.stack === 'zero') return 'stacked_bar';
+    return 'bar';
+  }
+  if (mark === 'point') return 'scatter';
+  if (mark === 'area') return enc?.color ? 'stacked_area' : 'area';
+  if (mark === 'line') return enc?.color ? 'multi_line' : 'line';
+  return mark;
+}
+
 // ─── Main Export ───────────────────────────────────────────────────────────────
 
-export function MessageVisualization({ columns, rows, chartSpec, conversationId }: MessageVisualizationProps) {
-  if (!chartSpec) return null;
+export function MessageVisualization({
+  columns, rows, chartSpec,
+  primaryChartType, alternativeChartSpecs,
+  conversationId,
+}: MessageVisualizationProps) {
+  // Single source of truth for primary type — explicit prop OR derived from spec encoding
+  const primaryType = useMemo(
+    () => detectPrimaryType(chartSpec, primaryChartType),
+    [chartSpec, primaryChartType],
+  );
 
-  const specResult = normalizeSpec(chartSpec, columns, rows);
-  if (!specResult) return null;
+  const allTypes = useMemo(() => {
+    const types = [primaryType].filter(Boolean);
+    for (const t of alternativeChartSpecs ?? []) {
+      if (t && !types.includes(t)) types.push(t);
+    }
+    return types;
+  }, [primaryType, alternativeChartSpecs]);
 
-  if (specResult === 'table') return null;
+  // Initialise to the detected primary so the correct button is highlighted on load
+  const [activeType, setActiveType] = useState<string>(() => primaryType);
+  const [chartActions, setChartActions] = useState<ChartActions | null>(null);
 
-  if (specResult === 'kpi_card') {
-    const values = (chartSpec.values as Record<string, unknown>[] | undefined) ?? [];
+  const activeSpec = useMemo<Record<string, unknown> | null>(() => {
+    // Return primary spec when active type matches primary OR is empty
+    if (!activeType || activeType === primaryType) return chartSpec ?? null;
+    // Build alternative spec client-side from the primary spec's embedded data
+    if (chartSpec) {
+      const built = buildSpecForType(chartSpec, activeType);
+      if (built) return built;
+    }
+    return chartSpec ?? null;
+  }, [activeType, primaryType, chartSpec]);
+
+  if (!activeSpec) return null;
+
+  const isTableType = activeType === 'table';
+  const currentNormalized = isTableType ? 'table' : normalizeSpec(activeSpec, columns, rows);
+  if (!currentNormalized) return null;
+
+  if (currentNormalized === 'kpi_card') {
+    const values = (activeSpec.values as Record<string, unknown>[] | undefined) ?? [];
     if (!values.length) return null;
     return (
       <div className="mt-3 rounded-xl border border-border px-4 pt-3 pb-2 bg-sidebar">
-        {chartSpec.title ? <p className="text-sm font-medium text-foreground mb-3">{String(chartSpec.title)}</p> : null}
+        {allTypes.length > 1 && (
+          <div className="mb-3 pb-2 border-b border-border/40">
+            <ChartTypeSwitcher types={allTypes} activeType={activeType} onSelect={setActiveType} />
+          </div>
+        )}
+        {activeSpec.title ? <p className="text-sm font-medium text-foreground mb-3">{String(activeSpec.title)}</p> : null}
         <KpiCard values={values} />
+      </div>
+    );
+  }
+
+  if (currentNormalized === 'table') {
+    if (!columns?.length || !rows?.length) return null;
+    return (
+      <div className="mt-3 rounded-xl border border-border overflow-hidden bg-sidebar">
+        {allTypes.length > 1 && (
+          <div className="px-4 pt-3 pb-2 border-b border-border/40">
+            <ChartTypeSwitcher types={allTypes} activeType={activeType} onSelect={setActiveType} />
+          </div>
+        )}
+        <InlineTable columns={columns} rows={rows} />
       </div>
     );
   }
 
   return (
     <div className="mt-3">
-      <div className="rounded-xl border border-border pt-4 px-4 pb-2 bg-sidebar">
-        <VegaVisualization rawSpec={specResult} conversationId={conversationId} />
+      <div className="rounded-xl border border-border pt-3 px-4 pb-2 bg-sidebar">
+        <ChartToolbar
+          types={allTypes}
+          activeType={activeType}
+          onSelect={setActiveType}
+          actions={chartActions}
+        />
+        <VegaVisualization
+          rawSpec={currentNormalized}
+          conversationId={conversationId}
+          onActionsReady={setChartActions}
+        />
       </div>
     </div>
   );

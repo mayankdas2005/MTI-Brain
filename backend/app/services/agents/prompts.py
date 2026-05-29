@@ -54,6 +54,23 @@ REASONING_DIRECTIVE_BRIEF = (
     + _REASONING_NO_LEAK
 )
 
+REASONING_DIRECTIVE_SQL = (
+    "You are executing a pre-validated spec — the join clauses, tables, and filters are correct. "
+    "Do NOT question or reinterpret them. Reason only about: "
+    "(1) which columns each CTE must forward, "
+    "(2) which columns are aggregated vs grouped, "
+    "(3) what expression to write for each derived alias. "
+    "3–5 sentences max."
+    + _REASONING_NO_LEAK
+)
+
+REASONING_DIRECTIVE_REPAIR = (
+    "Identify the exact error. State the minimal one-line fix. "
+    "If prior attempts are listed, state why each failed and how this fix is different. "
+    "Do not suggest restructuring. 2–3 sentences."
+    + _REASONING_NO_LEAK
+)
+
 # ─── Node 0: Intake Classifier ───────────────────────────────────────────────
 
 INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
@@ -216,14 +233,15 @@ SCHEMA RULES:
 
 ---
 
-ANCHOR TABLE RULE:
-Check TEMPLATE MATCHES in SCHEMA CANDIDATES below.
-  If a [HIGH CONFIDENCE] entry exists → your anchor_tables MUST be the tables listed there.
-  If no [HIGH CONFIDENCE] entry exists → choose tables marked `fact` in TABLES — dimension tables
-  alone cannot drive a count or sum query. Prefer fact tables with matching grain.
-Measures, dimensions, and filters must reference columns from your chosen anchor_tables only.
-Columns from non-anchor tables in COLUMNS below may only be used as JOIN display partners —
-never as measures, dimensions, or filter values unless you add that table as an anchor_table.
+ANCHOR TABLE GUIDANCE:
+TEMPLATES in SCHEMA CANDIDATES suggest anchor table patterns from similar past questions —
+treat them as starting hints only, not constraints.
+anchor_tables must include EVERY table that contributes columns to this answer
+(measures, dimensions, filters, or join partners). Complex multi-hop questions require
+3–5+ tables. Verify each table by checking its columns and join-column sample values.
+Never assume 1–2 tables are sufficient without confirming all required columns are present.
+All column refs must be real columns from COLUMNS above.
+If a needed column belongs to a table not yet in anchor_tables, add that table.
 
 TABLE ROLE GUIDE (use `typical_join_role` in TABLES):
   fact      — event or transaction data (one row per occurrence) — primary anchor candidates
@@ -408,7 +426,11 @@ ORIGINAL SQL (the broken query):
 ANTI-PATTERNS (do not repeat these):
 {anti_patterns}
 
+{candidate_paths_section}
+
 {feedback_section}
+
+{performance_directive}
 
 ---
 
@@ -432,8 +454,14 @@ RULES:
        reference bare `rate`). Do not add a new JOIN unless the column requires it.
      - Final SELECT references column not in last CTE's SELECT: add the column to the last
        CTE's SELECT list so the final SELECT can use it.
-2. If a JOIN column does not exist: look it up in PRIMARY COLUMNS within SCHEMA REFERENCE for those
-   two tables. Use the column that exists in both tables and best matches the intended join key.
+2. If a JOIN column does not exist: first check CANDIDATE JOIN PATHS above for a pre-validated
+   alternative ON clause for those two tables — use it verbatim if found.
+   If no candidate path is available, look in PRIMARY COLUMNS within SCHEMA REFERENCE for those
+   two tables. Use ONLY a column name EXPLICITLY LISTED there.
+   NEVER invent or guess a column name not shown in PRIMARY COLUMNS or CANDIDATE JOIN PATHS.
+   If no suitable replacement column is found, output the broken SQL unchanged and write in
+   <reasoning>: "CANNOT FIX: replacement join column for {{table_a}} → {{table_b}} not available
+   in schema reference."
    Check `grain` of both tables — if joining fact to fact, verify the key is unique on one side.
 3. Never change what is defined in QUERY INTENT above: tables joined, aggregation logic, metric
    definitions, or the semantic meaning of the query.
@@ -477,12 +505,25 @@ CTE_COLUMN_PLANNER_PROMPT = ChatPromptTemplate.from_template(
 TASK:
 For every CTE listed in CTE NAMES and for the FINAL SELECT, list every column that scope must SELECT.
 
-Rules:
-  - First CTE reads from real tables: can SELECT any column using schema.table.column, aliasing as needed
-  - Each downstream CTE reads from an upstream CTE: can ONLY use aliases already defined in that upstream CTE's SELECT
-  - Final SELECT reads from last CTE: can ONLY use aliases from that CTE's SELECT list
-  - Include EVERY column needed: aggregated measures, GROUP BY dimensions, filter columns, display columns
-  - If a downstream CTE needs a column from a real table, the first CTE must forward it
+COLUMN FORWARDING RULES:
+  - First CTE reads from real tables: SELECT any column as schema.table.column, aliased.
+  - Each downstream CTE reads ONLY from its upstream CTE: CANNOT use schema.table.column for tables not in its own FROM/JOIN.
+  - Final SELECT reads ONLY from the last CTE's SELECT list.
+  - Include ALL columns needed by any downstream scope: measures (raw, for aggregation), GROUP BY dimensions, filter columns, display columns.
+  - If a downstream CTE needs a raw table column, the FIRST CTE must forward it with an alias.
+  - DERIVED ALIASES (alias differs from column name, e.g. 'period' from DATE_TRUNC, or 'rate' from a CAST):
+    The FIRST CTE defines them as an expression (e.g. DATE_TRUNC('month', batch_close_ts) AS period).
+    Every downstream CTE between definition and the final SELECT MUST include the alias in its SELECT list
+    and in GROUP BY if that CTE aggregates. The final SELECT references only the alias, not the raw column.
+
+JOIN KEY VALIDATION:
+  ON clauses in PRE-COMPUTED JOIN CHAIN may carry value overlap evidence comments:
+    -- ✓ N shared values (e.g. VAL1, VAL2)   → data-confirmed valid join
+    -- ⚠ NO VALUE OVERLAP (A vs B samples)    → columns sampled but share no values; join returns 0 rows
+    (no comment)                               → not yet probed; treat as unconfirmed
+  When a ⚠ NO VALUE OVERLAP appears, flag that table pair in your reasoning.
+  The SQL generator will choose an alternative path — do not plan column forwarding around a ⚠ join
+  unless no alternative exists.
 
 Output the plan inside <plan>...</plan>, one line per CTE, then the final SELECT:
   CTE <name>: [col_alias (raw: schema.table.column), col_alias2, ...]
@@ -492,6 +533,16 @@ Example:
   CTE base_data: [rate (raw: lpp.fx_rate.rate), rate_date (raw: lpp.fx_rate.rate_date), currency_code (raw: lpp.currency.code)]
   CTE aggregated: [currency_code, avg_rate (= AVG(rate))]
   FINAL SELECT: [currency_code, avg_rate]
+
+{reasoning_directive}
+
+<reasoning>
+Start at the FINAL SELECT: what columns does the query need to output?
+Work backward — what does each upstream CTE need to forward?
+For the first CTE: list every real table column that must be fetched (measures, dimensions, filter cols, display cols).
+For each ON clause in PRE-COMPUTED JOIN CHAIN: state whether it carries ✓ evidence, ⚠ warning, or no comment.
+Forwarding audit: for each downstream CTE and the final SELECT, confirm every required column exists in the upstream SELECT.
+</reasoning>
 
 <plan>
 list every CTE and final SELECT with their required columns here
@@ -526,7 +577,7 @@ SQL_GENERATE_PROMPT = ChatPromptTemplate.from_template(
 ANTI-PATTERNS (do not repeat these):
 {anti_patterns}
 
----
+{candidate_join_paths_section}
 
 RULES:
 1. PRE-COMPUTED JOIN CHAIN (or BASE TABLE for single-table queries) gives the exact FROM + JOIN
@@ -827,6 +878,10 @@ Output only the JSON array inside the tags."""
 CHART_LABEL_PROMPT = ChatPromptTemplate.from_template(
     """You are a financial data visualization expert. Choose the single best chart type for the data, then name 2 valid alternatives.
 
+NOTE: The rules below are guidelines — the final choice must be driven by the actual data shape,
+column types, and row counts in DATA PROFILE. Override any guideline when the data clearly calls
+for a different chart type.
+
 HARD OVERRIDES (system applies after your response — account for them in your labels):
 - Total rows == 1 AND a number column exists → forced to kpi_card
 - Total rows ≤ 5 AND ALL columns are number → forced to kpi_card
@@ -879,7 +934,7 @@ STEP 2 — PICK PRIMARY CHART TYPE (first matching rule wins):
   → string_cols=1, number_cols=1:
       ≤ 6 distinct values AND (executive OR director)              → donut
       ≤ 7 distinct values AND question asks share/breakdown        → pie or donut
-      labels > 20 chars OR many categories                         → bar_horizontal
+      labels > 20 chars OR many categories                         → bar
       otherwise                                                     → bar
   → string_cols=2, number_cols=1:
       question asks share/composition (parts of a whole)           → stacked_bar
@@ -887,11 +942,11 @@ STEP 2 — PICK PRIMARY CHART TYPE (first matching rule wins):
 
   PURE NUMERIC (no date_cols, no string_cols):
   → exactly 2 number_cols AND analyst persona                      → scatter
-  → otherwise                                                      → table
+  → otherwise                                                      → bar
 
   WIDE / MANY ROWS:
-  → Total rows > 30 AND no date_cols                               → table
-  → number_cols > 5                                                → table
+  → Total rows > 30 AND no date_cols                               → bar
+  → number_cols > 5                                                → bar
 
   PERSONA OVERRIDES (apply on top of above):
   → executive: never scatter, never grouped_bar — prefer kpi_card > donut > area > bar
@@ -907,18 +962,16 @@ STEP 3 — PICK 2 ALTERNATIVES (must be structurally valid for the SAME columns)
   Alternatives must work with the exact same date_cols/string_cols/number_cols you have.
   Do NOT suggest a type that needs a different column structure.
 
-  primary = line / area           → alternatives: [multi_line (only if string_col exists), bar, table]
-  primary = multi_line            → alternatives: [stacked_area, line, table]
-  primary = stacked_area          → alternatives: [multi_line, bar, table]
-  primary = bar                   → alternatives: [bar_horizontal, table]
-  primary = bar_horizontal        → alternatives: [bar, table]
-  primary = donut / pie           → alternatives: [bar, bar_horizontal]
-  primary = grouped_bar           → alternatives: [stacked_bar, bar_horizontal]
+  primary = line / area           → alternatives: [multi_line (only if string_col exists), bar]
+  primary = multi_line            → alternatives: [stacked_area, line]
+  primary = stacked_area          → alternatives: [multi_line, bar]
+  primary = bar                   → alternatives: [grouped_bar, waterfall]
+  primary = donut / pie           → alternatives: [bar, stacked_bar]
+  primary = grouped_bar           → alternatives: [stacked_bar, bar]
   primary = stacked_bar           → alternatives: [grouped_bar, bar]
-  primary = scatter               → alternatives: [bar, table]
+  primary = scatter               → alternatives: [bar, dual_axis]
+  primary = waterfall             → alternatives: [bar, stacked_bar]
   primary = kpi_card              → alternatives: []
-  primary = table                 → alternatives: [bar (if string+number), line (if date+number)]
-  Always include table as second alternative when total rows > 5 and primary is not table/kpi_card.
   Maximum 2 alternatives. Remove any type that cannot render with the current column structure.
 
 ---
@@ -963,7 +1016,6 @@ AXIS LABEL ORIENTATION:
   y_axis_label = LEFT   (vertical)   axis label
 
   bar (vertical):     x = category name,  y = measure name
-  bar_horizontal:     x = measure name,   y = category name
   line / area:        x = "Date",         y = measure name
   multi_line / stacked_area: x = "Date",  y = measure name  (color dimension → legend only)
 
@@ -989,7 +1041,7 @@ Begin IMMEDIATELY with <reasoning>. No text before it. Then output <chart>. No t
   "legend_labels": {{}},
   "value_format": ",.0f",
   "color_scheme": "blues",
-  "alternative_types": ["bar_horizontal", "table"]
+  "alternative_types": ["grouped_bar", "waterfall"]
 }}
 </chart>"""
 )

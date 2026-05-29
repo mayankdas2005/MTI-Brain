@@ -2,6 +2,10 @@
 
 Single responsibility: take semantic_ir_list from state, generate SQL for each IR
 via LLM, write sql_list back to state.
+
+Column validation (strip_hallucinated_columns + validate_and_fix_join_clauses) is
+performed upstream in query_compiler immediately after build_semantic_ir so the IR
+reaching here already has validated column names and join clauses.
 """
 
 from __future__ import annotations
@@ -24,7 +28,8 @@ async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
         logger.warning("sql_generator | no IR list | thread={}", state["thread_id"])
         return {"sql_list": [], "error": "No IR to generate SQL from"}
 
-    sql_list = []
+    sql_list: list[str] = []
+
     for ir_dict in ir_list:
         ir = SemanticIR(**ir_dict)
         try:
@@ -39,7 +44,7 @@ async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
     first_sql = next((s for s in sql_list if s), None)
     logger.info("sql_generator DONE | thread={} | sql_len={}", state["thread_id"], len(first_sql or ""))
 
-    result: dict = {"sql_list": sql_list}
+    result: dict = {"sql_list": sql_list, "semantic_context": semantic_context}
     if first_sql:
         result["prior_sql"] = first_sql
     return result

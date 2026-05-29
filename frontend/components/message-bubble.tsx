@@ -545,6 +545,8 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           columns={columns}
           rows={rows}
           chartSpec={message.metadata_.chart_spec}
+          primaryChartType={message.metadata_?.chart_type}
+          alternativeChartSpecs={message.metadata_?.alternative_chart_specs}
           conversationId={message.conversation_id}
         />
       )}
@@ -681,22 +683,22 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                                 }).catch(() => {});
                               } else {
                                 removeGC(convId);
-                                toast.info('Graph context no longer available. Click to rebuild.');
+                                toast.info('Query context no longer available. Click to rebuild.');
                               }
                             }).catch(() => {
                               removeGC(convId);
-                              toast.info('Graph context no longer available. Click to rebuild.');
+                              toast.info('Query context no longer available. Click to rebuild.');
                             });
                             return;
                           }
                           setGC(convId, { status: 'pending', url: null, queuedAt: Date.now() });
-                          toast.info('Generating knowledge graph…', {
+                          toast.info('Fetching query context…', {
                             id: `gc-${convId}`,
-                            description: 'This may take up to a minute.',
+                            description: 'Retrieving the knowledge graph context used to answer this question.',
                           });
                           void generateGraphContext(convId).catch((err: unknown) => {
                             setGC(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-                            toast.error(err instanceof Error ? err.message : 'Graph context generation failed.', { id: `gc-${convId}` });
+                            toast.warning(err instanceof Error ? err.message : 'Failed to fetch query context.', { id: `gc-${convId}` });
                           });
                         }}
                         className="gap-2"
@@ -749,23 +751,23 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                               } else {
                                 // DB record gone — clear stale state, let user regenerate
                                 removeDash(convId);
-                                toast.info('Dashboard no longer available. Click Generate to rebuild it.');
+                                toast.info('Report no longer available. Click to rebuild.');
                               }
                             }).catch(() => {
                               // 404 — DB record deleted, reset to idle
                               removeDash(convId);
-                              toast.info('Dashboard no longer available. Click Generate to rebuild it.');
+                              toast.info('Report no longer available. Click to rebuild.');
                             });
                             return;
                           }
                           setDash(convId, { status: 'pending', url: null, queuedAt: Date.now() });
-                          toast.info('Generating executive dashboard…', {
+                          toast.info('Building report…', {
                             id: `dash-${convId}`,
-                            description: 'This may take up to a minute. We\'ll notify you when ready.',
+                            description: 'Compiling the answer and data into an executive report.',
                           });
                           void generateDashboard(convId).catch((err: unknown) => {
                             setDash(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-                            toast.error(err instanceof Error ? err.message : 'Dashboard generation failed.', { id: `dash-${convId}` });
+                            toast.warning(err instanceof Error ? err.message : 'Failed to build report.', { id: `dash-${convId}` });
                           });
                         }}
                         className="gap-2"
