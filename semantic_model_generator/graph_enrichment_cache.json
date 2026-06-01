@@ -24397,6 +24397,296 @@
         "variance percentage greater than 10%"
       ],
       "time_windowed": true
+    },
+    "30": {
+      "source_line": 30,
+      "description": "Lists all debt instruments with maturity dates falling within the next 90 days, showing outstanding balances and relevant debt details.",
+      "intent_scores": {
+        "maturity_ladder": 0.85,
+        "investment_and_maturity": 0.7,
+        "balance_lookup": 0.4
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_upcoming_maturities: narrow down all debt records to only those with a maturity date within the next 90 days from today",
+        "rank_by_maturity: order the filtered debt by maturity date ascending to surface the most imminent obligations first"
+      ],
+      "required_aggregations": [
+        "total outstanding debt amount maturing within 90 days"
+      ],
+      "required_filters": [
+        "maturity date within the next 90 calendar days from today"
+      ],
+      "time_windowed": true
+    },
+    "31": {
+      "source_line": 31,
+      "description": "Lists all open (unexpired) letters of credit along with their expiration dates, counterparty details, and notional amounts.",
+      "intent_scores": {
+        "investment_positions": 0.65,
+        "counterparty_exposure": 0.55,
+        "balance_lookup": 0.5
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_open_lcs: isolate all letters of credit that are currently open and have not yet expired",
+        "sort_by_expiration: order results by expiration date ascending to highlight the soonest-expiring items"
+      ],
+      "required_aggregations": [
+        "count of open letters of credit",
+        "total notional value of open letters of credit"
+      ],
+      "required_filters": [
+        "status is open or active",
+        "expiration date is in the future or not yet reached"
+      ],
+      "time_windowed": false
+    },
+    "32": {
+      "source_line": 32,
+      "description": "Calculates available borrowing capacity under the revolving credit facility by subtracting current drawn amounts and outstanding commitments from the total facility limit.",
+      "intent_scores": {
+        "balance_and_policy": 0.8,
+        "policy_check": 0.65,
+        "exposure_analysis": 0.5
+      },
+      "complexity": "complex",
+      "sql_pattern": "multi_join",
+      "is_cross_domain": false,
+      "min_cte_count": 3,
+      "max_cte_count": 4,
+      "cte_steps": [
+        "get_facility_limit: retrieve the total committed size of the revolving credit facility",
+        "get_drawn_balance: sum all current outstanding borrowings drawn against the facility",
+        "get_outstanding_commitments: sum any letters of credit or other commitments reducing available capacity",
+        "compute_available_capacity: subtract drawn balance and outstanding commitments from the total facility limit to arrive at net available borrowing capacity"
+      ],
+      "required_aggregations": [
+        "total facility limit",
+        "total drawn balance",
+        "total outstanding commitments",
+        "net available borrowing capacity"
+      ],
+      "required_filters": [
+        "facility type is revolving credit",
+        "records are current and active"
+      ],
+      "time_windowed": false
+    },
+    "33": {
+      "source_line": 33,
+      "description": "Shows the net cash position (inflows minus outflows) for the current week, broken down by geographic region.",
+      "intent_scores": {
+        "balance_lookup": 0.8,
+        "general_analytics": 0.6,
+        "trend_analysis": 0.4
+      },
+      "complexity": "complex",
+      "sql_pattern": "time_series",
+      "is_cross_domain": false,
+      "min_cte_count": 2,
+      "max_cte_count": 4,
+      "cte_steps": [
+        "filter_current_week: narrow all cash transaction or balance records to the current calendar week",
+        "aggregate_by_region: sum cash inflows and outflows separately for each region",
+        "compute_net_position: subtract total outflows from total inflows within each region to produce the net cash position",
+        "rank_regions: order regions by net cash position to highlight the strongest and weakest"
+      ],
+      "required_aggregations": [
+        "total cash inflows by region",
+        "total cash outflows by region",
+        "net cash position by region"
+      ],
+      "required_filters": [
+        "transaction or balance date falls within the current week"
+      ],
+      "time_windowed": true
+    },
+    "34": {
+      "source_line": 34,
+      "description": "Returns the total notional value of all outstanding FX hedge positions, summarized across all currency pairs and instrument types.",
+      "intent_scores": {
+        "fx_exposure": 0.9,
+        "exposure_analysis": 0.65,
+        "balance_lookup": 0.4
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_active_hedges: isolate all FX hedge records that are currently outstanding and have not matured or been closed",
+        "sum_notional: aggregate the notional amounts across all active hedges, optionally grouped by currency pair or instrument type"
+      ],
+      "required_aggregations": [
+        "total notional value of outstanding FX hedges",
+        "notional by currency pair",
+        "notional by instrument type"
+      ],
+      "required_filters": [
+        "hedge status is outstanding or active",
+        "maturity or expiry date has not yet passed"
+      ],
+      "time_windowed": false
+    },
+    "35": {
+      "source_line": 35,
+      "description": "Lists all investment positions with maturity dates within the next 30 days, showing face value, instrument type, and counterparty.",
+      "intent_scores": {
+        "investment_and_maturity": 0.9,
+        "maturity_ladder": 0.7,
+        "investment_positions": 0.65
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_near_term_maturities: narrow investment records to those whose maturity date falls within the next 30 days from today",
+        "sort_by_maturity: order positions by maturity date ascending so the most imminent maturities appear first"
+      ],
+      "required_aggregations": [
+        "total face value of investments maturing within 30 days",
+        "count of positions by instrument type"
+      ],
+      "required_filters": [
+        "maturity date within the next 30 calendar days from today",
+        "position is still active or open"
+      ],
+      "time_windowed": true
+    },
+    "36": {
+      "source_line": 36,
+      "description": "Shows the current covenant compliance status across all credit facilities, indicating which covenants are in compliance, at risk, or in breach.",
+      "intent_scores": {
+        "policy_check": 0.9,
+        "balance_and_policy": 0.75,
+        "exposure_analysis": 0.45
+      },
+      "complexity": "complex",
+      "sql_pattern": "multi_join",
+      "is_cross_domain": false,
+      "min_cte_count": 3,
+      "max_cte_count": 5,
+      "cte_steps": [
+        "get_facilities: retrieve all active credit facilities and their associated covenant thresholds",
+        "get_current_metrics: pull the most recent actual financial metrics relevant to each covenant test",
+        "evaluate_compliance: compare each actual metric against its covenant threshold and assign a compliance status (compliant, at risk, breach)",
+        "summarize_by_facility: roll up compliance statuses at the facility level to show overall standing per facility"
+      ],
+      "required_aggregations": [
+        "count of covenants by compliance status",
+        "number of facilities with at least one breach or at-risk covenant"
+      ],
+      "required_filters": [
+        "facility is currently active",
+        "covenant test period is current"
+      ],
+      "time_windowed": false
+    },
+    "37": {
+      "source_line": 37,
+      "description": "Returns the total outstanding balance of commercial paper along with the weighted average interest rate across all outstanding commercial paper issuances.",
+      "intent_scores": {
+        "balance_lookup": 0.8,
+        "investment_positions": 0.6,
+        "general_analytics": 0.45
+      },
+      "complexity": "complex",
+      "sql_pattern": "multi_join",
+      "is_cross_domain": false,
+      "min_cte_count": 2,
+      "max_cte_count": 3,
+      "cte_steps": [
+        "filter_active_cp: isolate all commercial paper issuances that are currently outstanding and have not yet matured",
+        "aggregate_balance_and_rate: sum the outstanding face values and compute the weighted average rate by weighting each issuance's rate by its outstanding balance",
+        "summarize_results: present the total outstanding balance alongside the weighted average rate as a single summary result"
+      ],
+      "required_aggregations": [
+        "total outstanding commercial paper balance",
+        "weighted average interest rate across all outstanding issuances"
+      ],
+      "required_filters": [
+        "instrument type is commercial paper",
+        "maturity date has not yet passed",
+        "issuance status is outstanding"
+      ],
+      "time_windowed": false
+    },
+    "38": {
+      "source_line": 38,
+      "description": "Lists all bank account signatories whose annual recertification is due or falls within the current quarter, flagging overdue or upcoming renewals.",
+      "intent_scores": {
+        "payment_operations": 0.75,
+        "general_analytics": 0.6,
+        "policy_check": 0.55
+      },
+      "complexity": "complex",
+      "sql_pattern": "multi_join",
+      "is_cross_domain": false,
+      "min_cte_count": 2,
+      "max_cte_count": 4,
+      "cte_steps": [
+        "filter_recertification_due: identify all signatories whose last recertification date is such that the annual renewal falls within or before the end of the current quarter",
+        "join_account_details: link signatory records to their associated bank accounts to provide account-level context",
+        "classify_urgency: label each record as overdue, due this quarter, or upcoming based on recertification deadline proximity",
+        "sort_by_deadline: order results by recertification due date ascending to surface the most urgent items first"
+      ],
+      "required_aggregations": [
+        "count of signatories due for recertification by urgency category"
+      ],
+      "required_filters": [
+        "recertification due date falls on or before the end of the current quarter",
+        "signatory status is active"
+      ],
+      "time_windowed": true
+    },
+    "39": {
+      "source_line": 39,
+      "description": "Provides a full breakdown of the investment portfolio by instrument type, credit rating, and maturity bucket, and identifies any positions that violate investment policy guidelines, including concentration limits or prohibited instrument types.",
+      "intent_scores": {
+        "investment_positions": 0.9,
+        "policy_check": 0.85,
+        "balance_and_policy": 0.75,
+        "exposure_analysis": 0.6,
+        "maturity_ladder": 0.55
+      },
+      "complexity": "advanced",
+      "sql_pattern": "cross_domain",
+      "is_cross_domain": true,
+      "min_cte_count": 5,
+      "max_cte_count": 8,
+      "cte_steps": [
+        "get_active_positions: retrieve all currently active investment positions with their face values, instrument types, credit ratings, and maturity dates",
+        "assign_maturity_buckets: categorize each position into a maturity bucket (e.g., 0-30 days, 31-90 days, 91-180 days, 180+ days) based on time remaining to maturity",
+        "aggregate_by_instrument_type: sum position values and compute percentage of total portfolio for each instrument type",
+        "aggregate_by_credit_rating: sum position values and compute percentage of total portfolio for each credit rating tier",
+        "aggregate_by_maturity_bucket: sum position values and compute percentage of total portfolio for each maturity bucket",
+        "get_policy_limits: retrieve the investment policy rules including maximum concentration limits, minimum credit rating requirements, and permitted instrument types",
+        "flag_policy_violations: compare each aggregated metric and individual position against the policy limits and generate a violation flag with description for any breach",
+        "final_summary: combine portfolio mix breakdowns and policy violation flags into a unified view for review"
+      ],
+      "required_aggregations": [
+        "total portfolio value by instrument type with percentage share",
+        "total portfolio value by credit rating with percentage share",
+        "total portfolio value by maturity bucket with percentage share",
+        "count and value of positions in violation of policy guidelines"
+      ],
+      "required_filters": [
+        "investment positions are currently active and not matured",
+        "policy guidelines are currently in effect"
+      ],
+      "time_windowed": false
     }
   }
 }

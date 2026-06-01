@@ -5,7 +5,7 @@
 
 :root {
   /* ── Light mode - Premium cool slate ── */
-  --background: #eaf1fa;
+  --background: #ffffff;
   --foreground: #0f1b2d;
   --card: #f8fbff;
   --card-foreground: #0f1b2d;
@@ -49,7 +49,7 @@
   --user-bubble: #d8e4f3;
   --user-bubble-foreground: #0f1b2d;
   /* Sidebar */
-  --sidebar: #dce8f6;
+  --sidebar: #ffffff;
   --sidebar-foreground: #0f1b2d;
   --sidebar-primary: #1B76B8;
   --sidebar-primary-foreground: #ffffff;
