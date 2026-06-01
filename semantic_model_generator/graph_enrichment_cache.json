@@ -24129,5 +24129,274 @@
       "description": "The confirmation status of a cash flow or balance, indicating whether it has been confirmed by the bank or is still estimated/forecast. Maps to cash_balance.cash_flow_status."
     }
   ],
-  "glossary_context_offset": 290
+  "glossary_context_offset": 300,
+  "query_templates": {
+    "0": {
+      "source_line": 0,
+      "description": "Returns the sum of all cash balances across every bank account as of the prior business day.",
+      "intent_scores": {
+        "balance_lookup": 0.85,
+        "general_analytics": 0.15
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_yesterday: narrow all account balance records down to yesterday's date",
+        "aggregate_total: sum all account balances into a single grand total"
+      ],
+      "required_aggregations": [
+        "total cash balance across all bank accounts"
+      ],
+      "required_filters": [
+        "balance date equals yesterday"
+      ],
+      "time_windowed": true
+    },
+    "1": {
+      "source_line": 1,
+      "description": "Returns the daily closing balance for the JPMorgan operating account for each of the last 7 days as a time series.",
+      "intent_scores": {
+        "balance_lookup": 0.75,
+        "trend_analysis": 0.2,
+        "general_analytics": 0.05
+      },
+      "complexity": "simple",
+      "sql_pattern": "time_series",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_account_and_period: narrow balance records to the JPMorgan operating account and the last 7 calendar days",
+        "order_by_date: present daily closing balances in chronological order"
+      ],
+      "required_aggregations": [
+        "closing balance per day for the specified account"
+      ],
+      "required_filters": [
+        "specific bank (JPMorgan)",
+        "specific account type (operating)",
+        "date range of last 7 days"
+      ],
+      "time_windowed": true
+    },
+    "2": {
+      "source_line": 2,
+      "description": "Lists all wire transfer payment records exceeding one million dollars that were processed today.",
+      "intent_scores": {
+        "payment_operations": 0.88,
+        "general_analytics": 0.12
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_wire_transfers_today: isolate payment transactions that are wire transfers, processed today, and exceed one million in amount",
+        "present_results: return the filtered list with relevant transaction details"
+      ],
+      "required_aggregations": [],
+      "required_filters": [
+        "payment type equals wire transfer",
+        "transaction date equals today",
+        "amount greater than 1,000,000"
+      ],
+      "time_windowed": true
+    },
+    "3": {
+      "source_line": 3,
+      "description": "Identifies all bank accounts that carried a negative balance on any day during the current week.",
+      "intent_scores": {
+        "balance_lookup": 0.7,
+        "policy_check": 0.2,
+        "general_analytics": 0.1
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_negative_balances_this_week: isolate balance records from the current week where the balance value is below zero",
+        "deduplicate_accounts: return a distinct list of accounts that appeared with a negative balance"
+      ],
+      "required_aggregations": [
+        "count or list of accounts with negative balances"
+      ],
+      "required_filters": [
+        "balance amount is negative (less than zero)",
+        "balance date falls within the current week"
+      ],
+      "time_windowed": true
+    },
+    "4": {
+      "source_line": 4,
+      "description": "Returns the total dollar amount of all ACH receipt transactions received yesterday.",
+      "intent_scores": {
+        "payment_operations": 0.8,
+        "balance_lookup": 0.15,
+        "general_analytics": 0.05
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter_ach_receipts_yesterday: isolate payment records that are ACH type, classified as receipts/inflows, and dated yesterday",
+        "aggregate_total: sum all qualifying ACH receipt amounts into a single total"
+      ],
+      "required_aggregations": [
+        "total ACH receipt amount for yesterday"
+      ],
+      "required_filters": [
+        "payment type equals ACH",
+        "transaction direction is receipt/inflow",
+        "transaction date equals yesterday"
+      ],
+      "time_windowed": true
+    },
+    "5": {
+      "source_line": 5,
+      "description": "Lists all bank accounts organized into groups by the currency each account is denominated in.",
+      "intent_scores": {
+        "balance_lookup": 0.5,
+        "general_analytics": 0.4,
+        "code_lookup": 0.1
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 2,
+      "cte_steps": [
+        "filter: narrow down records to the relevant scope",
+        "aggregate: compute the required business metrics"
+      ],
+      "required_aggregations": [
+        "count of accounts per currency"
+      ],
+      "required_filters": [],
+      "time_windowed": false
+    },
+    "6": {
+      "source_line": 6,
+      "description": "Returns the count of currently open bank accounts located in Canada.",
+      "intent_scores": {
+        "balance_lookup": 0.55,
+        "general_analytics": 0.35,
+        "code_lookup": 0.1
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 1,
+      "cte_steps": [
+        "filter: narrow down records to the relevant scope",
+        "aggregate: compute the required business metrics"
+      ],
+      "required_aggregations": [
+        "count of open bank accounts in Canada"
+      ],
+      "required_filters": [
+        "country equals Canada",
+        "account status is open/active"
+      ],
+      "time_windowed": false
+    },
+    "7": {
+      "source_line": 7,
+      "description": "Returns a full daily cash position snapshot \u2014 including opening balances, inflows, outflows, and closing balances by entity and account \u2014 for last Friday.",
+      "intent_scores": {
+        "balance_lookup": 0.55,
+        "payment_operations": 0.25,
+        "general_analytics": 0.2
+      },
+      "complexity": "complex",
+      "sql_pattern": "multi_join",
+      "is_cross_domain": false,
+      "min_cte_count": 3,
+      "max_cte_count": 5,
+      "cte_steps": [
+        "filter_date: narrow all relevant records to last Friday's date",
+        "get_opening_balances: retrieve the opening balance for each account as of last Friday",
+        "aggregate_transactions: sum all inflows and outflows by account for last Friday",
+        "compute_closing_balances: combine opening balances with net transaction activity to derive closing balances",
+        "assemble_report: join account and entity reference details to produce the full daily cash position report"
+      ],
+      "required_aggregations": [
+        "total inflows per account",
+        "total outflows per account",
+        "closing balance per account"
+      ],
+      "required_filters": [
+        "date equals last Friday"
+      ],
+      "time_windowed": true
+    },
+    "8": {
+      "source_line": 8,
+      "description": "Returns the most recent USD-to-CAD foreign exchange rate stored in the system.",
+      "intent_scores": {
+        "fx_exposure": 0.6,
+        "code_lookup": 0.3,
+        "general_analytics": 0.1
+      },
+      "complexity": "simple",
+      "sql_pattern": "single_table",
+      "is_cross_domain": false,
+      "min_cte_count": 1,
+      "max_cte_count": 1,
+      "cte_steps": [
+        "filter: narrow down records to the relevant scope",
+        "aggregate: compute the required business metrics"
+      ],
+      "required_aggregations": [],
+      "required_filters": [
+        "source currency equals USD",
+        "target currency equals CAD",
+        "most recent or current rate date"
+      ],
+      "time_windowed": false
+    },
+    "9": {
+      "source_line": 9,
+      "description": "Compares actual cash inflows against forecasted inflows for each legal entity over the past 30 days, computing the variance percentage and flagging any entity-day combinations where the variance exceeds 10%.",
+      "intent_scores": {
+        "trend_and_forecast": 0.55,
+        "scenario_forecast": 0.25,
+        "trend_analysis": 0.15,
+        "general_analytics": 0.05
+      },
+      "complexity": "advanced",
+      "sql_pattern": "time_series",
+      "is_cross_domain": false,
+      "min_cte_count": 5,
+      "max_cte_count": 7,
+      "cte_steps": [
+        "filter_period: narrow all records to the past 30 days",
+        "aggregate_actuals: sum actual cash inflows by entity and day for the period",
+        "aggregate_forecasts: sum forecasted cash inflows by entity and day for the same period",
+        "join_actuals_and_forecasts: combine actual and forecast totals by matching entity and date",
+        "compute_variances: calculate the absolute and percentage difference between actual and forecasted inflows for each entity-day pair",
+        "flag_breaches: mark rows where the variance percentage exceeds the 10% threshold",
+        "present_results: order and present the final comparison with variance highlights by entity and date"
+      ],
+      "required_aggregations": [
+        "total actual inflows per entity per day",
+        "total forecasted inflows per entity per day",
+        "variance amount per entity per day",
+        "variance percentage per entity per day"
+      ],
+      "required_filters": [
+        "transaction or forecast date within the last 30 days",
+        "variance percentage greater than 10%"
+      ],
+      "time_windowed": true
+    }
+  }
 }
