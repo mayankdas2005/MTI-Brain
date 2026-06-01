@@ -44,8 +44,7 @@ class ColumnEnrichment(BaseModel):
     pii_type: Optional[Literal["name", "email", "phone", "address", "dob", "ssn"]] = None
     temporal_grain: Literal["day", "week", "month", "quarter", "year", "timestamp", "none"] = "none"
     default_aggregation: Literal["SUM", "AVG", "COUNT", "MIN", "MAX", "NONE"] = "NONE"
-    value_aliases: Optional[list[str]] = None
-    value_scale: Optional[str] = None
+    value_aliases: Optional[list[str]] = None  # ["DB_VALUE -> business label", ...], grounded in value_vocabulary
 
 
 class ColumnsEnrichmentResponse(BaseModel):
@@ -99,7 +98,10 @@ class IntentsOutput(BaseModel):
 class BusinessTermItem(BaseModel):
     term: str
     variants: list[str] = Field(default_factory=list)
-    term_type: Literal["abbreviation", "entity_alias", "unit", "metric", "product"]
+    term_type: Literal["abbreviation", "entity_alias", "unit", "metric", "product",
+                       "concept", "status", "dimension"]
+    term_category: Literal["metric", "dimension", "entity", "concept", "status",
+                           "policy_reference", "aggregation_scope", "filter_value"] = "concept"
     description: str
 
 
@@ -112,7 +114,13 @@ class QueryTemplateItem(BaseModel):
     description: str
     intent_scores: dict[str, float] = Field(default_factory=lambda: {"general_analytics": 0.5})
     complexity: Literal["simple", "complex", "advanced"] = "complex"
-    anchor_ontology_classes: list[str] = Field(default_factory=list)
+    sql_pattern: Literal[
+        "single_table", "multi_join", "time_series",
+        "cross_domain", "time_series_seasonality"
+    ] = "multi_join"
+    is_cross_domain: bool = False
+    min_cte_count: int = 1
+    max_cte_count: int = 5
     cte_steps: list[str] = Field(default_factory=list)
     required_aggregations: list[str] = Field(default_factory=list)
     required_filters: list[str] = Field(default_factory=list)
@@ -191,7 +199,9 @@ _TABLE_SYSTEM = (
     "You are a senior data engineer documenting a treasury and payments data warehouse "
     "for a large enterprise. You have deep knowledge of financial data: bank accounts, "
     "cash positions, FX, payments, card acquiring, debt instruments, and ERP integration. "
-    "Document tables based purely on the structural evidence provided — do not invent facts."
+    "Document tables based purely on the structural evidence provided — do not invent facts. "
+    "IMPORTANT: Do not name specific database columns, foreign key columns, primary keys, "
+    "join predicates, or SQL syntax in your response. Describe only the business meaning and purpose."
 )
 
 _TABLE_PROMPT_TEMPLATE = """For each table below, return a JSON array with one object per table.
@@ -247,6 +257,9 @@ def enrich_tables(tables_data: list[dict], chat_client, cache: dict) -> dict:
 
 _COL_PROMPT_TEMPLATE = """You are documenting database columns for a text-to-SQL semantic layer.
 
+IMPORTANT: Do not suggest what other columns this column joins to. Do not name foreign key targets, join predicates, or SQL column references. Describe only the business meaning of each column in isolation.
+Do not name specific database columns, foreign key columns, primary keys, or join predicates in your response.
+
 Table: {fqn}
 Table description: {table_description}
 
@@ -254,16 +267,18 @@ For each column, return a JSON array with one object per column having these exa
 - "name": column name as given
 - "description": one sentence — what does this column store? Use sample_vals as direct evidence. If sample_vals = ['US','GB','DE'] write "ISO 2-letter country code", not "a column that stores country".
 - "semantic_type": one of [identifier, measure, dimension, date, flag, amount, free_text, code, percentage, ratio]
-- "synonyms": list of 3-5 business terms a non-technical user would call this column
+- "synonyms": list of 3-5 business terms a non-technical user would call this column. Ground them in the column name and sample_vals provided — do not invent terms not supported by the data.
 - "is_pii": true or false
 - "pii_type": one of [name, email, phone, address, dob, ssn, null]
 - "temporal_grain": one of [day, week, month, quarter, year, timestamp, none] — "none" for non-date columns
 - "default_aggregation": one of [SUM, AVG, COUNT, MIN, MAX, NONE] — most natural aggregation for this column; NONE for non-numeric or identifier columns
-- "value_aliases": for categorical/code columns with n_distinct <= 20 — list of "user_term -> db_value" strings (e.g. ["Visa -> VI","Mastercard -> MC","Amex -> AX"]); null for all other columns
-- "value_scale": for numeric amount/ratio columns — describe the unit and scale (e.g. "USD, stored in full dollars", "basis points (1 bp = 0.01%)", "percentage 0-100 scale"); null for all other columns
+- "value_aliases": for categorical/code columns — list of "DB_VALUE -> business label" strings. ONLY include values that appear in the provided sample_vals or value_vocabulary. Do NOT invent values. Return null if column has no sample_vals or is not a code/flag/status column.
 
-Rules for value_aliases: Only populate when semantic_type IN [code, flag, dimension] AND n_distinct <= 20. Use the sample_vals to infer the mapping to common business names. If codes are already self-explanatory, set null.
-Rules for value_scale: Only populate when semantic_type IN [amount, measure, ratio, percentage]. Infer from column name (e.g. "_bps" → basis points, "_pct" → percentage, "_usd" → USD). If unclear, set null.
+Rules for value_aliases:
+  - Only generate when semantic_type IN [code, flag, dimension, status] AND sample_vals/value_vocabulary is non-empty
+  - Map ONLY values that actually appear in sample_vals or value_vocabulary
+  - Format: ["ACTIVE -> active/outstanding loan", "REPAID -> paid off/closed"] — list of strings
+  - If values are already self-explanatory English words, return null
 
 Columns:
 {columns_json}"""
@@ -421,11 +436,13 @@ def enrich_community(
     communities: list[dict],
     chat_client,
     cache: dict,
+    checkpoint_fn=None,
 ) -> dict:
     """
-    Enrich Community nodes with description and query_patterns.
+    Enrich Community nodes with descriptions.
     communities: list of {id, dominant_domain, table_names: [...], table_descriptions: [...]}
-    Returns {community_id: {description, query_patterns}}
+    checkpoint_fn: optional callable(results) called after each batch for incremental saves.
+    Returns {community_id: {description}}
     """
     to_process = [c for c in communities if str(c["id"]) not in cache]
     results = dict(cache)
@@ -446,6 +463,8 @@ def enrich_community(
                      -(-len(to_process) // batch_size))
         except Exception as e:
             log.error("Community enrichment batch %d failed: %s", i // batch_size, e)
+        if checkpoint_fn:
+            checkpoint_fn(results)
 
     log.info("Community enrichment: %d communities processed.", len(results))
     return results
@@ -537,27 +556,34 @@ def generate_business_glossary(
 _QUERY_TEMPLATE_PROMPT = """You are analyzing treasury analytics questions for a text-to-SQL system.
 Users are non-technical business people. All queries use CTEs. Do NOT write SQL.
 
+IMPORTANT: Do not name specific database columns, table names, foreign key columns, join predicates,
+or any SQL syntax. Describe only the business meaning and logical steps.
+Do not name specific database columns or table names in your response.
+
 Available intents: {intents_list}
-
-Available ontology classes (camelCase — pick only from this list): {classes_list}
-
-Ontology class descriptions (use these to understand what each class represents):
-{class_context}
 
 For each question provided, analyze it and fill in:
 - source_line: the integer source_line from the question entry
 - description: one sentence describing what data and metrics the answer contains
 - intent_scores: a dict mapping intent names to confidence scores (0.0-1.0); at least one intent required
 - complexity: one of simple, complex, or advanced
-- anchor_ontology_classes: list of ontology class names from the provided list that are relevant; empty list if none match
-- cte_steps: list of CTE step descriptions in snake_case — always at least 2 steps, each as "cte_name: what this CTE does"
-- required_aggregations: list of plain English descriptions of each aggregation (no SQL)
-- required_filters: list of plain English descriptions of each filter condition
+- sql_pattern: one of [single_table, multi_join, time_series, cross_domain, time_series_seasonality]
+  * single_table: data from one table with filters
+  * multi_join: 2-4 tables joined via foreign keys, same business domain
+  * time_series: temporal trend or comparison over time periods
+  * cross_domain: question spans multiple business domains (liquidity + debt + FX, etc.)
+  * time_series_seasonality: forecast with prior-year comparison baseline
+- is_cross_domain: true if the question requires data from 2+ distinct business domains (e.g. cash + debt + FX combined)
+- min_cte_count: minimum number of CTEs expected (integer)
+- max_cte_count: maximum number of CTEs expected (integer)
+- cte_steps: list of business-level step descriptions — always at least min_cte_count steps, each as "step_name: what business operation this step performs" (e.g. "filter_period: narrow down to the selected date range", "aggregate_balances: sum up cash balances by currency") — NO column names or table names
+- required_aggregations: list of plain English descriptions of each aggregation (e.g. "total cash balance by currency") — no SQL
+- required_filters: list of plain English descriptions of each filter condition (e.g. "filter by company", "within a date range") — no SQL
 - time_windowed: true if the question involves a time window (MTD, YTD, last N days, etc.)
 
 Complexity rules:
-- simple: 1-2 CTEs, <= 2 tables, single aggregate or lookup
-- complex: 3-5 CTEs, 3-5 tables, multi-aggregate with conditions
+- simple: 1-2 CTEs, single aggregate or lookup
+- complex: 3-5 CTEs, multi-aggregate with conditions
 - advanced: 5+ CTEs, cross-domain, stress tests, trends, executive dashboards
 
 Questions (with source_line and question_text):
@@ -577,20 +603,20 @@ def enrich_query_templates(
     Enrich QueryTemplate nodes from Questions.txt using structured output.
     questions: list of {source_line: int, question_text: str}
     Returns {source_line: enriched_dict}
+
+    Note: anchor_table_fqns is NOT derived here — it is computed programmatically
+    in the pipeline from intent → ontology_class → Table lookups.
     """
     to_process = [q for q in questions if str(q["source_line"]) not in cache]
     results = dict(cache)
 
     intents_list = ", ".join(intents)
-    classes_list = ", ".join(ontology_classes[:150])
     structured = chat_client.with_structured_output(QueryTemplatesOutput)
 
     for i in range(0, len(to_process), batch_size):
         batch = to_process[i: i + batch_size]
         prompt = _QUERY_TEMPLATE_PROMPT.format(
             intents_list=intents_list,
-            classes_list=classes_list,
-            class_context=class_context or "(no class descriptions available)",
             questions_json=json.dumps(batch, indent=2),
         )
         try:
@@ -599,8 +625,8 @@ def enrich_query_templates(
                 d = item.model_dump()
                 if len(d.get("cte_steps") or []) < 2:
                     d["cte_steps"] = [
-                        "base: select relevant rows from anchor tables with applied filters",
-                        "final: aggregate or format results for the user",
+                        "filter: narrow down records to the relevant scope",
+                        "aggregate: compute the required business metrics",
                     ]
                 results[str(d["source_line"])] = d
             done = min(i + batch_size, len(to_process))
@@ -615,10 +641,9 @@ def enrich_query_templates(
                         "description": q["question_text"],
                         "intent_scores": {"general_analytics": 0.5},
                         "complexity": "complex",
-                        "anchor_ontology_classes": [],
                         "cte_steps": [
-                            "base: select relevant rows from anchor tables with applied filters",
-                            "final: aggregate or format results for the user",
+                            "filter: narrow down records to the relevant scope",
+                            "aggregate: compute the required business metrics",
                         ],
                         "required_aggregations": [],
                         "required_filters": [],

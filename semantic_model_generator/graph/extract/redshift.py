@@ -12,6 +12,8 @@ from typing import Any
 
 import redshift_connector
 
+from ..utils import is_uuid_col
+
 log = logging.getLogger(__name__)
 
 _SCHEMA = "lpp"
@@ -140,6 +142,10 @@ class RedshiftExtractor:
             top_freq_values = self.get_top_frequent_values(con, pg_stats, columns, tbl_filter, col_filter)
             log.info("top_freq done: %d tables", len(top_freq_values))
 
+            log.info("distinct_values (per-table, all string cols) …")
+            distinct_values = self.get_distinct_values(con, columns, tbl_filter)
+            log.info("distinct_values done: %d tables", len(distinct_values))
+
             result = {
                 "tables":          tables,
                 "columns":         columns,
@@ -158,6 +164,7 @@ class RedshiftExtractor:
                 "never_joined":    never_joined,
                 "samples":         samples,
                 "top_freq_values": top_freq_values,
+                "distinct_values": distinct_values,
             }
         log.info("Redshift extraction complete.")
         return result
@@ -633,20 +640,20 @@ class RedshiftExtractor:
         columns: list[dict],
         tbl_filter: set[str] = frozenset(),
         col_filter: set[tuple[str, str]] = frozenset(),
-        max_distinct: int = 50,
-        top_n: int = 20,
+        max_distinct: int = 100,
+        top_n: int = 100,
     ) -> dict[str, dict[str, list[str]]]:
         """
         Returns {table_name: {col_name: ["val:count", ...]}} for low-cardinality columns.
         Uses UNION ALL + GROUP BY COUNT(*) ORDER BY freq DESC — frequency-ranked, not random.
-        Covers columns where 1 < n_distinct <= max_distinct only.
-        Columns with n_distinct < 0 are handled by q8_samples (LIMIT 200, no sort/group).
-        Only processes tables/columns present in tbl_filter/col_filter when provided.
+        Covers columns where 1 <= n_distinct <= max_distinct (inclusive of 1).
+        UUID columns are excluded.
         """
         _SKIP_FREQ_TYPES = {"boolean", "bool", "hllsketch", "super", "geometry"}
         col_type_map: dict[tuple[str, str], str] = {
             (r["table_name"], r["column_name"]): (r.get("data_type") or "").lower()
             for r in columns
+            if not is_uuid_col(r["column_name"])
         }
         user_cols: set[tuple[str, str]] = set(col_type_map.keys())
         if col_filter:
@@ -657,6 +664,8 @@ class RedshiftExtractor:
             nd  = float(row.get("n_distinct") or 0)
             tbl = row["table_name"]
             col = row["column_name"]
+            if is_uuid_col(col):
+                continue
             if tbl_filter and tbl not in tbl_filter:
                 continue
             if (tbl, col) not in user_cols:
@@ -664,7 +673,7 @@ class RedshiftExtractor:
             ctype = col_type_map.get((tbl, col), "")
             if ctype in _SKIP_FREQ_TYPES:
                 continue
-            if 1 < nd <= max_distinct:
+            if 1 <= nd <= max_distinct:  # FIX: was 1 < nd (missed n_distinct=1 columns)
                 candidates.setdefault(tbl, []).append(col)
 
         result: dict[str, dict[str, list[str]]] = {}
@@ -690,4 +699,68 @@ class RedshiftExtractor:
             except Exception as e:
                 log.warning("top_freq [%d/%d] %s — FAILED: %s", idx, total_cand, tbl, e)
         log.info("top_freq_values: processed %d/%d tables.", len(result), total_cand)
+        return result
+
+    def get_distinct_values(
+        self,
+        con,
+        columns: list[dict],
+        tbl_filter: set[str] = frozenset(),
+        max_distinct: int = 100,
+    ) -> dict[str, dict[str, list[str]]]:
+        """
+        Returns {table_name: {col_name: [val, ...]}} for ALL string columns.
+
+        Every varchar / char / text column is fetched regardless of n_distinct.
+        Up to max_distinct (100) values per column ordered by frequency DESC.
+        Each column subquery has its own LIMIT — safe for high-cardinality columns.
+        UUID columns and non-string types are excluded.
+        """
+        _STRING_TYPES = {
+            "character varying", "varchar", "char", "character", "text", "nvarchar", "bpchar",
+        }
+
+        col_type_map: dict[tuple[str, str], str] = {
+            (r["table_name"], r["column_name"]): (r.get("data_type") or "").lower()
+            for r in columns
+            if not is_uuid_col(r["column_name"])
+        }
+
+        def _qualifies(col: str, data_type: str) -> bool:
+            return data_type.split("(")[0].strip() in _STRING_TYPES
+
+        # Build per-table candidate column lists
+        candidates: dict[str, list[str]] = {}
+        for (tbl, col), dtype in col_type_map.items():
+            if tbl_filter and tbl not in tbl_filter:
+                continue
+            if _qualifies(col, dtype):
+                candidates.setdefault(tbl, []).append(col)
+
+        result: dict[str, dict[str, list[str]]] = {}
+        for tbl, cols in candidates.items():
+            # Each column is a self-contained subquery with its own LIMIT so high-cardinality
+            # free-text columns don't cause unbounded GROUP BY scans.
+            union_parts = [
+                f"SELECT * FROM ("
+                f"SELECT '{c}' AS col_name, \"{c}\"::varchar AS val, COUNT(*) AS freq "
+                f"FROM {self.schema}.{tbl} WHERE \"{c}\" IS NOT NULL GROUP BY \"{c}\""
+                f" ORDER BY freq DESC LIMIT {max_distinct}) _q_{i}"
+                for i, c in enumerate(cols)
+            ]
+            sql = " UNION ALL ".join(union_parts) + " ORDER BY col_name, freq DESC"
+            try:
+                rows = _fetch(con, sql)
+                tbl_result: dict[str, list[str]] = {}
+                for r in rows:
+                    col_name = r["col_name"]
+                    bucket = tbl_result.setdefault(col_name, [])
+                    if len(bucket) < max_distinct:
+                        bucket.append(str(r["val"]))
+                result[tbl] = tbl_result
+                log.info("distinct_values %s — %d cols, %d total values",
+                         tbl, len(tbl_result), sum(len(v) for v in tbl_result.values()))
+            except Exception as e:
+                log.warning("distinct_values %s — FAILED: %s", tbl, e)
+        log.info("distinct_values: processed %d tables.", len(result))
         return result

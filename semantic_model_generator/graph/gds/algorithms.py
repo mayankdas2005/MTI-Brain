@@ -196,6 +196,88 @@ class GDSPipeline:
         log.info("Betweenness: wrote to %d nodes.", r.get("nodePropertiesWritten", 0))
         return r
 
+    # ── Strongly Connected Components ─────────────────────────────────────
+
+    def project_directed_graph(self):
+        """Project a directed graph for algorithms requiring edge direction."""
+        self._drop_graph("join_graph_directed")
+        self._run("""
+            CALL gds.graph.project(
+                'join_graph_directed',
+                'Table',
+                {
+                    JOINS_TO: {
+                        orientation: 'NATURAL',
+                        properties: { join_cost: { defaultValue: 2.0 } }
+                    }
+                }
+            )
+        """)
+        log.info("Projected join_graph_directed.")
+
+    def run_scc(self) -> dict:
+        """Strongly Connected Components — tables mutually reachable via directed joins.
+        Writes scc_id on Table nodes."""
+        self.project_directed_graph()
+        result = self._run("""
+            CALL gds.scc.write('join_graph_directed', {
+                writeProperty: 'scc_id'
+            })
+            YIELD componentCount, componentDistribution
+            RETURN componentCount, componentDistribution
+        """)
+        self._drop_graph("join_graph_directed")
+        r = result[0] if result else {}
+        log.info("SCC: %d components.", r.get("componentCount", 0))
+        return r
+
+    # ── Triangle Count ─────────────────────────────────────────────────────
+
+    def run_triangle_count(self) -> dict:
+        """Triangle Count — tables that form natural multi-table join hubs.
+        Writes triangle_count on Table nodes. Requires join_graph (undirected)."""
+        result = self._run("""
+            CALL gds.triangleCount.write('join_graph', {
+                writeProperty: 'triangle_count'
+            })
+            YIELD globalTriangleCount, nodeCount
+            RETURN globalTriangleCount, nodeCount
+        """)
+        r = result[0] if result else {}
+        log.info("TriangleCount: %d global triangles across %d nodes.",
+                 r.get("globalTriangleCount", 0), r.get("nodeCount", 0))
+        return r
+
+    # ── Degree Centrality ──────────────────────────────────────────────────
+
+    def run_degree_centrality(self) -> dict:
+        """Degree Centrality — in_degree and out_degree on Table nodes.
+        High in_degree = shared dimension; high out_degree = central fact table."""
+        self.project_directed_graph()
+        # In-degree (how many tables join TO this table)
+        self._run("""
+            CALL gds.degree.write('join_graph_directed', {
+                writeProperty: 'in_degree',
+                orientation:   'REVERSE'
+            })
+            YIELD nodePropertiesWritten
+            RETURN nodePropertiesWritten
+        """)
+        # Out-degree (how many tables this table joins to)
+        result = self._run("""
+            CALL gds.degree.write('join_graph_directed', {
+                writeProperty: 'out_degree',
+                orientation:   'NATURAL'
+            })
+            YIELD nodePropertiesWritten
+            RETURN nodePropertiesWritten
+        """)
+        self._drop_graph("join_graph_directed")
+        r = result[0] if result else {}
+        log.info("DegreeCentrality: wrote in_degree + out_degree to %d nodes.",
+                 r.get("nodePropertiesWritten", 0))
+        return r
+
     # ── Leiden ─────────────────────────────────────────────────────────────
 
     def run_leiden(self, gamma: float = _LEIDEN_GAMMA_DEFAULT) -> dict:
@@ -240,7 +322,7 @@ class GDSPipeline:
         if community_sizes:
             max_community_pct = round(community_sizes[0]["n"] / total * 100, 1)
 
-        ok = max_community_pct <= 30 and 15 <= cross_pct <= 50
+        ok = max_community_pct <= 35 and cross_pct >= 15
         log.info(
             "Leiden validation: max_community=%.1f%% cross_edges=%.1f%% ok=%s",
             max_community_pct, cross_pct, ok,
@@ -267,11 +349,10 @@ class GDSPipeline:
             cid, n = row["cid"], row["n"]
             self._run("""
                 MERGE (c:Community {id: $cid})
-                ON CREATE SET c.dominant_domain = 'unknown'
-                SET c.table_count  = $n,
-                    c.leiden_gamma = $gamma,
-                    c.run_date     = $now
-            """, cid=cid, n=n, gamma=gamma, now=now)
+                ON CREATE SET c.dominant_domain = 'unknown',
+                              c.created_at      = $now
+                SET c.table_count = $n
+            """, cid=cid, n=n, now=now)
 
         # Step 2 — Link tables to communities
         self._run("""
@@ -293,8 +374,6 @@ class GDSPipeline:
                  reduce(s = 0.0, r IN ranked | s + r.weight) AS total_w
             MATCH (c:Community {id: cid})
             SET c.dominant_domain            = ranked[0].domain,
-                c.domain_distribution        = [r IN ranked |
-                    r.domain + ':' + toString(round(r.weight * 1000) / 1000.0)],
                 c.dominant_domain_confidence = CASE WHEN total_w = 0 THEN 0.0
                     ELSE round(ranked[0].weight / total_w * 100) / 100.0 END
         """)

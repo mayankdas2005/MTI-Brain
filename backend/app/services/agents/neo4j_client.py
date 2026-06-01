@@ -108,25 +108,33 @@ def _do_neo4j_write(cypher: str, **kwargs) -> None:
 
 
 def _bootstrap_indexes() -> None:
-    """Create required FTS indexes on startup.
+    """Create all required indexes and constraints on backend startup.
 
-    QueryPattern and AntiPattern vector indexes are NOT bootstrapped here because
-    those nodes have no data yet. Bootstrapping an index on an empty schema
-    causes Neo4j 01N52 property-key warnings on every query. The write_query_pattern
-    and write_anti_pattern functions will populate those nodes over time; the
-    indexes can be created then.
+    QueryPattern and AntiPattern vector indexes are NOT created here because
+    those nodes have no data yet — bootstrapping on an empty schema causes
+    Neo4j 01N52 property-key warnings on every query. Those indexes are created
+    lazily by write_query_pattern / write_anti_pattern.
+
+    SCHEMA_DDL is the single source of truth in neo4j_writer.py.
+    All DDL statements are idempotent (IF NOT EXISTS).
     """
-    queries = [
-        """CREATE FULLTEXT INDEX businessterm_ft IF NOT EXISTS
-           FOR (n:BusinessTerm) ON EACH [n.term, n.variants, n.description]""",
-    ]
+    try:
+        from semantic_model_generator.graph.load.neo4j_writer import SCHEMA_DDL, FULLTEXT_DDL
+        queries = SCHEMA_DDL + FULLTEXT_DDL
+    except ImportError:
+        # Fallback: minimal set if semantic_model_generator not installed
+        queries = [
+            "CREATE CONSTRAINT tbl_fqn_unique IF NOT EXISTS FOR (t:Table) REQUIRE t.fqn IS UNIQUE",
+            "CREATE CONSTRAINT col_id_unique IF NOT EXISTS FOR (c:Column) REQUIRE c.id IS UNIQUE",
+        ]
+
     with get_driver().session(database=settings.NEO4J_DB) as session:
         for q in queries:
             try:
                 session.run(q)
             except Exception as e:
                 logger.warning("Index bootstrap warning (non-fatal): {}", e)
-    logger.info("Neo4j vector indexes bootstrapped")
+    logger.info("Neo4j schema indexes bootstrapped")
 
 
 # ── Template search ──────────────────────────────────────────────────────────
@@ -140,10 +148,14 @@ def search_query_templates(embedding: list[float]) -> list[dict]:
       LIMIT 5
     )
     SCORE AS score
+    WHERE coalesce(qt.template_confidence, 0) >= 0.6
     RETURN qt.id AS id, qt.question_text AS question_text,
-           qt.primary_intent AS primary_intent, qt.anchor_table_fqns AS anchor_table_fqns,
+           qt.primary_intent AS primary_intent,
+           qt.anchor_table_fqns_resolved AS anchor_table_fqns,
            qt.cte_steps AS cte_steps, qt.required_aggregations AS required_aggregations,
            qt.required_filters AS required_filters, qt.complexity AS complexity,
+           qt.sql_pattern AS sql_pattern, qt.is_cross_domain AS is_cross_domain,
+           qt.template_confidence AS template_confidence, qt.is_validated AS is_validated,
            score
     """
     t0 = time.monotonic()
@@ -244,11 +256,14 @@ def search_query_templates_fulltext(query_text: str) -> list[dict]:
     cypher = """
     CALL db.index.fulltext.queryNodes('querytemplate_ft', $query)
     YIELD node AS qt, score
+    WHERE coalesce(qt.template_confidence, 0) >= 0.6
     RETURN qt.id AS id, qt.question_text AS question_text,
-           qt.primary_intent AS primary_intent, qt.anchor_table_fqns AS anchor_table_fqns,
+           qt.primary_intent AS primary_intent,
+           qt.anchor_table_fqns_resolved AS anchor_table_fqns,
            qt.cte_steps AS cte_steps, qt.required_aggregations AS required_aggregations,
            qt.required_filters AS required_filters, qt.complexity AS complexity,
-           qt.description AS description,
+           qt.description AS description, qt.sql_pattern AS sql_pattern,
+           qt.is_cross_domain AS is_cross_domain, qt.template_confidence AS template_confidence,
            score LIMIT 5
     """
     t0 = time.monotonic()
@@ -890,14 +905,82 @@ def get_query_templates_by_ids(ids: list[str]) -> list[dict]:
     return [dict(r["qt"] or {}) for r in results]
 
 
+# ── Intent fulltext search ───────────────────────────────────────────────────
+
+@neo4j_breaker
+def search_intents_fulltext(query_text: str) -> list[dict]:
+    cypher = """
+    CALL db.index.fulltext.queryNodes('intent_ft', $query)
+    YIELD node AS i, score
+    RETURN i.name AS name, i.description AS description, score
+    LIMIT 5
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(cypher, {"query": query_text})
+    logger.debug("neo4j | fn=search_intents_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+# ── QueryPattern fulltext search ─────────────────────────────────────────────
+
+@neo4j_breaker
+def search_query_patterns_fulltext(query_text: str) -> list[dict]:
+    cypher = """
+    CALL db.index.fulltext.queryNodes('querypattern_ft', $query)
+    YIELD node AS qp, score
+    RETURN qp.id AS id, qp.question_text AS question_text, qp.sql_cte_outline AS sql_cte_outline,
+           qp.join_outline AS join_outline, qp.filter_summary AS filter_summary,
+           qp.tables_used AS tables_used, qp.intent AS intent, qp.complexity AS complexity,
+           qp.recompile_count AS recompile_count, qp.repair_count AS repair_count, score
+    LIMIT 3
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(cypher, {"query": query_text})
+    logger.debug("neo4j | fn=search_query_patterns_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+# ── Cross-domain bridge lookup ────────────────────────────────────────────────
+
+@neo4j_breaker
+def get_dimension_hub_for_communities(community_ids: list) -> list[dict]:
+    """Fetch BRIDGES_TO edges with hub info for a set of community IDs."""
+    cypher = """
+    MATCH (c1:Community)-[r:BRIDGES_TO]->(c2:Community)
+    WHERE c1.id IN $ids AND c2.id IN $ids
+      AND r.hub_table_fqn IS NOT NULL
+    RETURN c1.id AS from_community, c2.id AS to_community,
+           r.hub_table_fqn AS hub_table_fqn, r.hub_join_col AS hub_join_col,
+           r.bridge_type AS bridge_type, r.join_safe AS join_safe,
+           r.shared_dimension_columns AS shared_dimension_columns
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(cypher, {"ids": community_ids})
+    logger.debug("neo4j | fn=get_dimension_hub_for_communities | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+# ── Write delegation ─────────────────────────────────────────────────────────
+
+try:
+    from semantic_model_generator.graph.load.neo4j_writer import (
+        write_join_path as _wjp,
+        write_query_pattern as _wqp,
+        write_anti_pattern as _wap,
+    )
+    _WRITER_AVAILABLE = True
+except ImportError:
+    _WRITER_AVAILABLE = False
+
+
 @neo4j_breaker
 def write_join_path(path_data: dict) -> None:
     """Write a newly computed JoinPath back to Neo4j for future reuse."""
-    query = """
-    MERGE (jp:JoinPath {id: $id})
-    SET jp += $props
-    """
-    _neo4j_write(query, id=path_data["id"], props=path_data)
+    if _WRITER_AVAILABLE:
+        _wjp(run_fn=_neo4j_write, path_data=path_data)
+    else:
+        _neo4j_write("MERGE (jp:JoinPath {id: $id}) SET jp += $props",
+                     id=path_data["id"], props=path_data)
     logger.debug("neo4j | fn=write_join_path | id={}", path_data.get("id"))
 
 
@@ -964,19 +1047,19 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
 
 @neo4j_breaker
 def write_query_pattern(pattern_data: dict) -> None:
-    query = """
-    MERGE (qp:QueryPattern {id: $id})
-    SET qp += $props
-    """
-    _neo4j_write(query, id=pattern_data["id"], props=pattern_data)
+    if _WRITER_AVAILABLE:
+        _wqp(run_fn=_neo4j_write, pattern_data=pattern_data)
+    else:
+        _neo4j_write("MERGE (qp:QueryPattern {id: $id}) SET qp += $props",
+                     id=pattern_data["id"], props=pattern_data)
     logger.debug("neo4j | fn=write_query_pattern | id={}", pattern_data.get("id"))
 
 
 @neo4j_breaker
 def write_anti_pattern(pattern_data: dict) -> None:
-    query = """
-    MERGE (ap:AntiPattern {id: $id})
-    SET ap += $props
-    """
-    _neo4j_write(query, id=pattern_data["id"], props=pattern_data)
+    if _WRITER_AVAILABLE:
+        _wap(run_fn=_neo4j_write, pattern_data=pattern_data)
+    else:
+        _neo4j_write("MERGE (ap:AntiPattern {id: $id}) SET ap += $props",
+                     id=pattern_data["id"], props=pattern_data)
     logger.debug("neo4j | fn=write_anti_pattern | id={}", pattern_data.get("id"))

@@ -1,54 +1,19 @@
 """
-Rollup relationship detection and is_subquery_anchor enrichment.
+Rollup relationship detection — schema-driven, no LLM, no name patterns.
 
-Detects time-windowed table variants (e.g. transfer_in_last_7, balance_mtd)
-and creates ROLLUP_OF edges linking them to their base tables.
-Also writes is_rollup / rollup_base_fqn / rollup_window_days on rollup tables.
+Detects pre-aggregated / time-windowed table variants by structural analysis
+of column overlap and temporal grain columns in the Neo4j graph.
+
+Creates ROLLUP_OF edges and writes is_subquery_anchor on base tables.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from datetime import datetime, timezone
-
-from pydantic import BaseModel, Field
-from typing import Optional
-from ..enrich.llm_enricher import _langchain_bedrock
 
 log = logging.getLogger(__name__)
 _NOW = lambda: datetime.now(timezone.utc).isoformat()
-
-# Regex patterns that identify rollup/time-windowed table suffixes
-_ROLLUP_PATTERNS = [
-    (re.compile(r"_last[_]?(\d+)[d]?$", re.I),         "trailing_N_days"),
-    (re.compile(r"_(\d+)[d]?_rolling$", re.I),          "trailing_N_days"),
-    (re.compile(r"_mtd$", re.I),                         "month_to_date"),
-    (re.compile(r"_ytd$", re.I),                         "year_to_date"),
-    (re.compile(r"_qtd$", re.I),                         "quarter_to_date"),
-    (re.compile(r"_weekly$", re.I),                      "weekly"),
-    (re.compile(r"_monthly$", re.I),                     "monthly"),
-    (re.compile(r"_daily$", re.I),                       "daily"),
-    (re.compile(r"_7d(ay)?s?$", re.I),                   "trailing_7_days"),
-    (re.compile(r"_30d(ay)?s?$", re.I),                  "trailing_30_days"),
-    (re.compile(r"_90d(ay)?s?$", re.I),                  "trailing_90_days"),
-]
-
-_WINDOW_DAYS = {
-    "trailing_N_days":  None,   # extracted from suffix
-    "month_to_date":    30,
-    "year_to_date":     365,
-    "quarter_to_date":  90,
-    "weekly":           7,
-    "monthly":          30,
-    "daily":            1,
-    "trailing_7_days":  7,
-    "trailing_30_days": 30,
-    "trailing_90_days": 90,
-}
-
-_MIN_CONFIDENCE = 0.80
 
 _GRAIN_WINDOW_MAP = {
     "week":    ("weekly",           7),
@@ -57,6 +22,8 @@ _GRAIN_WINDOW_MAP = {
     "year":    ("year_to_date",     365),
 }
 
+_MIN_CONFIDENCE = 0.70
+
 
 def detect_rollup_candidates_from_graph(loader) -> list[dict]:
     """
@@ -64,13 +31,13 @@ def detect_rollup_candidates_from_graph(loader) -> list[dict]:
     Requires temporal_grain to be set on Column nodes (run after ENRICH step).
 
     Detection criteria:
-    - Candidate row_count <= base row_count * 1.1 (aggregated)
-    - Column overlap >= 60% of base columns
+    - Candidate row_count <= base row_count * 1.1
+    - Column overlap (shared / base) >= 0.60
     - Candidate has a temporal grain column (week/month/quarter/year) absent in base
-    - No FK cand→base (not a parent-child pair)
+    - No JOINS_TO edge from candidate to base (not a parent-child FK pair)
 
     Returns list of {rollup_fqn, base_fqn, window_type, window_days, confidence}
-    with the same shape as detect_rollup_candidates().
+    where confidence = shared_cols / base_col_count (column overlap ratio).
     """
     rows = loader._run("""
         MATCH (base:Table)-[:HAS_COLUMN]->(bc:Column)
@@ -108,6 +75,14 @@ def detect_rollup_candidates_from_graph(loader) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
+
+        base_col_count = r.get("base_col_count") or 1
+        shared = r.get("shared_cols") or 0
+        confidence = round(shared / base_col_count, 3)
+
+        if confidence < _MIN_CONFIDENCE:
+            continue
+
         window_type, window_days = _GRAIN_WINDOW_MAP.get(r["grain"], ("unknown", None))
         candidates.append({
             "rollup_fqn":  r["rollup_fqn"],
@@ -115,137 +90,9 @@ def detect_rollup_candidates_from_graph(loader) -> list[dict]:
             "grain_col":   r.get("grain_col"),
             "window_type": window_type,
             "window_days": window_days,
-            "confidence":  0.90,
+            "confidence":  confidence,
         })
 
-    log.info("Schema-driven rollup detection: %d candidates found.", len(candidates))
+    log.info("Schema-driven rollup detection: %d candidates (min_confidence=%.2f).",
+             len(candidates), _MIN_CONFIDENCE)
     return candidates
-
-
-def _strip_rollup_suffix(name: str) -> str:
-    """Remove the rollup suffix to get the candidate base table name."""
-    for pattern, _ in _ROLLUP_PATTERNS:
-        stripped = pattern.sub("", name)
-        if stripped != name:
-            return stripped
-    return name
-
-
-def detect_rollup_candidates(table_names: list[str]) -> list[dict]:
-    """
-    Pure heuristic pass — no LLM.
-    Returns list of {rollup_fqn, base_candidate_name, window_type, window_days, confidence}
-    for pairs where a rollup-suffixed table has a matching base table in the set.
-    """
-    name_set = set(table_names)
-    # Build short_name → fqn mapping
-    short_to_fqn: dict[str, str] = {}
-    for fqn in table_names:
-        short = fqn.split(".")[-1]
-        short_to_fqn[short] = fqn
-
-    candidates = []
-    for fqn in table_names:
-        short = fqn.split(".")[-1]
-        schema = fqn.rsplit(".", 1)[0]
-
-        for pattern, window_type in _ROLLUP_PATTERNS:
-            m = pattern.search(short)
-            if not m:
-                continue
-
-            base_short = pattern.sub("", short)
-            base_fqn = short_to_fqn.get(base_short) or f"{schema}.{base_short}"
-
-            if base_fqn not in name_set and f"{schema}.{base_short}" not in name_set:
-                continue
-
-            # Extract N from trailing_N_days
-            window_days = _WINDOW_DAYS.get(window_type)
-            if window_type == "trailing_N_days" and m.group(1):
-                try:
-                    window_days = int(m.group(1))
-                except ValueError:
-                    pass
-
-            candidates.append({
-                "rollup_fqn":        fqn,
-                "base_fqn":          base_fqn,
-                "window_type":       window_type,
-                "window_days":       window_days,
-                "confidence":        0.90,
-            })
-            break  # one match per table
-
-    return candidates
-
-
-_ROLLUP_LLM_PROMPT = """You are validating rollup/time-windowed table relationships in a data warehouse.
-
-For each candidate pair below, determine whether the rollup_table is genuinely a time-windowed or pre-aggregated variant of the base_table.
-
-For each candidate provide:
-- rollup_fqn: the rollup table fqn exactly as given
-- base_fqn: the base table fqn exactly as given
-- window_type: the window type string (e.g. trailing_7_days, month_to_date) or null if not applicable
-- window_days: integer number of days in the window, or null
-- confidence: a float between 0.0 and 1.0
-- confirmed: true if this is genuinely a rollup/time-windowed variant, false otherwise
-
-Candidate pairs:
-{pairs_json}"""
-
-
-class _RollupValidation(BaseModel):
-    rollup_fqn: str
-    base_fqn: str
-    window_type: Optional[str] = None
-    window_days: Optional[int] = None
-    confidence: float
-    confirmed: bool
-
-
-class _RollupValidationsOutput(BaseModel):
-    validations: list[_RollupValidation] = Field(default_factory=list)
-
-
-def validate_rollup_with_llm(
-    candidates: list[dict],
-    table_descriptions: dict[str, str],
-    chat_client,
-) -> list[dict]:
-    """
-    Use LLM to validate heuristic rollup candidates.
-    Returns only pairs with confidence >= _MIN_CONFIDENCE and confirmed=true.
-    """
-    if not candidates:
-        return []
-
-    enriched = [
-        {**c,
-         "rollup_description": table_descriptions.get(c["rollup_fqn"], ""),
-         "base_description":   table_descriptions.get(c["base_fqn"], "")}
-        for c in candidates
-    ]
-    prompt = _ROLLUP_LLM_PROMPT.format(
-        pairs_json=json.dumps(enriched, indent=2, default=str)
-    )
-    try:
-        structured = chat_client.with_structured_output(_RollupValidationsOutput)
-        output: _RollupValidationsOutput = structured.invoke(prompt)
-        confirmed = [
-            v.model_dump() for v in output.validations
-            if v.confirmed and v.confidence >= _MIN_CONFIDENCE
-        ]
-        rejected = len(output.validations) - len(confirmed)
-        log.info("Rollup LLM: %d/%d confirmed, %d rejected (confidence < %.2f or confirmed=false).",
-                 len(confirmed), len(candidates), rejected, _MIN_CONFIDENCE)
-        if rejected:
-            for v in output.validations:
-                if not (v.confirmed and v.confidence >= _MIN_CONFIDENCE):
-                    log.debug("  rejected: %s → %s confirmed=%s conf=%.2f",
-                              v.rollup_fqn, v.base_fqn, v.confirmed, v.confidence)
-        return confirmed
-    except Exception as e:
-        log.error("Rollup LLM validation failed: %s — returning heuristic candidates", e)
-        return [c for c in candidates if c["confidence"] >= _MIN_CONFIDENCE]

@@ -125,3 +125,18 @@ What is our share of e-commerce versus in-warehouse payment volume?
 How much member-facing fraud did we absorb last year?
 Show me the trajectory of our payments cost as a percentage of revenue over the last decade, decomposed into mix, rate, and operating-leverage effects.
 Summarize all material payment incidents and regulatory matters over the past 24 months in a format suitable for the audit committee.
+Give me a one-page CFO briefing on treasury health showing liquidity, outstanding debt, FX exposure, interest rate accruals, and counterparty risk by company.
+What is our total net treasury position by currency combining confirmed cash balances, outstanding borrowings, and hedged FX forward positions?
+Build a 4-week and 3-month cash forecast using historical inflows and outflows. Factor in seasonality from the same period last year and flag any week where projected liquidity falls below our $200M minimum threshold.
+Show me the weekly net cash flow trend for the last 12 weeks versus the same period last year by company.
+What is our total FX exposure by currency after netting outstanding FX forward hedges against gross underlying exposures?
+What is our total debt maturity profile for the next 24 months broken down by currency and by company?
+Show me accounts receivable outstanding, accounts payable due, and net working capital by company for the current period.
+What percentage of our interest-bearing debt is floating rate versus fixed rate and what is our total benchmark rate sensitivity?
+How does our forecast accuracy compare to actuals over the last 6 months by flow category and company?
+What is our total counterparty credit exposure to each bank including deposits, short-term investments, and derivative mark-to-market?
+Show me all companies where outstanding borrowings exceed their credit facility limit.
+What is the total cost of our cross-border payment activity this month including FX conversion costs, lifting fees, and processing fees?
+Generate a weekly liquidity waterfall for the next 8 weeks showing opening balance, projected inflows, projected outflows, and closing balance by company.
+What is our total card settlement exposure showing pending card settlements versus available cash in each settlement bank account?
+Show me forecast versus actual cash flows for the current quarter with variance analysis by company and by flow category.

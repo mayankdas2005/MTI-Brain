@@ -34,6 +34,7 @@ from pathlib import Path
 from .config import bedrock as bedrock_cfg
 from .config import neo4j as neo4j_cfg
 from .config import rs as rs_cfg
+from .utils import is_uuid_col
 from .enrich.embeddings import (
     embed_columns,
     embed_communities,
@@ -61,7 +62,7 @@ from .enrich.llm_enricher import (
     enrich_tables,
     generate_business_glossary,
 )
-from .enrich.rollup import detect_rollup_candidates_from_graph, validate_rollup_with_llm
+from .enrich.rollup import detect_rollup_candidates_from_graph
 from .extract.redshift import RedshiftExtractor
 from .extract.yml_parser import parse as parse_yml
 from .gds.algorithms import GDSPipeline
@@ -129,9 +130,9 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         t = time.time()
         log.info("── EXTRACT ──────────────────────────────────────────────")
 
-        log.info("Parsing semantic_model.yml …")
+        log.info("Parsing lpp_semantic_model.yml …")
         tables_meta, columns_meta, sme_edges = parse_yml()
-        log.info("YML: %d tables, %d columns, %d SME edges",
+        log.info("YML: %d tables, %d columns (uuid-cols excluded), %d declared FK edges",
                  len(tables_meta), len(columns_meta), len(sme_edges))
 
         yml_table_names: set[str] = {tm.name for tm in tables_meta}
@@ -173,18 +174,24 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         for row in raw.get("pg_stats", []):
             q3_by_table[row["table_name"]][row["column_name"]] = row
 
-        # Declared PKs from Q4
+        # Declared PKs from Q4 (uuid-named columns excluded from PK tracking)
         declared_pks: set[tuple] = set()
         declared_fk_edges: list[FKEdge] = []
         for row in raw.get("constraints", []):
+            col_name = row["column_name"]
             if row["constraint_type"] == "PRIMARY KEY":
-                declared_pks.add((row["table_name"], row["column_name"]))
+                if not is_uuid_col(col_name):
+                    declared_pks.add((row["table_name"], col_name))
             elif row["constraint_type"] == "FOREIGN KEY" and row.get("ref_table"):
+                ref_col = row["ref_column"] or "code"
+                # Skip uuid-based FK edges
+                if is_uuid_col(col_name) or is_uuid_col(ref_col):
+                    continue
                 declared_fk_edges.append(FKEdge(
                     from_table=f"{rs_cfg.schema}.{row['table_name']}",
-                    from_col=row["column_name"],
+                    from_col=col_name,
                     to_table=f"{rs_cfg.schema}.{row['ref_table']}",
-                    to_col=row["ref_column"] or "code",
+                    to_col=ref_col,
                     confidence=1.0,
                     source="declared_fk",
                     is_declared=True,
@@ -200,22 +207,17 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
             q11 = q11_idx.get(name, {})
             q2_cols = q2_by_table.get(name, [])
 
-            # Update stats
-            tm.row_count    = int(q1.get("row_count") or tm.row_count)
-            tm.size_mb      = float(q1.get("size_mb") or tm.size_mb)
-            tm.diststyle    = q1.get("diststyle") or tm.diststyle
-            tm.distkey_col  = q1.get("distkey_col") or tm.distkey_col
-            tm.sortkey1     = q1.get("sortkey1") or tm.sortkey1
-            tm.sortkey_type = q1.get("sortkey1_type") or tm.sortkey_type
-            tm.encoded_pct  = float(q11.get("pct_encoded") or tm.encoded_pct)
-            tm.table_type_db = q1.get("table_type_db") or tm.table_type_db
+            # Update stats from Redshift Q1 (only fields that still exist in TableMeta)
+            tm.row_count   = int(q1.get("row_count") or tm.row_count)
+            tm.diststyle   = q1.get("diststyle") or tm.diststyle
+            tm.distkey_col = q1.get("distkey_col") or tm.distkey_col
+            tm.sortkey1    = q1.get("sortkey1") or tm.sortkey1
 
             if tm.table_type != "derived":
-                ttype, conf, _ = infer_table_type(
+                ttype, _, _ = infer_table_type(
                     table=q1, col_dist=q9, card=q10, enc=q11, columns=q2_cols
                 )
-                tm.table_type    = ttype
-                tm.type_confidence = conf
+                tm.table_type = ttype
 
             updated_tables.append(tm)
 
@@ -235,27 +237,101 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                     cm.data_type        = row.get("data_type", cm.data_type)
                     cm.ordinal_position = int(row.get("ordinal_position") or cm.ordinal_position)
                     cm.is_nullable      = row.get("is_nullable", "YES") == "YES"
-                    cm.is_notnull       = bool(row.get("is_notnull", False))
+                    # is_notnull removed from ColumnMeta; use is_nullable instead
                     cm.is_pk            = is_pk or cm.is_pk
                     cm.null_frac        = float(q3_stat.get("null_frac") or 0)
                     cm.n_distinct       = float(q3_stat.get("n_distinct") or 0)
                     cm.source_hash      = cm.compute_source_hash()
 
-        # Wire Q8 sample values (fallback for low-n_distinct cols not covered by Q_topvals)
-        q8 = raw.get("samples", {})
+        # Wire top_freq_values, distinct_values, sample_values from Redshift extracts
+        q_topvals  = raw.get("top_freq_values", {})
+        q_distinct = raw.get("distinct_values", {})
+        q8         = raw.get("samples", {})
         for cm in columns_meta:
-            tbl_name = cm.table_fqn.split(".")[-1]
-            vals = q8.get(tbl_name, {}).get(cm.name, [])
-            if vals:
-                cm.sample_values = vals
+            tbl = cm.table_fqn.split(".")[-1]
+            if fv := q_topvals.get(tbl, {}).get(cm.name):
+                cm.top_freq_values = fv
+            if dv := q_distinct.get(tbl, {}).get(cm.name):
+                cm.distinct_values = dv
+            if sv := q8.get(tbl, {}).get(cm.name):
+                cm.sample_values = sv
+            # sample_values fallback: Q8 has partial coverage (~5 cols/table cap)
+            # distinct_values is authoritative for string cols — derive from it when Q8 missed
+            if not cm.sample_values:
+                if cm.distinct_values:
+                    cm.sample_values = cm.distinct_values[:10]
+                elif cm.top_freq_values:
+                    cm.sample_values = [v.split(":")[0] for v in cm.top_freq_values[:10]]
 
-        # Wire top_freq_values (frequency-ranked) from new Q_topvals extraction
-        q_topvals = raw.get("top_freq_values", {})
+        # Derive value_vocabulary per column
         for cm in columns_meta:
+            if cm.distinct_values:
+                cm.value_vocabulary = cm.distinct_values[:30]
+            elif cm.top_freq_values:
+                cm.value_vocabulary = [v.split(":")[0] for v in cm.top_freq_values[:30]]
+
+            # filter_selectivity derived from n_distinct relative to row count
+            nd = abs(cm.n_distinct) if cm.n_distinct < 0 else cm.n_distinct
             tbl_name = cm.table_fqn.split(".")[-1]
-            freq_vals = q_topvals.get(tbl_name, {}).get(cm.name, [])
-            if freq_vals:
-                cm.top_freq_values = freq_vals
+            row_count = int(q1_idx.get(tbl_name, {}).get("row_count") or 1)  # cast Decimal→int
+            if nd > 0:
+                ratio = nd / max(row_count, 1) if cm.n_distinct > 0 else abs(cm.n_distinct)
+                if ratio > 0.5:
+                    cm.filter_selectivity = "high"
+                elif ratio >= 0.01:
+                    cm.filter_selectivity = "medium"
+                else:
+                    cm.filter_selectivity = "low"
+
+        # Derive DERIVED table-level structural properties (no LLM, no name patterns)
+        _TS_DATA_TYPES = {"date", "timestamp", "timestamp with time zone",
+                          "timestamp without time zone", "timestamptz"}
+        _NUMERIC_GROUPING = {
+            "numeric", "decimal", "integer", "bigint", "smallint",
+            "double precision", "real", "float", "int",
+        }
+        _GROUPABLE_DT = {
+            "character varying", "varchar", "char", "character",
+            "boolean", "date", "timestamp", "timestamp with time zone",
+            "timestamp without time zone", "timestamptz",
+        }
+        _JOIN_ROLE_MAP = {
+            "fact": "center", "dimension": "lookup",
+            "bridge": "bridge", "derived": "derived",
+        }
+
+        for tm in updated_tables:
+            cols_for_table = [c for c in columns_meta if c.table_fqn == tm.fqn]
+
+            # column_count
+            tm.column_count = len(cols_for_table)
+
+            # typical_join_role from table_type
+            tm.typical_join_role = _JOIN_ROLE_MAP.get(tm.table_type, "unknown")
+
+            # grain: join deduplicated non-uuid pk_columns (already set from YAML)
+            if tm.pk_columns:
+                tm.grain = ", ".join(tm.pk_columns)
+
+            # is_time_series: PK has a date/timestamp column AND row_count > 500 AND has FK col
+            pk_set = set(tm.pk_columns)
+            has_date_pk = any(
+                c.data_type.lower().split("(")[0].strip() in _TS_DATA_TYPES
+                for c in cols_for_table if c.name in pk_set
+            )
+            has_fk_col = any(c.is_foreign_key for c in cols_for_table)
+            tm.is_time_series = has_date_pk and tm.row_count > 500 and has_fk_col
+
+            # natural_dimensions: groupable, not PK, not FK
+            tm.natural_dimensions = [
+                c.name for c in cols_for_table
+                if c.is_groupable and not c.is_pk and not c.is_foreign_key
+            ]
+
+            # natural_measures: measurable (already set on ColumnMeta in yml_parser)
+            tm.natural_measures = [
+                c.name for c in cols_for_table if c.is_measurable
+            ]
 
         # Compute source hashes on tables
         for tm in updated_tables:
@@ -389,6 +465,9 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
 
         gds.run_pagerank()
         gds.run_betweenness()
+        gds.run_scc()
+        gds.run_triangle_count()
+        gds.run_degree_centrality()
 
         # Leiden with gamma tuning
         gds.project_leiden_graph()
@@ -428,26 +507,18 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                 MATCH (t:Table)
                 RETURN t.fqn AS fqn, t.name AS name, t.table_type AS table_type,
                        t.ontology_class AS ontology_class,
-                       toFloat(t.type_confidence) AS type_confidence,
                        toInteger(t.row_count) AS row_count,
-                       toFloat(t.size_mb) AS size_mb,
-                       t.diststyle AS diststyle, t.distkey_col AS distkey_col,
                        t.sortkey1 AS sortkey1, t.business_domain AS business_domain
             """)
             for r in tbl_rows_neo:
                 tm = TableMeta(
                     fqn=r["fqn"], name=r["name"],
                     schema=r["fqn"].split(".")[0],
-                    table_type_db="",
                     table_type=r.get("table_type") or "",
                     ontology_class=r.get("ontology_class") or "",
                 )
                 tm.row_count       = r.get("row_count") or 0
-                tm.size_mb         = float(r.get("size_mb") or 0)
-                tm.diststyle       = r.get("diststyle") or ""
-                tm.distkey_col     = r.get("distkey_col") or ""
                 tm.sortkey1        = r.get("sortkey1") or ""
-                tm.type_confidence = float(r.get("type_confidence") or 0)
                 tm.business_domain = r.get("business_domain") or ""
                 tables_meta.append(tm)
             log.info("C4: rebuilt tables_meta from Neo4j (%d tables).", len(tables_meta))
@@ -458,9 +529,11 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                 RETURN c.table_fqn AS table_fqn, c.id AS id, c.name AS name,
                        c.data_type AS data_type, c.ordinal_position AS ordinal_position,
                        c.is_nullable AS is_nullable, c.is_pk AS is_pk,
-                       c.is_notnull AS is_notnull, c.null_frac AS null_frac,
+                       c.null_frac AS null_frac,
                        c.n_distinct AS n_distinct, c.sample_values AS sample_values,
-                       c.top_freq_values AS top_freq_values
+                       c.top_freq_values AS top_freq_values,
+                       c.value_vocabulary AS value_vocabulary,
+                       c.distinct_values AS distinct_values
             """)
             for r in col_rows_neo:
                 cm = ColumnMeta(
@@ -469,11 +542,12 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                     ordinal_position=r.get("ordinal_position") or 0,
                     is_nullable=r.get("is_nullable", True),
                     is_pk=r.get("is_pk", False),
-                    is_notnull=r.get("is_notnull", False),
                     null_frac=float(r.get("null_frac") or 0),
                     n_distinct=float(r.get("n_distinct") or 0),
                     sample_values=r.get("sample_values") or [],
                     top_freq_values=r.get("top_freq_values") or [],
+                    value_vocabulary=r.get("value_vocabulary") or [],
+                    distinct_values=r.get("distinct_values") or [],
                 )
                 col_map[cm.table_fqn].append(cm)
             log.info("C4: rebuilt col_map from Neo4j (%d columns).", sum(len(v) for v in col_map.values()))
@@ -491,9 +565,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
             MATCH (t:Table) WHERE t.enrichment_status IN ['pending','stale','failed']
             RETURN t.fqn AS fqn, t.table_type AS table_type,
                    t.row_count AS row_count, t.ontology_class AS ontology_class,
-                   t.type_confidence AS type_confidence,
-                   t.size_mb AS size_mb, t.diststyle AS diststyle,
-                   t.distkey_col AS distkey_col, t.sortkey1 AS sortkey1
+                   t.sortkey1 AS sortkey1
         """)
         fqns_to_enrich = {r["fqn"] for r in status_rows}
 
@@ -504,21 +576,17 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         total = len(tables_to_enrich)
 
         # ── Phase 1: Column enrichment (all tables, table_description="" — no table desc yet) ──
-        COL_FLUSH = 10
+        COL_FLUSH = 5
         log.info("ENRICH Phase 1 — column enrichment (%d tables) …", total)
         pending_col_rows: list[dict] = []
         for idx, tm in enumerate(tables_to_enrich, 1):
             cols_data = []
             for c in col_map.get(tm.fqn, []):
-                top_freq = c.top_freq_values
-                if top_freq:
-                    display_vals = [v.split(":")[0] for v in top_freq[:6]]
-                else:
-                    display_vals = c.sample_values[:6]
                 cols_data.append({
                     "name": c.name, "data_type": c.data_type, "is_pk": c.is_pk,
                     "null_frac": c.null_frac, "n_distinct": c.n_distinct,
-                    "sample_vals": display_vals,
+                    "sample_vals": c.sample_values[:10],
+                    "value_vocabulary": c.value_vocabulary[:30],
                 })
 
             col_results = enrich_columns(
@@ -542,14 +610,15 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                     "temporal_grain":     col_enr.get("temporal_grain") or "none",
                     "default_aggregation": col_enr.get("default_aggregation") or "NONE",
                     "value_aliases":      col_enr.get("value_aliases") or [],
-                    "value_scale":        col_enr.get("value_scale") or "",
                     "description_model":  model_arn,
                 })
 
+            # Save checkpoint after every table so interrupts lose at most 1 table
+            checkpoint["columns"] = col_cache
+            _save_checkpoint(checkpoint)
+
             if idx % COL_FLUSH == 0 or idx == total:
                 loader.batch_update_column_enrichment(pending_col_rows, _NOW())
-                checkpoint["columns"] = col_cache
-                _save_checkpoint(checkpoint)
                 log.info("ENRICH Phase 1: %d/%d tables done, %d cols flushed.",
                          idx, total, len(pending_col_rows))
                 pending_col_rows = []
@@ -582,9 +651,9 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                 fqn=tm.fqn,
                 ontology_class=tm.ontology_class,
                 table_type=tm.table_type,
-                type_confidence=tm.type_confidence,
+                type_confidence=0.0,
                 row_count=tm.row_count,
-                size_mb=tm.size_mb,
+                size_mb=0.0,
                 diststyle=tm.diststyle,
                 distkey_col=tm.distkey_col,
                 sortkey1=tm.sortkey1,
@@ -592,7 +661,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                     "name": c.name,
                     "data_type": c.data_type,
                     "is_pk": c.is_pk,
-                    "is_notnull": c.is_notnull,
+                    "is_notnull": getattr(c, "is_notnull", False),
                     "null_frac": c.null_frac,
                     "n_distinct": c.n_distinct,
                     "sample_values": c.sample_values,
@@ -681,8 +750,6 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                  reduce(s = 0.0, r IN ranked | s + r.weight) AS total_w
             MATCH (c:Community {id: cid})
             SET c.dominant_domain            = ranked[0].domain,
-                c.domain_distribution        = [r IN ranked |
-                    r.domain + ':' + toString(round(r.weight * 1000) / 1000.0)],
                 c.dominant_domain_confidence = CASE WHEN total_w = 0 THEN 0.0
                     ELSE round(ranked[0].weight / total_w * 100) / 100.0 END
         """)
@@ -712,9 +779,12 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
             }
             for r in community_rows_enrich
         ]
-        comm_enriched = enrich_community(community_llm_input, chat_client, comm_cache)
-        checkpoint["communities"] = comm_enriched
-        _save_checkpoint(checkpoint)
+        def _save_comm(results):
+            checkpoint["communities"] = results
+            _save_checkpoint(checkpoint)
+
+        comm_enriched = enrich_community(community_llm_input, chat_client, comm_cache,
+                                         checkpoint_fn=_save_comm)
         loader.load_community_descriptions(comm_enriched)
         loader.initialize_community_defaults()
         log.info("  Community enrichment done (%d communities).", len(comm_enriched))
@@ -763,15 +833,8 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         t = time.time()
         log.info("── ROLLUP ───────────────────────────────────────────────")
 
-        chat_client = _langchain_bedrock(bedrock_cfg)
-
-        table_desc_map = {
-            r["fqn"]: r.get("description", "")
-            for r in loader._run("MATCH (t:Table) RETURN t.fqn AS fqn, t.description AS description")
-        }
-
         candidates = detect_rollup_candidates_from_graph(loader)
-        validated = validate_rollup_with_llm(candidates, table_desc_map, chat_client)
+        validated = candidates  # schema-validated; confidence = column overlap ratio
 
         now = _NOW()
         for v in validated:
@@ -884,13 +947,13 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         # Build context: enriched column synonyms, semantic types, value aliases + table descriptions
         context_rows = loader._run("""
             MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
-            WHERE c.synonyms <> [] OR c.value_aliases <> []
+            WHERE size(coalesce(c.synonyms, [])) > 0
+               OR size(coalesce(c.value_aliases, [])) > 0
             RETURN t.name AS table_name, t.description AS table_desc,
                    c.name AS col_name, c.synonyms AS synonyms,
                    c.semantic_type AS semantic_type,
                    c.value_aliases AS value_aliases,
-                   c.value_vocabulary AS value_vocabulary,
-                   c.top_values_text AS top_values_text
+                   c.value_vocabulary AS value_vocabulary
             LIMIT 500
         """)
         context_lines = []
@@ -936,6 +999,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                 existing_term_names.update(bt["term"] for bt in new_terms)
                 if new_terms:
                     loader.load_business_terms(new_terms)
+                    loader.load_business_term_table_edges(new_terms)
                 glossary_checkpoint["glossary_terms"] = all_terms
                 glossary_checkpoint["glossary_context_offset"] = done_rows
                 _save_checkpoint(glossary_checkpoint)
@@ -1044,6 +1108,10 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                     "required_aggregations":   enr.get("required_aggregations") or [],
                     "required_filters":        enr.get("required_filters") or [],
                     "time_windowed":           bool(enr.get("time_windowed", False)),
+                    "sql_pattern":             enr.get("sql_pattern") or "multi_join",
+                    "is_cross_domain":         bool(enr.get("is_cross_domain", False)),
+                    "min_cte_count":           int(enr.get("min_cte_count") or 1),
+                    "max_cte_count":           int(enr.get("max_cte_count") or 5),
                     "source_line":             sl,
                 })
                 for intent_name, conf in intent_scores.items():
@@ -1109,15 +1177,14 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         bedrock_client = _bedrock_client(bedrock_cfg)
         model_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
 
-        # Column embeddings — include top_values_text for value-level semantic search
+        # Column embeddings — name + description + synonyms (array-joined at embed time)
         col_rows = loader._run("""
             MATCH (c:Column) WHERE c.cohere_embedding IS NULL
                OR c.enrichment_status = 'stale'
             RETURN c.id AS id, c.name AS name,
                    c.description AS description,
                    c.synonyms AS synonyms,
-                   c.synonyms_text AS synonyms_text,
-                   c.top_values_text AS top_values_text
+                   c.value_vocabulary AS value_vocabulary
         """)
         if col_rows:
             col_embs = embed_columns(col_rows, bedrock_client, model_arn)
@@ -1137,7 +1204,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                          min(i + EMBED_BATCH, len(emb_rows)), len(emb_rows))
             stats["embed_calls"] += 1
 
-        # Table embeddings — include synonyms_text for synonym-level semantic search
+        # Table embeddings — name + domain + description + synonyms (array-joined) + top cols
         tbl_rows = loader._run("""
             MATCH (t:Table) WHERE t.cohere_embedding IS NULL
                OR t.enrichment_status = 'stale'
@@ -1147,7 +1214,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
             RETURN t.fqn AS fqn, t.name AS name,
                    t.description AS description,
                    t.business_domain AS business_domain,
-                   t.synonyms_text AS synonyms_text,
+                   reduce(s = '', syn IN coalesce(t.synonyms, []) | s + ' ' + syn) AS synonyms_text,
                    top_cols AS top_col_names
         """)
         if tbl_rows:
@@ -1193,7 +1260,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
             MATCH (c:Community) WHERE c.description IS NOT NULL AND c.description <> ''
               AND (c.cohere_embedding IS NULL OR c.enrichment_status = 'stale')
             RETURN c.id AS id, c.dominant_domain AS dominant_domain,
-                   c.description AS description, c.query_patterns AS query_patterns
+                   c.description AS description
         """)
         if comm_rows:
             comm_embs = embed_communities(comm_rows, bedrock_client, model_arn)
@@ -1287,14 +1354,12 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
     if not dry_run and loader:
         check = loader.integrity_check()
         log.info("Integrity: %s", check)
-
         run_meta.update({
             **stats,
             "completed_at": _NOW(),
             "duration_seconds": round(time.time() - _t0, 1),
             **{f"integrity_{k}": v for k, v in check.items()},
         })
-        loader.save_pipeline_run(run_meta)
 
     if loader:
         loader.close()

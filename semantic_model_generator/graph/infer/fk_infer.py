@@ -16,6 +16,7 @@ from difflib import SequenceMatcher
 from typing import NamedTuple
 
 from ..models import ColumnMeta, FKEdge, TableMeta
+from ..utils import is_uuid_col
 
 _FK_SUFFIXES = ("_key", "_id", "_sk", "_nk", "_fk", "_ref", "_code",
                 "_no", "_num", "_seq", "_ref_id")
@@ -144,6 +145,9 @@ def build_query_history_edges(query_rows: list[dict]) -> list[FKEdge]:
     edges = []
     for key, count in freq.items():
         e = meta[key]
+        # Skip UUID-column joins — they carry no business join semantics
+        if is_uuid_col(e["from_col"]) or is_uuid_col(e["to_col"]):
+            continue
         confidence = min(0.90 + (count - 1) * 0.01, 0.99)
         edges.append(FKEdge(
             from_table=e["from_table"],
@@ -199,10 +203,13 @@ def infer_fks(
 
     for t in tables:
         for c in col_map.get(t.fqn, []):
+            # Skip UUID columns — they are surrogate keys with no join semantics
+            if is_uuid_col(c.name):
+                continue
             is_pk = (
                 c.is_pk
                 or c.n_distinct == -1.0
-                or (c.is_notnull and c.null_frac < 0.005)
+                or (not c.is_nullable and c.null_frac < 0.005)
             )
             if not is_pk:
                 continue
@@ -214,7 +221,7 @@ def infer_fks(
     # ── Tier 2: Exact name match ───────────────────────────────────────────
     for t in tables:
         for col in col_map.get(t.fqn, []):
-            if col.is_pk:
+            if col.is_pk or is_uuid_col(col.name):
                 continue
             col_lower = col.name.lower()
             for ref_fqn, ref_col in pk_exact.get(col_lower, []):
@@ -244,12 +251,13 @@ def infer_fks(
                     from_table=t.fqn, from_col=col.name,
                     to_table=ref_fqn, to_col=ref_col.name,
                     confidence=confidence, source="exact_name_match",
+                    is_inferred=True,
                 ))
 
     # ── Tier 3: Normalized name match (integer cols only) ─────────────────
     for t in tables:
         for col in col_map.get(t.fqn, []):
-            if col.is_pk:
+            if col.is_pk or is_uuid_col(col.name):
                 continue
             if col.data_type.lower() not in _NUMERIC_TYPES:
                 continue
@@ -284,6 +292,7 @@ def infer_fks(
                     from_table=t.fqn, from_col=col.name,
                     to_table=ref_fqn, to_col=ref_col.name,
                     confidence=confidence, source="normalized_name",
+                    is_inferred=True,
                 ))
 
     return sorted(results, key=lambda x: x.confidence, reverse=True)

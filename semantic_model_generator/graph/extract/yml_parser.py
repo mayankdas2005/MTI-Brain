@@ -1,199 +1,265 @@
 """
-Parse semantic_model.yml → TableMeta list + FKEdge list (is_ontology=True).
+Parse lpp_semantic_model.yml → TableMeta list + ColumnMeta list + FKEdge list.
 
-159 R2RML subdomains → ~90 unique physical Table nodes.
-Multiple subdomains for the same physical table are merged.
+YAML structure (lpp_semantic_model.yml):
+  version, schema, database, host, generated_at, table_count
+  relationships:   # 200 manually-identified FK entries
+    - from_table, from_column, to_table, to_column
+  tables:          # 105 tables
+    - name, schema, row_count, size_mb, dist_style
+      primary_keys: [col, col, ...]   # contains DUPLICATES — must dedup
+      foreign_keys:                   # optional per-table FK array
+        - from_column, to_table, to_column
+      columns:
+        - name, data_type, ordinal_position, nullable, default
+          is_primary_key, is_foreign_key, is_distkey, sortkey_position, encoding
+          references:                 # optional, when is_foreign_key=true
+            table: <table_name>
+            column: <column_name>
 
-Two-pass parse:
-  Pass 1 — build entity_type → pk_col map from each subdomain's columns.
-  Pass 2 — use that map so FK edges have the correct to_col (target PK),
-            not the source FK column name that was erroneously extracted
-            from the IRI template placeholder.
+Design decisions:
+- ALL 200 declared relationships are loaded as JOINS_TO edges unconditionally —
+  including UUID-target joins which are manually verified valid.
+- UUID filter (is_uuid_col) is NOT applied here. It applies only in fk_infer.py
+  for inferred edges.
+- uuid-named columns are stored as Column nodes with is_surrogate_key=True.
+- No bidirectional dedup — keep both directions. _pass_is_canonical() handles priority.
+- Confidence is derived from whether to_col is a PK on the target table.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from collections import defaultdict
+from typing import Any
 
 import yaml
 
 from ..models import ColumnMeta, FKEdge, TableMeta
+from ..utils import is_uuid_col
 
 _SCHEMA = "lpp"
-_NEW_YML = Path(__file__).resolve().parents[2] / "output" / "semantic_model.yml"
+_YML_PATH = Path(__file__).resolve().parents[2] / "output" / "lpp_semantic_model.yml"
 
-_PK_PREFERENCE = ("code", "id", "uuid", "ref", "key")
-
-
-def _target_type_to_fqn(target_entity_type: str) -> str:
-    return f"{_SCHEMA}.{target_entity_type.replace('-', '_')}"
-
-
-def _infer_pk_col(columns: dict) -> str:
-    """Return most likely PK column name from a subdomain's columns dict."""
-    col_names = list(columns.keys())
-    for preferred in _PK_PREFERENCE:
-        if preferred in col_names:
-            return preferred
-    return col_names[0] if col_names else "code"
+_NUMERIC_TYPES = {
+    "numeric", "decimal", "integer", "bigint", "smallint",
+    "double precision", "real", "float", "int",
+}
+_GROUPABLE_TYPES = {
+    "character varying", "varchar", "char", "character",
+    "boolean", "date",
+    "timestamp", "timestamp with time zone", "timestamp without time zone",
+    "timestamptz",
+}
+_TEXT_TYPES = {"character varying", "varchar", "char", "character", "text", "nvarchar"}
 
 
-def _is_derived_only(source: dict) -> bool:
-    if source.get("type") != "sql_query":
+def _fqn(table_name: str) -> str:
+    return f"{_SCHEMA}.{table_name}"
+
+
+def _dedup_pk_columns(raw_pks: list[str]) -> list[str]:
+    """Remove duplicates from primary_keys array while preserving order."""
+    return list(dict.fromkeys(raw_pks))
+
+
+def _parse_distkey_col(dist_style: str) -> str:
+    """Extract column name from dist_style like 'KEY(account_ref)' → 'account_ref'."""
+    if "KEY(" in dist_style.upper():
+        return dist_style.split("(")[-1].split(")")[0].strip()
+    return ""
+
+
+def _derive_is_measurable(col: dict) -> bool:
+    dt = col.get("data_type", "").lower()
+    base = dt.split("(")[0].strip()
+    if base not in _NUMERIC_TYPES:
         return False
-    tables = source.get("tables", [])
-    sql = source.get("sql", "")
-    if len(tables) > 1:
-        return True
-    if "group by" in sql.lower() or "join " in sql.lower():
-        return True
-    return False
+    if col.get("is_primary_key") or col.get("is_foreign_key"):
+        return False
+    return True
 
 
-def parse(yml_path: Path = _NEW_YML) -> tuple[list[TableMeta], list[ColumnMeta], list[FKEdge]]:
+def _derive_is_groupable(col: dict) -> bool:
+    dt = col.get("data_type", "").lower()
+    base = dt.split("(")[0].strip()
+    if col.get("is_primary_key"):
+        return False
+    return base in _GROUPABLE_TYPES
+
+
+def _classify_confidence(to_col: str, to_table_pks: set[str],
+                         from_dtype: str, to_dtype: str) -> tuple[float, str]:
+    """Return (confidence, source) for a declared FK edge."""
+    to_col_is_pk = to_col in to_table_pks
+    from_is_text = from_dtype.split("(")[0].strip() in _TEXT_TYPES
+    to_is_text   = to_dtype.split("(")[0].strip() in _TEXT_TYPES
+
+    if to_col_is_pk:
+        return 1.0, "declared_fk"
+    if from_is_text and to_is_text:
+        return 0.70, "declared_fk_weak"
+    return 0.85, "declared_fk"
+
+
+def parse(yml_path: Path = _YML_PATH) -> tuple[list[TableMeta], list[ColumnMeta], list[FKEdge]]:
     """
     Returns:
-        tables  — one TableMeta per unique physical FQN
-        columns — ColumnMeta list (all columns across all tables)
-        edges   — FKEdge list with is_ontology=True
+        tables  — one TableMeta per table (105 full tables)
+        columns — all columns including surrogate uuid columns (marked is_surrogate_key)
+        edges   — all 200 declared FK edges (no UUID filter, no bidirectional dedup)
     """
     with open(yml_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
-    subdomains: dict = data.get("business_subdomains", {})
+    schema = data.get("schema", _SCHEMA)
 
-    # ── Pass 1: build entity_type → pk_col map ────────────────────────────
-    # Keyed by both the hyphenated form (target_entity_type in connections)
-    # and the snake_case form (table name) so lookups work either way.
-    entity_pk: dict[str, str] = {}
-    for sd_name, sd in subdomains.items():
-        source = sd.get("source", {})
-        src_type = source.get("type", "table")
-        if src_type == "table":
-            fqn = source.get("table", "")
-        else:
-            tables_list = source.get("tables", [])
-            fqn = tables_list[0] if tables_list else ""
-        if not fqn:
-            continue
-        table_short = fqn.split(".")[-1]          # e.g. "bank_account"
-        hyphenated  = table_short.replace("_", "-")  # e.g. "bank-account"
-        columns_raw = sd.get("columns") or {}
-        pk = _infer_pk_col(columns_raw)
-        for key in (table_short, hyphenated):
-            if key not in entity_pk:              # first subdomain wins
-                entity_pk[key] = pk
+    # ── Pass 1: build pk_map and col_type_map for confidence classification ───
+    pk_map: dict[str, set[str]] = {}      # table_name → set of PK column names
+    col_dtype_map: dict[tuple[str, str], str] = {}  # (table_name, col_name) → data_type
 
-    # ── Pass 2: aggregate table / column / edge data ──────────────────────
-    table_map: dict[str, dict] = {}
+    for tbl in data.get("tables", []):
+        tbl_name = tbl["name"]
+        raw_pks = _dedup_pk_columns(tbl.get("primary_keys", []))
+        pk_map[tbl_name] = set(raw_pks)
+        for col in tbl.get("columns", []):
+            col_dtype_map[(tbl_name, col["name"])] = (col.get("data_type") or "").lower()
 
-    for subdomain_name, sd in subdomains.items():
-        source = sd.get("source", {})
-        src_type = source.get("type", "table")
+    # ── Collect FK edges from all three YAML sources ─────────────────────────
+    # No UUID filter — all 200 declared relationships loaded unconditionally.
+    # No bidirectional dedup — keep both directions; _pass_is_canonical() handles priority.
+    seen_keys: set[tuple[str, str, str, str]] = set()
+    raw_edges: list[dict[str, Any]] = []
 
-        if src_type == "table":
-            fqn = source.get("table", "")
-        else:
-            tables_list = source.get("tables", [])
-            if not tables_list:
-                continue
-            fqn = tables_list[0]
+    def _add_fk(from_table: str, from_col: str, to_table: str, to_col: str):
+        key = (from_table, from_col, to_table, to_col)
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
 
-        if not fqn:
-            continue
+        from_dtype = col_dtype_map.get((from_table, from_col), "")
+        to_dtype   = col_dtype_map.get((to_table,   to_col),   "")
+        to_pks     = pk_map.get(to_table, set())
+        confidence, source = _classify_confidence(to_col, to_pks, from_dtype, to_dtype)
 
-        is_derived = _is_derived_only(source)
-        ontology_class = sd.get("ontology_class", "")
-        columns_raw: dict = sd.get("columns", {}) or {}
-        connections_raw: list = sd.get("connections") or []
+        raw_edges.append({
+            "from_table":   _fqn(from_table),
+            "from_col":     from_col,
+            "to_table":     _fqn(to_table),
+            "to_col":       to_col,
+            "confidence":   confidence,
+            "source":       source,
+            "to_col_is_pk": to_col in to_pks,
+            "is_self_join": from_table == to_table,
+        })
 
-        if fqn not in table_map:
-            table_map[fqn] = {
-                "fqn": fqn,
-                "name": fqn.split(".")[-1],
-                "schema": fqn.split(".")[0] if "." in fqn else _SCHEMA,
-                "ontology_class": ontology_class,
-                "is_derived": is_derived,
-                "columns": {},
-                "connections": [],
-            }
+    # Source 1: top-level relationships array
+    for rel in data.get("relationships", []):
+        _add_fk(rel["from_table"], rel["from_column"],
+                rel["to_table"],   rel["to_column"])
 
-        entry = table_map[fqn]
+    # Source 2 & 3: per-table foreign_keys + column-level references
+    for tbl in data.get("tables", []):
+        tbl_name = tbl["name"]
+        for fk in tbl.get("foreign_keys", []):
+            _add_fk(tbl_name, fk["from_column"], fk["to_table"], fk["to_column"])
+        for col in tbl.get("columns", []):
+            if col.get("is_foreign_key") and col.get("references"):
+                refs = col["references"]
+                _add_fk(tbl_name, col["name"], refs["table"], refs.get("column", ""))
 
-        if not entry["ontology_class"] and ontology_class:
-            entry["ontology_class"] = ontology_class
+    # ── Build col_ref_map for ColumnMeta FK resolution ───────────────────────
+    col_ref_map: dict[tuple[str, str], tuple[str, str]] = {}
+    for item in raw_edges:
+        from_tbl = item["from_table"].split(".")[-1]
+        col_ref_map[(from_tbl, item["from_col"])] = (item["to_table"], item["to_col"])
 
-        for col_name, col_info in columns_raw.items():
-            if col_name not in entry["columns"]:
-                entry["columns"][col_name] = {
-                    "name": col_name,
-                    "data_type": col_info.get("type", "varchar"),
-                    "predicate": col_info.get("predicate", ""),
-                }
-
-        for conn in connections_raw:
-            via = conn.get("via_columns", [])
-            if not via:
-                continue
-            from_col = via[0]
-            target_type = conn.get("target_entity_type", "")
-            to_fqn = _target_type_to_fqn(target_type)
-
-            # Resolve to_col from the target table's inferred PK column.
-            # entity_pk is keyed by both "bank_account" and "bank-account" forms.
-            to_col = entity_pk.get(target_type) or entity_pk.get(
-                target_type.replace("-", "_"), "code"
-            )
-
-            key = (from_col, to_fqn, to_col)
-            if key not in {(c["from_col"], c["to_fqn"], c["to_col"]) for c in entry["connections"]}:
-                entry["connections"].append({
-                    "from_col": from_col,
-                    "to_fqn": to_fqn,
-                    "to_col": to_col,
-                    "predicate": conn.get("predicate", ""),
-                })
-
+    # ── Parse tables and columns ─────────────────────────────────────────────
     tables: list[TableMeta] = []
     columns: list[ColumnMeta] = []
-    edges: list[FKEdge] = []
 
-    for fqn, entry in table_map.items():
-        name = entry["name"]
-        schema = entry["schema"]
-        table_type = "derived" if entry["is_derived"] else ""
+    for tbl in data.get("tables", []):
+        tbl_name = tbl["name"]
+        tbl_fqn  = _fqn(tbl_name)
+        tbl_schema = tbl.get("schema", schema)
+
+        raw_pks = tbl.get("primary_keys", [])
+        pk_cols_all = _dedup_pk_columns(raw_pks)
+        # Keep all pk columns including uuid-named ones (they'll be flagged is_surrogate_key)
+        pk_cols = pk_cols_all
+
+        dist_style   = tbl.get("dist_style", "")
+        distkey_col  = _parse_distkey_col(dist_style)
+        is_view      = tbl_name.startswith("v_")
 
         tm = TableMeta(
-            fqn=fqn,
-            name=name,
-            schema=schema,
-            table_type_db="",
-            ontology_class=entry["ontology_class"],
-            table_type=table_type,
+            fqn=tbl_fqn,
+            name=tbl_name,
+            schema=tbl_schema,
+            row_count=tbl.get("row_count") or 0,
+            diststyle=dist_style,
+            distkey_col=distkey_col,
+            pk_columns=pk_cols,
+            is_view=is_view,
         )
         tables.append(tm)
 
-        for pos, (col_name, col_info) in enumerate(entry["columns"].items(), start=1):
+        # ALL columns — including uuid-named ones (marked is_surrogate_key below)
+        for col in tbl.get("columns", []):
+            col_name  = col["name"]
+            data_type = col.get("data_type", "")
+            is_pk     = bool(col.get("is_primary_key", False))
+            is_fk     = bool(col.get("is_foreign_key", False))
+            nullable  = col.get("nullable", True)
+            if nullable is None:
+                nullable = True
+
+            # Surrogate UUID key — no join or aggregation semantics
+            is_surrogate = (col_name == "uuid" or col_name.endswith("_uuid")) and is_pk
+
+            ref_table_fqn = ""
+            ref_col = ""
+            refs = col.get("references")
+            if refs:
+                ref_table_fqn = _fqn(refs["table"])
+                ref_col = refs.get("column", "")
+            elif (tbl_name, col_name) in col_ref_map:
+                ref_table_fqn, ref_col = col_ref_map[(tbl_name, col_name)]
+
+            # is_surrogate_fk: FK column that references a uuid surrogate PK on the target table
+            is_surrogate_fk = is_fk and is_uuid_col(ref_col) if ref_col else False
+
             cm = ColumnMeta(
-                table_fqn=fqn,
+                table_fqn=tbl_fqn,
                 name=col_name,
-                data_type=col_info["data_type"],
-                ordinal_position=pos,
+                data_type=data_type,
+                ordinal_position=col.get("ordinal_position", 0),
+                is_nullable=nullable,
+                is_pk=is_pk,
+                is_foreign_key=is_fk,
+                is_surrogate_key=is_surrogate,
+                is_surrogate_fk=is_surrogate_fk,
+                referenced_table_fqn=ref_table_fqn,
+                referenced_column=ref_col,
+                is_measurable=_derive_is_measurable(col) and not is_surrogate,
+                is_groupable=_derive_is_groupable(col) and not is_surrogate,
             )
             columns.append(cm)
 
-        for conn in entry["connections"]:
-            edge = FKEdge(
-                from_table=fqn,
-                from_col=conn["from_col"],
-                to_table=conn["to_fqn"],
-                to_col=conn["to_col"],
-                confidence=1.0,
-                source="semantic_model_yml",
-                is_ontology=True,
-                predicate=conn["predicate"],
-            )
-            edges.append(edge)
+    # ── Build FKEdge objects ──────────────────────────────────────────────────
+    edges: list[FKEdge] = [
+        FKEdge(
+            from_table=item["from_table"],
+            from_col=item["from_col"],
+            to_table=item["to_table"],
+            to_col=item["to_col"],
+            confidence=item["confidence"],
+            source=item["source"],
+            is_declared=True,
+            is_ontology=False,
+            to_col_is_pk=item["to_col_is_pk"],
+            is_self_join=item["is_self_join"],
+        )
+        for item in raw_edges
+    ]
 
     return tables, columns, edges

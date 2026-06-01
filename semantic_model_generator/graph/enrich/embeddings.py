@@ -73,16 +73,17 @@ def build_column_text(
     synonyms: list[str],
     synonyms_text: str = "",
     top_values_text: str = "",
+    value_vocabulary: list[str] | None = None,
 ) -> str:
     parts = [name]
     if description:
         parts.append(description)
-    # Use pre-joined synonyms_text if available, else fall back to synonyms list
     syns = synonyms_text.strip() or " ".join(synonyms)
     if syns:
         parts.append(syns)
-    if top_values_text:
-        parts.append(top_values_text.strip())
+    # Include value vocabulary for categorical columns (improves value-level vector search)
+    if value_vocabulary:
+        parts.append(" ".join(value_vocabulary[:20]))
     return " ".join(parts).strip()
 
 
@@ -111,7 +112,7 @@ def embed_columns(
     model_arn: str,
 ) -> list[dict]:
     """
-    column_records: list of {id, name, description, synonyms, synonyms_text, top_values_text}
+    column_records: list of {id, name, description, synonyms, value_vocabulary}
     Returns list of {id, embedding}
     """
     texts = [
@@ -119,8 +120,7 @@ def embed_columns(
             r["name"],
             r.get("description", ""),
             r.get("synonyms") or [],
-            r.get("synonyms_text") or "",
-            r.get("top_values_text") or "",
+            value_vocabulary=r.get("value_vocabulary") or [],
         )
         for r in column_records
     ]
