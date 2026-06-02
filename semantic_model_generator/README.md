@@ -77,6 +77,9 @@ python -m semantic_model_generator.graph.pipeline [--steps STEPS] [--dry-run] [-
 | `--steps` | Comma-separated step names or `all` (default: `all`) |
 | `--dry-run` | Parse and infer without writing to Neo4j |
 | `--reset-checkpoint` | Delete `graph_enrichment_cache.json` and re-run enrichment from scratch |
+| `--reset-templates` | Clear only the templates cache from the checkpoint so templates re-enrich |
+| `--reset-glossary` | Clear only the glossary cache from the checkpoint so glossary re-enriches |
+| `--reset-communities` | Clear only the community descriptions cache so communities re-enrich |
 
 ### Examples
 
@@ -166,6 +169,9 @@ Runs Graph Data Science algorithms for centrality and community detection.
 - **PageRank**: table centrality score
 - **Betweenness Centrality**: table bridge importance
 - **Leiden community detection** (gamma=1.2; retried at gamma=1.5 if quality check fails): groups tables into business communities; creates `Community` nodes linked via `CONTAINS_TABLE`
+- **SCC (Strongly Connected Components)**: identifies strongly connected table clusters
+- **Triangle Count**: structural density metric per table
+- **Degree Centrality**: in/out degree score per table
 - **FastRP + Node Similarity**: structural similarity between tables (cutoff=0.5, top_k=10)
 
 ---
@@ -176,7 +182,7 @@ LLM-powered enrichment using AWS Bedrock Claude Sonnet via LangChain structured 
 
 Runs in 3 phases with checkpoint caching (`graph_enrichment_cache.json`). Only processes nodes with `enrichment_status IN ['pending', 'stale', 'failed']`.
 
-**Phase 1 — Column enrichment** (batched by table, flushed every 10 tables):
+**Phase 1 — Column enrichment** (batched by table, flushed every 5 tables):
 - For each column: `description`, `semantic_type` (identifier/measure/dimension/date/flag/amount/code/free_text/percentage/ratio), `synonyms`, `is_pii`, `pii_type`, `temporal_grain`, `default_aggregation`, `value_aliases` (for code/flag columns with n_distinct ≤ 20), `value_scale`
 
 **Phase 2 — Table enrichment** (batched 5 tables per Bedrock call):
@@ -186,7 +192,7 @@ Runs in 3 phases with checkpoint caching (`graph_enrichment_cache.json`). Only p
 - Creates `Domain` nodes and `BELONGS_TO` edges from enriched `business_domain` values
 
 **Phase 3 — Domain voting + Community + Domain enrichment**:
-- Domain voting: updates `dominant_domain` on each `Community` node using PageRank-weighted table domains
+- Domain voting: updates `dominant_domain` and `dominant_domain_confidence` on each `Community` node using PageRank-weighted table domains
 - Community enrichment: generates `description` and `query_patterns` (3 example questions per community)
 - Domain enrichment: generates a 2-3 sentence `description` per `Domain` node
 
@@ -232,7 +238,7 @@ Builds the intent routing layer from `output/intent_classes.json`.
 Extracts business terminology from the enriched graph.
 
 - Scans column `synonyms`, `value_aliases`, `value_vocabulary`, and `semantic_type` from Neo4j (up to 300 context lines)
-- Batches context in groups of 10 and calls Claude Sonnet to identify business terms: financial abbreviations, entity aliases, product/value synonyms, unit terms, treasury-specific metrics
+- Batches context in groups of 15 and calls Claude Sonnet to identify business terms: financial abbreviations, entity aliases, product/value synonyms, unit terms, treasury-specific metrics
 - Creates `BusinessTerm` nodes with `variants`, `term_type` (abbreviation/entity_alias/unit/metric/product), and `description`
 - Fully resumable: tracks `glossary_context_offset` in the checkpoint file
 
@@ -242,7 +248,7 @@ Extracts business terminology from the enriched graph.
 
 Enriches query templates from `output/Questions.txt`.
 
-- Loads questions (one per line) and enriches each with: `description`, `intent_scores` (dict of intent → confidence), `complexity` (simple/complex/advanced), `anchor_ontology_classes`, `cte_steps`, `required_aggregations`, `required_filters`, `time_windowed`
+- Loads questions (one per line) and enriches each with: `description`, `primary_intent`, `intent_scores` (dict of intent → confidence), `complexity` (simple/complex/advanced), `anchor_table_fqns`, `cte_steps`, `required_aggregations`, `required_filters`, `time_windowed`, `sql_pattern`, `is_cross_domain`, `min_cte_count`, `max_cte_count`
 - Creates `QueryTemplate` nodes (id format: `qt_NNN`) linked to `Intent` nodes via `CLASSIFIED_AS` and to `Table` nodes via `REQUIRES_TABLE`
 - Batched in groups of 10; resumable via `query_templates` key in checkpoint
 
@@ -256,10 +262,10 @@ Embedding text construction per entity type:
 
 | Entity | Text |
 |--------|------|
-| Column | `name description synonyms_text top_values_text` |
+| Column | `name description synonyms_text value_vocabulary` |
 | Table | `name business_domain description synonyms_text top_col_names` |
 | Intent | `name description` |
-| Community | `id dominant_domain description query_patterns` |
+| Community | `id dominant_domain description` |
 | Domain | `name description` |
 | BusinessTerm | `term description` |
 | QueryTemplate | `question_text` |
@@ -302,7 +308,7 @@ After embedding, runs KNN on column embeddings (cutoff=0.88, k=10) to create `SE
 
 **Uniqueness constraints**: Table.fqn, Column.id, Domain.name, Community.id, JoinPath.id, PipelineRun.run_id, Intent.name, BusinessTerm.term, QueryTemplate.id
 
-**Range indexes — Table**: business_domain, table_type, community_id, wcc_component_id, is_isolated, enrichment_status, is_time_series, typical_join_role, is_subquery_anchor, is_rollup, intent_tags
+**Range indexes — Table**: business_domain, table_type, community_id, wcc_component_id, is_dimension_hub, enrichment_status, is_time_series, typical_join_role, is_subquery_anchor, is_rollup, intent_tags
 
 **Range indexes — Column**: table_fqn, name, semantic_type, is_pii, is_pk, enrichment_status, is_groupable, is_measurable, temporal_grain
 
@@ -310,12 +316,18 @@ After embedding, runs KNN on column embeddings (cutoff=0.88, k=10) to create `SE
 
 **TEXT indexes**: Table.name, Column.name
 
-**Full-text indexes** (English analyzer):
-- `table_fulltext`: Table(name, description, business_domain, ontology_class)
-- `column_fulltext`: Column(name, description, synonyms_text, semantic_type)
-- `table_ft_extended`: Table(name, description, synonyms_text, intent_tags_text)
-- `col_ft_extended`: Column(name, description, synonyms_text, top_values_text)
-- `querytemplate_ft`: QueryTemplate(question_text, description, primary_intent)
+**Range indexes — QueryTemplate**: primary_intent, complexity
+
+**Relationship indexes — JOINS_TO**: confidence, is_ontology, source, is_canonical, has_nullable_fk, from_table, to_table
+
+**Full-text indexes** (English analyzer, array properties indexed natively):
+- `table_ft_extended`: Table(name, description, synonyms, business_domain, grain, intent_tags, natural_dimensions, natural_measures)
+- `col_ft_extended`: Column(name, description, synonyms, semantic_type, value_vocabulary)
+- `querytemplate_ft`: QueryTemplate(question_text, description, required_aggregations, required_filters)
+- `businessterm_ft`: BusinessTerm(term, variants, description)
+- `intent_ft`: Intent(name, description)
+- `community_ft`: Community(description, dominant_domain)
+- `querypattern_ft`: QueryPattern(question_text, filter_summary)
 
 **Vector indexes** (1536-dim, cosine similarity):
 - `col_cohere_embedding`, `tbl_cohere_embedding`, `querytemplate_cohere`, `businessterm_cohere`, `intent_cohere`, `community_cohere`, `domain_cohere`
