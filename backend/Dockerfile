@@ -33,9 +33,7 @@ COPY --from=builder /venv /venv
 ENV PATH="/venv/bin:$PATH"
 
 COPY ./app ./app
-COPY ./data ./data
 
-RUN mkdir -p /app/data && chown appuser:appuser /app/data
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
