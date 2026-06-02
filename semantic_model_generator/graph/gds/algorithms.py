@@ -364,7 +364,7 @@ class GDSPipeline:
         # Step 3 — PageRank-weighted domain voting (Community nodes now exist)
         self._run("""
             MATCH (t:Table) WHERE t.community_id IS NOT NULL
-              AND t.business_domain IS NOT NULL
+              AND t.business_domain IS NOT NULL AND t.business_domain <> ''
             WITH t.community_id AS cid,
                  t.business_domain AS dom,
                  sum(coalesce(t.pagerank_score, 0.001)) AS w

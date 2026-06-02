@@ -81,7 +81,6 @@ def compute_relevant_to_edges(
 def build_intent_node_dicts(
     intent_classes: dict[str, list[str]],
     intent_descriptions: dict[str, str],
-    model_arn: str,
 ) -> list[dict]:
     """
     Build Intent node property dicts ready for neo4j_loader.load_intent_nodes().
@@ -91,10 +90,8 @@ def build_intent_node_dicts(
         desc_data = intent_descriptions.get(intent_name) or {}
         description = desc_data.get("description", "") if isinstance(desc_data, dict) else str(desc_data)
         nodes.append({
-            "name":              intent_name,
-            "class_count":       len(classes),
-            "description":       description,
-            "description_model": model_arn,
+            "name":        intent_name,
+            "description": description,
         })
     return nodes
 

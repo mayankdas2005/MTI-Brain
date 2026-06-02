@@ -33,8 +33,13 @@ def _conn(host: str, database: str, user: str, password: str, port: int = 5439):
         user=user,
         password=password,
         port=port,
+        timeout=30,          # TCP connect timeout (seconds)
     )
     try:
+        # Per-statement timeout — kills any query that runs longer than 3 minutes
+        cur = con.cursor()
+        cur.execute("SET statement_timeout = 180000")
+        cur.close()
         yield con
     finally:
         con.close()

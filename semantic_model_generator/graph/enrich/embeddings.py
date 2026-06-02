@@ -71,17 +71,13 @@ def build_column_text(
     name: str,
     description: str,
     synonyms: list[str],
-    synonyms_text: str = "",
-    top_values_text: str = "",
     value_vocabulary: list[str] | None = None,
 ) -> str:
     parts = [name]
     if description:
         parts.append(description)
-    syns = synonyms_text.strip() or " ".join(synonyms)
-    if syns:
-        parts.append(syns)
-    # Include value vocabulary for categorical columns (improves value-level vector search)
+    if synonyms:
+        parts.append(" ".join(synonyms))
     if value_vocabulary:
         parts.append(" ".join(value_vocabulary[:20]))
     return " ".join(parts).strip()

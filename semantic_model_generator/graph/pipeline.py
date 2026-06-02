@@ -46,7 +46,6 @@ from .enrich.intents import (
     build_intent_node_dicts,
     compute_relevant_to_edges,
     load_intent_classes,
-    resolve_anchor_table_fqns,
 )
 from .enrich.llm_enricher import (
     _bedrock_client,
@@ -78,6 +77,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
+logging.getLogger("semantic_model_generator.graph.enrich.llm_enricher").setLevel(logging.DEBUG)
 log = logging.getLogger("pipeline")
 
 _ALL_STEPS = [
@@ -93,7 +93,8 @@ def _idx(rows: list[dict], key: str) -> dict:
     return {str(r.get(key, "")): r for r in rows}
 
 
-def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False):
+def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
+        reset_templates: bool = False, reset_glossary: bool = False, reset_communities: bool = False):
     run_id = str(uuid.uuid4())
     started_at = _NOW()
     run_meta: dict = {
@@ -111,6 +112,19 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
     if reset_checkpoint and _CHECKPOINT_FILE.exists():
         _CHECKPOINT_FILE.unlink()
         log.info("Checkpoint reset.")
+    elif (reset_templates or reset_glossary or reset_communities) and _CHECKPOINT_FILE.exists():
+        cp = _load_checkpoint()
+        if reset_templates:
+            cp.pop("query_templates", None)
+            log.info("Templates cache cleared from checkpoint.")
+        if reset_glossary:
+            cp.pop("glossary_terms", None)
+            cp.pop("glossary_context_offset", None)
+            log.info("Glossary cache cleared from checkpoint.")
+        if reset_communities:
+            cp.pop("communities", None)
+            log.info("Communities cache cleared from checkpoint.")
+        _save_checkpoint(cp)
 
     loader = None if dry_run else Neo4jLoader(
         neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password, neo4j_cfg.db
@@ -869,23 +883,42 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         intent_json_path = Path(__file__).resolve().parents[1] / "output" / "intent_classes.json"
         intent_classes = load_intent_classes(intent_json_path)
 
-        # Build ontology_class → [fqn] index from Neo4j
+        def _to_pascal(snake: str) -> str:
+            return "".join(w.capitalize() for w in snake.split("_"))
+
+        # Build ontology_class → [fqn] index from table names (PascalCase)
+        # ontology_class on the node may be empty — derive from table name as fallback
         class_rows = loader._run("""
             MATCH (t:Table)
-            WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
-            RETURN t.fqn AS fqn, t.ontology_class AS ontology_class
+            RETURN t.fqn AS fqn, t.name AS name,
+                   coalesce(t.ontology_class, '') AS ontology_class
         """)
         table_fqn_by_class: dict[str, list[str]] = defaultdict(list)
         for r in class_rows:
-            raw_class = r["ontology_class"]
-            # ontology_class stored as 'lpp:AcquirerSlaMetric' — extract camelCase part
-            camel = raw_class.split(":")[-1] if ":" in raw_class else raw_class
-            table_fqn_by_class[camel].append(r["fqn"])
+            _oc = r["ontology_class"]
+            cls = _oc.split(":")[-1] if _oc else _to_pascal(r["name"])
+            table_fqn_by_class[cls].append(r["fqn"])
+
+        # Persist derived ontology_class back to nodes that are missing it
+        missing_rows = [
+            {"fqn": r["fqn"], "cls": f"{r['fqn'].split('.')[0]}:{_to_pascal(r['name'])}"}
+            for r in class_rows if not r["ontology_class"]
+        ]
+        if missing_rows:
+            loader._batch_write("""
+                UNWIND $rows AS r
+                MATCH (t:Table {fqn: r.fqn})
+                SET t.ontology_class = r.cls
+            """, missing_rows)
+            log.info("INTENTS: set ontology_class on %d tables that were missing it.", len(missing_rows))
 
         # Query enriched table context for each ontology class
         tbl_ctx_rows = loader._run("""
-            MATCH (t:Table) WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
-            RETURN t.name AS name, split(t.ontology_class, ':')[-1] AS cls,
+            MATCH (t:Table)
+            RETURN t.name AS name,
+                   CASE WHEN coalesce(t.ontology_class,'') <> ''
+                        THEN split(t.ontology_class,':')[-1]
+                        ELSE t.name END AS cls,
                    coalesce(t.description, '') AS description,
                    coalesce(t.business_domain, '') AS domain,
                    coalesce(t.natural_measures, []) AS measures
@@ -917,7 +950,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         intent_descriptions = enrich_intents(intent_input, chat_client)
 
         # Build and load Intent nodes
-        intent_nodes = build_intent_node_dicts(intent_classes, intent_descriptions, model_arn)
+        intent_nodes = build_intent_node_dicts(intent_classes, intent_descriptions)
         loader.load_intent_nodes(intent_nodes)
 
         # Build RELEVANT_TO edges and load them
@@ -929,7 +962,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
 
         loader._run("""
             MATCH (i:Intent) WHERE i.description IS NOT NULL AND i.description <> ''
-            SET i.enrichment_status = 'enriched'
+            SET i.enrichment_status = 'complete'
         """)
         loader.initialize_intent_defaults()
         log.info("INTENTS: %d nodes, %d edges.", len(intent_nodes), len(relevant_edges))
@@ -949,13 +982,40 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
             MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
             WHERE size(coalesce(c.synonyms, [])) > 0
                OR size(coalesce(c.value_aliases, [])) > 0
-            RETURN t.name AS table_name, t.description AS table_desc,
+            RETURN t.name AS table_name, t.fqn AS table_fqn, t.description AS table_desc,
                    c.name AS col_name, c.synonyms AS synonyms,
                    c.semantic_type AS semantic_type,
                    c.value_aliases AS value_aliases,
                    c.value_vocabulary AS value_vocabulary
+            ORDER BY size(coalesce(c.value_aliases, [])) DESC,
+                     size(coalesce(c.value_vocabulary, [])) DESC,
+                     size(coalesce(c.synonyms, [])) DESC
             LIMIT 500
         """)
+        fqn_by_name_gloss: dict[str, str] = {r["table_name"]: r["table_fqn"] for r in context_rows}
+
+        # Build (table_name -> {token_lower -> col_name}) for source_column_name lookup
+        _col_token_idx: dict[str, dict[str, str]] = {}
+        for r in context_rows:
+            tbl, col = r["table_name"], r["col_name"]
+            tbl_idx = _col_token_idx.setdefault(tbl, {})
+            for alias_pair in (r.get("value_aliases") or []):
+                key = alias_pair.split("->")[0].strip().lower()
+                if key:
+                    tbl_idx[key] = col
+            for val in (r.get("value_vocabulary") or []):
+                tbl_idx[val.strip().lower()] = col
+            for syn in (r.get("synonyms") or []):
+                tbl_idx[syn.strip().lower()] = col
+
+        def _find_source_col(term_dict: dict, table_name: str) -> str:
+            tbl_idx = _col_token_idx.get(table_name, {})
+            candidates = [term_dict.get("term", "")] + list(term_dict.get("variants") or [])
+            for c in candidates:
+                hit = tbl_idx.get(c.strip().lower())
+                if hit:
+                    return hit
+            return ""
         context_lines = []
         for r in context_rows[:300]:
             syns = ", ".join(r.get("synonyms") or [])
@@ -972,7 +1032,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                 line += f" values=[{vocab}]"
             context_lines.append(line)
 
-        GLOSS_BATCH = 10
+        GLOSS_BATCH = 15
         glossary_checkpoint = _load_checkpoint()
         cached_terms: list[dict] = glossary_checkpoint.get("glossary_terms") or []
         glossary_offset: int = glossary_checkpoint.get("glossary_context_offset", 0)
@@ -980,6 +1040,16 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         if glossary_offset >= len(context_lines) and cached_terms:
             log.info("GLOSSARY: %d terms from checkpoint — all %d context rows done, skipping LLM.",
                      len(cached_terms), len(context_lines))
+            for bt in cached_terms:
+                names = bt.get("related_table_names") or []
+                if not bt.get("related_table_fqns"):
+                    bt["related_table_fqns"] = [fqn_by_name_gloss[n] for n in names if n in fqn_by_name_gloss]
+                if not bt.get("source_column_name"):
+                    bt["source_column_name"] = next(
+                        (_find_source_col(bt, n) for n in names if _find_source_col(bt, n)), ""
+                    )
+            loader.load_business_terms(cached_terms)
+            loader.load_business_term_table_edges(cached_terms)
             terms = cached_terms
         else:
             existing_term_names: set[str] = {bt["term"] for bt in cached_terms}
@@ -994,6 +1064,12 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                 log.info("GLOSSARY: calling LLM for context rows %d–%d / %d ...",
                          i + 1, done_rows, len(context_lines))
                 batch_terms = generate_business_glossary("\n".join(chunk), chat_client)
+                for bt in batch_terms:
+                    names = bt.get("related_table_names") or []
+                    bt["related_table_fqns"] = [fqn_by_name_gloss[n] for n in names if n in fqn_by_name_gloss]
+                    bt["source_column_name"] = next(
+                        (_find_source_col(bt, n) for n in names if _find_source_col(bt, n)), ""
+                    )
                 new_terms = [bt for bt in batch_terms if bt["term"] not in existing_term_names]
                 all_terms.extend(new_terms)
                 existing_term_names.update(bt["term"] for bt in new_terms)
@@ -1033,25 +1109,17 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         intent_classes = load_intent_classes(intent_json_path)
         intents_list = list(intent_classes.keys())
 
-        # Collect ontology classes + enriched descriptions from Neo4j
-        class_rows_qt = loader._run("""
+        # Fetch all tables for LLM anchor selection and name→fqn resolution
+        table_rows_qt = loader._run("""
             MATCH (t:Table)
-            WHERE t.ontology_class IS NOT NULL AND t.ontology_class <> ''
-            RETURN DISTINCT split(t.ontology_class, ':')[-1] AS cls,
-                   t.description AS description,
-                   t.business_domain AS domain,
-                   t.natural_measures AS measures
+            RETURN t.name AS name, t.fqn AS fqn,
+                   t.description AS description, t.business_domain AS domain
         """)
-        ontology_classes = [r["cls"] for r in class_rows_qt]
-        class_context_lines = []
-        for r in class_rows_qt:
-            line = f"{r['cls']}: {r.get('description') or ''}"
-            if r.get("domain"):
-                line += f" (domain: {r['domain']})"
-            if r.get("measures"):
-                line += f" measures: {', '.join((r['measures'] or [])[:3])}"
-            class_context_lines.append(line)
-        class_context = "\n".join(class_context_lines[:100])
+        tables_for_llm = [
+            {"name": r["name"], "description": r.get("description") or "", "domain": r.get("domain") or ""}
+            for r in table_rows_qt
+        ]
+        fqn_by_name_qt: dict[str, str] = {r["name"]: r["fqn"] for r in table_rows_qt}
 
         checkpoint = _load_checkpoint()
 
@@ -1074,15 +1142,6 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         log.info("TEMPLATES: %d questions total, %d cached, %d to enrich.",
                  len(questions), n_cached_qt, len(to_enrich_qt))
 
-        # Build ontology_class → fqn index for anchor_table_fqns resolution
-        class_fqn_rows = loader._run("""
-            MATCH (t:Table) WHERE t.ontology_class IS NOT NULL
-            RETURN t.fqn AS fqn, split(t.ontology_class, ':')[-1] AS cls
-        """)
-        fqn_by_class_qt: dict[str, list[str]] = defaultdict(list)
-        for r in class_fqn_rows:
-            fqn_by_class_qt[r["cls"]].append(r["fqn"])
-
         def _build_qt_dicts(qs: list[dict]) -> tuple:
             tmpls, i_edges, t_edges = [], [], []
             for q in qs:
@@ -1092,9 +1151,14 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                     continue
                 qt_id = f"qt_{sl:03d}"
                 intent_scores: dict = enr.get("intent_scores") or {"general_analytics": 0.5}
+                # Normalise so the top intent always scores 1.0 — preserves ranking,
+                # prevents artificially low confidence when LLM spreads probability thin
+                _max = max(intent_scores.values()) if intent_scores else 1.0
+                if _max > 0:
+                    intent_scores = {k: round(v / _max, 4) for k, v in intent_scores.items()}
                 primary_intent = max(intent_scores, key=intent_scores.get)
-                anchor_classes = enr.get("anchor_ontology_classes") or []
-                anchor_fqns = resolve_anchor_table_fqns(anchor_classes, fqn_by_class_qt)
+                anchor_names = enr.get("anchor_table_names") or []
+                anchor_fqns = [fqn_by_name_qt[n] for n in anchor_names if n in fqn_by_name_qt]
                 tmpls.append({
                     "id":                      qt_id,
                     "question_text":           q["question_text"],
@@ -1102,7 +1166,6 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
                     "primary_intent":          primary_intent,
                     "intent_scores":           [{"name": k, "score": float(v)} for k, v in intent_scores.items()],
                     "complexity":              enr.get("complexity", "complex"),
-                    "anchor_ontology_classes": anchor_classes,
                     "anchor_table_fqns":       anchor_fqns,
                     "cte_steps":               enr.get("cte_steps") or [],
                     "required_aggregations":   enr.get("required_aggregations") or [],
@@ -1140,11 +1203,10 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
             batch_result = enrich_query_templates(
                 questions=batch,
                 intents=intents_list,
-                ontology_classes=ontology_classes,
+                tables=tables_for_llm,
                 chat_client=chat_client,
                 cache={},
                 batch_size=TMPL_BATCH,
-                class_context=class_context,
             )
             qt_cache.update(batch_result)
 
@@ -1176,6 +1238,12 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False)
         EMBED_BATCH = 50
         bedrock_client = _bedrock_client(bedrock_cfg)
         model_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
+
+        # Normalise any legacy 'enriched' status to 'complete' across all node types
+        loader._run("""
+            MATCH (n) WHERE n.enrichment_status = 'enriched'
+            SET n.enrichment_status = 'complete'
+        """)
 
         # Column embeddings — name + description + synonyms (array-joined at embed time)
         col_rows = loader._run("""
@@ -1382,6 +1450,9 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true", help="Parse and infer without writing to Neo4j")
     parser.add_argument("--reset-checkpoint", action="store_true", help="Delete enrichment checkpoint and start fresh")
+    parser.add_argument("--reset-templates", action="store_true", help="Clear only the templates cache so templates re-enrich with updated prompt")
+    parser.add_argument("--reset-glossary", action="store_true", help="Clear only the glossary cache so glossary re-enriches with updated prompt")
+    parser.add_argument("--reset-communities", action="store_true", help="Clear only the community descriptions cache so communities re-enrich")
     args = parser.parse_args()
 
     if args.steps.strip().lower() == "all":
@@ -1393,7 +1464,9 @@ def main():
             print(f"Unknown steps: {invalid}. Valid: {_ALL_STEPS}", file=sys.stderr)
             sys.exit(1)
 
-    run(steps=steps, dry_run=args.dry_run, reset_checkpoint=args.reset_checkpoint)
+    run(steps=steps, dry_run=args.dry_run, reset_checkpoint=args.reset_checkpoint,
+        reset_templates=args.reset_templates, reset_glossary=args.reset_glossary,
+        reset_communities=args.reset_communities)
 
 
 if __name__ == "__main__":

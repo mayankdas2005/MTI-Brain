@@ -1,6 +1,7 @@
 from pathlib import Path
 from urllib.parse import quote_plus
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV = str(Path(__file__).resolve().parent.parent / ".env")
@@ -13,7 +14,11 @@ class _RS(BaseSettings):
     host: str
     port: int = 5439
     db: str
-    schema: str = "lpp"
+    schema_name: str = Field("lpp", alias="REDSHIFT_SCHEMA")
+
+    @property
+    def schema(self) -> str:
+        return self.schema_name
 
     @property
     def dsn(self) -> str:

@@ -537,9 +537,10 @@ class Neo4jLoader:
         now = _NOW()
         self._run("""
             MATCH (d:Domain {name: $name})
-            SET d.description      = $description,
-                d.cohere_embedding = null,
-                d.updated_at       = $now
+            SET d.description        = $description,
+                d.enrichment_status  = 'complete',
+                d.cohere_embedding   = null,
+                d.updated_at         = $now
         """, name=domain_name, description=description, now=now)
 
     def update_table_embedding(self, fqn: str, embedding: list[float], model: str):
@@ -632,6 +633,26 @@ class Neo4jLoader:
 
     # ── New Cypher passes ─────────────────────────────────────────────────
 
+    def _pass_domain_voting(self):
+        """Re-run PageRank-weighted domain voting after ENRICH sets business_domain on tables.
+        Excludes tables with empty/null business_domain so they don't corrupt the vote."""
+        self._run("""
+            MATCH (t:Table) WHERE t.community_id IS NOT NULL
+              AND t.business_domain IS NOT NULL AND t.business_domain <> ''
+            WITH t.community_id AS cid,
+                 t.business_domain AS dom,
+                 sum(coalesce(t.pagerank_score, 0.001)) AS w
+            ORDER BY w DESC
+            WITH cid, collect({domain: dom, weight: w}) AS ranked
+            WITH cid, ranked,
+                 reduce(s = 0.0, r IN ranked | s + r.weight) AS total_w
+            MATCH (c:Community {id: cid})
+            SET c.dominant_domain            = ranked[0].domain,
+                c.dominant_domain_confidence = CASE WHEN total_w = 0 THEN 0.0
+                    ELSE round(ranked[0].weight / total_w * 100) / 100.0 END
+        """)
+        log.debug("Pass: community dominant_domain re-voted from post-enrich table domains.")
+
     def _pass_community_table_count(self):
         """Set table_count on Community nodes from CONTAINS_TABLE edges."""
         self._run("""
@@ -718,19 +739,30 @@ class Neo4jLoader:
         log.debug("Pass: from_col_null_frac / join_likely_sparse on JOINS_TO set.")
 
     def _pass_bridges_to_enhanced(self):
-        """Create/update BRIDGES_TO edges between communities that share a hub table."""
+        """Create/update BRIDGES_TO edges between communities that share a hub table.
+        When multiple hubs qualify, pick the one with the highest in_degree (most connected)
+        so that company (in_degree=33) always beats peripheral hubs like pension_plan.
+        """
         self._run("""
             MATCH (t1:Table)-[:JOINS_TO*1..2 {is_declared: true}]->(hub:Table {is_dimension_hub: true})
             MATCH (t2:Table)-[:JOINS_TO*1..2 {is_declared: true}]->(hub)
             WHERE t1.community_id <> t2.community_id
               AND t1.community_id IS NOT NULL AND t2.community_id IS NOT NULL
             WITH t1.community_id AS c1, t2.community_id AS c2,
-                 hub.fqn AS hub_fqn, coalesce(hub.hub_join_col, 'code') AS hub_col
+                 hub.fqn AS hub_fqn, coalesce(hub.hub_join_col, 'code') AS hub_col,
+                 hub.community_id AS hub_cid,
+                 coalesce(hub.in_degree, 0) AS hub_indegree
+            ORDER BY hub_indegree DESC
+            WITH c1, c2,
+                 head(collect(hub_fqn))  AS hub_fqn,
+                 head(collect(hub_col))  AS hub_col,
+                 head(collect(hub_cid))  AS hub_cid
             MATCH (comm1:Community {id: c1}), (comm2:Community {id: c2})
             MERGE (comm1)-[r:BRIDGES_TO]->(comm2)
             SET r.bridge_type              = 'hub_table',
                 r.hub_table_fqn            = hub_fqn,
                 r.hub_join_col             = hub_col,
+                r.hub_community_id         = hub_cid,
                 r.shared_dimension_columns = [hub_col],
                 r.join_safe                = true
         """)
@@ -752,7 +784,7 @@ class Neo4jLoader:
         self._run("""
             MATCH (qt:QueryTemplate)
             SET qt.template_confidence =
-              toFloat(coalesce(qt.anchor_fqns_verified, false)) * 0.4 +
+              CASE WHEN coalesce(qt.anchor_fqns_verified, false) THEN 0.4 ELSE 0.0 END +
               CASE WHEN size(coalesce(qt.anchor_table_fqns_resolved, [])) > 0 THEN 0.3 ELSE 0.0 END +
               0.2 +
               CASE WHEN (qt.complexity = 'simple'   AND size(coalesce(qt.cte_steps, [])) <= 2)
@@ -792,6 +824,7 @@ class Neo4jLoader:
         self._pass_is_canonical()
         self._pass_ambiguity_risk()
         # Community + cross-domain passes
+        self._pass_domain_voting()
         self._pass_community_table_count()
         self._pass_bridges_to_enhanced()
         self._pass_shared_synonyms()
@@ -1019,6 +1052,7 @@ class Neo4jLoader:
                 b.term_category      = coalesce(r.term_category, "concept"),
                 b.description        = r.description,
                 b.related_table_fqns = coalesce(r.related_table_fqns, []),
+                b.enrichment_status  = 'complete',
                 b.created_at         = r.created_at
         """, rows)
         log.info("Loaded %d BusinessTerm nodes.", len(rows))
@@ -1087,6 +1121,7 @@ class Neo4jLoader:
                 q.min_cte_count           = r.min_cte_count,
                 q.max_cte_count           = r.max_cte_count,
                 q.source_line             = r.source_line,
+                q.enrichment_status       = 'complete',
                 q.created_at              = r.created_at
         """, rows)
         log.info("Loaded %d QueryTemplate nodes.", len(rows))
@@ -1136,9 +1171,10 @@ class Neo4jLoader:
                 continue
             self._run("""
                 MATCH (c:Community {id: $cid})
-                SET c.description      = $desc,
-                    c.cohere_embedding = null,
-                    c.updated_at       = $now
+                SET c.description        = $desc,
+                    c.enrichment_status  = 'complete',
+                    c.cohere_embedding   = null,
+                    c.updated_at         = $now
             """, cid=cid, desc=data.get("description", ""), now=now)
         log.info("Updated descriptions for %d Community nodes.", len(enriched))
 

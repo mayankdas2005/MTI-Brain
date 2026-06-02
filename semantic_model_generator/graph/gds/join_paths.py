@@ -21,7 +21,12 @@ _NOW = lambda: datetime.now(timezone.utc).isoformat()
 
 class JoinPathBuilder:
     def __init__(self, uri: str, user: str, password: str, db: str):
-        self._driver = GraphDatabase.driver(uri, auth=(user, password))
+        self._driver = GraphDatabase.driver(
+            uri, auth=(user, password),
+            keep_alive=True,
+            connection_timeout=120,
+            max_transaction_retry_time=300,
+        )
         self._db = db
 
     def close(self):
@@ -57,14 +62,13 @@ class JoinPathBuilder:
     def _get_join_clauses_for_path(self, path_tables: list[str]) -> list[str]:
         """
         Look up from_col/to_col for each consecutive pair in a path.
-        Returns fully-qualified SQL fragments like 'lpp.t1.col = lpp.t2.col'.
-        Uses startNode/endNode to determine correct table ownership per column
-        regardless of path traversal direction.
+        Returns SQL JOIN predicates ordered by traversal direction:
+        each clause is always '{left_table}.{col} = {right_table}.{col}'
+        where left_table = path_tables[i] and right_table = path_tables[i+1].
         GDS virtual path relationships only carry projected numeric properties
         (join_cost), not string properties — so we query the real edges here.
         """
         clauses: list[str] = []
-        seen: set[str] = set()
         for i in range(len(path_tables) - 1):
             a, b = path_tables[i], path_tables[i + 1]
             rows = self._run("""
@@ -76,12 +80,14 @@ class JoinPathBuilder:
             """, a=a, b=b)
             if rows:
                 row = rows[0]
-                clause = f"{row['from_fqn']}.{row['fc']} = {row['to_fqn']}.{row['tc']}"
-                if clause not in seen:
-                    seen.add(clause)
-                    clauses.append(clause)
+                # Always emit clause in traversal order: a.col = b.col
+                if row["from_fqn"] == a:
+                    clause = f"{a}.{row['fc']} = {b}.{row['tc']}"
+                else:
+                    clause = f"{a}.{row['tc']} = {b}.{row['fc']}"
+                clauses.append(clause)
             else:
-                clauses.append("")
+                clauses.append(f"/* no edge found between {a} and {b} */")
         return clauses
 
     # ── Dijkstra ───────────────────────────────────────────────────────────
@@ -122,7 +128,7 @@ class JoinPathBuilder:
                 RETURN
                     [n IN nodes(path) | n.fqn] AS path_tables,
                     totalCost,
-                    length(path) - 1           AS hop_count
+                    size(nodes(path)) - 1      AS hop_count
                 LIMIT 1
             """, src=src, dst=dst)
 
@@ -182,7 +188,7 @@ class JoinPathBuilder:
                 RETURN
                     [n IN nodes(path) | n.fqn] AS path_tables,
                     totalCost,
-                    length(path) - 1           AS hop_count,
+                    size(nodes(path)) - 1      AS hop_count,
                     index + 1                  AS k_rank
             """, src=src, dst=dst, k=k)
 
@@ -312,7 +318,7 @@ class JoinPathBuilder:
                 RETURN
                     [n IN nodes(path) | n.fqn] AS path_tables,
                     totalCost,
-                    length(path) - 1           AS hop_count
+                    size(nodes(path)) - 1      AS hop_count
                 LIMIT 1
             """, src=src, dst=dst)
 
