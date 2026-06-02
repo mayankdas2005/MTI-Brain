@@ -990,7 +990,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             ORDER BY size(coalesce(c.value_aliases, [])) DESC,
                      size(coalesce(c.value_vocabulary, [])) DESC,
                      size(coalesce(c.synonyms, [])) DESC
-            LIMIT 500
+            LIMIT 2000
         """)
         fqn_by_name_gloss: dict[str, str] = {r["table_name"]: r["table_fqn"] for r in context_rows}
 
@@ -1017,7 +1017,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
                     return hit
             return ""
         context_lines = []
-        for r in context_rows[:300]:
+        for r in context_rows:
             syns = ", ".join(r.get("synonyms") or [])
             aliases = ", ".join(r.get("value_aliases") or [])
             vocab = ", ".join(r.get("value_vocabulary") or [])

@@ -293,7 +293,7 @@ class JoinPathBuilder:
               AND b.typical_join_role IN ['anchor','fact']
             RETURN a.fqn AS src, b.fqn AS dst, ca.id AS cid_a, cb.id AS cid_b
             ORDER BY coalesce(a.pagerank_score, 0) DESC
-            LIMIT 200
+            LIMIT 500
         """)
         if not candidate_pairs:
             log.info("No cross-community candidate pairs found — skipping.")
