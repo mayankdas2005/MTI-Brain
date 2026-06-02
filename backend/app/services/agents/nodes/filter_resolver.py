@@ -118,12 +118,28 @@ async def _resolve_filter(
         f.table_fqn, f.column_name, column_meta.get("data_type"), column_meta.get("semantic_type"),
     )
 
-    # filter_values = Redshift-probed distinct values written by context_fetcher enrichment
-    # Never use Neo4j value_vocabulary (always []) or partial sample_values for matching
+    # filter_values is set from value_vocabulary in context_fetcher (no Redshift probe).
+    # value_vocabulary = distinct_values[0..30] from ingestion pipeline.
+    # sample_values (5-10 items) is NOT used — insufficient for filter resolution.
     filter_values = column_meta.get("filter_values") or []
-    raw_aliases = column_meta.get("value_aliases")
-    value_aliases = raw_aliases if isinstance(raw_aliases, dict) else {}
     filter_selectivity = column_meta.get("filter_selectivity", "medium")
+
+    # value_aliases stored as list in Neo4j: ["BRL -> Brazilian Real", "USD -> US Dollar"]
+    # Parse to dict: {"BRL": "Brazilian Real", ...}
+    # resolve_tier1_combined does reverse lookup: user says "Brazilian Real" → returns "BRL"
+    raw_aliases = column_meta.get("value_aliases") or []
+    if isinstance(raw_aliases, dict):
+        value_aliases = raw_aliases
+    elif isinstance(raw_aliases, list):
+        value_aliases = {}
+        for alias_str in raw_aliases:
+            for sep in (" -> ", " → ", "->", "→"):
+                if sep in str(alias_str):
+                    parts = str(alias_str).split(sep, 1)
+                    value_aliases[parts[0].strip()] = parts[1].strip()
+                    break
+    else:
+        value_aliases = {}
 
     # Temporal (date columns and time_filter) — handle before value matching
     data_type = column_meta.get("data_type", "").lower()
@@ -144,8 +160,14 @@ async def _resolve_filter(
     if resolved_val and 70 <= score < 85:
         return f.model_copy(update={"value": resolved_val, "resolved": True}), True
 
-    # Tier 2: Live Redshift probe — only when filter_values is empty (enrichment didn't run)
+    # Tier 4: Live Redshift probe — ONLY when value_vocabulary was empty in Neo4j
+    # (numeric columns, very high cardinality, or columns that need re-enrichment)
     if not filter_values and filter_selectivity != "high":
+        logger.warning(
+            "filter_resolver | TIER4_REDSHIFT | {}.{} | value_vocabulary was empty — "
+            "this column may need re-enrichment in the ingestion pipeline",
+            f.table_fqn, f.column_name,
+        )
         probe_result = await _run_redshift_probe(f.table_fqn, f.column_name, f.raw_user_value, state["thread_id"])
         if probe_result:
             resolved_val, score, candidates = resolve_tier1_combined(f.raw_user_value, probe_result, value_aliases)
@@ -192,7 +214,25 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
     from app.core.circuit_breaker import llm_breaker
 
     from app.services.agents.prompts import REASONING_DIRECTIVE_BRIEF
-    candidates_text = "\n".join(f'  {i + 1}. "{c}"' for i, c in enumerate(candidates))
+
+    # Build alias map from column metadata to show business meanings alongside DB values
+    column_meta = _get_column_meta(f.table_fqn, f.column_name, state)
+    raw_al = column_meta.get("value_aliases") or []
+    alias_map: dict[str, str] = {}
+    if isinstance(raw_al, list):
+        for s in raw_al:
+            for sep in (" -> ", " → ", "->", "→"):
+                if sep in str(s):
+                    parts = str(s).split(sep, 1)
+                    alias_map[parts[0].strip()] = parts[1].strip()
+                    break
+    elif isinstance(raw_al, dict):
+        alias_map = raw_al
+
+    candidates_text = "\n".join(
+        f'  {i + 1}. "{c}"{f"  ({alias_map[c]})" if c in alias_map else ""}'
+        for i, c in enumerate(candidates)
+    )
     prompt = FILTER_DISAMBIGUATE_PROMPT.format_messages(
         raw_user_value=f.raw_user_value,
         column_name=f.column_name,
@@ -223,9 +263,20 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
 
 def _get_column_meta(table_fqn: str, col_name: str, state: AnalyticsState) -> dict:
     semantic_context = state.get("semantic_context") or {}
+
+    # Fast path: O(1) lookup from _column_lookup (full untrimmed data from context_fetcher)
+    lookup = semantic_context.get("_column_lookup")
+    if lookup:
+        col = lookup.get((table_fqn, col_name))
+        if col:
+            return col
+
+    # Slow path: linear scan of display columns (fallback if _column_lookup missing)
     for col in semantic_context.get("columns", []):
         if col.get("table_fqn") == table_fqn and col.get("name") == col_name:
             return col
+
+    # Last resort: direct Neo4j query
     try:
         results = neo4j_client.resolve_columns(table_fqn, [col_name])
         return results[0] if results else {}

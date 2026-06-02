@@ -54,6 +54,8 @@ SCHEMA_DDL: list[str] = [
     # ── Range indexes — JoinPath ──────────────────────────────────────────
     "CREATE INDEX jp_quality            IF NOT EXISTS FOR (j:JoinPath) ON (j.quality_score)",
     "CREATE INDEX jp_hop_count          IF NOT EXISTS FOR (j:JoinPath) ON (j.hop_count)",
+    "CREATE INDEX jp_from_fqn           IF NOT EXISTS FOR (j:JoinPath) ON (j.from_fqn)",
+    "CREATE INDEX jp_to_fqn             IF NOT EXISTS FOR (j:JoinPath) ON (j.to_fqn)",
 
     # ── Relationship indexes — JOINS_TO ───────────────────────────────────
     "CREATE INDEX joins_confidence      IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.confidence)",

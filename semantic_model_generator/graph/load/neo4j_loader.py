@@ -61,6 +61,10 @@ class Neo4jLoader:
             "CREATE CONSTRAINT intent_name_unique    IF NOT EXISTS FOR (i:Intent)       REQUIRE i.name IS UNIQUE",
             "CREATE CONSTRAINT businessterm_unique   IF NOT EXISTS FOR (b:BusinessTerm) REQUIRE b.term IS UNIQUE",
             "CREATE CONSTRAINT querytemplate_id      IF NOT EXISTS FOR (q:QueryTemplate) REQUIRE q.id IS UNIQUE",
+
+            "CREATE CONSTRAINT tbl_fqn_unique IF NOT EXISTS FOR (t:Table) REQUIRE t.fqn IS UNIQUE",
+            "CREATE CONSTRAINT col_id_unique IF NOT EXISTS FOR (c:Column) REQUIRE c.id IS UNIQUE",
+            
             # RANGE indexes — Table
             "CREATE INDEX table_domain          IF NOT EXISTS FOR (t:Table)  ON (t.business_domain)",
             "CREATE INDEX table_type            IF NOT EXISTS FOR (t:Table)  ON (t.table_type)",
@@ -166,10 +170,26 @@ class Neo4jLoader:
             f"CREATE VECTOR INDEX intent_cohere IF NOT EXISTS FOR (i:Intent) ON (i.cohere_embedding) {_VEC_OPTS}",
             f"CREATE VECTOR INDEX community_cohere IF NOT EXISTS FOR (c:Community) ON (c.cohere_embedding) {_VEC_OPTS}",
             f"CREATE VECTOR INDEX domain_cohere IF NOT EXISTS FOR (d:Domain) ON (d.cohere_embedding) {_VEC_OPTS}",
+            f"CREATE VECTOR INDEX querypattern_cohere_embedding IF NOT EXISTS FOR (q:QueryPattern) ON (q.cohere_embedding) {_VEC_OPTS}",
+            f"CREATE VECTOR INDEX antipattern_cohere_embedding IF NOT EXISTS FOR (a:AntiPattern) ON (a.cohere_embedding) {_VEC_OPTS}",
         ]:
             self._run(vec_ddl)
 
+        self._cleanup_stale_patterns()
         log.info("Schema applied.")
+
+    def _cleanup_stale_patterns(self):
+        """Delete runtime pattern nodes written by old code that lacked required properties."""
+        deleted_qp = self._run(
+            "MATCH (qp:QueryPattern) WHERE qp.tables_used IS NULL DETACH DELETE qp RETURN count(*) AS n"
+        )
+        deleted_ap = self._run(
+            "MATCH (ap:AntiPattern) WHERE ap.error_type IS NULL DETACH DELETE ap RETURN count(*) AS n"
+        )
+        n_qp = deleted_qp[0]["n"] if deleted_qp else 0
+        n_ap = deleted_ap[0]["n"] if deleted_ap else 0
+        if n_qp or n_ap:
+            log.info("Cleaned up stale pattern nodes: QueryPattern=%d AntiPattern=%d", n_qp, n_ap)
 
     # ── Domain nodes ───────────────────────────────────────────────────────
 

@@ -14,6 +14,30 @@ from app.services.agents import neo4j_client
 from app.services.agents.semantic_ir import ColumnRef, FilterSpec, SemanticIR
 
 
+_TIMEFRAME_GRAIN: dict[str, str] = {
+    "last_7_days":    "day",
+    "last_14_days":   "day",
+    "last_30_days":   "day",
+    "last_week":      "week",
+    "last_2_weeks":   "week",
+    "last_month":     "month",
+    "last_3_months":  "month",
+    "last_6_months":  "month",
+    "last_12_months": "month",
+    "last_year":      "month",
+    "this_year":      "month",
+    "ytd":            "month",
+    "last_quarter":   "quarter",
+    "this_quarter":   "quarter",
+}
+
+
+def _infer_temporal_grain(timeframe: str | None) -> str | None:
+    if not timeframe:
+        return None
+    return _TIMEFRAME_GRAIN.get(timeframe.lower().strip().replace(" ", "_"))
+
+
 def _normalize_fqn(fqn: str) -> str:
     """Trim 3-part FQNs to schema.table.
 
@@ -78,6 +102,8 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
     template_id = resolved.get("template_id", "")
     cte_steps = _get_cte_steps(template_id, semantic_context)
 
+    temporal_grain = resolved.get("temporal_grain") or _infer_temporal_grain(resolved.get("timeframe"))
+
     ir = SemanticIR(
         template_id=template_id,
         intent=resolved.get("intent", ""),
@@ -92,13 +118,34 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
         dimensions=dimensions,
         filters=filters,
         time_filter=time_filter,
-        temporal_grain=resolved.get("temporal_grain"),
+        temporal_grain=temporal_grain,
         cte_steps=cte_steps,
         order_by=_coerce_list(resolved.get("order_by")),
         limit=resolved.get("limit"),
         sub_query_index=None,
         candidate_join_paths=candidate_join_paths or None,
     )
+
+    # Backstop: inject DATE_TRUNC dimension when temporal_grain is known but LLM didn't add
+    # the date column to dimensions. Fires only for multi-dim breakdowns or time_series shape.
+    # Skipped for pure summary queries (no dimensions, not time_series).
+    if (
+        ir.temporal_grain
+        and ir.time_filter
+        and (ir.dimensions or ir.result_shape == "time_series")
+        and not any(d.column_name == ir.time_filter.column_name for d in ir.dimensions)
+    ):
+        period_alias = f"period_{ir.temporal_grain}"
+        ir.dimensions.insert(0, ColumnRef(
+            table_fqn=ir.time_filter.table_fqn,
+            column_name=ir.time_filter.column_name,
+            alias=period_alias,
+            semantic_type="date",
+        ))
+        logger.info(
+            "ir_builder | injected date dim (backstop) | grain={} | col={} | alias={}",
+            ir.temporal_grain, ir.time_filter.column_name, period_alias,
+        )
     logger.info(
         "ir_builder | ir_built | template={} | anchor_tables={} | measures={} | time_filter={}.{} | filters={}",
         template_id,
@@ -402,6 +449,9 @@ def _build_time_filter(timeframe: str | None, anchor_tables: list[str], semantic
     )
 
 
+_DATE_GRAINS = {"day", "week", "month", "quarter", "year", "hour", "minute", "date"}
+
+
 def _find_date_column(anchor_tables: list[str], semantic_context: dict) -> tuple[str, str]:
     columns = semantic_context.get("columns", [])
     _DATE_TYPES = {"date", "timestamp", "datetime"}
@@ -412,14 +462,15 @@ def _find_date_column(anchor_tables: list[str], semantic_context: dict) -> tuple
             if col.get("table_fqn") != table:
                 continue
             name = col["name"]
-            if col.get("temporal_grain"):
+            # Whitelist check — "none" and empty strings are falsy-equivalent here
+            if col.get("temporal_grain", "").lower() in _DATE_GRAINS:
                 logger.info("ir_builder | date_col | table={} col={} via=temporal_grain", table, name)
-                return table, name
-            if col.get("semantic_type", "").lower() in _DATE_SEMANTICS:
-                logger.info("ir_builder | date_col | table={} col={} via=semantic_type({})", table, name, col.get("semantic_type"))
                 return table, name
             if col.get("data_type", "").lower() in _DATE_TYPES:
                 logger.info("ir_builder | date_col | table={} col={} via=data_type({})", table, name, col.get("data_type"))
+                return table, name
+            if col.get("semantic_type", "").lower() in _DATE_SEMANTICS:
+                logger.info("ir_builder | date_col | table={} col={} via=semantic_type({})", table, name, col.get("semantic_type"))
                 return table, name
 
     fallback_table = anchor_tables[0] if anchor_tables else ""

@@ -216,12 +216,12 @@ export function pickRandom<T>(arr: T[], n: number): T[] {
   return shuffled.slice(0, n);
 }
 
-/** Pick 4 suggestions: 1 simple + 2 complex + 1 advanced, fully randomised. */
+/** Pick 3 suggestions: 1 simple, 1 complex, 1 advanced — in that fixed order. */
 export function pickSuggestions(_recentTitles: string[] = []): Suggestion[] {
-  const [simple]             = pickRandom(TREASURY_SIMPLE, 1);
-  const [complex1, complex2] = pickRandom(TREASURY_COMPLEX, 2);
-  const [advanced]           = pickRandom(TREASURY_ADVANCED, 1);
-  return [simple, complex1, complex2, advanced].sort(() => Math.random() - 0.5);
+  const [simple]   = pickRandom(TREASURY_SIMPLE, 1);
+  const [complex]  = pickRandom(TREASURY_COMPLEX, 1);
+  const [advanced] = pickRandom(TREASURY_ADVANCED, 1);
+  return [simple, complex, advanced];
 }
 
 // Legacy flat exports — kept so any existing direct imports still compile.

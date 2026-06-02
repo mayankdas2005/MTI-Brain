@@ -19,50 +19,45 @@ def _build_data_summary(
     Returns:
         col_stats    — one line per column: type, range/top-values, null rate
         null_notes   — human-readable note for columns with >20% nulls (empty string if none)
-        sampled_rows — head + middle + tail sample capped at 20 rows, as raw lists
+        sampled_rows — spread-sampled rows capped at 20, as raw lists
     """
+    import pandas as pd
+
     if not columns or not rows:
         return "", "", rows or []
 
-    total = len(rows)
+    df = pd.DataFrame(rows, columns=columns)
+    total = len(df)
     stat_lines: list[str] = []
     null_note_lines: list[str] = []
 
-    for i, col in enumerate(columns):
-        all_vals = [r[i] if i < len(r) else None for r in rows]
-        null_count = sum(1 for v in all_vals if v is None)
-        vals = [v for v in all_vals if v is not None]
+    for col in columns:
+        series = df[col]
+        null_count = int(series.isna().sum())
+        non_null = series.dropna()
+        null_suffix = f" | null={null_count}/{total}" if null_count else ""
 
         if null_count and null_count / total > 0.2:
             null_note_lines.append(f"{col}: {null_count}/{total} nulls ({null_count * 100 // total}%)")
 
-        if not vals:
+        if non_null.empty:
             stat_lines.append(f"{col} [unknown]: all null")
             continue
 
-        try:
-            [float(v) for v in vals[:20]]
-            dtype = "numeric"
-        except (TypeError, ValueError):
-            s0 = str(vals[0])
-            dtype = "date" if re.match(r"\d{4}-\d{2}-\d{2}", s0) else "string"
-
-        null_suffix = f" | null={null_count}/{total}" if null_count else ""
-
-        if dtype == "numeric":
-            nums = [float(v) for v in vals]
+        if pd.api.types.is_numeric_dtype(series):
+            nums = non_null.astype(float)
             stat_lines.append(
-                f"{col} [numeric]: min={min(nums):g} max={max(nums):g} mean={sum(nums)/len(nums):.4g}{null_suffix}"
+                f"{col} [numeric]: min={nums.min():g} max={nums.max():g} mean={nums.mean():.4g}{null_suffix}"
             )
-        elif dtype == "date":
-            sorted_dates = sorted(str(v) for v in vals)
-            stat_lines.append(f"{col} [date]: {sorted_dates[0]} → {sorted_dates[-1]}{null_suffix}")
+        elif non_null.astype(str).str.match(r"\d{4}-\d{2}-\d{2}").any():
+            sv = sorted(non_null.astype(str).tolist())
+            stat_lines.append(f"{col} [date]: {sv[0]} → {sv[-1]}{null_suffix}")
         else:
-            str_vals = [str(v) for v in vals]
-            top = Counter(str_vals).most_common(5)
+            sv = non_null.astype(str)
+            top = list(sv.value_counts().head(5).items())
             top_str = ", ".join(f'"{v}"({c})' for v, c in top)
             stat_lines.append(
-                f"{col} [string]: top=[{top_str}] | distinct={len(set(str_vals))}{null_suffix}"
+                f"{col} [string]: top=[{top_str}] | distinct={int(sv.nunique())}{null_suffix}"
             )
 
     return "\n".join(stat_lines), "; ".join(null_note_lines), _spread_sample(rows, cap=20)
@@ -180,43 +175,31 @@ def _build_data_profile(
 
         lines.append("")
 
-    # Strategic sampling: ≤ 15 rows → show all; > 15 → top 3 · middle 2 · bottom 2
     non_null = [r for r in rows if any(v is not None and v != "" for v in r)]
     if not non_null:
         lines.append("DATA SAMPLE: (all returned rows contain only null values)")
-    elif len(non_null) <= 15:
+    elif len(non_null) <= 20:
         lines.append(f"DATA SAMPLE (all {len(non_null)} rows):")
         for r in non_null:
             lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
     else:
-        n = len(non_null)
-        mid = n // 2
-        top = non_null[:3]
-        middle = non_null[max(0, mid - 1): mid + 1]
-        bottom = non_null[-2:]
-        lines.append(f"DATA SAMPLE (top 3 · middle 2 · bottom 2 of {n} rows):")
-        for r in top:
-            lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
-        lines.append("  ···")
-        for r in middle:
-            lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
-        lines.append("  ···")
-        for r in bottom:
+        sampled = _spread_sample(non_null, cap=20)
+        lines.append(f"DATA SAMPLE ({len(sampled)} of {len(non_null)} rows — spread sample):")
+        for r in sampled:
             lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
 
     return "\n".join(lines)
 
 
 def _infer_col_type_from_rows(rows: list[list], col_idx: int) -> str:
-    sample = [r[col_idx] for r in rows[:20] if col_idx < len(r) and r[col_idx] is not None]
-    if not sample:
+    import pandas as pd
+    vals = [r[col_idx] for r in rows[:20] if col_idx < len(r)]
+    series = pd.Series(vals).dropna()
+    if series.empty:
         return "unknown"
-    try:
-        [float(v) for v in sample]
+    if pd.api.types.is_numeric_dtype(series):
         return "number"
-    except (TypeError, ValueError):
-        pass
-    if re.match(r"\d{4}-\d{2}-\d{2}", str(sample[0])):
+    if series.astype(str).str.match(r"\d{4}-\d{2}-\d{2}").any():
         return "date"
     return "varchar"
 

@@ -36,7 +36,7 @@ graph TD;
 	sql_generator --> sql_validator;
 	sql_validator -.-> error_response;
 	sql_validator -.-> executor;
-	sql_validator -.-> query_compiler;
+	sql_validator -.-> sql_generator;
 	synthesis -.-> __end__;
 	synthesis -.-> chart_agent;
 	compress --> __end__;

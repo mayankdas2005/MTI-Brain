@@ -1,0 +1,346 @@
+"""Table search functions — all paths that return Table node data."""
+
+from __future__ import annotations
+
+import time
+
+from app.core.circuit_breaker import neo4j_breaker
+from app.core.logger import logger
+from .client import _neo4j_run
+
+# Shared RETURN clause for table properties — used by all table search functions.
+# No numeric scores exposed — use matched_via for path attribution.
+_TABLE_RETURN = """
+    t.fqn AS fqn, t.name AS name, t.description AS description,
+    t.grain AS grain, t.synonyms AS synonyms,
+    t.business_domain AS business_domain, t.community_id AS community_id,
+    t.typical_join_role AS typical_join_role, t.table_type AS table_type,
+    t.is_time_series AS is_time_series,
+    t.natural_dimensions AS natural_dimensions,
+    t.natural_measures AS natural_measures,
+    t.is_dimension_hub AS is_dimension_hub,
+    t.hub_join_col AS hub_join_col,
+    t.has_seasonality_pattern AS has_seasonality_pattern,
+    t.typical_lookback_days AS typical_lookback_days,
+    t.betweenness_score AS betweenness_score,
+    t.in_degree AS in_degree,
+    t.pk_columns AS pk_columns,
+    t.pagerank_score AS pagerank_score,
+    t.intent_tags AS intent_tags,
+    t.time_dimension_col AS time_dimension_col
+"""
+
+
+@neo4j_breaker
+def search_tables_vector(embedding: list[float]) -> list[dict]:
+    query = f"""CYPHER 25
+    MATCH (t:Table)
+    SEARCH t IN (VECTOR INDEX `tbl_cohere_embedding` FOR $embedding LIMIT 10)
+    SCORE AS score
+    RETURN {_TABLE_RETURN}, score, 'direct_vector' AS matched_via
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"embedding": embedding})
+    logger.debug("neo4j | fn=search_tables_vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_fulltext(query_text: str) -> list[dict]:
+    cypher = f"""
+    CALL db.index.fulltext.queryNodes('table_ft_extended', $query)
+    YIELD node AS t, score
+    RETURN {_TABLE_RETURN}, score, 'direct_fts' AS matched_via LIMIT 10
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(cypher, {"query": query_text})
+    logger.debug("neo4j | fn=search_tables_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_intents(embedding: list[float]) -> list[dict]:
+    query = f"""CYPHER 25
+    MATCH (i:Intent)
+    SEARCH i IN (VECTOR INDEX `intent_cohere` FOR $embedding LIMIT 3)
+    SCORE AS intent_score
+    WITH i, intent_score
+    MATCH (t:Table)-[:RELEVANT_TO]->(i)
+    RETURN {_TABLE_RETURN}, intent_score AS score, i.name AS matched_via
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"embedding": embedding})
+    logger.debug("neo4j | fn=search_tables_via_intents | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_community(embedding: list[float]) -> list[dict]:
+    query = f"""CYPHER 25
+    MATCH (c:Community)
+    SEARCH c IN (VECTOR INDEX `community_cohere` FOR $embedding LIMIT 2)
+    SCORE AS community_score
+    WITH c, community_score
+    MATCH (c)-[:CONTAINS_TABLE]->(t:Table)
+    RETURN {_TABLE_RETURN}, community_score AS score, c.dominant_domain AS matched_via
+    ORDER BY community_score DESC LIMIT 15
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"embedding": embedding})
+    logger.debug("neo4j | fn=search_tables_via_community | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_domain(embedding: list[float]) -> list[dict]:
+    query = f"""CYPHER 25
+    MATCH (d:Domain)
+    SEARCH d IN (VECTOR INDEX `domain_cohere` FOR $embedding LIMIT 2)
+    SCORE AS domain_score
+    WITH d, domain_score
+    MATCH (t:Table)-[:BELONGS_TO]->(d)
+    RETURN {_TABLE_RETURN}, domain_score AS score, d.name AS matched_via
+    ORDER BY domain_score DESC LIMIT 20
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"embedding": embedding})
+    logger.debug("neo4j | fn=search_tables_via_domain | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_joinpaths(candidate_fqns: list[str]) -> list[dict]:
+    if not candidate_fqns:
+        return []
+    query = f"""
+    MATCH (jp:JoinPath)
+    WHERE (jp.from_fqn IN $fqns OR jp.to_fqn IN $fqns)
+      AND jp.quality_score >= 0.8
+      AND jp.hop_count <= 1
+    WITH jp,
+         CASE WHEN jp.from_fqn IN $fqns THEN jp.to_fqn ELSE jp.from_fqn END AS target_fqn,
+         CASE jp.algorithm WHEN 'dijkstra' THEN 0 ELSE jp.k_rank END AS path_priority
+    WHERE NOT target_fqn IN $fqns
+    ORDER BY path_priority ASC, jp.quality_score DESC
+    WITH target_fqn, COLLECT(jp)[0] AS best_jp
+    MATCH (t:Table {{fqn: target_fqn}})
+    RETURN {_TABLE_RETURN},
+           best_jp.quality_score AS score,
+           (best_jp.from_fqn + ' -> ' + best_jp.to_fqn) AS matched_via
+    ORDER BY best_jp.quality_score DESC LIMIT 5
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"fqns": candidate_fqns})
+    logger.debug("neo4j | fn=search_tables_via_joinpaths | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_business_terms(embedding: list[float], query_text: str) -> list[dict]:
+    """Path D: BusinessTerm hybrid → REFERENCES_TABLE → Table.
+
+    Note: source_column_name on REFERENCES_TABLE edge may be inaccurate.
+    Use related_table_fqns on BusinessTerm node — it is reliable.
+    """
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    # Vector pass
+    vector_query = f"""CYPHER 25
+    MATCH (bt:BusinessTerm)
+    SEARCH bt IN (VECTOR INDEX `businessterm_cohere` FOR $embedding LIMIT 5)
+    SCORE AS score
+    WHERE score > 0.65
+    MATCH (bt)-[:REFERENCES_TABLE]->(t:Table)
+    RETURN {_TABLE_RETURN}, score, 'businessterm_v' AS matched_via LIMIT 10
+    """
+    try:
+        t0 = time.monotonic()
+        rows = _neo4j_run(vector_query, {"embedding": embedding})
+        logger.debug("neo4j | fn=search_tables_via_business_terms | vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(rows))
+        for r in rows:
+            d = dict(r)
+            if d.get("fqn") and d["fqn"] not in seen:
+                seen.add(d["fqn"])
+                results.append(d)
+    except Exception as e:
+        logger.warning("neo4j | search_tables_via_business_terms vector failed | error={}", e)
+
+    # Fulltext pass
+    fts_query = f"""
+    CALL db.index.fulltext.queryNodes('businessterm_ft', $query)
+    YIELD node AS bt, score
+    WHERE score > 0.5
+    MATCH (bt)-[:REFERENCES_TABLE]->(t:Table)
+    RETURN {_TABLE_RETURN}, score, 'businessterm_ft' AS matched_via LIMIT 10
+    """
+    try:
+        t0 = time.monotonic()
+        rows = _neo4j_run(fts_query, {"query": query_text})
+        logger.debug("neo4j | fn=search_tables_via_business_terms | fts | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(rows))
+        for r in rows:
+            d = dict(r)
+            if d.get("fqn") and d["fqn"] not in seen:
+                seen.add(d["fqn"])
+                results.append(d)
+    except Exception as e:
+        logger.warning("neo4j | search_tables_via_business_terms fts failed | error={}", e)
+
+    return results[:10]
+
+
+@neo4j_breaker
+def search_tables_via_columns(embedding: list[float], query_text: str) -> list[dict]:
+    """Path E: Column hybrid search → deduplicate by table_fqn → Table nodes."""
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    vector_query = f"""CYPHER 25
+    MATCH (c:Column)
+    SEARCH c IN (VECTOR INDEX `col_cohere_embedding` FOR $embedding LIMIT 20)
+    SCORE AS score
+    WITH DISTINCT c.table_fqn AS fqn, max(score) AS top_score
+    MATCH (t:Table {{fqn: fqn}})
+    RETURN {_TABLE_RETURN}, top_score AS score, 'column_v' AS matched_via LIMIT 10
+    """
+    try:
+        t0 = time.monotonic()
+        rows = _neo4j_run(vector_query, {"embedding": embedding})
+        logger.debug("neo4j | fn=search_tables_via_columns | vector | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(rows))
+        for r in rows:
+            d = dict(r)
+            if d.get("fqn") and d["fqn"] not in seen:
+                seen.add(d["fqn"])
+                results.append(d)
+    except Exception as e:
+        logger.warning("neo4j | search_tables_via_columns vector failed | error={}", e)
+
+    fts_query = f"""
+    CALL db.index.fulltext.queryNodes('col_ft_extended', $query)
+    YIELD node AS c, score
+    WITH DISTINCT c.table_fqn AS fqn, max(score) AS top_score
+    MATCH (t:Table {{fqn: fqn}})
+    RETURN {_TABLE_RETURN}, top_score AS score, 'column_ft' AS matched_via LIMIT 10
+    """
+    try:
+        t0 = time.monotonic()
+        rows = _neo4j_run(fts_query, {"query": query_text})
+        logger.debug("neo4j | fn=search_tables_via_columns | fts | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(rows))
+        for r in rows:
+            d = dict(r)
+            if d.get("fqn") and d["fqn"] not in seen:
+                seen.add(d["fqn"])
+                results.append(d)
+    except Exception as e:
+        logger.warning("neo4j | search_tables_via_columns fts failed | error={}", e)
+
+    return results[:10]
+
+
+@neo4j_breaker
+def search_tables_from_query_patterns(embedding: list[float]) -> list[dict]:
+    """Path H: QueryPattern → tables_used — ground truth from successful prior queries.
+
+    Only fires when score > 0.85 (confirmed similar question was answered before).
+    Returns tables from the matched pattern's tables_used list.
+    """
+    query = f"""CYPHER 25
+    MATCH (qp:QueryPattern)
+    SEARCH qp IN (VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding LIMIT 2)
+    SCORE AS score
+    WHERE score > 0.85
+    UNWIND qp.tables_used AS table_fqn
+    MATCH (t:Table {{fqn: table_fqn}})
+    RETURN {_TABLE_RETURN}, score, qp.id AS matched_via LIMIT 15
+    """
+    t0 = time.monotonic()
+    try:
+        results = _neo4j_run(query, {"embedding": embedding})
+        logger.debug("neo4j | fn=search_tables_from_query_patterns | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_tables_from_query_patterns failed (no patterns yet) | error={}", e)
+        return []
+
+
+@neo4j_breaker
+def get_tables_with_context(table_fqns: list[str]) -> list[dict]:
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (t:Table) WHERE t.fqn IN $fqns
+    OPTIONAL MATCH (t)-[:BELONGS_TO]->(d:Domain)
+    OPTIONAL MATCH (c:Community)-[:CONTAINS_TABLE]->(t)
+    RETURN properties(t) AS t, properties(d) AS d, properties(c) AS c
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"fqns": table_fqns})
+    logger.debug("neo4j | fn=get_tables_with_context | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"t": dict(r["t"] or {}), "d": dict(r["d"]) if r["d"] else None, "c": dict(r["c"]) if r["c"] else None} for r in results]
+
+
+@neo4j_breaker
+def get_table_relevant_intents(table_fqns: list[str]) -> list[dict]:
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (t:Table)-[r:RELEVANT_TO]->(i:Intent)
+    WHERE t.fqn IN $fqns
+    RETURN t.fqn AS table_fqn, properties(i) AS intent, properties(r) AS rel
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"fqns": table_fqns})
+    logger.debug("neo4j | fn=get_table_relevant_intents | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"table_fqn": r["table_fqn"], "intent": dict(r["intent"] or {}), "rel": dict(r["rel"] or {})} for r in results]
+
+
+@neo4j_breaker
+def get_structurally_similar_tables(table_fqns: list[str]) -> list[dict]:
+    if not table_fqns:
+        return []
+    query = """
+    MATCH (t1:Table)-[r:STRUCTURALLY_SIMILAR]->(t2:Table)
+    WHERE t1.fqn IN $fqns AND t2.fqn IN $fqns
+    RETURN t1.fqn AS from_fqn, t2.fqn AS to_fqn, properties(r) AS rel
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"fqns": table_fqns})
+    logger.debug("neo4j | fn=get_structurally_similar_tables | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"from_fqn": r["from_fqn"], "to_fqn": r["to_fqn"], "rel": dict(r["rel"] or {})} for r in results]
+
+
+@neo4j_breaker
+def get_community_bridges(community_ids: list) -> list[dict]:
+    if not community_ids:
+        return []
+    query = """
+    MATCH (c1:Community)-[r:BRIDGES_TO]->(c2:Community)
+    WHERE c1.id IN $ids AND c2.id IN $ids
+    RETURN c1.id AS from_id, c2.id AS to_id, properties(r) AS rel
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"ids": community_ids})
+    logger.debug("neo4j | fn=get_community_bridges | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [{"from_id": r["from_id"], "to_id": r["to_id"], "rel": dict(r["rel"] or {})} for r in results]
+
+
+@neo4j_breaker
+def get_business_term_table_edges(bt_terms: list[str], anchor_fqns: list[str]) -> list[dict]:
+    """Fetch real REFERENCES_TABLE edges from BusinessTerms to anchor tables.
+
+    Used by graph_context_builder to show which BusinessTerms actually pointed to
+    the tables used in the query — replaces the old fake CONTEXT_RELEVANT edges.
+    Only returns edges where BOTH the term AND the table were used in this query.
+    """
+    if not bt_terms or not anchor_fqns:
+        return []
+    query = """
+    MATCH (bt:BusinessTerm)-[r:REFERENCES_TABLE]->(t:Table)
+    WHERE bt.term IN $bt_terms AND t.fqn IN $anchor_fqns
+    RETURN bt.term AS term, t.fqn AS table_fqn,
+           r.source_column_name AS source_column_name
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"bt_terms": bt_terms, "anchor_fqns": anchor_fqns})
+    logger.debug("neo4j | fn=get_business_term_table_edges | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]

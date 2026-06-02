@@ -59,6 +59,9 @@ class ColumnStat(BaseModel):
     max: float | str | None = None
     mean: float | None = None
     median: float | None = None
+    std: float | None = None
+    p25: float | None = None
+    p75: float | None = None
     mode: str | float | None = None
     top_values: list[tuple[str, int]] | None = None  # string cols only
 

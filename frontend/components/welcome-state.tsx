@@ -290,7 +290,7 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
               )}
               {pinnedLoading && !pinnedFetched ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {Array.from({ length: Math.min(pinnedLastKnown, 6) }, (_, i) => (
+                  {Array.from({ length: Math.min(pinnedLastKnown, 3) }, (_, i) => (
                     <div key={i} className={`rounded-xl border border-border bg-background px-4 py-3 min-h-[4.25rem] flex flex-col justify-between${i >= 2 ? ' hidden sm:block' : ''}`}>
                       <Skeleton className="h-3.5 w-3/4" />
                       <Skeleton className="h-3 w-1/4 mt-auto" />
@@ -300,13 +300,13 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
               ) : (
                 <>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {pinnedMetrics.slice(0, 6).map((m, i) => (
+                    {pinnedMetrics.slice(0, 3).map((m, i) => (
                       <MetricPinCard key={m.id} metric={m} className={i >= 2 ? 'hidden sm:block' : ''} />
                     ))}
                   </div>
-                  {pinnedMetrics.length > 6 && (
+                  {pinnedMetrics.length > 3 && (
                     <p className="text-[11px] text-muted-foreground/60 text-center mt-2">
-                      +{pinnedMetrics.length - 6} more - unpin some to see them here
+                      +{pinnedMetrics.length - 3} more - unpin some to see them here
                     </p>
                   )}
                 </>

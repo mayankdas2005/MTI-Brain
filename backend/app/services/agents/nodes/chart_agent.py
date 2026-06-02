@@ -351,17 +351,29 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
             all_rows.extend(res["rows"])
 
     if not all_columns or not all_rows:
-        logger.info("chart_agent | no data for chart | thread={}", state["thread_id"])
+        logger.warning(
+            "chart_agent | no data | thread={} | query_summary_cols={} | result_list_lens={}",
+            state["thread_id"],
+            len(query_summary.get("columns", [])),
+            [len(r.get("rows", [])) for r in result_list],
+        )
         return {"chart_spec": None}
 
     intent = ir_list[0].get("intent", "") if ir_list else ""
     persona = state.get("persona", "executive")
 
+    col_type_map: dict[str, str] = {
+        c["name"]: c.get("dtype", "string")
+        for c in (query_summary.get("columns") or [])
+    }
+
+    n_rows = len(all_rows)
+
     # Fast path: if guardrails would force the type regardless, skip the LLM call
-    forced_type = _apply_guardrails("__probe__", all_columns, all_rows)
+    forced_type = _apply_guardrails("__probe__", all_columns, col_type_map, n_rows)
     if forced_type == "kpi_card":
         logger.info("chart_agent | fast-path kpi_card (no LLM) | thread={}", state["thread_id"])
-        spec = _build_vega_lite_spec("kpi_card", all_columns, all_rows, {})
+        spec = _build_vega_lite_spec("kpi_card", all_columns, all_rows, {}, col_type_map)
         return {"chart_spec": spec, "chart_type": "kpi_card", "alternative_chart_specs": []}
 
     chart_type, labels = await _select_chart_and_labels(
@@ -369,36 +381,27 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
     )
 
     # Safety guardrails that override LLM choice
-    chart_type = _apply_guardrails(chart_type, all_columns, all_rows)
+    chart_type = _apply_guardrails(chart_type, all_columns, col_type_map, n_rows)
 
     logger.info("chart_agent | selected type={} | thread={} | rows={}", chart_type, state["thread_id"], len(all_rows))
 
     if chart_type == "table":
-        spec = _build_table_spec(all_columns, all_rows)
-        return {"chart_spec": spec, "chart_type": chart_type, "alternative_chart_specs": []}
+        logger.info("chart_agent | chart_type=table → no chart spec (frontend table handles this) | thread={}", state["thread_id"])
+        return {"chart_spec": None, "chart_type": "table", "alternative_chart_specs": []}
 
     spec = _postprocess_spec(
-        _build_vega_lite_spec(chart_type, all_columns, all_rows, labels),
+        _build_vega_lite_spec(chart_type, all_columns, all_rows, labels, col_type_map),
         all_columns, all_rows, labels,
     )
 
-    # Collect guardrailed alternative type names (specs are built client-side from primary data)
     raw_alternatives = labels.get("alternative_types") or []
-    seen_types = {chart_type}
-    alternative_types: list[str] = []
-    for alt in raw_alternatives[:3]:
-        if not isinstance(alt, str):
-            continue
-        guarded = _apply_guardrails(alt, all_columns, all_rows)
-        if guarded not in seen_types and guarded in _VALID_CHART_TYPES:
-            seen_types.add(guarded)
-            alternative_types.append(guarded)
+    alternative_specs = _build_alternative_specs(raw_alternatives, chart_type, all_columns, all_rows, labels, col_type_map)
 
     logger.info(
         "chart_agent DONE | thread={} | type={} | alternatives={}",
-        state["thread_id"], chart_type, alternative_types,
+        state["thread_id"], chart_type, [a["chart_type"] for a in alternative_specs],
     )
-    return {"chart_spec": spec, "chart_type": chart_type, "alternative_chart_specs": alternative_types}
+    return {"chart_spec": spec, "chart_type": chart_type, "alternative_chart_specs": alternative_specs}
 
 
 def _build_alternative_specs(
@@ -407,46 +410,42 @@ def _build_alternative_specs(
     columns: list[str],
     rows: list[list],
     labels: dict,
+    col_type_map: dict | None = None,
 ) -> list[dict]:
     """Build Vega-Lite specs for each LLM-suggested alternative type.
 
     Returns a list of {"chart_type": str, "spec": dict} entries.
     Skips any type that duplicates the primary, fails guardrails, or raises during build.
     """
-    seen = {primary_type}
+    seen = {primary_type, "table"}  # never include "table" as alternative — frontend shows SQL result table
     result = []
     for alt_type in raw_alternatives[:3]:
         if not isinstance(alt_type, str):
             continue
-        guarded = _apply_guardrails(alt_type, columns, rows)
+        guarded = _apply_guardrails(alt_type, columns, col_type_map or {}, len(rows))
         if guarded in seen or guarded not in _VALID_CHART_TYPES:
             continue
         seen.add(guarded)
         try:
-            if guarded == "table":
-                spec = _build_table_spec(columns, rows)
-            else:
-                spec = _postprocess_spec(
-                    _build_vega_lite_spec(guarded, columns, rows, labels),
-                    columns, rows, labels,
-                )
+            spec = _postprocess_spec(
+                _build_vega_lite_spec(guarded, columns, rows, labels, col_type_map),
+                columns, rows, labels,
+            )
             result.append({"chart_type": guarded, "spec": spec})
         except Exception as e:
             logger.debug("chart_agent | alt spec failed | type={} | error={}", guarded, e)
     return result
 
 
-def _apply_guardrails(chart_type: str, columns: list[str], rows: list[list]) -> str:
+def _apply_guardrails(chart_type: str, columns: list[str], col_type_map: dict, n_rows: int = 0) -> str:
     """Hard rules that override LLM choice regardless of reasoning."""
-    n_rows = len(rows)
-    col_types = _classify_column_types(columns, rows)
-    n_numeric = col_types.count("numeric")
-    n_date = col_types.count("date")
+    n_numeric = sum(1 for c in columns if col_type_map.get(c) == "numeric")
+    n_date = sum(1 for c in columns if col_type_map.get(c) == "date")
 
     if n_rows == 1 and n_numeric >= 1:
         return "kpi_card"
 
-    if n_rows <= 5 and n_numeric == len(columns):
+    if n_rows <= 5 and n_numeric == len(columns) and n_numeric >= 1:
         return "kpi_card"
 
     if chart_type in ("line", "area", "multi_line", "stacked_area") and n_date == 0:
@@ -533,13 +532,19 @@ async def _select_chart_and_labels(
 
 def _fallback_chart_type(columns: list[str], rows: list[list], intent: str, persona: str) -> str:
     """Simple deterministic fallback used only when LLM call fails."""
+    import pandas as pd
+
     if not rows or not columns:
         return "table"
     n_rows = len(rows)
-    col_types = _classify_column_types(columns, rows)
-    n_numeric = col_types.count("numeric")
-    n_date = col_types.count("date")
-    n_string = col_types.count("string")
+    df = pd.DataFrame(rows, columns=columns)
+    n_numeric = sum(1 for c in columns if pd.api.types.is_numeric_dtype(df[c]))
+    n_date = sum(
+        1 for c in columns
+        if df[c].dtype == object and not df[c].dropna().empty
+        and df[c].dropna().astype(str).str.match(r"\d{4}-\d{2}-\d{2}").any()
+    )
+    n_string = sum(1 for c in columns if df[c].dtype == object) - n_date
 
     if n_rows == 1 and n_numeric >= 1:
         return "kpi_card"
@@ -549,8 +554,6 @@ def _fallback_chart_type(columns: list[str], rows: list[list], intent: str, pers
         return "area" if persona in ("executive", "director") else "line"
     if n_string == 1 and n_numeric == 1:
         return "bar" if n_rows > 5 else ("donut" if persona in ("executive", "director") else "pie")
-    if n_rows > 30:
-        return "table"
     return "bar"
 
 
@@ -576,7 +579,29 @@ def _safe_value_format(fmt: str, rows: list[list], col_idx: int) -> str:
     return fmt
 
 
-def _build_vega_lite_spec(chart_type: str, columns: list[str], rows: list[list], labels: dict) -> dict:
+def _build_vega_lite_spec(
+    chart_type: str,
+    columns: list[str],
+    rows: list[list],
+    labels: dict,
+    col_type_map: dict | None = None,
+) -> dict:
+    ctm = col_type_map or {}
+    numeric_cols = [c for c in columns if ctm.get(c) == "numeric"]
+    string_cols  = [c for c in columns if ctm.get(c) == "string"]
+    date_cols    = [c for c in columns if ctm.get(c) == "date"]
+
+    def _num(exclude: str | None = None) -> str:
+        return next((c for c in numeric_cols if c != exclude),
+                    numeric_cols[0] if numeric_cols else columns[-1] if columns else "value")
+
+    def _str(exclude: str | None = None) -> str:
+        return next((c for c in string_cols if c != exclude),
+                    string_cols[0] if string_cols else columns[0] if columns else "category")
+
+    def _date() -> str:
+        return date_cols[0] if date_cols else (columns[0] if columns else "date")
+
     spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
         "width": "container",
@@ -587,51 +612,48 @@ def _build_vega_lite_spec(chart_type: str, columns: list[str], rows: list[list],
     }
 
     if chart_type == "bar":
-        y_col = _find_numeric_col(columns, rows)
-        x_col = _find_string_col(columns, rows, exclude=y_col) or (columns[0] if columns else "x")
-        spec["mark"] = "bar"
-        cat_label = labels.get("x_axis_label", x_col)
-        val_label = labels.get("y_axis_label", y_col)
+        y_col = _num()
+        x_col = _str(exclude=y_col)
         val_format = _safe_value_format(labels.get("value_format", ",.0f"), rows, columns.index(y_col) if y_col in columns else -1)
+        spec["mark"] = "bar"
         spec["encoding"] = {
-            "x": {
-                "field": x_col, "type": "nominal",
-                "axis": {"title": cat_label},
-                "sort": "-y",
-            },
-            "y": {
-                "field": y_col, "type": "quantitative",
-                "axis": {"title": val_label, "format": val_format},
-            },
+            "x": {"field": x_col, "type": "nominal",
+                  "axis": {"title": labels.get("x_axis_label", x_col)}, "sort": "-y"},
+            "y": {"field": y_col, "type": "quantitative",
+                  "axis": {"title": labels.get("y_axis_label", y_col), "format": val_format}},
         }
 
     elif chart_type in ("line", "area"):
-        x_col = _find_date_col(columns, rows)
-        y_col = _find_numeric_col(columns, rows, exclude=x_col)
+        x_col = _date()
+        y_col = _num(exclude=x_col)
         spec["mark"] = chart_type
         spec["encoding"] = {
-            "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate", "axis": {"title": labels.get("x_axis_label", x_col), "format": "%b %d, %Y"}},
-            "y": {"field": y_col, "type": "quantitative", "axis": {"title": labels.get("y_axis_label", y_col), "format": labels.get("value_format", ",.0f")}},
+            "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
+                  "axis": {"title": labels.get("x_axis_label", x_col), "format": "%b %d, %Y"}},
+            "y": {"field": y_col, "type": "quantitative",
+                  "axis": {"title": labels.get("y_axis_label", y_col), "format": labels.get("value_format", ",.0f")}},
         }
 
     elif chart_type in ("multi_line", "stacked_area"):
-        x_col = _find_date_col(columns, rows)
-        cat_col = _find_string_col(columns, rows, exclude=x_col)
-        y_col = _find_numeric_col(columns, rows, exclude=x_col)
+        x_col = _date()
+        cat_col = _str(exclude=x_col)
+        y_col = _num(exclude=x_col)
         mark = "line" if chart_type == "multi_line" else "area"
         spec["mark"] = mark
-        encoding: dict = {
-            "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate", "axis": {"title": labels.get("x_axis_label", x_col), "format": "%b %d, %Y"}},
-            "y": {"field": y_col, "type": "quantitative", "axis": {"title": labels.get("y_axis_label", y_col)}},
+        enc: dict = {
+            "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
+                  "axis": {"title": labels.get("x_axis_label", x_col), "format": "%b %d, %Y"}},
+            "y": {"field": y_col, "type": "quantitative",
+                  "axis": {"title": labels.get("y_axis_label", y_col)}},
             "color": {"field": cat_col, "type": "nominal"},
         }
         if chart_type == "stacked_area":
-            encoding["y"]["stack"] = "zero"
-        spec["encoding"] = encoding
+            enc["y"]["stack"] = "zero"
+        spec["encoding"] = enc
 
     elif chart_type in ("pie", "donut"):
-        name_col = _find_string_col(columns, rows)
-        value_col = _find_numeric_col(columns, rows)
+        name_col = _str()
+        value_col = _num()
         spec["mark"] = {"type": "arc", "innerRadius": 50 if chart_type == "donut" else 0}
         spec["encoding"] = {
             "theta": {"field": value_col, "type": "quantitative"},
@@ -644,42 +666,72 @@ def _build_vega_lite_spec(chart_type: str, columns: list[str], rows: list[list],
         return spec
 
     elif chart_type in ("grouped_bar", "stacked_bar"):
-        string_cols = [c for i, c in enumerate(columns) if _classify_column_types(columns, rows)[i] == "string"]
         x_col = string_cols[0] if string_cols else columns[0]
-        cat_col = string_cols[1] if len(string_cols) > 1 else (string_cols[0] if string_cols else columns[0])
-        y_col = _find_numeric_col(columns, rows)
+        cat_col = string_cols[1] if len(string_cols) > 1 else x_col
+        y_col = _num()
         spec["mark"] = "bar"
-        encoding = {
-            "x": {"field": x_col, "type": "nominal", "axis": {"title": labels.get("x_axis_label", x_col)}},
-            "y": {"field": y_col, "type": "quantitative", "axis": {"title": labels.get("y_axis_label", y_col), "format": labels.get("value_format", ",.0f")}},
+        enc = {
+            "x": {"field": x_col, "type": "nominal",
+                  "axis": {"title": labels.get("x_axis_label", x_col)}},
+            "y": {"field": y_col, "type": "quantitative",
+                  "axis": {"title": labels.get("y_axis_label", y_col), "format": labels.get("value_format", ",.0f")}},
             "color": {"field": cat_col, "type": "nominal"},
         }
         if chart_type == "stacked_bar":
-            encoding["y"]["stack"] = "zero"
+            enc["y"]["stack"] = "zero"
         else:
-            encoding["xOffset"] = {"field": cat_col}
-        spec["encoding"] = encoding
+            enc["xOffset"] = {"field": cat_col}
+        spec["encoding"] = enc
 
     elif chart_type == "scatter":
-        x_col = _find_numeric_col(columns, rows)
-        y_col = _find_numeric_col(columns, rows, exclude=x_col)
+        x_col = _num()
+        y_col = _num(exclude=x_col)
         spec["mark"] = "point"
         spec["encoding"] = {
-            "x": {"field": x_col, "type": "quantitative", "axis": {"title": labels.get("x_axis_label", x_col)}},
-            "y": {"field": y_col, "type": "quantitative", "axis": {"title": labels.get("y_axis_label", y_col)}},
+            "x": {"field": x_col, "type": "quantitative",
+                  "axis": {"title": labels.get("x_axis_label", x_col)}},
+            "y": {"field": y_col, "type": "quantitative",
+                  "axis": {"title": labels.get("y_axis_label", y_col)}},
+        }
+
+    elif chart_type == "waterfall":
+        x_col = _str()
+        y_col = _num()
+        spec["mark"] = "bar"
+        spec["transform"] = [
+            {"window": [{"op": "sum", "field": y_col, "as": "_wf_sum"}], "frame": [None, 0]},
+            {"calculate": f"datum._wf_sum - datum['{y_col}']", "as": "_wf_prev"},
+        ]
+        spec["encoding"] = {
+            "x": {"field": x_col, "type": "nominal", "sort": None,
+                  "axis": {"title": labels.get("x_axis_label", x_col)}},
+            "y": {"field": "_wf_sum", "type": "quantitative",
+                  "axis": {"title": labels.get("y_axis_label", y_col),
+                           "format": labels.get("value_format", ",.0f")}},
+            "y2": {"field": "_wf_prev"},
+            "color": {
+                "condition": {"test": f"datum['{y_col}'] < 0", "value": "#e45755"},
+                "value": "#4c78a8",
+            },
         }
 
     else:
+        x_col = _str()
+        y_col = _num()
         spec["mark"] = "bar"
-        if columns:
-            spec["encoding"] = {
-                "x": {"field": columns[0], "type": "nominal"},
-                "y": {"field": columns[1] if len(columns) > 1 else columns[0], "type": "quantitative"},
-            }
+        spec["encoding"] = {
+            "x": {"field": x_col, "type": "nominal"},
+            "y": {"field": y_col, "type": "quantitative"},
+        }
 
     spec["config"] = {
         "axis": {"labelFont": "Inter, sans-serif", "titleFont": "Inter, sans-serif"},
         "legend": {"labelFont": "Inter, sans-serif"},
+        "bar": {"strokeWidth": 0},
+        "arc": {"strokeWidth": 0},
+        "line": {"strokeWidth": 2},
+        "area": {"strokeWidth": 0},
+        "point": {"strokeWidth": 0},
     }
     return spec
 
@@ -692,56 +744,3 @@ def _build_table_spec(columns: list[str], rows: list[list]) -> dict:
     }
 
 
-def _classify_column_types(columns: list[str], rows: list[list]) -> list[str]:
-    import re
-    result = []
-    for i in range(len(columns)):
-        sample = [rows[j][i] for j in range(min(20, len(rows))) if rows[j][i] is not None]
-        if not sample:
-            result.append("unknown")
-            continue
-        try:
-            [float(v) for v in sample]
-            result.append("numeric")
-            continue
-        except (TypeError, ValueError):
-            pass
-        if re.match(r"\d{4}-\d{2}-\d{2}", str(sample[0])):
-            result.append("date")
-            continue
-        result.append("string")
-    return result
-
-
-def _find_date_col(columns: list[str], rows: list[list]) -> str:
-    import re
-    for i, col in enumerate(columns):
-        sample = [str(rows[j][i]) for j in range(min(5, len(rows))) if rows[j][i] is not None]
-        if sample and re.match(r"\d{4}-\d{2}-\d{2}", sample[0]):
-            return col
-    return columns[0] if columns else "date"
-
-
-def _find_numeric_col(columns: list[str], rows: list[list], exclude: str | None = None) -> str:
-    for i, col in enumerate(columns):
-        if col == exclude:
-            continue
-        sample = [rows[j][i] for j in range(min(5, len(rows))) if rows[j][i] is not None]
-        try:
-            [float(v) for v in sample]
-            return col
-        except (TypeError, ValueError):
-            pass
-    return columns[-1] if columns else "value"
-
-
-def _find_string_col(columns: list[str], rows: list[list], exclude: str | None = None) -> str:
-    for i, col in enumerate(columns):
-        if col == exclude:
-            continue
-        sample = [rows[j][i] for j in range(min(5, len(rows))) if rows[j][i] is not None]
-        try:
-            [float(v) for v in sample]
-        except (TypeError, ValueError):
-            return col
-    return columns[0] if columns else "category"

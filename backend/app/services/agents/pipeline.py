@@ -36,7 +36,7 @@ _STATE_KEYS = {
     "recompile_count", "repair_count", "filter_resolution_needed",
     "result_list", "query_summary", "no_data", "reliability_flags",
     "low_confidence_filters", "zero_row_probe_result",
-    "answer", "chart_spec", "follow_ups", "error", "stopped", "prior_sql",
+    "answer", "chart_spec", "chart_type", "alternative_chart_specs", "follow_ups", "error", "stopped", "prior_sql",
 }
 
 
@@ -49,54 +49,93 @@ def cancel_stream(thread_id: str) -> bool:
 
 
 def _build_graph_context_snapshot(state: AnalyticsState) -> dict:
-    """Collect the minimal identifiers and context data needed to reconstruct the graph visualization."""
+    """Build the minimal snapshot needed to reconstruct the trust graph visualization.
+
+    Shows only what agents ACTUALLY used:
+    - anchor_tables / path_tables from SemanticIR (tables in the SQL, not all candidates)
+    - used_columns: measures + dimensions + filters + time_filter with role annotations
+    - join_clauses / join_path_ids: only the paths used, not all candidates
+    - business_terms, intents, query_patterns, anti_patterns from semantic_context
+    - is_cross_domain / cross_domain_hub for cross-domain queries
+    """
     semantic_context = state.get("semantic_context") or {}
     resolved_intent = state.get("resolved_intent") or {}
     ir_list = state.get("semantic_ir_list") or []
 
+    # Tables that appear in the SQL — NOT all 8+ candidate tables from context fetcher
+    anchor_tables: list[str] = list(dict.fromkeys(
+        fqn
+        for ir in ir_list
+        for fqn in (ir.get("anchor_tables") or [])
+    ))
     path_tables: list[str] = list(dict.fromkeys(
         fqn
         for ir in ir_list
         for fqn in (ir.get("path_tables") or []) + (ir.get("anchor_tables") or [])
     ))
+
+    # Only join clauses actually used in SQL (skip empty strings = unresolved pairs)
     join_clauses: list[str] = [
         clause
         for ir in ir_list
         for clause in (ir.get("join_clauses") or [])
+        if clause
     ]
+    # Only JoinPath IDs from the IR itself — not all candidate paths
     join_path_ids: list[str] = list(dict.fromkeys(
         pid
         for ir in ir_list
-        for pid in (
-            list(ir.get("join_path_ids") or []) +
-            [p.get("id", "") for p in (ir.get("candidate_join_paths") or []) if p.get("id")]
-        )
+        for pid in (ir.get("join_path_ids") or [])
+        if pid
     ))
-    selected_columns: list[dict] = [
-        {
-            "table_fqn": c.get("table_fqn") if isinstance(c, dict) else getattr(c, "table_fqn", ""),
-            "column_name": c.get("column_name") if isinstance(c, dict) else getattr(c, "column_name", ""),
-            "aggregation": c.get("aggregation") if isinstance(c, dict) else getattr(c, "aggregation", None),
-            "alias": c.get("alias") if isinstance(c, dict) else getattr(c, "alias", None),
-        }
-        for ir in ir_list
-        for c in ((ir.get("measures") or []) + (ir.get("dimensions") or []))
-    ]
+
+    # Columns actually referenced in SQL: measures + dimensions + filters + time_filter
+    # Role annotation lets the visualization distinguish how each column was used
+    used_columns: list[dict] = []
+    seen_cols: set[tuple] = set()
+
+    def _add_col(table_fqn: str, col_name: str, role: str, agg: str | None = None) -> None:
+        key = (table_fqn, col_name)
+        if not table_fqn or not col_name or key in seen_cols:
+            return
+        seen_cols.add(key)
+        entry: dict = {"table_fqn": table_fqn, "column_name": col_name, "role": role}
+        if agg:
+            entry["aggregation"] = agg
+        used_columns.append(entry)
+
+    def _get(obj, key: str, default=""):
+        return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+    for ir in ir_list:
+        for m in (ir.get("measures") or []):
+            _add_col(_get(m, "table_fqn"), _get(m, "column_name"), "measure", _get(m, "aggregation") or None)
+        for d in (ir.get("dimensions") or []):
+            _add_col(_get(d, "table_fqn"), _get(d, "column_name"), "dimension")
+        for f in (ir.get("filters") or []):
+            _add_col(_get(f, "table_fqn"), _get(f, "column_name"), "filter")
+        tf = ir.get("time_filter")
+        if tf:
+            col_name = _get(tf, "column_name") or _get(tf, "column")
+            _add_col(_get(tf, "table_fqn"), col_name, "time_filter")
 
     return {
-        "tables": semantic_context.get("tables") or [],
-        "business_terms": semantic_context.get("business_terms") or [],
-        "intents": semantic_context.get("intents") or [],
-        "templates": semantic_context.get("templates") or [],
-        "query_patterns": semantic_context.get("query_patterns") or [],
-        "anti_patterns": semantic_context.get("anti_patterns") or [],
-        "anchor_tables": resolved_intent.get("anchor_tables") or [],
+        "anchor_tables": anchor_tables,
         "path_tables": path_tables,
         "join_clauses": join_clauses,
         "join_path_ids": join_path_ids,
-        "selected_columns": selected_columns,
-        "template_id": resolved_intent.get("template_id"),
+        "used_columns": used_columns,
+        "business_terms": semantic_context.get("business_terms") or [],
+        "intents": semantic_context.get("intents") or [],
+        "query_patterns": semantic_context.get("query_patterns") or [],
+        "anti_patterns": semantic_context.get("anti_patterns") or [],
+        "templates": semantic_context.get("templates") or [],
+        "template_id": resolved_intent.get("template_id", ""),
+        "is_cross_domain": semantic_context.get("is_cross_domain", False),
+        "cross_domain_hub": semantic_context.get("cross_domain_hub"),
         "intent": resolved_intent.get("intent"),
+        # REMOVED: "tables" (all candidates — too broad),
+        #          "selected_columns" (replaced by "used_columns" which includes filters)
     }
 
 

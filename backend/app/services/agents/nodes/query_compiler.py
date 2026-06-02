@@ -1,30 +1,52 @@
-"""Node 2: query_compiler — builds SemanticIR and generates SQL via LLM.
+"""Node 2: query_compiler — builds SemanticIR from resolved intent.
 
-Single-query only (decomposition removed — a multi-CTE SQL handles all use cases).
+Single-query only (decomposition removed).
 Filter resolution happens BEFORE SQL compilation (routes to filter_resolver if needed).
 
-Implementation is split across:
-  ir_builder.py     — SemanticIR construction, join paths, column validation, filter specs
-  schema_context.py — schema context for SQL LLM, join discovery, anti/query patterns
-  sql_generator.py  — CTE planner pre-pass + LLM SQL generation
+Changes from original:
+- Removed _probe_join_clause_columns() — no Redshift DISTINCT probes at compilation time
+- ir/validation functions now validate against _column_lookup (Neo4j data) instead of Redshift
 """
 
 from __future__ import annotations
 
-import asyncio
 import re as _re
 
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.nodes.ir_builder import build_semantic_ir
-from app.services.agents.ir_utils import strip_hallucinated_columns, validate_and_fix_join_clauses
+from app.services.agents.ir import validation as ir_val
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
-_JOIN_CLAUSE_FQN_RE = _re.compile(
-    r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_$]*)"
-)
+# Split only on unambiguous list separators — NOT 'and'/'or' which are ambiguous
+# ("USD and CAD" vs "$100M or more"). Preserves dates, FX pairs (USD/EUR), codes.
+_LIST_SEP_RE = _re.compile(r"[,;|]")
+_NUMERIC_START_RE = _re.compile(r"^[\$\-\+]?\d")
+
+
+def _split_multi_value_filters(ir: SemanticIR) -> SemanticIR:
+    """Split filters like 'USD, CAD' into separate FilterSpec objects.
+
+    Only splits on comma, semicolon, pipe. Skips if any part starts with a digit or
+    currency symbol (numeric/currency values must not be split on comma thousands-separators).
+    """
+    expanded = []
+    for f in ir.filters:
+        if f.resolved or f.is_raw_sql:
+            expanded.append(f)
+            continue
+        parts = [p.strip() for p in _LIST_SEP_RE.split(f.raw_user_value) if p.strip()]
+        if len(parts) <= 1:
+            expanded.append(f)
+            continue
+        if any(_NUMERIC_START_RE.match(p) for p in parts):
+            expanded.append(f)
+            continue
+        for part in parts:
+            expanded.append(f.model_copy(update={"raw_user_value": part, "value": part}))
+    return ir.model_copy(update={"filters": expanded})
 
 
 async def query_compiler(state: AnalyticsState, config: RunnableConfig) -> dict:
@@ -41,7 +63,7 @@ async def query_compiler(state: AnalyticsState, config: RunnableConfig) -> dict:
     missing = [t for t in anchor_tables if t not in known_fqns]
     if missing:
         logger.warning(
-            "query_compiler | anchor_tables not in semantic_context — will attempt anyway | missing={} | thread={}",
+            "query_compiler | anchor_tables not in semantic_context | missing={} | thread={}",
             missing, state["thread_id"],
         )
 
@@ -58,158 +80,52 @@ async def query_compiler(state: AnalyticsState, config: RunnableConfig) -> dict:
     return await _handle_single(state, resolved, semantic_context, config)
 
 
-async def _handle_single(state: AnalyticsState, resolved: dict, semantic_context: dict, config: RunnableConfig) -> dict:
+async def _handle_single(
+    state: AnalyticsState,
+    resolved: dict,
+    semantic_context: dict,
+    config: RunnableConfig,
+) -> dict:
+    thread_id = str(state["thread_id"])
+
     try:
         ir = build_semantic_ir(resolved, semantic_context)
     except Exception as e:
-        logger.error("query_compiler | IR build failed | thread={} | error={}", state["thread_id"], e)
-        return {"error": str(e), "needs_clarification": True, "clarification_reason": "I couldn't map your question to the data model."}
+        logger.error("query_compiler | IR build failed | thread={} | error={}", thread_id, e)
+        return {
+            "error": str(e),
+            "needs_clarification": True,
+            "clarification_reason": "I couldn't map your question to the data model.",
+        }
 
-    # Validate and fix column refs + join clauses against Redshift information_schema
-    # before any downstream agent sees the IR.
-    # Must run BEFORE probe so we only probe columns that survived validation.
-    try:
-        ir = await strip_hallucinated_columns(ir, str(state["thread_id"]))
-        ir = await validate_and_fix_join_clauses(ir, str(state["thread_id"]))
-    except Exception as e:
-        logger.warning("query_compiler | IR validation error (continuing) | thread={} | error={}", state["thread_id"], e)
+    # Split comma/semicolon/pipe-separated filter values into individual FilterSpecs.
+    ir = _split_multi_value_filters(ir)
 
-    # Probe distinct values for join clause columns not yet sampled.
-    # Runs on the validated IR — only probes columns confirmed to exist in Redshift.
+    # Ensure every measure has an aggregation — SUM is the safe default when intent_resolver
+    # left it null (the LLM prompt says "always set" but this is the backstop).
+    if any(not m.aggregation for m in ir.measures):
+        patched_measures = [
+            m.model_copy(update={"aggregation": m.aggregation or "SUM"})
+            for m in ir.measures
+        ]
+        ir = ir.model_copy(update={"measures": patched_measures})
+        logger.debug("query_compiler | null_aggregation_defaulted_to_SUM | thread={}", thread_id)
+
+    # Validate and fix column refs + join clauses against Neo4j _column_lookup.
+    # No Redshift calls — validation uses _column_lookup loaded in context_fetcher.
     try:
-        await _probe_join_clause_columns(ir, semantic_context, str(state["thread_id"]))
+        ir = await ir_val.strip_hallucinated_columns(ir, thread_id, semantic_context)
+        ir = await ir_val.validate_and_fix_join_clauses(ir, thread_id, semantic_context)
     except Exception as e:
-        logger.warning("query_compiler | join_col_probe error (continuing) | thread={} | error={}", state["thread_id"], e)
+        logger.warning("query_compiler | IR validation error (continuing) | thread={} | error={}", thread_id, e)
 
     has_unresolved = any(not f.resolved for f in ir.filters)
     if ir.time_filter and not ir.time_filter.resolved:
         has_unresolved = True
 
     if has_unresolved:
-        logger.info("query_compiler | unresolved filters | thread={} | routing to filter_resolver", state["thread_id"])
-        return {
-            "semantic_ir_list": [ir.model_dump()],
-            "filter_resolution_needed": True,
-        }
+        logger.info("query_compiler | unresolved filters | routing to filter_resolver | thread={}", thread_id)
+        return {"semantic_ir_list": [ir.model_dump()], "filter_resolution_needed": True}
 
-    logger.info("query_compiler | all filters resolved | thread={} | routing to sql_generator", state["thread_id"])
-    return {
-        "semantic_ir_list": [ir.model_dump()],
-        "filter_resolution_needed": False,
-    }
-
-
-async def _probe_join_clause_columns(
-    ir: SemanticIR,
-    semantic_context: dict,
-    thread_id: str,
-) -> None:
-    """Probe DISTINCT values for join clause columns not yet sampled.
-
-    JoinPath join clause columns are loaded at ir_builder time — after context_fetcher
-    Step B has already run. This fills the gap so the SQL LLM sees sample values for
-    ALL join key columns and can verify FK relationships from value overlap.
-    """
-    from app.services.agents import redis_client as rc
-    from app.services.agents.redshift_client import execute_query
-
-    clauses: list[str] = list(ir.join_clauses or [])
-    for path in (ir.candidate_join_paths or []):
-        clauses.extend(path.get("join_clauses") or [])
-
-    needed: dict[str, set[str]] = {}
-    for clause in clauses:
-        for m in _JOIN_CLAUSE_FQN_RE.finditer(clause):
-            schema, table, col = m.group(1), m.group(2), m.group(3)
-            needed.setdefault(f"{schema}.{table}", set()).add(col)
-
-    if not needed:
-        return
-
-    col_index: dict[tuple[str, str], dict] = {}
-    for col in (semantic_context.get("columns") or []):
-        fqn = col.get("table_fqn", "")
-        name = col.get("name", "")
-        if fqn and name:
-            col_index[(fqn, name)] = col
-
-    # Pre-load schema caches for all referenced tables so we can skip absent columns
-    # without hitting Redshift. fetch_table_schema is cached via Redis so this is cheap.
-    from app.services.agents.redis_client import get_schema_cols
-    schema_valid_cols: dict[str, set[str]] = {}
-    for fqn in needed:
-        parts = fqn.rsplit(".", 1)
-        if len(parts) == 2:
-            cached_schema = get_schema_cols(parts[0], parts[1])
-            if cached_schema is not None:
-                schema_valid_cols[fqn] = {r[0] for r in cached_schema}
-
-    to_probe: list[tuple[str, str, dict | None]] = []
-    for fqn, col_names in needed.items():
-        valid_for_table = schema_valid_cols.get(fqn)
-        for col_name in col_names:
-            # Skip if schema cache confirms this column doesn't exist
-            if valid_for_table is not None and col_name not in valid_for_table:
-                logger.debug(
-                    "query_compiler | join_col_probe_skip | {}.{} | confirmed absent in schema cache",
-                    fqn, col_name,
-                )
-                continue
-            key = (fqn, col_name)
-            col_dict = col_index.get(key)
-            if col_dict and col_dict.get("filter_values"):
-                continue
-            cached = rc.get_filter_values(fqn, col_name)
-            if cached is not None:
-                if col_dict:
-                    col_dict["filter_values"] = cached
-                    col_dict["sample_values"] = cached[:5]
-                continue
-            # col_dict may be None here — defer creating the entry until probe succeeds
-            to_probe.append((fqn, col_name, col_dict))
-
-    if not to_probe:
-        return
-
-    sem = asyncio.Semaphore(4)
-
-    async def _probe_one(fqn: str, col_name: str, col_dict: dict | None) -> None:
-        async with sem:
-            probe_sql = (
-                f'SELECT val FROM ('
-                f'SELECT CAST("{col_name}" AS VARCHAR) AS val '
-                f'FROM {fqn} '
-                f'WHERE "{col_name}" IS NOT NULL '
-                f'LIMIT 5000'
-                f') t GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 100'
-            )
-            try:
-                _, rows = await execute_query(probe_sql, timeout_s=60, thread_id=thread_id)
-                values = [str(r[0]) for r in rows if r and r[0] is not None]
-                rc.set_filter_values(fqn, col_name, values, ttl=86400)
-                # Only inject a new entry into semantic_context on success — never for
-                # columns that failed (probe failure = column likely doesn't exist).
-                if col_dict is None:
-                    col_dict = {
-                        "table_fqn": fqn,
-                        "name": col_name,
-                        "data_type": "character varying",
-                        "sample_values": values[:5],
-                        "filter_values": values,
-                    }
-                    semantic_context.setdefault("columns", []).append(col_dict)
-                else:
-                    col_dict["filter_values"] = values
-                    col_dict["sample_values"] = values[:5]
-                logger.info(
-                    "query_compiler | join_col_probe | {}.{} | count={}",
-                    fqn, col_name, len(values),
-                )
-            except Exception as e:
-                logger.warning(
-                    "query_compiler | join_col_probe_failed | {}.{} | error={}",
-                    fqn, col_name, e,
-                )
-
-    await asyncio.gather(*[_probe_one(fqn, col, d) for fqn, col, d in to_probe], return_exceptions=True)
-    logger.info("query_compiler | join_col_probes_done | thread={} | probed={}", thread_id, len(to_probe))
+    logger.info("query_compiler | all filters resolved | routing to sql_generator | thread={}", thread_id)
+    return {"semantic_ir_list": [ir.model_dump()], "filter_resolution_needed": False}

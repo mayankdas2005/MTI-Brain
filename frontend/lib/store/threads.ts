@@ -1109,7 +1109,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 row_count: (data.row_count as number) ?? m.metadata_?.row_count,
                 chart_spec: (data.chart_spec as Record<string, unknown>) ?? m.metadata_?.chart_spec,
                 chart_type: (data.chart_type as string | undefined) ?? m.metadata_?.chart_type,
-                alternative_chart_specs: (data.alternative_chart_specs as string[] | undefined) ?? m.metadata_?.alternative_chart_specs,
+                alternative_chart_specs: (data.alternative_chart_specs as { chart_type: string; spec: Record<string, unknown> }[] | undefined) ?? m.metadata_?.alternative_chart_specs,
                 follow_ups: (data.follow_ups as string[]) ?? m.metadata_?.follow_ups,
                 duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
                 pipeline_steps:
@@ -1430,7 +1430,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onChart: (data) => {
         mapMsgs((m) =>
-          m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec, chart_type: data.chart_type as string | undefined, alternative_chart_specs: data.alternative_chart_specs as string[] | undefined } } : m,
+          m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec, chart_type: data.chart_type as string | undefined, alternative_chart_specs: data.alternative_chart_specs as { chart_type: string; spec: Record<string, unknown> }[] | undefined } } : m,
         );
       },
       onVizSkip: () => {
@@ -1471,7 +1471,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 row_count: (data.row_count as number) ?? m.metadata_?.row_count,
                 chart_spec: (data.chart_spec as Record<string, unknown>) ?? m.metadata_?.chart_spec,
                 chart_type: (data.chart_type as string | undefined) ?? m.metadata_?.chart_type,
-                alternative_chart_specs: (data.alternative_chart_specs as string[] | undefined) ?? m.metadata_?.alternative_chart_specs,
+                alternative_chart_specs: (data.alternative_chart_specs as { chart_type: string; spec: Record<string, unknown> }[] | undefined) ?? m.metadata_?.alternative_chart_specs,
                 follow_ups: (data.follow_ups as string[]) ?? m.metadata_?.follow_ups,
                 duration_ms: (data.duration_ms as number) ?? m.metadata_?.duration_ms,
                 pipeline_steps:
@@ -1740,7 +1740,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       },
       onChart: (data) => {
         mapMsgs((m) =>
-          m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec, chart_type: data.chart_type as string | undefined, alternative_chart_specs: data.alternative_chart_specs as string[] | undefined } } : m,
+          m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec, chart_type: data.chart_type as string | undefined, alternative_chart_specs: data.alternative_chart_specs as { chart_type: string; spec: Record<string, unknown> }[] | undefined } } : m,
         );
       },
       onVizSkip: () => {

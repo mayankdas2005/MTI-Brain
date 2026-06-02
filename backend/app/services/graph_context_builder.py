@@ -4,6 +4,17 @@ Loads graph_context snapshot from the assistant message metadata_, re-queries
 Neo4j for full node/edge data, builds vis.js-compatible cypherResult records,
 injects them into graph_explorer_template.html, and uploads to S3.
 Returns (s3_key, s3_url).
+
+Trust principle: shows ONLY what the agents actually touched —
+  - Tables that appear in the SQL (anchor + path tables from SemanticIR)
+  - Columns that are in measures / dimensions / filters / time_filter
+  - The JoinPath nodes actually used (not all candidates)
+  - BusinessTerms with real REFERENCES_TABLE edges to anchor tables
+  - Detected intents pointing to anchor tables
+  - AntiPatterns used as guardrails
+  - QueryPatterns matched as ground truth
+  - Domain + Community context for anchor tables
+  - Cross-domain hub + BRIDGES_TO if is_cross_domain=True
 """
 
 from __future__ import annotations
@@ -16,7 +27,6 @@ import uuid
 from datetime import date
 from functools import partial
 from pathlib import Path
-from typing import Any
 
 import boto3
 from sqlalchemy import select
@@ -30,7 +40,7 @@ _TEMPLATE_PATH = Path(__file__).resolve().parent / "graph_explorer_template.html
 _PLACEHOLDER = "/* GRAPH_DATA_PLACEHOLDER */ []"
 
 
-# ── S3 helpers (identical pattern to dashboard_builder) ──────────────────────
+# ── S3 helpers ────────────────────────────────────────────────────────────────
 
 def _get_s3_client():
     return boto3.client(
@@ -126,7 +136,7 @@ def _triplet(n: dict, r: dict | None, m: dict | None) -> dict:
     return {"n": n, "r": r, "m": m}
 
 
-# ── join_clause parser (for multi-hop paths not in JOINS_TO edges) ───────────
+# ── join_clause parser ────────────────────────────────────────────────────────
 
 def _parse_join_clause_tables(clause: str) -> tuple[str, str] | None:
     """Extract (left_table_fqn, right_table_fqn) from 'schema.t1.col = schema.t2.col'."""
@@ -139,13 +149,22 @@ def _parse_join_clause_tables(clause: str) -> tuple[str, str] | None:
     return _table(parts[0]), _table(parts[1])
 
 
-# ── Main builder ─────────────────────────────────────────────────────────────
+# ── Main builder ──────────────────────────────────────────────────────────────
 
 async def generate_and_store(
     conversation_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> tuple[str, str]:
-    """Build the graph context HTML and upload to S3. Returns (s3_key, s3_url)."""
+    """Build the trust graph HTML and upload to S3. Returns (s3_key, s3_url).
+
+    Shows only what was actually used to generate the answer:
+    - anchor tables + path tables (SQL scope)
+    - used columns (measures, dimensions, filters)
+    - actual join paths
+    - real BusinessTerm → Table edges (not synthetic connections)
+    - intents, anti-patterns, query patterns
+    - domain + community context
+    """
 
     # 1. Load assistant message from DB
     async with async_read_session_factory() as session:
@@ -162,37 +181,399 @@ async def generate_and_store(
 
     meta: dict = asst_msg.metadata_ or {}
     snapshot: dict = meta.get("graph_context") or {}
-    path_tables: list[str] = snapshot.get("path_tables") or []
 
-    logger.info("graph_context_builder | conv={} | path_tables={}", conversation_id, path_tables)
+    # Migration: old snapshot format uses "tables" + "selected_columns" instead of
+    # "anchor_tables" + "used_columns". Fall back to legacy builder for those.
+    if "anchor_tables" not in snapshot and "path_tables" in snapshot:
+        logger.warning(
+            "graph_context_builder | old_snapshot_format | conv={} | using legacy builder",
+            conversation_id,
+        )
+        return await _generate_from_old_snapshot(snapshot, conversation_id)
 
-    if not path_tables:
-        raise ValueError(f"No graph_context.path_tables for conversation_id={conversation_id}")
+    # 2. Extract new-format snapshot fields
+    anchor_tables: list[str] = snapshot.get("anchor_tables") or []
+    path_tables: list[str]   = snapshot.get("path_tables") or anchor_tables
+    all_tables = list(dict.fromkeys(path_tables + anchor_tables))
 
-    # 2. Re-query Neo4j for full node/edge data
+    if not all_tables:
+        raise ValueError(f"No anchor/path tables in graph_context for conversation_id={conversation_id}")
+
+    used_columns: list[dict] = snapshot.get("used_columns") or []
+    join_clauses: list[str]  = snapshot.get("join_clauses") or []
+    join_path_ids: list[str] = snapshot.get("join_path_ids") or []
+    is_cross_domain: bool    = snapshot.get("is_cross_domain", False)
+    cross_domain_hub: dict   = snapshot.get("cross_domain_hub") or {}
+
+    snap_bt_terms: list[str]   = [bt.get("term") for bt in (snapshot.get("business_terms") or []) if bt.get("term")]
+    snap_qp_ids: list[str]     = [qp.get("id") for qp in (snapshot.get("query_patterns") or []) if qp.get("id")]
+    snap_ap_ids: list[str]     = [ap.get("id") for ap in (snapshot.get("anti_patterns") or []) if ap.get("id")]
+    snap_tmpl_ids: list[str]   = list(dict.fromkeys(
+        t for t in [
+            snapshot.get("template_id", ""),
+            *[tmpl.get("id", "") for tmpl in (snapshot.get("templates") or [])],
+        ] if t
+    ))
+
+    col_ids = [
+        f"{c['table_fqn']}.{c['column_name']}"
+        for c in used_columns
+        if c.get("table_fqn") and c.get("column_name")
+    ]
+
+    logger.info(
+        "graph_context_builder | conv={} | anchor_tables={} | path_tables={} | used_cols={} | cross_domain={}",
+        conversation_id, anchor_tables, path_tables, len(used_columns), is_cross_domain,
+    )
+
+    # 3. Re-query Neo4j for full node/edge data (10 parallel queries)
     from app.services.agents import neo4j_client as nc
-
     loop = asyncio.get_event_loop()
-
-    # Extract IDs/keys from snapshot upfront — all available before any queries
-    join_path_ids: list[str]    = [pid for pid in (snapshot.get("join_path_ids") or []) if pid]
-    snap_bt_terms: list[str]    = [bt.get("term") for bt in (snapshot.get("business_terms") or []) if bt.get("term")]
-    snap_qp_ids: list[str]      = [qp.get("id") for qp in (snapshot.get("query_patterns") or []) if qp.get("id")]
-    snap_ap_ids: list[str]      = [ap.get("id") for ap in (snapshot.get("anti_patterns") or []) if ap.get("id")]
-    snap_tmpl_ids: list[str]    = [t.get("id") for t in (snapshot.get("templates") or []) if t.get("id")]
 
     (
         tables_ctx,
-        columns_raw,
+        col_props_raw,
         joins_raw,
         relevant_intents,
-        struct_similar,
-        sem_similar_cols,
         join_paths_raw,
         bt_full,
+        bt_table_edges,
         qp_full,
         ap_full,
         tmpl_full,
+    ) = await asyncio.gather(
+        loop.run_in_executor(None, nc.get_tables_with_context, all_tables),
+        loop.run_in_executor(None, nc.get_columns_by_ids, col_ids),
+        loop.run_in_executor(None, nc.get_direct_joins, all_tables),
+        loop.run_in_executor(None, nc.get_table_relevant_intents, anchor_tables),
+        loop.run_in_executor(None, nc.get_join_paths_by_ids, join_path_ids),
+        loop.run_in_executor(None, nc.get_business_terms_by_terms, snap_bt_terms),
+        loop.run_in_executor(None, nc.get_business_term_table_edges, snap_bt_terms, anchor_tables),
+        loop.run_in_executor(None, nc.get_query_patterns_by_ids, snap_qp_ids),
+        loop.run_in_executor(None, nc.get_anti_patterns_by_ids, snap_ap_ids),
+        loop.run_in_executor(None, nc.get_query_templates_by_ids, snap_tmpl_ids),
+    )
+
+    # Community bridges (only for cross-domain — needs community IDs from tables)
+    community_ids = list({
+        row["c"]["id"]
+        for row in tables_ctx
+        if row.get("c") and row["c"].get("id")
+    })
+    community_bridges = await loop.run_in_executor(None, nc.get_community_bridges, community_ids)
+
+    # 4. Build lookup maps
+    table_props_map: dict[str, dict] = {}
+    domain_map: dict[str, dict] = {}
+    community_map: dict[str, dict] = {}
+    table_domain_map: dict[str, str] = {}
+    table_community_map: dict[str, str] = {}
+
+    for row in tables_ctx:
+        t = row.get("t") or {}
+        fqn = t.get("fqn")
+        if fqn:
+            table_props_map[fqn] = t
+        d = row.get("d")
+        c = row.get("c")
+        if d and d.get("name"):
+            domain_map[d["name"]] = d
+            if fqn:
+                table_domain_map[fqn] = d["name"]
+        if c and c.get("id"):
+            community_map[c["id"]] = c
+            if fqn:
+                table_community_map[fqn] = c["id"]
+
+    # Annotate cross-domain hub table
+    if is_cross_domain and cross_domain_hub.get("hub_table_fqn"):
+        hub_fqn = cross_domain_hub["hub_table_fqn"]
+        if hub_fqn in table_props_map:
+            table_props_map[hub_fqn]["_is_cross_domain_hub"] = True
+            table_props_map[hub_fqn]["_hub_join_col"] = cross_domain_hub.get("hub_join_col", "")
+
+    # Column props by id
+    col_props_by_id: dict[str, dict] = {c.get("id", ""): c for c in col_props_raw if c.get("id")}
+
+    # Build used_column role lookup: (table_fqn, column_name) → role info
+    used_col_role: dict[tuple, dict] = {
+        (c["table_fqn"], c["column_name"]): c
+        for c in used_columns
+        if c.get("table_fqn") and c.get("column_name")
+    }
+
+    # Intent map
+    intent_map: dict[str, dict] = {}
+    for ri in relevant_intents:
+        iname = ri.get("intent", {}).get("name", "")
+        if iname:
+            intent_map[iname] = ri["intent"]
+
+    # BusinessTerm full props
+    bt_map: dict[str, dict] = {bt.get("term", ""): bt for bt in bt_full if bt.get("term")}
+    # BusinessTerm → Table edges (real REFERENCES_TABLE)
+    bt_to_table: dict[str, list[str]] = {}
+    for edge in bt_table_edges:
+        term = edge.get("term", "")
+        table_fqn = edge.get("table_fqn", "")
+        if term and table_fqn:
+            bt_to_table.setdefault(term, []).append(table_fqn)
+
+    # 5. Assign integer identities and build records
+    ids = _IdRegistry()
+    records: list[dict] = []
+
+    def table_id(fqn: str) -> int:       return ids.get(f"T:{fqn}")
+    def col_id(cid: str) -> int:         return ids.get(f"C:{cid}")
+    def domain_id(name: str) -> int:     return ids.get(f"D:{name}")
+    def comm_id(cid: str) -> int:        return ids.get(f"COM:{cid}")
+    def intent_id(name: str) -> int:     return ids.get(f"I:{name}")
+    def bt_id(term: str) -> int:         return ids.get(f"BT:{term}")
+    def qp_id(qpid: str) -> int:         return ids.get(f"QP:{qpid}")
+    def ap_id(apid: str) -> int:         return ids.get(f"AP:{apid}")
+    def jp_id(jpid: str) -> int:         return ids.get(f"JP:{jpid}")
+    def tmpl_node_id(tid: str) -> int:   return ids.get(f"QT:{tid}")
+
+    def _t_props(fqn: str) -> dict:
+        return table_props_map.get(fqn, {"fqn": fqn, "name": fqn.split(".")[-1]})
+
+    # ── Table HAS_COLUMN Column (only USED columns with role annotation) ─────
+    for uc in used_columns:
+        t_fqn = uc.get("table_fqn", "")
+        c_name = uc.get("column_name", "")
+        role = uc.get("role", "")
+        agg = uc.get("aggregation")
+        if not t_fqn or not c_name:
+            continue
+        cid = f"{t_fqn}.{c_name}"
+        c_full_props = col_props_by_id.get(cid, {"id": cid, "name": c_name, "table_fqn": t_fqn})
+        edge_props: dict = {"role": role}
+        if agg:
+            edge_props["aggregation"] = agg
+        records.append(_triplet(
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
+            _edge(ids.next_edge_id(), "HAS_COLUMN", table_id(t_fqn), col_id(cid), edge_props),
+            _node(col_id(cid), ["Column"], c_full_props),
+        ))
+
+    # ── Table JOINS_TO Table (direct FK edges between path tables) ───────────
+    seen_joins: set[tuple[str, str]] = set()
+    for j in joins_raw:
+        f_fqn, t_fqn = j.get("from_fqn", ""), j.get("to_fqn", "")
+        if not f_fqn or not t_fqn:
+            continue
+        key = (f_fqn, t_fqn)
+        if key in seen_joins:
+            continue
+        seen_joins.add(key)
+        records.append(_triplet(
+            _node(table_id(f_fqn), ["Table"], _t_props(f_fqn)),
+            _edge(ids.next_edge_id(), "JOINS_TO", table_id(f_fqn), table_id(t_fqn), j),
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
+        ))
+
+    # ── Table JOINS_TO Table (from join_clauses for multi-hop paths) ──────────
+    for clause in join_clauses:
+        pair = _parse_join_clause_tables(clause)
+        if not pair:
+            continue
+        f_fqn, t_fqn = pair
+        key = (f_fqn, t_fqn)
+        if key in seen_joins or f_fqn == t_fqn:
+            continue
+        seen_joins.add(key)
+        records.append(_triplet(
+            _node(table_id(f_fqn), ["Table"], _t_props(f_fqn)),
+            _edge(ids.next_edge_id(), "JOINS_TO", table_id(f_fqn), table_id(t_fqn),
+                  {"join_clause": clause, "source": "join_path"}),
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
+        ))
+
+    # ── Table BELONGS_TO Domain ───────────────────────────────────────────────
+    for fqn, dname in table_domain_map.items():
+        d_props = domain_map.get(dname, {"name": dname})
+        records.append(_triplet(
+            _node(table_id(fqn), ["Table"], _t_props(fqn)),
+            _edge(ids.next_edge_id(), "BELONGS_TO", table_id(fqn), domain_id(dname), {}),
+            _node(domain_id(dname), ["Domain"], d_props),
+        ))
+
+    # ── Community CONTAINS_TABLE Table ───────────────────────────────────────
+    for fqn, cid in table_community_map.items():
+        c_props = community_map.get(cid, {"id": cid})
+        records.append(_triplet(
+            _node(comm_id(cid), ["Community"], c_props),
+            _edge(ids.next_edge_id(), "CONTAINS_TABLE", comm_id(cid), table_id(fqn), {}),
+            _node(table_id(fqn), ["Table"], _t_props(fqn)),
+        ))
+
+    # ── Community BRIDGES_TO Community (cross-domain only) ───────────────────
+    for cb in community_bridges:
+        from_cid, to_cid = cb.get("from_id", ""), cb.get("to_id", "")
+        if not from_cid or not to_cid:
+            continue
+        fc_props = community_map.get(from_cid, {"id": from_cid})
+        tc_props = community_map.get(to_cid, {"id": to_cid})
+        records.append(_triplet(
+            _node(comm_id(from_cid), ["Community"], fc_props),
+            _edge(ids.next_edge_id(), "BRIDGES_TO", comm_id(from_cid), comm_id(to_cid),
+                  cb.get("rel") or {}),
+            _node(comm_id(to_cid), ["Community"], tc_props),
+        ))
+
+    # ── Table RELEVANT_TO Intent (anchor tables only) ─────────────────────────
+    for ri in relevant_intents:
+        t_fqn = ri.get("table_fqn", "")
+        iname = ri.get("intent", {}).get("name", "")
+        if not t_fqn or not iname:
+            continue
+        i_props = intent_map.get(iname, {"name": iname})
+        records.append(_triplet(
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
+            _edge(ids.next_edge_id(), "RELEVANT_TO", table_id(t_fqn), intent_id(iname),
+                  ri.get("rel") or {}),
+            _node(intent_id(iname), ["Intent"], i_props),
+        ))
+
+    # ── BusinessTerm REFERENCES_TABLE Table (real Neo4j edges only) ──────────
+    # Only show terms that actually point to anchor tables — not all terms to all tables
+    for term, linked_tables in bt_to_table.items():
+        bt_props = bt_map.get(term, {"term": term})
+        bt_node = _node(bt_id(term), ["BusinessTerm"], bt_props)
+        for t_fqn in linked_tables:
+            records.append(_triplet(
+                bt_node,
+                _edge(ids.next_edge_id(), "REFERENCES_TABLE", bt_id(term), table_id(t_fqn), {}),
+                _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
+            ))
+
+    # BusinessTerms with no REFERENCES_TABLE edge to anchor tables — show isolated
+    for bt in bt_full:
+        term = bt.get("term", "")
+        if not term or term in bt_to_table:
+            continue
+        records.append(_triplet(_node(bt_id(term), ["BusinessTerm"], bt), None, None))
+
+    # ── QueryPattern USES_TABLE Table ─────────────────────────────────────────
+    for qp in qp_full:
+        qpid = qp.get("id", "") or qp.get("question_text", "")[:40]
+        if not qpid:
+            continue
+        qp_node = _node(qp_id(qpid), ["QueryPattern"], qp)
+        raw_tables = qp.get("tables_used") or []
+        if isinstance(raw_tables, str):
+            raw_tables = [t.strip() for t in raw_tables.split(",") if t.strip()]
+        linked = False
+        for t_fqn in raw_tables:
+            records.append(_triplet(
+                qp_node,
+                _edge(ids.next_edge_id(), "USES_TABLE", qp_id(qpid), table_id(t_fqn), {}),
+                _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
+            ))
+            linked = True
+        if not linked:
+            records.append(_triplet(qp_node, None, None))
+
+    # ── AntiPattern — isolated (SQL-generation guardrails, not query nodes) ───
+    for ap in ap_full:
+        apid = ap.get("id", "") or ap.get("error_type", "")
+        if not apid:
+            continue
+        records.append(_triplet(_node(ap_id(apid), ["AntiPattern"], ap), None, None))
+
+    # ── JoinPath LINKS_TABLE Table ────────────────────────────────────────────
+    for jp in join_paths_raw:
+        jpid = jp.get("id", "")
+        if not jpid:
+            continue
+        jp_node = _node(jp_id(jpid), ["JoinPath"], jp)
+        linked = False
+        for t_fqn in (jp.get("path_tables") or []):
+            records.append(_triplet(
+                jp_node,
+                _edge(ids.next_edge_id(), "LINKS_TABLE", jp_id(jpid), table_id(t_fqn), {}),
+                _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
+            ))
+            linked = True
+        if not linked:
+            records.append(_triplet(jp_node, None, None))
+
+    # ── QueryTemplate REQUIRES_TABLE Table ───────────────────────────────────
+    selected_template_id = snapshot.get("template_id", "")
+    for tmpl in tmpl_full:
+        tid = tmpl.get("id", "")
+        if not tid:
+            continue
+        # Mark whichever template was actually selected by intent_resolver
+        if selected_template_id and tid == selected_template_id:
+            tmpl = {**tmpl, "_selected": True}
+        qt_node = _node(tmpl_node_id(tid), ["QueryTemplate"], tmpl)
+        linked = False
+        for anchor_fqn in (tmpl.get("anchor_table_fqns") or []):
+            records.append(_triplet(
+                qt_node,
+                _edge(ids.next_edge_id(), "REQUIRES_TABLE", tmpl_node_id(tid), table_id(anchor_fqn), {}),
+                _node(table_id(anchor_fqn), ["Table"], _t_props(anchor_fqn)),
+            ))
+            linked = True
+        primary_intent_name = tmpl.get("primary_intent", "")
+        if primary_intent_name and primary_intent_name in intent_map:
+            records.append(_triplet(
+                qt_node,
+                _edge(ids.next_edge_id(), "CLASSIFIED_AS", tmpl_node_id(tid),
+                      intent_id(primary_intent_name), {}),
+                _node(intent_id(primary_intent_name), ["Intent"], intent_map[primary_intent_name]),
+            ))
+            linked = True
+        if not linked:
+            records.append(_triplet(qt_node, None, None))
+
+    logger.info("graph_context_builder | conv={} | records={}", conversation_id, len(records))
+
+    # 6. Inject into template
+    template_html = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    if _PLACEHOLDER not in template_html:
+        raise RuntimeError("graph_explorer_template.html is missing GRAPH_DATA_PLACEHOLDER")
+    html = template_html.replace(_PLACEHOLDER, json.dumps(records, default=str))
+
+    # 7. Upload to S3
+    short_id = str(conversation_id)[:8]
+    today = date.today().isoformat()
+    s3_key = f"graph-contexts/graph-{short_id}-{today}.html"
+    s3_url = await _upload_to_s3(s3_key, html.encode("utf-8"))
+
+    logger.info("graph_context_builder | uploaded | conv={} | key={}", conversation_id, s3_key)
+    return s3_key, s3_url
+
+
+# ── Legacy builder (backward compat for old snapshot format) ─────────────────
+
+async def _generate_from_old_snapshot(
+    snapshot: dict,
+    conversation_id: uuid.UUID,
+) -> tuple[str, str]:
+    """Handle old-format snapshots that use 'path_tables' + 'selected_columns'.
+
+    This preserves functionality for conversations recorded before the new
+    snapshot format was deployed.
+    """
+    path_tables: list[str] = snapshot.get("path_tables") or []
+    if not path_tables:
+        raise ValueError(f"No graph_context.path_tables for conversation_id={conversation_id}")
+
+    from app.services.agents import neo4j_client as nc
+    loop = asyncio.get_event_loop()
+
+    join_path_ids: list[str] = [pid for pid in (snapshot.get("join_path_ids") or []) if pid]
+    snap_bt_terms = [bt.get("term") for bt in (snapshot.get("business_terms") or []) if bt.get("term")]
+    snap_qp_ids   = [qp.get("id") for qp in (snapshot.get("query_patterns") or []) if qp.get("id")]
+    snap_ap_ids   = [ap.get("id") for ap in (snapshot.get("anti_patterns") or []) if ap.get("id")]
+    snap_tmpl_ids = [t.get("id") for t in (snapshot.get("templates") or []) if t.get("id")]
+
+    (
+        tables_ctx, columns_raw, joins_raw, relevant_intents,
+        struct_similar, sem_similar_cols, join_paths_raw,
+        bt_full, qp_full, ap_full, tmpl_full,
     ) = await asyncio.gather(
         loop.run_in_executor(None, nc.get_tables_with_context, path_tables),
         loop.run_in_executor(None, nc.get_columns_for_tables, path_tables),
@@ -207,24 +588,18 @@ async def generate_and_store(
         loop.run_in_executor(None, nc.get_query_templates_by_ids, snap_tmpl_ids),
     )
 
-    # Community bridges (need community IDs from tables_ctx)
     community_ids = list({
-        row["c"]["id"]
-        for row in tables_ctx
-        if row.get("c") and row["c"].get("id")
+        row["c"]["id"] for row in tables_ctx if row.get("c") and row["c"].get("id")
     })
     community_bridges = await loop.run_in_executor(None, nc.get_community_bridges, community_ids)
 
-    # 3. Build node/edge tables — Neo4j data is authoritative; snapshot is fallback only
-    snapshot_tables: list[dict]         = snapshot.get("tables") or []
-    snapshot_intents: list[dict]        = snapshot.get("intents") or []
-    selected_columns: list[dict]        = snapshot.get("selected_columns") or []
-    template_id: str | None             = snapshot.get("template_id")
-    join_clauses: list[str]             = snapshot.get("join_clauses") or []
+    # (abbreviated legacy build — just enough to not error)
+    snapshot_tables = snapshot.get("tables") or []
+    selected_columns = snapshot.get("selected_columns") or []
+    join_clauses = snapshot.get("join_clauses") or []
+    template_id = snapshot.get("template_id")
 
-    # Merge: Neo4j full props keyed by identifier, falling back to snapshot for any missing nodes
-    def _merge(neo4j_list: list[dict], snap_list: list[dict], key: str) -> list[dict]:
-        """Return Neo4j rows, supplemented by any snapshot rows whose key isn't in Neo4j."""
+    def _merge(neo4j_list, snap_list, key):
         neo4j_map = {r.get(key): r for r in neo4j_list if r.get(key)}
         for s in snap_list:
             k = s.get(key)
@@ -232,36 +607,24 @@ async def generate_and_store(
                 neo4j_map[k] = s
         return list(neo4j_map.values())
 
-    snapshot_business_terms: list[dict] = _merge(bt_full,   snapshot.get("business_terms") or [], "term")
-    snapshot_query_patterns: list[dict] = _merge(qp_full,   snapshot.get("query_patterns") or [], "id")
-    snapshot_anti_patterns:  list[dict] = _merge(ap_full,   snapshot.get("anti_patterns")  or [], "id")
-    snapshot_templates:      list[dict] = _merge(tmpl_full, snapshot.get("templates")       or [], "id")
+    snapshot_business_terms = _merge(bt_full, snapshot.get("business_terms") or [], "term")
+    snapshot_query_patterns = _merge(qp_full, snapshot.get("query_patterns") or [], "id")
+    snapshot_anti_patterns  = _merge(ap_full, snapshot.get("anti_patterns") or [], "id")
+    snapshot_templates      = _merge(tmpl_full, snapshot.get("templates") or [], "id")
 
-    # Build lookup maps
     table_props_map: dict[str, dict] = {}
     for row in tables_ctx:
         t = row.get("t") or {}
-        fqn = t.get("fqn")
-        if fqn:
-            table_props_map[fqn] = t
-
-    # Enrich with snapshot table data for any tables not returned by get_tables_with_context
+        if t.get("fqn"):
+            table_props_map[t["fqn"]] = t
     for st in snapshot_tables:
         fqn = st.get("fqn") or st.get("table_fqn")
         if fqn and fqn not in table_props_map:
             table_props_map[fqn] = st
 
-    col_id_map: dict[str, dict] = {}
-    col_by_table_name: dict[tuple[str, str], dict] = {}
-    for col in columns_raw:
-        cid = col.get("id") or f"{col.get('table_fqn')}.{col.get('name')}"
-        col_id_map[cid] = col
-        col_by_table_name[(col.get("table_fqn", ""), col.get("name", ""))] = col
-
-    selected_set = {
-        (sc.get("table_fqn", ""), sc.get("column_name", ""))
-        for sc in selected_columns
-    }
+    col_id_map = {col.get("id") or f"{col.get('table_fqn')}.{col.get('name')}": col for col in columns_raw}
+    col_by_table_name = {(col.get("table_fqn", ""), col.get("name", "")): col for col in columns_raw}
+    selected_set = {(sc.get("table_fqn", ""), sc.get("column_name", "")) for sc in selected_columns}
 
     domain_map: dict[str, dict] = {}
     community_map: dict[str, dict] = {}
@@ -270,8 +633,7 @@ async def generate_and_store(
     for row in tables_ctx:
         t = row.get("t") or {}
         fqn = t.get("fqn")
-        d = row.get("d")
-        c = row.get("c")
+        d, c = row.get("d"), row.get("c")
         if d and d.get("name"):
             domain_map[d["name"]] = d
             if fqn:
@@ -281,85 +643,56 @@ async def generate_and_store(
             if fqn:
                 table_community_map[fqn] = c["id"]
 
-    # Start with snapshot intents as a fallback, then overwrite with full Neo4j properties
-    # (snapshot intents only carry id/name/score/description; Neo4j has all fields)
-    intent_map: dict[str, dict] = {i.get("name", ""): i for i in snapshot_intents if i.get("name")}
+    intent_map: dict[str, dict] = {i.get("name", ""): i for i in (snapshot.get("intents") or []) if i.get("name")}
     for ri in relevant_intents:
         iname = ri.get("intent", {}).get("name", "")
         if iname:
-            intent_map[iname] = ri["intent"]  # always prefer full Neo4j properties
+            intent_map[iname] = ri["intent"]
 
     matched_template = next(
         (t for t in snapshot_templates if t.get("id") == template_id),
         snapshot_templates[0] if snapshot_templates else None,
     )
 
-    # 4. Assign integer identities and build records
     ids = _IdRegistry()
     records: list[dict] = []
 
-    def table_id(fqn: str) -> int:
-        return ids.get(f"T:{fqn}")
+    def table_id(fqn): return ids.get(f"T:{fqn}")
+    def col_id(cid): return ids.get(f"C:{cid}")
+    def domain_id(name): return ids.get(f"D:{name}")
+    def comm_id(cid): return ids.get(f"COM:{cid}")
+    def intent_id(name): return ids.get(f"I:{name}")
+    def bt_id(term): return ids.get(f"BT:{term}")
+    def qp_id(qpid): return ids.get(f"QP:{qpid}")
+    def ap_id(apid): return ids.get(f"AP:{apid}")
+    def jp_id(jpid): return ids.get(f"JP:{jpid}")
+    def template_id_fn(tid): return ids.get(f"QT:{tid}")
+    def _t_props(fqn): return table_props_map.get(fqn, {"fqn": fqn, "name": fqn.split(".")[-1]})
 
-    def col_id(cid: str) -> int:
-        return ids.get(f"C:{cid}")
-
-    def domain_id(name: str) -> int:
-        return ids.get(f"D:{name}")
-
-    def community_id_fn(cid: str) -> int:
-        return ids.get(f"COM:{cid}")
-
-    def intent_id(name: str) -> int:
-        return ids.get(f"I:{name}")
-
-    def template_id_fn(tid: str) -> int:
-        return ids.get(f"QT:{tid}")
-
-    def bt_id(term: str) -> int:
-        return ids.get(f"BT:{term}")
-
-    def qp_id(qpid: str) -> int:
-        return ids.get(f"QP:{qpid}")
-
-    def ap_id(apid: str) -> int:
-        return ids.get(f"AP:{apid}")
-
-    def jp_id(jpid: str) -> int:
-        return ids.get(f"JP:{jpid}")
-
-    # ── Table HAS_COLUMN Column ──────────────────────────────────────────────
     for col in columns_raw:
         t_fqn = col.get("table_fqn", "")
         cid = col.get("id") or f"{t_fqn}.{col.get('name')}"
         is_selected = (t_fqn, col.get("name", "")) in selected_set
-        t_props = table_props_map.get(t_fqn, {"fqn": t_fqn, "name": t_fqn.split(".")[-1]})
         records.append(_triplet(
-            _node(table_id(t_fqn), ["Table"], t_props),
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
             _edge(ids.next_edge_id(), "HAS_COLUMN", table_id(t_fqn), col_id(cid),
-                  {"selected": is_selected, "created_at": col.get("created_at")}),
+                  {"selected": is_selected}),
             _node(col_id(cid), ["Column"], col),
         ))
 
-    # ── Table JOINS_TO Table (from Neo4j direct edges) ───────────────────────
-    seen_joins: set[tuple[str, str]] = set()
+    seen_joins: set[tuple] = set()
     for j in joins_raw:
         f_fqn, t_fqn = j.get("from_fqn", ""), j.get("to_fqn", "")
-        if not f_fqn or not t_fqn:
-            continue
         key = (f_fqn, t_fqn)
-        if key in seen_joins:
+        if not f_fqn or not t_fqn or key in seen_joins:
             continue
         seen_joins.add(key)
-        f_props = table_props_map.get(f_fqn, {"fqn": f_fqn, "name": f_fqn.split(".")[-1]})
-        t_props = table_props_map.get(t_fqn, {"fqn": t_fqn, "name": t_fqn.split(".")[-1]})
         records.append(_triplet(
-            _node(table_id(f_fqn), ["Table"], f_props),
+            _node(table_id(f_fqn), ["Table"], _t_props(f_fqn)),
             _edge(ids.next_edge_id(), "JOINS_TO", table_id(f_fqn), table_id(t_fqn), j),
-            _node(table_id(t_fqn), ["Table"], t_props),
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
         ))
 
-    # ── Table JOINS_TO Table (from join_clauses not in direct edges) ─────────
     for clause in join_clauses:
         pair = _parse_join_clause_tables(clause)
         if not pair:
@@ -369,119 +702,94 @@ async def generate_and_store(
         if key in seen_joins or f_fqn == t_fqn:
             continue
         seen_joins.add(key)
-        f_props = table_props_map.get(f_fqn, {"fqn": f_fqn, "name": f_fqn.split(".")[-1]})
-        t_props = table_props_map.get(t_fqn, {"fqn": t_fqn, "name": t_fqn.split(".")[-1]})
         records.append(_triplet(
-            _node(table_id(f_fqn), ["Table"], f_props),
+            _node(table_id(f_fqn), ["Table"], _t_props(f_fqn)),
             _edge(ids.next_edge_id(), "JOINS_TO", table_id(f_fqn), table_id(t_fqn),
                   {"join_clause": clause, "source": "join_path"}),
-            _node(table_id(t_fqn), ["Table"], t_props),
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
         ))
 
-    # ── Table STRUCTURALLY_SIMILAR Table ─────────────────────────────────────
     for ss in struct_similar:
         f_fqn, t_fqn = ss.get("from_fqn", ""), ss.get("to_fqn", "")
         if not f_fqn or not t_fqn:
             continue
-        f_props = table_props_map.get(f_fqn, {"fqn": f_fqn, "name": f_fqn.split(".")[-1]})
-        t_props = table_props_map.get(t_fqn, {"fqn": t_fqn, "name": t_fqn.split(".")[-1]})
         records.append(_triplet(
-            _node(table_id(f_fqn), ["Table"], f_props),
+            _node(table_id(f_fqn), ["Table"], _t_props(f_fqn)),
             _edge(ids.next_edge_id(), "STRUCTURALLY_SIMILAR", table_id(f_fqn), table_id(t_fqn),
                   ss.get("rel") or {}),
-            _node(table_id(t_fqn), ["Table"], t_props),
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
         ))
 
-    # ── Table BELONGS_TO Domain ───────────────────────────────────────────────
     for fqn, dname in table_domain_map.items():
-        t_props = table_props_map.get(fqn, {"fqn": fqn, "name": fqn.split(".")[-1]})
-        d_props = domain_map.get(dname, {"name": dname})
         records.append(_triplet(
-            _node(table_id(fqn), ["Table"], t_props),
+            _node(table_id(fqn), ["Table"], _t_props(fqn)),
             _edge(ids.next_edge_id(), "BELONGS_TO", table_id(fqn), domain_id(dname), {}),
-            _node(domain_id(dname), ["Domain"], d_props),
+            _node(domain_id(dname), ["Domain"], domain_map.get(dname, {"name": dname})),
         ))
 
-    # ── Community CONTAINS_TABLE Table ───────────────────────────────────────
     for fqn, cid in table_community_map.items():
-        t_props = table_props_map.get(fqn, {"fqn": fqn, "name": fqn.split(".")[-1]})
         c_props = community_map.get(cid, {"id": cid})
         records.append(_triplet(
-            _node(community_id_fn(cid), ["Community"], c_props),
-            _edge(ids.next_edge_id(), "CONTAINS_TABLE", community_id_fn(cid), table_id(fqn), {}),
-            _node(table_id(fqn), ["Table"], t_props),
+            _node(comm_id(cid), ["Community"], c_props),
+            _edge(ids.next_edge_id(), "CONTAINS_TABLE", comm_id(cid), table_id(fqn), {}),
+            _node(table_id(fqn), ["Table"], _t_props(fqn)),
         ))
 
-    # ── Community BRIDGES_TO Community ───────────────────────────────────────
     for cb in community_bridges:
         from_cid, to_cid = cb.get("from_id", ""), cb.get("to_id", "")
         if not from_cid or not to_cid:
             continue
-        fc_props = community_map.get(from_cid, {"id": from_cid})
-        tc_props = community_map.get(to_cid, {"id": to_cid})
         records.append(_triplet(
-            _node(community_id_fn(from_cid), ["Community"], fc_props),
-            _edge(ids.next_edge_id(), "BRIDGES_TO", community_id_fn(from_cid),
-                  community_id_fn(to_cid), cb.get("rel") or {}),
-            _node(community_id_fn(to_cid), ["Community"], tc_props),
+            _node(comm_id(from_cid), ["Community"], community_map.get(from_cid, {"id": from_cid})),
+            _edge(ids.next_edge_id(), "BRIDGES_TO", comm_id(from_cid), comm_id(to_cid),
+                  cb.get("rel") or {}),
+            _node(comm_id(to_cid), ["Community"], community_map.get(to_cid, {"id": to_cid})),
         ))
 
-    # ── Table RELEVANT_TO Intent ──────────────────────────────────────────────
     for ri in relevant_intents:
         t_fqn = ri.get("table_fqn", "")
         iname = ri.get("intent", {}).get("name", "")
         if not t_fqn or not iname:
             continue
-        t_props = table_props_map.get(t_fqn, {"fqn": t_fqn, "name": t_fqn.split(".")[-1]})
         i_props = intent_map.get(iname, {"name": iname})
         records.append(_triplet(
-            _node(table_id(t_fqn), ["Table"], t_props),
+            _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
             _edge(ids.next_edge_id(), "RELEVANT_TO", table_id(t_fqn), intent_id(iname),
                   ri.get("rel") or {}),
             _node(intent_id(iname), ["Intent"], i_props),
         ))
 
-    # ── QueryTemplate REQUIRES_TABLE Table ───────────────────────────────────
     if matched_template:
         tid = matched_template.get("id", template_id or "")
         qt_node = _node(template_id_fn(tid), ["QueryTemplate"], matched_template)
         for anchor_fqn in (matched_template.get("anchor_table_fqns") or []):
-            t_props = table_props_map.get(anchor_fqn, {"fqn": anchor_fqn, "name": anchor_fqn.split(".")[-1]})
             records.append(_triplet(
                 qt_node,
-                _edge(ids.next_edge_id(), "REQUIRES_TABLE", template_id_fn(tid), table_id(anchor_fqn), {}),
-                _node(table_id(anchor_fqn), ["Table"], t_props),
+                _edge(ids.next_edge_id(), "REQUIRES_TABLE", template_id_fn(tid),
+                      table_id(anchor_fqn), {}),
+                _node(table_id(anchor_fqn), ["Table"], _t_props(anchor_fqn)),
             ))
-
-        # ── QueryTemplate CLASSIFIED_AS Intent ───────────────────────────────
         primary_intent_name = matched_template.get("primary_intent", "")
         if primary_intent_name and primary_intent_name in intent_map:
-            i_props = intent_map[primary_intent_name]
             records.append(_triplet(
                 qt_node,
                 _edge(ids.next_edge_id(), "CLASSIFIED_AS", template_id_fn(tid),
                       intent_id(primary_intent_name), {}),
-                _node(intent_id(primary_intent_name), ["Intent"], i_props),
+                _node(intent_id(primary_intent_name), ["Intent"], intent_map[primary_intent_name]),
             ))
 
-    # ── Column SEMANTICALLY_SIMILAR Column ───────────────────────────────────
     for sc in sem_similar_cols:
         from_cid = sc.get("from_id", "")
         to_cid = sc.get("to_id", "")
         if not from_cid or not to_cid:
             continue
-        fc_props = col_id_map.get(from_cid, {"id": from_cid})
-        tc_props = col_id_map.get(to_cid, {"id": to_cid})
         records.append(_triplet(
-            _node(col_id(from_cid), ["Column"], fc_props),
+            _node(col_id(from_cid), ["Column"], col_id_map.get(from_cid, {"id": from_cid})),
             _edge(ids.next_edge_id(), "SEMANTICALLY_SIMILAR", col_id(from_cid), col_id(to_cid),
                   sc.get("rel") or {}),
-            _node(col_id(to_cid), ["Column"], tc_props),
+            _node(col_id(to_cid), ["Column"], col_id_map.get(to_cid, {"id": to_cid})),
         ))
 
-    # ── BusinessTerm -[CONTEXT_RELEVANT]-> Table ──────────────────────────────
-    # BusinessTerms have no table-reference property; connect them to every
-    # path_table from this query so they appear in the top-N-by-degree ranking.
     for bt in snapshot_business_terms:
         term = bt.get("term", "")
         if not term:
@@ -489,18 +797,15 @@ async def generate_and_store(
         bt_node = _node(bt_id(term), ["BusinessTerm"], bt)
         linked = False
         for fqn in path_tables:
-            t_props = table_props_map.get(fqn, {"fqn": fqn, "name": fqn.split(".")[-1]})
             records.append(_triplet(
                 bt_node,
                 _edge(ids.next_edge_id(), "CONTEXT_RELEVANT", bt_id(term), table_id(fqn), {}),
-                _node(table_id(fqn), ["Table"], t_props),
+                _node(table_id(fqn), ["Table"], _t_props(fqn)),
             ))
             linked = True
         if not linked:
             records.append(_triplet(bt_node, None, None))
 
-    # ── QueryPattern -[USES_TABLE]-> Table ────────────────────────────────────
-    # qp["tables_used"] is a comma-separated FQN string.
     for qp in snapshot_query_patterns:
         qpid = qp.get("id", "") or qp.get("question_text", "")[:40]
         if not qpid:
@@ -509,26 +814,21 @@ async def generate_and_store(
         raw_tables = [t.strip() for t in (qp.get("tables_used") or "").split(",") if t.strip()]
         linked = False
         for fqn in raw_tables:
-            t_props = table_props_map.get(fqn, {"fqn": fqn, "name": fqn.split(".")[-1]})
             records.append(_triplet(
                 qp_node,
                 _edge(ids.next_edge_id(), "USES_TABLE", qp_id(qpid), table_id(fqn), {}),
-                _node(table_id(fqn), ["Table"], t_props),
+                _node(table_id(fqn), ["Table"], _t_props(fqn)),
             ))
             linked = True
         if not linked:
             records.append(_triplet(qp_node, None, None))
 
-    # ── AntiPattern — intentionally isolated ──────────────────────────────────
-    # AntiPatterns are SQL-generation guardrails, not query-answering nodes.
     for ap in snapshot_anti_patterns:
         apid = ap.get("id", "") or ap.get("error_type", "")
         if not apid:
             continue
         records.append(_triplet(_node(ap_id(apid), ["AntiPattern"], ap), None, None))
 
-    # ── JoinPath -[LINKS_TABLE]-> Table ───────────────────────────────────────
-    # jp["path_tables"] is the ordered list of FQNs the join path traverses.
     for jp in join_paths_raw:
         jpid = jp.get("id", "")
         if not jpid:
@@ -536,29 +836,25 @@ async def generate_and_store(
         jp_node = _node(jp_id(jpid), ["JoinPath"], jp)
         linked = False
         for fqn in (jp.get("path_tables") or []):
-            t_props = table_props_map.get(fqn, {"fqn": fqn, "name": fqn.split(".")[-1]})
             records.append(_triplet(
                 jp_node,
                 _edge(ids.next_edge_id(), "LINKS_TABLE", jp_id(jpid), table_id(fqn), {}),
-                _node(table_id(fqn), ["Table"], t_props),
+                _node(table_id(fqn), ["Table"], _t_props(fqn)),
             ))
             linked = True
         if not linked:
             records.append(_triplet(jp_node, None, None))
 
-    logger.info("graph_context_builder | conv={} | records={}", conversation_id, len(records))
+    logger.info("graph_context_builder | legacy | conv={} | records={}", conversation_id, len(records))
 
-    # 5. Inject into template
     template_html = _TEMPLATE_PATH.read_text(encoding="utf-8")
     if _PLACEHOLDER not in template_html:
         raise RuntimeError("graph_explorer_template.html is missing GRAPH_DATA_PLACEHOLDER")
     html = template_html.replace(_PLACEHOLDER, json.dumps(records, default=str))
 
-    # 6. Upload to S3
     short_id = str(conversation_id)[:8]
     today = date.today().isoformat()
     s3_key = f"graph-contexts/graph-{short_id}-{today}.html"
     s3_url = await _upload_to_s3(s3_key, html.encode("utf-8"))
-
-    logger.info("graph_context_builder | uploaded | conv={} | key={}", conversation_id, s3_key)
+    logger.info("graph_context_builder | legacy uploaded | conv={} | key={}", conversation_id, s3_key)
     return s3_key, s3_url

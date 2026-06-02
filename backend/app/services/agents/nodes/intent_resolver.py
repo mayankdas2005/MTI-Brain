@@ -75,90 +75,143 @@ def _format_recent_messages(messages: list) -> str:
 
 
 def _build_schema_candidates_text(semantic_context: dict) -> str:
-    """Build structured SCHEMA CANDIDATES text replacing json.dumps(context_str).
+    """Build structured SCHEMA CANDIDATES text for the intent_resolver LLM.
 
-    Uses filter_values (Redshift DISTINCT probe) as primary samples source,
-    with sample_values (Neo4j) as fallback. Neo4j nodes may have empty sample_values.
+    Section order (LLM reads top-to-bottom):
+    1. CRITICAL CONSTRAINT — prevents hallucination
+    2. TABLES — grain + hub info, no numeric scores
+    3. COLUMNS — [JOIN KEY] first, description + synonyms + values
+    4. BUSINESS TERMS
+    5. INTENT PATTERNS
+    6. QUERY STRUCTURE HINTS — templates at bottom, NO anchor_table_fqns shown
+
+    filter_values = value_vocabulary (set in context_fetcher, not from Redshift).
     """
-    templates = semantic_context.get("templates", [])[:5]
-    tables = [
-        {k: v for k, v in t.items() if k not in _LLM_STRIP}
-        for t in semantic_context.get("tables", [])[:10]
-    ]
-    columns = [
-        {k: v for k, v in c.items() if k not in _LLM_STRIP}
-        for c in semantic_context.get("columns", [])[:40]
-    ]
+    templates     = semantic_context.get("templates", [])[:5]
+    tables_raw    = semantic_context.get("tables", [])[:10]
+    columns_raw   = semantic_context.get("columns", [])[:80]
     business_terms = semantic_context.get("business_terms", [])[:5]
-    intents = semantic_context.get("intents", [])[:3]
+    intents       = semantic_context.get("intents", [])[:3]
 
-    lines = ["--- SCHEMA CANDIDATES ---", ""]
+    # Join-critical set for [JOIN KEY] tagging
+    join_crit_set: set[tuple] = set()
+    for item in (semantic_context.get("join_critical_cols") or []):
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            join_crit_set.add(tuple(item))
 
-    # Template matches — no scores shown; treat as hints only
-    lines.append("TEMPLATES (suggested anchor table patterns — hints only, not constraints):")
-    if templates:
-        for t in templates:
-            anchors = ", ".join(t.get("anchor_table_fqns") or [])
-            lines.append(f"  {t.get('id', '')}   anchor tables: {anchors}")
-    else:
-        lines.append("  [No templates found — choose anchor tables from TABLES below]")
+    tables  = [{k: v for k, v in t.items() if k not in _LLM_STRIP} for t in tables_raw]
+    columns = [{k: v for k, v in c.items() if k not in _LLM_STRIP} for c in columns_raw]
 
-    lines += ["", "---", "", "TABLES (up to 10 — ranked by how many independent retrieval paths found each):"]
+    lines = [
+        "--- SCHEMA CANDIDATES ---",
+        "",
+        "CRITICAL: Only reference tables in TABLES and columns in COLUMNS below.",
+        "Do NOT invent table names, column names, or schema prefixes not listed here.",
+        "",
+    ]
+
+    # ── TABLES ────────────────────────────────────────────────────────────────
+    lines += ["TABLES (ranked by number of discovery paths that confirmed each table):"]
     for t in tables:
-        fqn = t.get("fqn", "")
+        fqn  = t.get("fqn", "")
         role = t.get("typical_join_role", "") or t.get("table_type", "")
-        desc = t.get("description", "")
+        desc = (t.get("description", "") or "")[:100]
         grain = t.get("grain", "")
-        role_str = f" {role:<12}" if role else "             "
-        desc_str = f" — {desc}" if desc else ""
-        grain_str = f"   grain: {grain}" if grain else ""
-        lines.append(f"  {fqn:<40}{role_str}{desc_str}{grain_str}".rstrip())
 
-    lines += ["", "---", "", "COLUMNS (up to 40 — from all candidate tables above, ranked by relevance score):"]
+        role_str = f" {role:<12}" if role else "             "
+        lines.append(f"  {fqn:<45}{role_str}— {desc}".rstrip())
+        if grain:
+            lines.append(f"    grain: {grain}")
+        if t.get("is_dimension_hub") and t.get("hub_join_col"):
+            lines.append(f"    [dimension hub — joins {t.get('in_degree', '?')} tables via '{t['hub_join_col']}']")
+
+    # ── COLUMNS ───────────────────────────────────────────────────────────────
+    lines += ["", "---", "", "COLUMNS (join-critical always shown; others ranked by relevance to question):"]
     for c in columns:
         table_fqn = c.get("table_fqn", "")
-        name = c.get("name", "")
-        dtype = c.get("data_type", c.get("semantic_type", ""))
-        desc = c.get("description", "")
-        # Prefer Redshift-probed filter_values; fall back to Neo4j sample_values
-        samples = c.get("filter_values") or c.get("sample_values") or []
-        is_measurable = c.get("is_measurable", False)
+        name      = c.get("name", "")
+        dtype     = c.get("data_type", "") or c.get("semantic_type", "")
+        desc      = c.get("description", "")
+        synonyms  = c.get("synonyms") or []
+        is_jk     = (table_fqn, name) in join_crit_set
+        is_meas   = c.get("is_measurable", False)
 
+        # Use filter_values (= value_vocabulary set in context_fetcher) — not sample_values
+        samples = c.get("filter_values") or []
+
+        # Parse value_aliases for meanings display
+        raw_al = c.get("value_aliases") or []
+        alias_map: dict = {}
+        if isinstance(raw_al, list):
+            for s in raw_al:
+                for sep in (" -> ", " → ", "->"):
+                    if sep in str(s):
+                        parts = str(s).split(sep, 1)
+                        alias_map[parts[0].strip()] = parts[1].strip()
+                        break
+        elif isinstance(raw_al, dict):
+            alias_map = raw_al
+
+        tag = "[JOIN KEY] " if is_jk else "           "
         col_ref = f"{table_fqn}.{name}"
-        line = f"  {col_ref:<52} {dtype:<10}"
-        if desc:
-            line += f'  "{desc}"'
-
         norm_dtype = (dtype or "").lower()
-        if samples:
-            if any(t in norm_dtype for t in ("date", "time", "timestamp")):
-                line += f"   sample: {samples[0]}"
-            else:
-                line += "   samples: " + " | ".join(str(v) for v in samples[:5])
-        elif is_measurable or any(t in norm_dtype for t in ("int", "float", "numeric", "decimal", "double", "real", "money", "bigint")):
-            line += "   (SUM / AVG)"
+
+        line = f"  {tag}{col_ref:<48} {dtype:<12}"
+        if desc:
+            max_desc = 200 if is_jk else (100 if is_meas else 60)
+            line += f'  "{desc[:max_desc]}"'
 
         lines.append(line)
 
+        # Synonyms line (for join-critical and measurable only)
+        if synonyms and (is_jk or is_meas):
+            lines.append(f"             also known as: {', '.join(synonyms[:3 if is_jk else 2])}")
+
+        # Values line
+        if samples:
+            if any(x in norm_dtype for x in ("date", "time", "timestamp")):
+                lines.append(f"             sample: {samples[0]}")
+            else:
+                lines.append("             values: " + " | ".join(str(v) for v in samples[:5]))
+            # Meanings line (value_aliases)
+            if alias_map:
+                meanings = " | ".join(f"{k}={v}" for k, v in list(alias_map.items())[:4])
+                lines.append(f"             meanings: {meanings}")
+        elif is_meas or any(x in norm_dtype for x in ("int", "float", "numeric", "decimal", "real", "money", "bigint")):
+            lines.append("             (SUM or AVG)")
+
+    # ── BUSINESS TERMS ────────────────────────────────────────────────────────
     if business_terms:
         lines += ["", "---", "", "BUSINESS TERMS:"]
         for bt in business_terms:
             if isinstance(bt, dict):
-                term = bt.get("term", "")
+                term       = bt.get("term", "")
                 definition = bt.get("definition", "") or bt.get("description", "")
                 if term:
                     lines.append(f'  "{term}"  →  {definition}')
 
+    # ── INTENT PATTERNS ───────────────────────────────────────────────────────
     if intents:
         lines += ["", "INTENT PATTERNS:"]
         for intent in intents:
             if isinstance(intent, dict):
-                name = intent.get("name", "")
-                desc = intent.get("description", "")
-                if name:
-                    lines.append(f"  {name:<25} — {desc}" if desc else f"  {name}")
+                n = intent.get("name", "")
+                d = intent.get("description", "")
+                if n:
+                    lines.append(f"  {n:<25} — {d}" if d else f"  {n}")
             elif isinstance(intent, str) and intent:
                 lines.append(f"  {intent}")
+
+    # ── QUERY STRUCTURE HINTS (templates at BOTTOM — NO anchor_table_fqns) ───
+    lines += ["", "---", "", "QUERY STRUCTURE HINTS (structural patterns from similar questions — suggestions only, do NOT override TABLES above):"]
+    if templates:
+        for t in templates:
+            sql_pat = t.get("sql_pattern", "")
+            cte_s   = " → ".join((t.get("cte_steps") or [])[:5])
+            if sql_pat or cte_s:
+                lines.append(f"  pattern={sql_pat}   cte_steps: {cte_s[:120]}")
+    else:
+        lines.append("  [No similar historical queries found]")
 
     return "\n".join(lines)
 
@@ -224,20 +277,33 @@ def _parse_response(raw: str, thread_id: str) -> dict | None:
 
 
 def _validate_identifiers(resolved: dict, semantic_context: dict) -> str | None:
-    """Check that every measure/dimension/filter column exists in semantic_context."""
-    known_columns = set()
-    for col in semantic_context.get("columns", []):
-        if col.get("table_fqn") and col.get("name"):
-            known_columns.add(f"{col['table_fqn']}.{col['name']}")
+    """Check that every measure/dimension table+column exists in semantic_context.
+
+    Uses _column_lookup (ALL anchor table columns, not just display subset of 40).
+    Also validates anchor_tables against known table FQNs — catches hallucinated tables.
+    """
+    lookup = semantic_context.get("_column_lookup") or {}
+    known_col_refs = {f"{tfqn}.{cname}" for (tfqn, cname) in lookup}
+    # Fallback to display columns when _column_lookup not yet populated
+    if not known_col_refs:
+        for col in semantic_context.get("columns", []):
+            if col.get("table_fqn") and col.get("name"):
+                known_col_refs.add(f"{col['table_fqn']}.{col['name']}")
+
+    known_tables = {t["fqn"] for t in semantic_context.get("tables", []) if t.get("fqn")}
+
+    for table_fqn in (resolved.get("anchor_tables") or []):
+        if known_tables and table_fqn not in known_tables:
+            return f"Table {table_fqn} not found in data catalog — likely hallucinated"
 
     for measure in resolved.get("measures", []):
         col_ref = f"{measure.get('table_fqn', '')}.{measure.get('column_name', '')}"
-        if col_ref and "." in col_ref and col_ref not in known_columns and known_columns:
-            return f"Column {col_ref} not found in available data catalog."
+        if col_ref and "." in col_ref and col_ref not in known_col_refs and known_col_refs:
+            return f"Column {col_ref} not found — will attempt fuzzy remap in ir/validation"
 
     for dim in resolved.get("dimensions", []):
         col_ref = f"{dim.get('table_fqn', '')}.{dim.get('column_name', '')}"
-        if col_ref and "." in col_ref and col_ref not in known_columns and known_columns:
-            return f"Column {col_ref} not found in available data catalog."
+        if col_ref and "." in col_ref and col_ref not in known_col_refs and known_col_refs:
+            return f"Column {col_ref} not found — will attempt fuzzy remap in ir/validation"
 
     return None

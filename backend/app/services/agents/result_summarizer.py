@@ -6,9 +6,7 @@ Raw rows are never passed to any LLM directly.
 
 from __future__ import annotations
 
-import re
-from collections import Counter
-from datetime import date
+import pandas as pd
 
 from app.services.agents.semantic_ir import ColumnStat, QuerySummary
 
@@ -31,13 +29,13 @@ def summarize_results(
             result_label=result_label,
         )
 
-    total_rows = len(rows)
-    col_stats = [_compute_column_stat(col, i, rows) for i, col in enumerate(columns)]
-    result_shape = _detect_result_shape(columns, rows, intent)
+    df = pd.DataFrame(rows, columns=columns)
+    col_stats = [_compute_column_stat_pd(col, df[col]) for col in columns]
+    result_shape = _detect_result_shape_pd(df, intent)
     sample_rows = _sample_rows(columns, rows, result_shape)
 
     return QuerySummary(
-        total_rows=total_rows,
+        total_rows=len(df),
         columns=col_stats,
         sample_rows=sample_rows,
         result_shape=result_shape,
@@ -46,100 +44,72 @@ def summarize_results(
     )
 
 
-def _compute_column_stat(col_name: str, col_idx: int, rows: list[list]) -> ColumnStat:
-    all_vals = [r[col_idx] for r in rows]
-    null_count = sum(1 for v in all_vals if v is None)
-    vals = [v for v in all_vals if v is not None]
-    total_count = len(all_vals)
-    distinct_count = len(set(str(v) for v in vals)) if vals else 0
+def _compute_column_stat_pd(col_name: str, series: pd.Series) -> ColumnStat:
+    null_count = int(series.isna().sum())
+    total_count = len(series)
+    non_null = series.dropna()
+    distinct_count = int(non_null.nunique())
 
-    if not vals:
+    if non_null.empty:
         return ColumnStat(
             name=col_name, dtype="unknown", null_count=null_count,
             total_count=total_count, distinct_count=0,
-            min=None, max=None, mean=None, median=None, mode=None, top_values=None,
         )
 
-    dtype = _infer_dtype(vals)
-
-    if dtype == "numeric":
-        nums = [float(v) for v in vals]
-        nums_sorted = sorted(nums)
+    if pd.api.types.is_numeric_dtype(series):
+        desc = non_null.astype(float).describe()
         return ColumnStat(
-            name=col_name, dtype="numeric", null_count=null_count,
-            total_count=total_count, distinct_count=distinct_count,
-            min=min(nums), max=max(nums),
-            mean=sum(nums) / len(nums),
-            median=_percentile(nums_sorted, 0.5),
-            mode=None, top_values=None,
+            name=col_name, dtype="numeric",
+            null_count=null_count, total_count=total_count, distinct_count=distinct_count,
+            min=float(desc["min"]), max=float(desc["max"]),
+            mean=float(desc["mean"]), median=float(desc["50%"]),
+            std=float(desc["std"]) if "std" in desc else None,
+            p25=float(desc["25%"]), p75=float(desc["75%"]),
         )
 
-    if dtype == "date":
-        str_vals = [str(v) for v in vals]
-        sorted_dates = sorted(str_vals)
+    str_series = non_null.astype(str)
+    if str_series.str.match(r"\d{4}-\d{2}-\d{2}").any():
+        sorted_vals = sorted(str_series.tolist())
         return ColumnStat(
-            name=col_name, dtype="date", null_count=null_count,
-            total_count=total_count, distinct_count=distinct_count,
-            min=sorted_dates[0], max=sorted_dates[-1],
-            mean=None, median=None, mode=None, top_values=None,
+            name=col_name, dtype="date",
+            null_count=null_count, total_count=total_count, distinct_count=distinct_count,
+            min=sorted_vals[0], max=sorted_vals[-1],
         )
 
-    str_vals = [str(v) for v in vals]
-    top = Counter(str_vals).most_common(5)
+    top = list(str_series.value_counts().head(5).items())
     return ColumnStat(
-        name=col_name, dtype="string", null_count=null_count,
-        total_count=total_count, distinct_count=distinct_count,
-        min=None, max=None, mean=None, median=None, mode=None,
+        name=col_name, dtype="string",
+        null_count=null_count, total_count=total_count, distinct_count=distinct_count,
         top_values=top,
     )
 
 
-def _infer_dtype(vals: list) -> str:
-    if not vals:
-        return "unknown"
-    sample = vals[:20]
-    try:
-        [float(v) for v in sample]
-        return "numeric"
-    except (TypeError, ValueError):
-        pass
-    str_sample = [str(v) for v in sample]
-    if str_sample and re.match(r"\d{4}-\d{2}-\d{2}", str_sample[0]):
-        return "date"
-    return "string"
-
-
-def _percentile(sorted_vals: list[float], p: float) -> float:
-    if not sorted_vals:
-        return 0.0
-    k = (len(sorted_vals) - 1) * p
-    lo = int(k)
-    hi = min(lo + 1, len(sorted_vals) - 1)
-    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo)
-
-
-def _detect_result_shape(columns: list[str], rows: list[list], intent: str) -> str:
-    """Determine the result shape for chart type selection."""
-    if not rows:
+def _detect_result_shape_pd(df: pd.DataFrame, intent: str) -> str:
+    if df.empty:
         return "flat"
 
-    if len(rows) <= 3 and all(_infer_dtype([r[i] for r in rows if r[i] is not None]) == "numeric" for i in range(min(len(columns), 3))):
+    has_numeric = any(pd.api.types.is_numeric_dtype(df[c]) for c in df.columns)
+    has_date = any(
+        df[c].dropna().astype(str).str.match(r"\d{4}-\d{2}-\d{2}").any()
+        for c in df.columns if df[c].dtype == object and not df[c].dropna().empty
+    )
+    n_string = sum(
+        1 for c in df.columns
+        if df[c].dtype == object
+        and not (df[c].dropna().astype(str).str.match(r"\d{4}-\d{2}-\d{2}").any()
+                 if not df[c].dropna().empty else False)
+    )
+
+    if len(df) <= 3 and has_numeric and not has_date:
         return "kpi"
-
-    col_types = [_infer_dtype([r[i] for r in rows if r[i] is not None]) for i in range(len(columns))]
-    has_date = "date" in col_types
-    has_numeric = "numeric" in col_types
-
     if has_date and has_numeric:
         return "time_series"
 
     intent_lower = intent.lower()
     if any(kw in intent_lower for kw in ["rank", "top", "bottom", "highest", "lowest"]):
         return "ranking"
-
-    if sum(1 for t in col_types if t == "string") >= 2 and has_numeric:
+    if n_string >= 2 and has_numeric:
         return "cross_tab"
-
     return "flat"
 
 
@@ -158,7 +128,7 @@ def _sample_rows(columns: list[str], rows: list[list], result_shape: str) -> lis
         mid_start = max(4, n // 2 - 2)
         middle = rows[mid_start:mid_start + 4]
         tail = rows[max(0, n - 4):]
-        seen_ids = set()
+        seen_ids: set = set()
         sampled = []
         for r in head + middle + tail:
             rid = id(r)

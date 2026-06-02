@@ -72,7 +72,7 @@ async def write_query_pattern(state: AnalyticsState, sql: str, ir: SemanticIR | 
             "sql_cte_outline": _extract_cte_outline(sql),
             "join_outline": _extract_join_outline(sql),
             "filter_summary": _extract_filter_summary(ir),
-            "tables_used": ",".join(ir.anchor_tables),
+            "tables_used": list(ir.anchor_tables),
             "intent": ir.intent,
             "complexity": ir.complexity,
             "recompile_count": recompile,

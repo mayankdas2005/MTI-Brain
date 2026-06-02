@@ -31,7 +31,7 @@ export interface SSEHandlers {
     metric_defined_at?: string | null;
   }) => void;
   onNodeDone?: (data: { node: string; duration_ms: number }) => void;
-  onChart?: (data: { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: string[] }) => void;
+  onChart?: (data: { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[] }) => void;
   onVizSkip?: () => void;
   onFollowUps?: (data: { questions: string[] }) => void;
   onStopped?: (data: { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number }) => void;

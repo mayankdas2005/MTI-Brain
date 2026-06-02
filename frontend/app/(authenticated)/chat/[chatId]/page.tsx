@@ -19,6 +19,7 @@ export default function ChatPage({ params }: ChatPageProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const autoScrollRef = useRef(true);
   const [hasNewResponse, setHasNewResponse] = useState(false);
   const prevStreamingRef = useRef(false);
   const streamJustEndedRef = useRef(false);
@@ -146,7 +147,7 @@ export default function ChatPage({ params }: ChatPageProps) {
         if (msgId) {
           const el = document.getElementById(`msg-${msgId}`);
           if (el) {
-            el.scrollIntoView({ behavior: 'instant', block: 'end' });
+            el.scrollIntoView({ behavior: 'smooth', block: 'end' });
             return;
           }
         }
@@ -154,8 +155,8 @@ export default function ChatPage({ params }: ChatPageProps) {
     }
 
     // Normal: scroll to bottom only if already following
-    if (autoScroll && scrollRef.current) {
-      scrollRef.current.scrollIntoView({ behavior: 'instant' });
+    if (autoScrollRef.current && scrollRef.current) {
+      scrollRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [displayedMessages, autoScroll, isStreaming]);
 
@@ -202,12 +203,14 @@ export default function ChatPage({ params }: ChatPageProps) {
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    autoScrollRef.current = isNearBottom;
     setAutoScroll(isNearBottom);
     if (isNearBottom) setHasNewResponse(false);
   };
 
   const scrollToBottom = () => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+    autoScrollRef.current = true;
     setAutoScroll(true);
     setHasNewResponse(false);
   };

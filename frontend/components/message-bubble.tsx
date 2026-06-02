@@ -101,6 +101,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const [aboutOpen, setAboutOpen] = useState(false);
   const [aboutQuestion, setAboutQuestion] = useState<string | null>(null);
   const reasoningRef = useRef<HTMLDivElement>(null);
+  const reasoningUserScrolledRef = useRef(false);
 
   // Resolve the user's question for the About panel at click time. We
   // read from the store imperatively so the bubble doesn't re-render on
@@ -114,9 +115,9 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     setAboutOpen(true);
   };
 
-  // Auto-scroll reasoning block while streaming
+  // Auto-scroll reasoning block while streaming (only when user hasn't scrolled up)
   useEffect(() => {
-    if (message.isStreaming && reasoningRef.current) {
+    if (message.isStreaming && reasoningRef.current && !reasoningUserScrolledRef.current) {
       reasoningRef.current.scrollTop = reasoningRef.current.scrollHeight;
     }
   }, [message.reasoning, message.isStreaming]);
@@ -886,6 +887,7 @@ function ReasoningPanel({
     if (wasStreaming && !nowStreaming) {
       const t = setTimeout(() => setOpen(false), 400);
       prevStreamingRef.current = nowStreaming;
+      timelineUserScrolledRef.current = false;
       return () => clearTimeout(t);
     }
     prevStreamingRef.current = nowStreaming;
@@ -895,8 +897,9 @@ function ReasoningPanel({
   // the box instead of pushing SQL/Data downward. Auto-scroll keeps the
   // latest active step visible without the user needing to scroll manually.
   const streamScrollRef = useRef<HTMLDivElement>(null);
+  const timelineUserScrolledRef = useRef(false);
   useEffect(() => {
-    if (message.isStreaming && streamScrollRef.current) {
+    if (message.isStreaming && streamScrollRef.current && !timelineUserScrolledRef.current) {
       streamScrollRef.current.scrollTop = streamScrollRef.current.scrollHeight;
     }
   }, [steps, message.isStreaming]);
@@ -959,6 +962,10 @@ function ReasoningPanel({
           <div
             ref={streamScrollRef}
             className={message.isStreaming ? 'max-h-56 overflow-y-auto scrollbar-hide' : undefined}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              timelineUserScrolledRef.current = el.scrollHeight - el.scrollTop - el.clientHeight > 60;
+            }}
           >
             {hasSteps ? (
               <PipelineTimeline steps={steps!} />

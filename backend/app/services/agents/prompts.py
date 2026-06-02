@@ -74,43 +74,56 @@ REASONING_DIRECTIVE_REPAIR = (
 # ─── Node 0: Intake Classifier ───────────────────────────────────────────────
 
 INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
-    """You are the intake classifier for MTI Brain, a treasury and payments analytics assistant.
+    """You are the intake classifier for a financial analytics assistant.
 
-CRITICAL RULE — SHORT AFFIRMATIVES:
-When the user says only "yes", "sure", "go ahead", "show me", "please", "ok", "yeah", "do it",
-or similar — check what the PRIOR ASSISTANT TURN contained:
+SYSTEM SCOPE — this assistant can run SQL queries against data in these business domains:
+  {domain_list}
 
-  Prior turn returned DATA (rows, KPIs, a chart, a table of numbers):
-    → "yes" means the user is accepting a drill-down or follow-up data query → analytics
+Analytical question patterns this system answers:
+  {intent_list}
 
-  Prior turn was a TEXT/STRATEGIC response (advice, explanation, a framework — no data rows):
-    → "yes" means the user wants to continue that conversation → general_chat
+---
 
-  Never route to analytics on a short affirmative unless the prior turn produced actual query results.
+SHORT AFFIRMATIVE RULE (highest priority — applies before any other rule):
+PRIOR TURN WAS ANALYTICS: {prior_was_analytics}
+
+When the user says only "yes", "sure", "go ahead", "please", "show me", "ok", or similar:
+  If {prior_was_analytics} == YES → the user is accepting a data follow-up → analytics
+  If {prior_was_analytics} == NO  → the user wants to continue a conversation → general_chat
+
+(Affirmative routing is already decided before this prompt runs — this rule is here for context only.)
+
+---
+
+CLASSIFICATION:
+
+  analytics — route here when the question asks for:
+    - A specific metric, balance, volume, rate, exposure, or threshold for this organization
+    - A trend, comparison, breakdown, ranking, or forecast over time or entities
+    - A lookup of accounts, transactions, counterparties, fraud cases, or payments
+    - Any question whose answer requires a database query against org-specific financial data
+    - Questions using business shorthand: "DSO", "ACH returns", "FX exposure", "sweep activity",
+      "dormant accounts", "maturity ladder", "concentration", "idle cash", etc.
+
+  general_chat — route here when the question is:
+    - A definition or conceptual explanation that can be answered from textbook knowledge alone
+      with no org-specific data needed
+      e.g.  "What is treasury management?" → general_chat
+            "What is our treasury balance?" → analytics  ← "our" signals org-specific data
+    - A question about the assistant's own capabilities or identity
+    - Completely off-topic (not financial / not in SYSTEM SCOPE above)
+
+TIEBREAKER:
+  - If the question mentions any domain, entity, time period, or metric from SYSTEM SCOPE → analytics
+  - Default: analytics — it is better to attempt a query and return "no data found" than to
+    silently answer a data question with general text
+
+---
 
 Conversation history:
 {conversation_context}
 
 User question: "{question}"
-
----
-
-Classify as one of:
-
-  analytics     — questions that can be answered by querying treasury/payments data:
-                  specific metrics, balances, volumes, trends, lookups with a time range,
-                  entity, or measurable parameter.
-
-  general_chat  — everything else, including:
-                  - Greetings, off-topic questions, capability questions.
-                  - Questions with no specific data parameters (no time range, no entity,
-                    no metric to pull from a database).
-
-  The test: can this be answered by running a SQL query against treasury/payments data?
-    YES → analytics
-    NO  → general_chat
-
-  When in doubt → general_chat (do not force vague strategic questions into analytics).
 
 Output only this JSON inside <output> tags:
 <output>{{"type": "analytics"}}</output>
@@ -163,8 +176,8 @@ If the message is a greeting or capability question, suggest 3 analytics topics 
 INTENT_RESOLVE_PROMPT = ChatPromptTemplate.from_template(
     """You are a financial analytics semantic interpreter for treasury data.
 
-HARD CONSTRAINT: Use ONLY table names, column names, and template IDs found in SCHEMA CANDIDATES below.
-Never invent identifiers.
+HARD CONSTRAINT: Use ONLY table names and column names from the TABLES and COLUMNS sections
+of SCHEMA CANDIDATES below. Never invent identifiers.
 
 ---
 
@@ -181,7 +194,8 @@ Before choosing any table or column, decide what the user wants as output:
   kpi         — single aggregate number, no dimension breakdown requested
                 → one row, one column
 
-  time_series — measure grouped over time (by day, week, month, quarter)
+  time_series — measure grouped over time (by day, week, month, quarter).
+                REQUIRED: set temporal_grain and add the date column to dimensions with alias "period_<grain>".
 
   comparison  — same measure for multiple named entities listed side by side
 
@@ -189,8 +203,16 @@ Before choosing any table or column, decide what the user wants as output:
 
 STEP 2 — EXTRACT PARAMETERS based on the classified shape
 Only after setting result_shape, extract anchor_tables, measures, dimensions, filters, timeframe.
-Do NOT depend on Neo4j's default_aggregation field. Leave measure aggregation null when the
-right function is not obvious from the question — the SQL generator decides SUM/AVG/COUNT.
+DIMENSION COMPLETENESS: Include ALL columns the user explicitly names as grouping dimensions.
+If the user says "by A, B, and C", all three MUST appear in dimensions. Do not drop dimensions
+due to perceived redundancy. If the question mentions a time period alongside other breakdown
+dimensions, the date column also belongs in dimensions (see TEMPORAL DIMENSION RULE below).
+AGGREGATION — always set, never null:
+  - User asks for total / sum / aggregate → SUM
+  - User asks for average / mean / typical → AVG
+  - User asks for count / how many → COUNT
+  - Ambiguous amount / value / balance column → SUM (safe default)
+  - Ambiguous rate / ratio / percentage / yield column → AVG
 
 ---
 
@@ -198,17 +220,18 @@ FILTER RULES:
 1. Every filter must have an operator. Default: "=". Valid: = | != | > | >= | < | <= | IN | LIKE | BETWEEN
 2. Numeric comparisons ("greater than 10%", "more than 5") → use the correct operator (>, >=, <, <=).
    Never put the operator symbol inside raw_value.
-3. Categorical filters: use the casing and format shown in the column's samples in COLUMNS below.
-   Always include every filter the user explicitly stated — the system validates exact values downstream.
-4. ONE VALUE PER FILTER OBJECT — CRITICAL:
-   Each filter object must contain exactly one value in raw_value.
-   When the user specifies multiple values for the same column (e.g. "USD and CAD", "status A or B",
-   "type X, Y"), output one filter object per value — never combine them into a single raw_value.
-   WRONG:  {{"column_name": "code", "operator": "=", "raw_value": "USD, CAD"}}
-   CORRECT: [{{"column_name": "code", "operator": "=", "raw_value": "USD"}},
-             {{"column_name": "code", "operator": "=", "raw_value": "CAD"}}]
-   The downstream system merges same-column filters into IN or OR automatically.
-   Combining values defeats resolution — "USD, CAD" will never match any single row.
+3. Categorical filters: use the exact DB code shown under `values:` for that column in COLUMNS below.
+   If `meanings:` is shown, map the user's business term to the corresponding DB code first, then use
+   that code as raw_value. Always include every filter the user explicitly stated — the system validates
+   exact values downstream.
+   CATEGORICAL FILTER DETECTION: Scan the question for IMPLIED categorical values too.
+   When a column has values: listed and the question semantically implies one, include it as a filter.
+   Example: question mentions "interest income" + schema shows direction values: INCOME, EXPENSE
+            → output filter: direction, raw_value = "income"  (resolver maps to exact DB code)
+   This rule applies ONLY to categorical columns with values: listed — NOT numeric thresholds
+   ("above $100M", "> 50") which use operator: ">"/">=" instead.
+4. ONE VALUE PER FILTER OBJECT: Each filter object must contain exactly one value.
+   For multi-value filters ("USD and CAD", "status A or B"), output one filter object per value.
 
 TOP-N RULE:
 Phrases like "top N", "bottom N", "highest N", "lowest N" → set limit=N and order_by=[<measure_alias> DESC]
@@ -225,8 +248,17 @@ Example: "bottom 5 banks by return volume" → limit=5, order_by=["return_count 
 SCHEMA RULES:
 - All tables use the lpp. prefix (e.g. lpp.ach_return, lpp.bank_account)
 - Column format: lpp.table_name.column_name (e.g. lpp.ach_return.amount)
-- Columns showing `(SUM / AVG)` are numeric measures — they need aggregation in GROUP BY queries.
-- Columns with `samples:` listed are categorical — use the exact casing from those samples for filters.
+- Columns showing `(SUM or AVG)` are numeric measures — they need aggregation in GROUP BY queries.
+- Columns tagged `[JOIN KEY]` are the declared join columns from the manually curated schema.
+  ALWAYS reference [JOIN KEY] columns for JOIN conditions — never invent join column names.
+- Columns with `values:` listed show the exact database codes for that column.
+  Use the exact casing shown for filters. e.g. `values: EUR | USD | GBP | BRL` → the filter
+  raw_value must be one of these exact strings.
+- Columns with `meanings:` show the business label for each database code.
+  e.g. `meanings: BRL=Brazilian Real | USD=US Dollar`. When the user says a business label,
+  set raw_value to the corresponding code (e.g. user says "Brazilian Real" → raw_value = "BRL").
+- Columns with `also known as:` list business synonyms for the column name. Use these to match
+  the user's business term to the correct column name.
 - `grain` on a table tells you what one row represents (e.g., "one row per return event"). Use this to
   understand data density before choosing anchor tables — a fact table joined to another fact table on
   a non-unique key can multiply rows.
@@ -234,11 +266,13 @@ SCHEMA RULES:
 ---
 
 ANCHOR TABLE GUIDANCE:
-TEMPLATES in SCHEMA CANDIDATES suggest anchor table patterns from similar past questions —
-treat them as starting hints only, not constraints.
+Select anchor_tables ONLY from the TABLES section in SCHEMA CANDIDATES.
+QUERY STRUCTURE HINTS (at the bottom of SCHEMA CANDIDATES) show sql_pattern and cte_steps
+from historical queries — use them for CTE structure guidance ONLY. They do NOT show which
+tables to use and must NOT influence your anchor_tables selection.
 anchor_tables must include EVERY table that contributes columns to this answer
 (measures, dimensions, filters, or join partners). Complex multi-hop questions require
-3–5+ tables. Verify each table by checking its columns and join-column sample values.
+3–5+ tables. Verify each table by checking its grain, columns, values, and meanings.
 Never assume 1–2 tables are sufficient without confirming all required columns are present.
 All column refs must be real columns from COLUMNS above.
 If a needed column belongs to a table not yet in anchor_tables, add that table.
@@ -260,6 +294,32 @@ TEMPORAL EXPRESSIONS — output as a keyword, never as a resolved date:
   YYYY-MM-DD  (only when the user states an explicit calendar date)
   null  (no time filter)
 
+TEMPORAL DIMENSION RULE:
+When timeframe is set, decide whether the date column should appear in SELECT/GROUP BY:
+
+  → Set temporal_grain AND add the date column to dimensions when:
+      - result_shape = "time_series"  (always — the date IS the primary axis)
+      - user says "by month" / "monthly" / "by week" / "weekly" / "by day" / "daily" / "by quarter"
+      - question has multiple other grouping dimensions AND a timeframe
+        e.g. "breakdown by corridor, currency, method for the past 12 months" → add date dim
+      Add one dimension entry for the time column:
+        {{"table_fqn": "<anchor_table>", "column_name": "<date_col>", "alias": "period_<grain>",
+          "aggregation": null, "semantic_type": "date"}}
+      e.g. grain=month → alias "period_month",  grain=day → alias "period_day"
+
+  → Do NOT add date to dimensions when:
+      - result_shape = "kpi" (single aggregate: "total revenue last year")
+      - timeframe is a pure filter with no breakdown ("active accounts as of today")
+      - no other breakdown dimensions AND result_shape ≠ "time_series"
+
+  temporal_grain values: "day" | "week" | "month" | "quarter" | "year" | null
+    timeframe > 1 month OR "by month" / "monthly"   → "month"
+    timeframe ≤ 1 month OR "by week" / "weekly"     → "week"
+    timeframe ≤ 2 weeks OR "by day" / "daily"       → "day"
+    "by quarter" / "quarterly"                      → "quarter"
+    "by year" / "annually"                          → "year"
+    pure filter / no grouping intent                → null
+
 ---
 
 USER PROFILE:
@@ -279,7 +339,7 @@ LONG-TERM MEMORY:
 EXAMPLE — ratio query (cross rate):
 Q: "What is the SPOT FX rate for USD/CAD today?"
 → result_shape="ratio". Two separate filter objects (one USD, one CAD). Dimensions empty.
-  Aggregation left null — SQL generator decides AVG from column name "rate".
+  rate column is a ratio/price → aggregation = "AVG".
 {{"template_id": "qt_008", "anchor_tables": ["lpp.fx_rate", "lpp.currency"], "result_shape": "ratio", "measures": [{{"table_fqn": "lpp.fx_rate", "column_name": "rate", "alias": "spot_rate", "aggregation": null, "semantic_type": "ratio"}}], "dimensions": [], "filters": [{{"table_fqn": "lpp.currency", "column_name": "code", "operator": "=", "raw_value": "USD"}}, {{"table_fqn": "lpp.currency", "column_name": "code", "operator": "=", "raw_value": "CAD"}}], "timeframe": "today", "intent": "fx_cross_rate", "complexity": "complex", "confidence": 0.95, "limit": null, "order_by": []}}
 
 ---
@@ -324,9 +384,11 @@ Output your reasoning in <reasoning>...</reasoning>, then the resolved intent in
 <reasoning>
 If PREVIOUS EXECUTION FAILURE section appears above: identify which table, column, or join caused
 the failure. Explicitly choose different tables or join paths that avoid the same error.
-Think through: which template matches, which columns are measures vs dimensions, any filters,
-which temporal keyword fits the user's time expression. For follow-ups, check CONVERSATION CONTEXT
-first to inherit anchor_tables and timeframe before adding new dimensions or filters.
+Think through: which tables from TABLES section match the question, which columns are measures
+vs dimensions, any filters (check `values:` for exact DB codes and `meanings:` for user-term-to-code
+mapping), which temporal keyword fits. QUERY STRUCTURE HINTS show structural patterns only — do not
+let them override the TABLES section. For follow-ups, check CONVERSATION CONTEXT first to inherit
+anchor_tables and timeframe before adding new dimensions or filters.
 </reasoning>
 <output>
 {{
@@ -337,6 +399,7 @@ first to inherit anchor_tables and timeframe before adding new dimensions or fil
   "dimensions": [...],
   "filters": [{{"table_fqn": "...", "column_name": "...", "operator": "=", "raw_value": "..."}}],
   "timeframe": "last_30_days",
+  "temporal_grain": null,
   "intent": "...",
   "complexity": "simple | complex | advanced",
   "confidence": 0.0,
@@ -373,26 +436,30 @@ Column: {column_name}  in table: {table_fqn}
 User said: "{raw_user_value}"
 Context question: {question}
 
-Known values in the database (numbered):
+Known database codes (numbered; business meanings shown in parentheses when available):
 {candidates}
 
 ---
 
-Pick the most likely match. The resolved_value MUST be copied character-for-character from the
-numbered list above — same casing, same spacing. No modification.
+Rules:
+1. resolved_value MUST be the DB code (left side before the parenthesis), not the business label.
+2. When meanings are shown in parentheses, match the user's term to the label first, then return
+   the code on the left.
+   Example: user said "Brazilian Real", list has  1. "BRL"  (Brazilian Real)  2. "USD"  (US Dollar)
+   → resolved_value = "BRL"  (return the code, not "Brazilian Real")
+3. Copy the DB code character-for-character — same casing, same spacing. No modification.
+4. If no candidate fits: resolved_value = null
 
-Example: user said "monthly", list has  1. "MONTHLY"  2. "QUARTERLY"
+Example (no meanings): user said "monthly", list has  1. "MONTHLY"  2. "QUARTERLY"
 → <output>{{"resolved_value": "MONTHLY"}}</output>
-
-If no candidate fits: <output>{{"resolved_value": null}}</output>
 
 {reasoning_directive}
 
 <reasoning>
-One sentence: which numbered entry matches and why.
+One sentence: which numbered entry matches (by direct match or meaning label) and why.
 </reasoning>
 <output>
-{{"resolved_value": "EXACT_VALUE_FROM_NUMBERED_LIST"}}
+{{"resolved_value": "EXACT_DB_CODE_FROM_NUMBERED_LIST"}}
 </output>"""
 )
 
@@ -437,12 +504,6 @@ ANTI-PATTERNS (do not repeat these):
 RULES:
 1. Fix ONLY: syntax errors, wrong column names, wrong schema prefix, type mismatches,
    Redshift dialect issues, invalid ON clauses, incorrect filter logic, broken CTE structure.
-   Incorrect filter logic includes:
-     - ILIKE with multiple values in a single string (e.g. ILIKE '%USD,CAD%' or ILIKE '%USD|CAD%').
-       Split into OR conditions: (col ILIKE '%USD%' OR col ILIKE '%CAD%').
-     - col = 'USD,CAD' where the column holds single values — split into OR: (col = 'USD' OR col = 'CAD').
-     - col = 'A or B' style — split into OR using the individual values.
-   The semantic intent (filter on multiple values) is preserved; only the broken syntax changes.
    Broken CTE structure includes:
      - Qualified column reference in wrong CTE scope: e.g. `AVG(fx_rate.rate)` inside a CTE
        that reads FROM an upstream CTE, not FROM lpp.fx_rate. Fix A: strip the qualifier and
@@ -457,20 +518,12 @@ RULES:
 2. If a JOIN column does not exist: first check CANDIDATE JOIN PATHS above for a pre-validated
    alternative ON clause for those two tables — use it verbatim if found.
    If no candidate path is available, look in PRIMARY COLUMNS within SCHEMA REFERENCE for those
-   two tables. Use ONLY a column name EXPLICITLY LISTED there.
-   NEVER invent or guess a column name not shown in PRIMARY COLUMNS or CANDIDATE JOIN PATHS.
-   If no suitable replacement column is found, output the broken SQL unchanged and write in
-   <reasoning>: "CANNOT FIX: replacement join column for {{table_a}} → {{table_b}} not available
-   in schema reference."
-   Check `grain` of both tables — if joining fact to fact, verify the key is unique on one side.
+   two tables. Use ONLY a column name EXPLICITLY LISTED there. Check `grain` of both tables —
+   if joining fact to fact, verify the key is unique on one side.
 3. Never change what is defined in QUERY INTENT above: tables joined, aggregation logic, metric
    definitions, or the semantic meaning of the query.
-4. Keep CTE structure — the fixed SQL must use WITH ... AS (...). Never a flat SELECT.
-5. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
+4. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
    the corrected SQL — formatting, ordering, alias style. These override your defaults.
-6. PRIOR REPAIR ATTEMPTS (if the section at the top of this prompt shows previous attempts):
-   each listed attempt already failed with a specific fix. Do NOT apply the same fix again.
-   Choose a different column, a different join key, or a different approach entirely.
 
 ---
 
@@ -519,7 +572,7 @@ COLUMN FORWARDING RULES:
 JOIN KEY VALIDATION:
   ON clauses in PRE-COMPUTED JOIN CHAIN may carry value overlap evidence comments:
     -- ✓ N shared values (e.g. VAL1, VAL2)   → data-confirmed valid join
-    -- ⚠ NO VALUE OVERLAP (A vs B samples)    → columns sampled but share no values; join returns 0 rows
+    -- ⚠ NO VALUE OVERLAP (A vs B vocabulary)  → columns have no shared values; join returns 0 rows
     (no comment)                               → not yet probed; treat as unconfirmed
   When a ⚠ NO VALUE OVERLAP appears, flag that table pair in your reasoning.
   The SQL generator will choose an alternative path — do not plan column forwarding around a ⚠ join
@@ -554,6 +607,8 @@ list every CTE and final SELECT with their required columns here
 SQL_GENERATE_PROMPT = ChatPromptTemplate.from_template(
     """You are writing a Redshift SQL query.
 
+{cross_domain_section}
+
 {unresolved_joins_section}
 
 {prior_sql_section}
@@ -584,31 +639,31 @@ RULES:
    sequence for the first CTE — copy it verbatim. Every table referenced by column name must
    appear in a FROM or JOIN of that CTE; never write schema.table.column for a table that is not
    in the FROM or a JOIN. Never drop or invent tables.
-2. Use every JOIN in PRE-COMPUTED JOIN CHAIN with the ON clause shown verbatim. Do not rewrite.
+1b. LOW-CARDINALITY JOIN KEY: When ⚠ LOW-CARDINALITY JOIN KEY appears for a join in the
+    PRE-COMPUTED JOIN CHAIN, you MUST add one or more of the listed narrowing candidate columns
+    to that ON clause (e.g. AND t.company_ref = u.company_ref). Never remove tables or existing
+    join conditions — only add AND clauses to narrow the join predicate.
+2. Use PRE-COMPUTED JOIN CHAIN as shown. You may substitute a different ON clause ONLY when
+   VOCABULARY OVERLAP HINTS in UNRESOLVED JOIN PAIRS provide a better-evidenced join column.
 2b. TIME FILTER in QUERY SPECIFICATION → add to WHERE clause verbatim. Never reinterpret or omit it.
-3. For filters in FILTERS:
-   - WHERE entries go in WHERE. HAVING entries go in HAVING.
-   - `[exact]` → use `= 'VALUE'` with that exact casing.
-   - `[exact — multiple values, use IN]` → use `IN ('V1', 'V2')` with exact casing.
-   - `[fuzzy — no exact value found, use ILIKE]` → use `col ILIKE '%value%'`. Never use = for fuzzy.
-   - `[fuzzy — multiple, use OR ILIKE]` → use `(col ILIKE '%v1%' OR col ILIKE '%v2%')`.
-   - Never use ILIKE on a date or numeric column — use =, >, <, or BETWEEN instead.
-   MULTI-VALUE FILTER GUARD — read before writing any WHERE clause:
-   If a filter value looks like it contains multiple values joined by any separator
-   (comma, pipe, slash, 'and', 'or', whitespace between identifiers — e.g. "USD,CAD",
-   "SPOT|FORWARD", "A or B", "X / Y"), this is multiple values collapsed into one string.
-   Do NOT write `col = 'USD,CAD'` or `col ILIKE '%USD,CAD%'` — that matches nothing.
-   Split and write one condition per value: `(col = 'USD' OR col = 'CAD')` for exact,
-   or `(col ILIKE '%USD%' OR col ILIKE '%CAD%')` for fuzzy. When in doubt, split.
+3. FILTER SYNTAX (3 tiers):
+   a. Column marked [enum: ...] in SCHEMA REFERENCE → EXACT match only:
+        col = 'CODE'   or   col IN ('C1', 'C2')
+      Map user's phrasing to nearest code in list. ILIKE is FORBIDDEN on enum columns.
+   b. `[exact]` tag from FILTERS → use `= 'VALUE'` with that exact casing.
+      `[exact — multiple values, use IN]` → use `IN ('V1', 'V2')`.
+   c. `[fuzzy — use ~* regex]` tag → use case-insensitive regex (handles any separator variant):
+        col ~* 'keyword'                  matches any case anywhere in value
+        col ~* 'word1[ _-]?word2'         handles WORD1_WORD2 / "word1 word2" / word1-word2
+        col ~* 'word1.*word2'             most flexible — word1 before word2, anything between
+        (col ~* 'p1' OR col ~* 'p2')      use OR when format is unclear
+      Use ILIKE only when the column contains free-form text (names, descriptions, notes).
+      Dates and numerics: use =, >, <, BETWEEN. Never regex or ILIKE.
 4. GROUP BY: use the [GRP/AGG] markers from PRIMARY COLUMNS in SCHEMA REFERENCE.
-   In every CTE and the final SELECT: columns marked [AGG] MUST be wrapped in SUM/AVG/COUNT/MIN/MAX.
+   Columns marked [AGG] MUST be wrapped in SUM/AVG/COUNT/MIN/MAX in every CTE and the final SELECT.
    Columns marked [GRP] that appear in SELECT alongside an aggregate MUST be in GROUP BY.
    This rule applies per CTE, not just the final SELECT.
-   When a measure shows [DECIDE]: choose aggregation from the column name and the question only.
-     column name contains rate / price / ratio / pct / percent / score / yield → AVG
-     question asks for total / sum / volume / aggregate amount → SUM
-     question asks count / how many / number of → COUNT
-     When in doubt for a rate or price column → AVG. Never default to SUM without reading the question first.
+   Aggregation is specified in QUERY SPECIFICATION — use what is shown there.
 5. If QUERY SPECIFICATION shows "flat lookup" → omit GROUP BY and HAVING entirely.
 6. DOWNSTREAM CTE COLUMN REFERENCES — CRITICAL:
    A downstream CTE can only reference columns by the ALIAS defined in the upstream CTE.
@@ -650,9 +705,12 @@ RULES:
 9. Apply LIMIT shown in QUERY SPECIFICATION to the final SELECT.
 10. Start with WITH. One statement. No semicolons.
 11. UNRESOLVED JOIN PAIRS (if the section appears above): you MUST provide an ON clause for every
-    listed table pair. Check ADDITIONAL JOINS in SCHEMA REFERENCE first. If not found there, pick
-    the join column from PRIMARY COLUMNS that shares the same name or semantic meaning between the
-    two tables (e.g. entity_id, company_id). State the ON clause you chose in <reasoning>.
+    listed table pair. Priority order:
+    a. VOCABULARY OVERLAP HINTS in that section — these show columns with actual shared data values.
+       Use the pair with the most shared values as the ON clause.
+    b. ADDITIONAL JOINS in SCHEMA REFERENCE — use the ON clause shown verbatim.
+    c. PRIMARY COLUMNS with matching names or semantic meaning (entity_id, company_id, etc.).
+    State the ON clause you chose in <reasoning>.
 12. PREVIOUS SQL ATTEMPT (if the section appears above): read it carefully. Identify what made it
     wrong or produce bad results. Your new SQL must be substantively different — do not repeat the
     same table selection, the same join approach, or the same CTE structure that failed.
@@ -664,6 +722,14 @@ RULES:
 15. CTE COLUMN PLAN (if the section appears above between QUERY SPECIFICATION and SCHEMA REFERENCE):
     this plan is pre-solved and authoritative. Each CTE's SELECT MUST include at minimum every
     column listed for it. The final SELECT MUST use only columns listed for it. Do not deviate.
+17. DATE_TRUNC OUTPUT FORMAT: when DIMENSIONS shows a date column with alias "period_<grain>",
+    format the DATE_TRUNC result for clean human-readable output based on the grain:
+      day     → DATE_TRUNC('day',     col)::DATE                     → YYYY-MM-DD
+      week    → DATE_TRUNC('week',    col)::DATE                     → YYYY-MM-DD (Monday)
+      month   → TO_CHAR(DATE_TRUNC('month',   col), 'YYYY-MM')       → YYYY-MM
+      quarter → TO_CHAR(DATE_TRUNC('quarter', col), 'YYYY-"Q"Q')     → YYYY-Q1
+      year    → TO_CHAR(DATE_TRUNC('year',    col), 'YYYY')          → YYYY
+    Never output a full ISO timestamp (e.g. 2026-08-01T00:00:00+00:00) for period columns.
 16. RESULT SHAPE: ratio (if shown in QUERY SPECIFICATION):
     This query asks for X÷Y — a single ratio value, NOT two separate rows.
     Pattern: aggregate each entity in one CTE, then pivot with CASE-WHEN division:
@@ -881,11 +947,6 @@ CHART_LABEL_PROMPT = ChatPromptTemplate.from_template(
 NOTE: The rules below are guidelines — the final choice must be driven by the actual data shape,
 column types, and row counts in DATA PROFILE. Override any guideline when the data clearly calls
 for a different chart type.
-
-HARD OVERRIDES (system applies after your response — account for them in your labels):
-- Total rows == 1 AND a number column exists → forced to kpi_card
-- Total rows ≤ 5 AND ALL columns are number → forced to kpi_card
-- kpi_card: x_axis_label and y_axis_label are unused — set both to ""
 
 ---
 

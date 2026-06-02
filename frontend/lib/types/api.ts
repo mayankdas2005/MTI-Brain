@@ -45,7 +45,7 @@ export interface MessageMetadata {
   row_count?: number;
   chart_spec?: Record<string, unknown>;
   chart_type?: string;
-  alternative_chart_specs?: string[];  // type names only — specs built client-side
+  alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[];
   follow_ups?: string[];
   run_id?: string;
   stopped?: boolean;

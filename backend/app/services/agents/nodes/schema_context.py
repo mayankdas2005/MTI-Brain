@@ -17,6 +17,9 @@ _COL_FIELDS_SQL = {
     "is_measurable", "is_groupable", "filter_selectivity",
     "sample_values", "filter_values", "value_vocabulary", "value_aliases",
     "description",
+    "temporal_grain",        # "day"/"month"/... for date cols, "none" for non-date
+    "referenced_table_fqn",  # semantic FK target table (empty for non-reference cols)
+    "referenced_column",     # semantic FK target column
 }
 # Secondary (non-anchor) table columns: minimal fields only
 _COL_FIELDS_SECONDARY = {"name", "table_fqn", "data_type", "semantic_type"}
@@ -56,8 +59,8 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
     tables = [
         {k: v for k, v in t.items()
          if k in {"fqn", "name", "description", "grain", "table_type",
-                  "is_time_series", "typical_join_role", "natural_measures", "natural_dimensions",
-                  "is_rollup"}}
+                  "is_time_series", "time_dimension_col", "typical_join_role",
+                  "natural_measures", "natural_dimensions", "is_rollup"}}
         for t in semantic_context.get("tables", [])
     ]
 
@@ -102,10 +105,27 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
         if not ir.join_clauses[i] and i + 1 < len(ir.path_tables):
             from_fqn = ir.path_tables[i]
             to_fqn = ir.path_tables[i + 1]
+            candidate_cols = _discover_candidate_join_columns(from_fqn, to_fqn, semantic_context)
+
+            # Tier 7: If no shared column names, try SEMANTICALLY_SIMILAR column bridge
+            sem_bridge = []
+            if not candidate_cols:
+                try:
+                    sem_bridge = neo4j_client.search_join_path_by_semantics(from_fqn, to_fqn)
+                    if sem_bridge:
+                        logger.info(
+                            "schema_context | semantic_bridge | from={} to={} | pairs={}",
+                            from_fqn, to_fqn,
+                            [(s.get("from_col"), s.get("to_col")) for s in sem_bridge],
+                        )
+                except Exception:
+                    pass
+
             unresolved_pairs.append({
                 "from": from_fqn,
                 "to": to_fqn,
-                "candidate_join_columns": _discover_candidate_join_columns(from_fqn, to_fqn, semantic_context),
+                "candidate_join_columns": candidate_cols,
+                "semantic_bridge_columns": sem_bridge,
             })
 
     primary_col_count = sum(1 for c in columns if c.get("table_fqn") in primary_fqns)
@@ -128,11 +148,9 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
 
 
 async def fetch_anti_patterns(state: AnalyticsState) -> str:
-    semantic_context = state.get("semantic_context") or {}
-    templates = semantic_context.get("templates", [])
-    if not templates:
-        logger.info("schema_context | anti_patterns | SKIP (no templates in context) | thread={}", state.get("thread_id"))
-        return "(none)"
+    # NOTE: Template gate REMOVED — anti-patterns must always run.
+    # Previously gated on 'if not templates' which silently skipped guard rails
+    # whenever templates were deprioritized (which is now always the case).
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])

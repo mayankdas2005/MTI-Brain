@@ -68,13 +68,18 @@ function getVegaThemeConfig(isDark: boolean): Record<string, unknown> {
     view:   { stroke: 'transparent' },
     axis: {
       labelColor, titleColor: labelColor,
-      grid: false,
+      grid: false, gridOpacity: 0,
       domainColor: 'transparent', tickColor: 'transparent',
       labelFont: font, titleFont: font,
       labelFontSize: 11, titleFontSize: 11,
     },
     legend: { labelColor, titleColor: labelColor, labelFont: font, titleFont: font, labelFontSize: 11 },
     title:  { color: labelColor, font, fontSize: 13, fontWeight: 500 },
+    bar:    { strokeWidth: 0 },
+    arc:    { strokeWidth: 0 },
+    area:   { strokeWidth: 0 },
+    point:  { strokeWidth: 0 },
+    line:   { strokeWidth: 2 },
   };
 }
 
@@ -202,7 +207,7 @@ function humanizeEncoding(spec: Record<string, unknown>): Record<string, unknown
     } else if (['x', 'y'].includes(channel)) {
       const raw = def.axis;
       if (raw === false || raw === null) { newEnc[channel] = base; continue; }
-      newEnc[channel] = { ...base, axis: { title: label, ...((raw as Record<string, unknown>) ?? {}) } };
+      newEnc[channel] = { ...base, axis: { title: label, ...((raw as Record<string, unknown>) ?? {}), grid: false } };
       changed = true;
     } else {
       newEnc[channel] = base;
@@ -785,28 +790,32 @@ export function MessageVisualization({
     [chartSpec, primaryChartType],
   );
 
-  const allTypes = useMemo(() => {
-    const types = [primaryType].filter(Boolean);
-    for (const t of alternativeChartSpecs ?? []) {
-      if (t && !types.includes(t)) types.push(t);
+  type AltSpec = { chart_type: string; spec: Record<string, unknown> };
+  const allTypes = useMemo<AltSpec[]>(() => {
+    const primary: AltSpec[] = primaryType ? [{ chart_type: primaryType, spec: chartSpec ?? {} }] : [];
+    const seen = new Set(primaryType ? [primaryType] : []);
+    const alts = alternativeChartSpecs as AltSpec[] | string[] | undefined;
+    for (const a of alts ?? []) {
+      // Support both new full-spec format and legacy type-name strings
+      const type = typeof a === 'string' ? a : a.chart_type;
+      const spec = typeof a === 'string' ? (chartSpec ? buildSpecForType(chartSpec, a) ?? {} : {}) : a.spec;
+      if (type && !seen.has(type)) {
+        seen.add(type);
+        primary.push({ chart_type: type, spec });
+      }
     }
-    return types;
-  }, [primaryType, alternativeChartSpecs]);
+    return primary;
+  }, [primaryType, chartSpec, alternativeChartSpecs]);
 
   // Initialise to the detected primary so the correct button is highlighted on load
   const [activeType, setActiveType] = useState<string>(() => primaryType);
   const [chartActions, setChartActions] = useState<ChartActions | null>(null);
 
   const activeSpec = useMemo<Record<string, unknown> | null>(() => {
-    // Return primary spec when active type matches primary OR is empty
-    if (!activeType || activeType === primaryType) return chartSpec ?? null;
-    // Build alternative spec client-side from the primary spec's embedded data
-    if (chartSpec) {
-      const built = buildSpecForType(chartSpec, activeType);
-      if (built) return built;
-    }
+    const found = allTypes.find(t => t.chart_type === activeType);
+    if (found?.spec && Object.keys(found.spec).length > 0) return found.spec;
     return chartSpec ?? null;
-  }, [activeType, primaryType, chartSpec]);
+  }, [activeType, allTypes, chartSpec]);
 
   if (!activeSpec) return null;
 
@@ -821,7 +830,7 @@ export function MessageVisualization({
       <div className="mt-3 rounded-xl border border-border px-4 pt-3 pb-2 bg-sidebar">
         {allTypes.length > 1 && (
           <div className="mb-3 pb-2 border-b border-border/40">
-            <ChartTypeSwitcher types={allTypes} activeType={activeType} onSelect={setActiveType} />
+            <ChartTypeSwitcher types={allTypes.map(t => t.chart_type)} activeType={activeType} onSelect={setActiveType} />
           </div>
         )}
         {activeSpec.title ? <p className="text-sm font-medium text-foreground mb-3">{String(activeSpec.title)}</p> : null}
@@ -836,7 +845,7 @@ export function MessageVisualization({
       <div className="mt-3 rounded-xl border border-border overflow-hidden bg-sidebar">
         {allTypes.length > 1 && (
           <div className="px-4 pt-3 pb-2 border-b border-border/40">
-            <ChartTypeSwitcher types={allTypes} activeType={activeType} onSelect={setActiveType} />
+            <ChartTypeSwitcher types={allTypes.map(t => t.chart_type)} activeType={activeType} onSelect={setActiveType} />
           </div>
         )}
         <InlineTable columns={columns} rows={rows} />
@@ -848,7 +857,7 @@ export function MessageVisualization({
     <div className="mt-3">
       <div className="rounded-xl border border-border pt-3 px-4 pb-2 bg-sidebar">
         <ChartToolbar
-          types={allTypes}
+          types={allTypes.map(t => t.chart_type)}
           activeType={activeType}
           onSelect={setActiveType}
           actions={chartActions}

@@ -10,6 +10,14 @@ import json
 
 from langchain_core.runnables import RunnableConfig
 
+# UUID columns are unique per row — using them as join keys always returns 0 rows.
+_UUID_SUFFIXES = ("_uuid", "_guid", "_uid")
+
+
+def _is_uuid_col(col_name: str) -> bool:
+    n = col_name.lower()
+    return n == "uuid" or any(n.endswith(s) for s in _UUID_SUFFIXES)
+
 from app.core.logger import logger
 from app.services.agents.helpers import parse_tag
 from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns
@@ -53,6 +61,7 @@ async def generate_sql_llm(
                 "value": f.value,
                 "is_having": f.is_having,
                 "is_raw_sql": f.is_raw_sql,
+                "resolved": f.resolved,
             }
             for f in ir.filters
         ],
@@ -94,28 +103,37 @@ async def generate_sql_llm(
         state.get("thread_id"),
     )
 
-    query_blueprint = _build_query_blueprint(spec, schema_ctx)
-    schema_reference = _build_schema_reference(schema_ctx)
-    unresolved_joins_section = _build_unresolved_joins_section(unresolved_pairs)
-    feedback_section = _build_feedback_section(state)
-    query_patterns_section = _build_query_patterns_section(query_patterns)
-    prior_sql_section = _build_prior_sql_section(state)
+    # Build col_lookup first — needed by query_blueprint (filter routing), unresolved joins, and candidate paths.
     col_lookup = {
-        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("filter_values") or c.get("sample_values") or []
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": (
+            c.get("filter_values") or c.get("value_vocabulary") or c.get("sample_values") or []
+        )
         for c in schema_ctx.get("columns", [])
         if c.get("table_fqn") and c.get("name")
     }
+
+    query_blueprint = _build_query_blueprint(spec, schema_ctx, col_lookup)
+    schema_reference = _build_schema_reference(schema_ctx)
+    unresolved_joins_section = _build_unresolved_joins_section(unresolved_pairs, col_lookup)
+    feedback_section = _build_feedback_section(state)
+    query_patterns_section = _build_query_patterns_section(query_patterns)
+    prior_sql_section = _build_prior_sql_section(state)
+
     recompile_count = state.get("recompile_count", 0)
     candidate_join_paths_section = (
         _build_candidate_join_paths_section(ir, col_lookup) if recompile_count > 0 else ""
     )
     reasoning_directive = REASONING_DIRECTIVE_SQL
 
+    # Cross-domain section — injected before QUERY SPECIFICATION when applicable
+    cross_domain_section = _build_cross_domain_section(semantic_context)
+
     cte_plan = await _plan_cte_columns(spec, query_blueprint, schema_reference, state, config)
     cte_column_plan = _build_cte_plan_section(cte_plan)
 
     from app.services.agents.prompts import SQL_GENERATE_PROMPT
     prompt = SQL_GENERATE_PROMPT.format_messages(
+        cross_domain_section=cross_domain_section,
         query_blueprint=query_blueprint,
         schema_reference=schema_reference,
         anti_patterns=anti_patterns,
@@ -207,6 +225,43 @@ def _is_exact_value(value) -> bool:
     return False
 
 
+def _build_cross_domain_section(semantic_context: dict) -> str:
+    """Inject cross-domain CTE blueprint when query spans multiple business domains.
+
+    hub_table_fqn is the conformed dimension (e.g., lpp.company).
+    NOT bridge_table_fqn (the bridging table) — these are different BRIDGES_TO properties.
+    """
+    if not semantic_context.get("is_cross_domain"):
+        return ""
+    hub = semantic_context.get("cross_domain_hub") or {}
+    hub_fqn = hub.get("hub_table_fqn")
+    hub_col = hub.get("hub_join_col", "code")
+
+    if hub_fqn:
+        return f"""
+--- CROSS-DOMAIN QUERY ---
+Conformed dimension hub: {hub_fqn}  (join column: {hub_col})
+
+Pattern:
+  1. One CTE per domain — each aggregates its fact table, GROUP BY <company_ref_col>
+  2. Final SELECT: FROM {hub_fqn} LEFT JOIN each domain CTE ON <domain>.ref_col = {hub_fqn}.{hub_col}
+  3. ALL domain CTEs use LEFT JOIN — data is sparse; INNER JOIN silently drops rows
+  4. COALESCE(metric, 0) for all domain metrics — handle missing data gracefully
+  5. THRESHOLD LITERALS (e.g. "$200M minimum") come from question text ONLY.
+     Do NOT join liquidity_policy or any policy table — that table has NULL company_ref values.
+
+"""
+    return """
+--- CROSS-DOMAIN QUERY (hub not auto-detected) ---
+Tables span multiple business domains. Instructions:
+  1. Find shared FK-like columns across anchor tables (company_ref, entity_code, counterparty_ref)
+  2. Use LEFT JOIN for all cross-domain connections — data is sparse
+  3. Use COALESCE(metric, 0) for all domain metrics
+  4. Threshold literals come from the question text only, not from any policy table
+
+"""
+
+
 def _build_cte_plan_section(plan: str) -> str:
     if not plan:
         return ""
@@ -218,8 +273,16 @@ def _build_cte_plan_section(plan: str) -> str:
     )
 
 
-def _get_join_overlap_evidence(on_clause: str, col_lookup: dict) -> str:
-    """Return value overlap evidence for a single ON clause, or '' if not probed."""
+def _get_join_overlap_evidence(
+    on_clause: str,
+    col_lookup: dict,
+    selectivity_lookup: dict | None = None,
+    ref_table_lookup: dict | None = None,
+    temporal_grain_lookup: dict | None = None,
+    dtype_lookup: dict | None = None,
+    semantic_type_lookup: dict | None = None,
+) -> str:
+    """Return value overlap + cardinality/semantic evidence for a single ON clause."""
     import re
     fqn_re = re.compile(
         r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_$]*)"
@@ -227,27 +290,115 @@ def _get_join_overlap_evidence(on_clause: str, col_lookup: dict) -> str:
     cols = fqn_re.findall(on_clause)
     if len(cols) < 2:
         return ""
-    col_a = f"{cols[0][0]}.{cols[0][1]}.{cols[0][2]}"
-    col_b = f"{cols[1][0]}.{cols[1][1]}.{cols[1][2]}"
+    col_a_name, col_b_name = cols[0][2], cols[1][2]
+    if _is_uuid_col(col_a_name) or _is_uuid_col(col_b_name):
+        return "⚠ UUID COLUMN — unique per row, will always return 0 rows as a join key"
+    col_a = f"{cols[0][0]}.{cols[0][1]}.{col_a_name}"
+    col_b = f"{cols[1][0]}.{cols[1][1]}.{col_b_name}"
     vals_a = set(str(v) for v in (col_lookup.get(col_a) or []))
     vals_b = set(str(v) for v in (col_lookup.get(col_b) or []))
     if not vals_a or not vals_b:
         return ""
     overlap = vals_a & vals_b
     if not overlap:
-        return f"⚠ NO VALUE OVERLAP ({len(vals_a)} A-side vs {len(vals_b)} B-side samples — join will return 0 rows)"
+        return f"⚠ NO VALUE OVERLAP ({len(vals_a)} A-side vs {len(vals_b)} B-side vocabulary values — join will return 0 rows)"
     sample = sorted(overlap)[:3]
-    return f"✓ {len(overlap)} shared values (e.g. {', '.join(sample)})"
+    evidence = f"✓ {len(overlap)} shared values (e.g. {', '.join(sample)})"
+
+    # Semantic FK confirmation (only when populated)
+    if ref_table_lookup:
+        ref_a = ref_table_lookup.get(col_a, "")
+        ref_b = ref_table_lookup.get(col_b, "")
+        join_to_a = f"{cols[1][0]}.{cols[1][1]}"
+        join_to_b = f"{cols[0][0]}.{cols[0][1]}"
+        if ref_a and ref_a == join_to_a:
+            evidence += f"  [semantic ref → {ref_a} ✓]"
+        elif ref_b and ref_b == join_to_b:
+            evidence += f"  [semantic ref → {ref_b} ✓]"
+
+    # Temporal grain annotation (only when not 'none'/empty)
+    if temporal_grain_lookup:
+        grain_a = temporal_grain_lookup.get(col_a, "")
+        grain_b = temporal_grain_lookup.get(col_b, "")
+        if grain_a and grain_a not in ("none", ""):
+            evidence += f"  [temporal_grain={grain_a}]"
+        elif grain_b and grain_b not in ("none", ""):
+            evidence += f"  [temporal_grain={grain_b}]"
+
+    # Low-cardinality join key warning using actual Redshift pg_stats selectivity
+    if selectivity_lookup:
+        sel_a = selectivity_lookup.get(col_a, "")
+        sel_b = selectivity_lookup.get(col_b, "")
+        if sel_a == "low" or sel_b == "low":
+            table_a_fqn = f"{cols[0][0]}.{cols[0][1]}"
+            table_b_fqn = f"{cols[1][0]}.{cols[1][1]}"
+            candidates: list[tuple[str, int]] = []
+            for fqn, sel in selectivity_lookup.items():
+                if sel not in ("medium", "high"):
+                    continue
+                parts = fqn.rsplit(".", 1)
+                if len(parts) != 2:
+                    continue
+                tbl, cname = parts
+                if tbl not in (table_a_fqn, table_b_fqn):
+                    continue
+                if cname in (col_a_name, col_b_name) or _is_uuid_col(cname):
+                    continue
+                if dtype_lookup and dtype_lookup.get(fqn, "") == "boolean":
+                    continue
+                if semantic_type_lookup and semantic_type_lookup.get(fqn, "") in ("flag", "indicator"):
+                    continue
+                # For high selectivity: only include confirmed semantic references
+                if sel == "high":
+                    if not (ref_table_lookup and ref_table_lookup.get(fqn, "")):
+                        continue
+                candidates.append((cname, 0 if sel == "medium" else 1))
+            candidates.sort(key=lambda x: x[1])
+            top = [c for c, _ in candidates[:3]]
+            hint = f" Narrowing candidates: {', '.join(top)}." if top else ""
+            evidence += (
+                f"\n    -- ⚠ LOW-CARDINALITY JOIN KEY (filter_selectivity=low,"
+                f" ≤50 distinct values per Redshift pg_stats) —"
+                f" fact-to-fact join risk: every row on side A matches every row on"
+                f" side B with the same key value, multiplying rows.{hint}"
+                f" See Rule 1 addendum."
+            )
+    return evidence
 
 
-def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
+def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None = None) -> str:
     """Build structured QUERY SPECIFICATION text replacing json.dumps(spec)."""
     lines = ["--- QUERY SPECIFICATION ---", ""]
 
-    col_lookup = {
-        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("filter_values") or c.get("sample_values") or []
-        for c in schema_ctx.get("columns", [])
-        if c.get("table_fqn") and c.get("name")
+    if col_lookup is None:
+        col_lookup = {
+            f"{c.get('table_fqn', '')}.{c.get('name', '')}": (
+                c.get("filter_values") or c.get("value_vocabulary") or c.get("sample_values") or []
+            )
+            for c in schema_ctx.get("columns", [])
+            if c.get("table_fqn") and c.get("name")
+        }
+
+    _cols = schema_ctx.get("columns", [])
+    selectivity_lookup = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("filter_selectivity", "")
+        for c in _cols if c.get("table_fqn") and c.get("name")
+    }
+    ref_table_lookup = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("referenced_table_fqn", "")
+        for c in _cols if c.get("table_fqn") and c.get("name")
+    }
+    temporal_grain_lookup = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("temporal_grain", "")
+        for c in _cols if c.get("table_fqn") and c.get("name")
+    }
+    dtype_lookup = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("data_type", "")
+        for c in _cols if c.get("table_fqn") and c.get("name")
+    }
+    semantic_type_lookup = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("semantic_type", "")
+        for c in _cols if c.get("table_fqn") and c.get("name")
     }
 
     anchor_tables = spec.get("anchor_tables") or []
@@ -262,12 +413,41 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
         lines.append("")
 
     time_filter = spec.get("time_filter")
+    anchor_tables_set = set(spec.get("anchor_tables") or [])
     if time_filter:
-        tf_col = f"{time_filter.get('table_fqn', '')}.{time_filter.get('column', '')}"
-        tf_op = time_filter.get("operator", ">=")
+        primary_fqn = time_filter.get("table_fqn", "")
+        tf_col = f"{primary_fqn}.{time_filter.get('column', '')}"
+        tf_op  = time_filter.get("operator", ">=")
         tf_val = time_filter.get("value", "")
-        lines.append(f"TIME FILTER:\n  {tf_col} {tf_op} {tf_val}")
+        lines.append(f"TIME FILTER:\n  {tf_col} {tf_op} {tf_val}   [primary]")
+        extra = []
+        for t in schema_ctx.get("tables", []):
+            fqn  = t.get("fqn", "")
+            tcol = t.get("time_dimension_col", "")
+            if fqn and tcol and t.get("is_time_series") and fqn != primary_fqn and fqn in anchor_tables_set:
+                extra.append(f"  {fqn}.{tcol} {tf_op} {tf_val}")
+        if extra:
+            lines.append("  Apply same boundary to ALL other time-series tables in this query:")
+            lines.extend(extra)
+            lines.append("  (Omitting these causes full-history scans → timeout)")
         lines.append("")
+    else:
+        snapshot_tables = [
+            (t.get("fqn", ""), t.get("time_dimension_col", ""))
+            for t in schema_ctx.get("tables", [])
+            if t.get("is_time_series") and t.get("time_dimension_col")
+               and t.get("fqn") in anchor_tables_set
+        ]
+        if snapshot_tables:
+            lines.append("TIME FILTER: none specified")
+            lines.append("  WARNING — these tables are daily snapshots; without a date filter they scan ALL history:")
+            for fqn, tcol in snapshot_tables:
+                lines.append(f"    {fqn} → {tcol}")
+            lines.append("  If the question asks for current/recent data, add one of:")
+            lines.append("    Latest snapshot: WHERE <col> = (SELECT MAX(<col>) FROM <table>)")
+            lines.append("    Recent window:   WHERE <col> >= DATEADD(DAY, -30, CURRENT_DATE)")
+            lines.append("  If intentionally querying full history (trend analysis), ignore this warning.")
+            lines.append("")
 
     measures = spec.get("measures") or []
     dimensions = spec.get("dimensions") or []
@@ -279,10 +459,7 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
             fqn = m.get("table_fqn", "")
             col = m.get("column_name", "")
             alias = m.get("alias", col)
-            if not agg or agg.upper() in ("", "NONE"):
-                agg_label = "[DECIDE]"
-            else:
-                agg_label = agg
+            agg_label = agg if (agg and agg.upper() not in ("", "NONE")) else "SUM"
             lines.append(f"  {agg_label}({fqn}.{col})              alias: {alias}")
         lines.append("")
 
@@ -296,7 +473,8 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
                 if temporal_grain and alias != col:
                     lines.append(
                         f"  {fqn}.{col}   alias: {alias}"
-                        f"   [base CTE: DATE_TRUNC('{temporal_grain}', {col}) AS {alias}]"
+                        f"   [base CTE: DATE_TRUNC('{temporal_grain}', {col}) AS {alias}"
+                        f" — format for clean display per grain]"
                     )
                 else:
                     lines.append(f"  {fqn}.{col}          alias: {alias}")
@@ -309,19 +487,26 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
     if filters:
         lines.append("FILTERS:")
         from collections import defaultdict
-        ilike_groups: dict[tuple, list] = defaultdict(list)
+        fuzzy_groups: dict[tuple, list] = defaultdict(list)   # → [fuzzy — use ~* regex]
         exact_groups: dict[tuple, list] = defaultdict(list)
         other_filters: list[dict] = []
         for f in filters:
+            col_key = f"{f.get('table_fqn', '')}.{f.get('column', '')}"
+            col_vocab = col_lookup.get(col_key, [])
+            is_resolved = f.get("resolved", False)
             if f.get("is_raw_sql"):
                 other_filters.append(f)
             elif f.get("operator") in ("ILIKE", "LIKE"):
-                ilike_groups[(f.get("table_fqn", ""), f.get("column", ""))].append(f)
+                fuzzy_groups[(f.get("table_fqn", ""), f.get("column", ""))].append(f)
             elif f.get("operator") == "=" and not _is_exact_value(f.get("value")):
-                # String values: use ILIKE %value% — Neo4j-resolved casing is LLM-generated
-                ilike_groups[(f.get("table_fqn", ""), f.get("column", ""))].append(f)
+                if is_resolved or col_vocab:
+                    # Resolved by filter_resolver OR has enum vocabulary → exact match
+                    exact_groups[(f.get("table_fqn", ""), f.get("column", ""))].append(f)
+                else:
+                    # No vocabulary, not resolved → regex fallback
+                    fuzzy_groups[(f.get("table_fqn", ""), f.get("column", ""))].append(f)
             elif f.get("operator") == "=":
-                # Dates and numbers: keep exact =
+                # Dates and numbers: exact =
                 exact_groups[(f.get("table_fqn", ""), f.get("column", ""))].append(f)
             else:
                 other_filters.append(f)
@@ -341,21 +526,19 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
                 vals = ", ".join(f"'{g.get('value', '')}'" for g in grp)
                 lines.append(f"  {section}:   {tfqn}.{col} IN ({vals})   [exact — multiple values, use IN]")
 
-        for (tfqn, col), grp in ilike_groups.items():
+        for (tfqn, col), grp in fuzzy_groups.items():
             section = "HAVING" if grp[0].get("is_having") else "WHERE"
-
-            def _ilike_clause(v: str) -> str:
-                s = str(v)
-                return f"{tfqn}.{col} ILIKE '{s}'" if "%" in s else f"{tfqn}.{col} ILIKE '%{s}%'"
-
             if len(grp) == 1:
-                val = grp[0].get("value", "")
-                clause = _ilike_clause(val)
-                label = "[fuzzy — use ILIKE]"
+                val = str(grp[0].get("value", ""))
+                clause = f"{tfqn}.{col} ~* '{val}'"
+                label = "[fuzzy — use ~* regex]"
             else:
-                parts = " OR ".join(_ilike_clause(g.get("value", "")) for g in grp)
+                parts = " OR ".join(
+                    "{}.{} ~* '{}'".format(tfqn, col, str(g.get("value", "")))
+                    for g in grp
+                )
                 clause = f"({parts})"
-                label = "[fuzzy — multiple, use OR ILIKE]"
+                label = "[fuzzy — multiple, use OR ~* regex]"
             lines.append(f"  {section}:   {clause}   {label}")
         lines.append("")
 
@@ -370,7 +553,14 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict) -> str:
             on_clause = j.get("on", "")
             lines.append(f"  {jtype} {to_t}")
             lines.append(f"    ON {on_clause}")
-            evidence = _get_join_overlap_evidence(on_clause, col_lookup)
+            evidence = _get_join_overlap_evidence(
+                on_clause, col_lookup,
+                selectivity_lookup=selectivity_lookup,
+                ref_table_lookup=ref_table_lookup,
+                temporal_grain_lookup=temporal_grain_lookup,
+                dtype_lookup=dtype_lookup,
+                semantic_type_lookup=semantic_type_lookup,
+            )
             if evidence:
                 lines.append(f"    -- {evidence}")
         lines.append("")
@@ -400,7 +590,17 @@ Write this query as a senior Redshift DBA. Non-negotiable:
   c. No SELECT * anywhere — name only columns used downstream.
   d. GROUP BY instead of DISTINCT on large result sets.
   e. Apply LIMIT {limit or 100} on the outer SELECT — never omit it.
-  f. Include only tables that the question requires.""")
+  f. Include only tables that the question requires.
+  g. Multi-fact CTE drive direction: when 2+ fact tables are pre-aggregated into CTEs and the
+     final SELECT has ORDER BY + LIMIT, drive from the most-filtered fact CTE — NOT from the
+     dimension table:
+       ✓ FROM <fact_cte> AS f INNER JOIN <dimension> AS d ON f.<key> = d.<key>
+       ✗ FROM <dimension> AS d LEFT JOIN <fact_cte> AS f ON f.<key> = d.<key>
+     The second form forces Redshift to read ALL dimension rows before ORDER BY/LIMIT can reduce
+     them. Dimension tables (instruments, companies, counterparties) can have millions of rows.
+     Fact CTEs are already date-filtered and grouped — they are tiny. Use the fact CTE as the
+     driver. Use INNER JOIN (not LEFT JOIN): dimension rows with no matching fact rows are
+     semantically out of scope for the requested period.""")
 
     return "\n".join(lines)
 
@@ -469,10 +669,10 @@ def _build_schema_reference(schema_ctx: dict) -> str:
             if desc:
                 line += f'  "{desc}"'
             if filter_values:
-                vals_str = " | ".join(str(v) for v in filter_values[:8])
-                line += f"   values: {vals_str}"
+                vals_str = ", ".join(str(v) for v in filter_values[:8])
+                line += f"   [enum: {vals_str}]"
             elif is_measurable:
-                line += "   (SUM or AVG)"
+                line += "   (numeric measure)"
             else:
                 line += "   (no known values)"
             lines.append(line)
@@ -504,21 +704,74 @@ def _build_schema_reference(schema_ctx: dict) -> str:
     return "\n".join(lines)
 
 
-def _build_unresolved_joins_section(unresolved_pairs: list[dict]) -> str:
+def _find_vocabulary_join_hints(
+    unresolved_pairs: list[dict],
+    col_lookup: dict,
+) -> dict[tuple, list]:
+    """For each unresolved (from_fqn, to_fqn) pair, find column pairs with vocabulary overlap.
+
+    Skips UUID columns. Returns up to 3 candidates per pair sorted by overlap count (descending).
+    col_lookup: {schema.table.col: [values]}
+    """
+    results: dict[tuple, list] = {}
+    for pair in unresolved_pairs:
+        from_fqn = pair.get("from", "")
+        to_fqn = pair.get("to", "")
+        if not from_fqn or not to_fqn:
+            continue
+        from_cols = {
+            k: set(str(v) for v in vals)
+            for k, vals in col_lookup.items()
+            if k.startswith(from_fqn + ".") and vals and not _is_uuid_col(k.split(".")[-1])
+        }
+        to_cols = {
+            k: set(str(v) for v in vals)
+            for k, vals in col_lookup.items()
+            if k.startswith(to_fqn + ".") and vals and not _is_uuid_col(k.split(".")[-1])
+        }
+        candidates = []
+        for fc, fset in from_cols.items():
+            for tc, tset in to_cols.items():
+                shared = sorted(fset & tset)
+                if shared:
+                    candidates.append((fc, tc, shared))
+        candidates.sort(key=lambda x: -len(x[2]))
+        results[(from_fqn, to_fqn)] = [(fc, tc, vals[:5]) for fc, tc, vals in candidates[:3]]
+    return results
+
+
+def _build_unresolved_joins_section(unresolved_pairs: list[dict], col_lookup: dict | None = None) -> str:
     if not unresolved_pairs:
         return ""
+    vocab_hints = _find_vocabulary_join_hints(unresolved_pairs, col_lookup or {})
     lines = ["UNRESOLVED JOIN PAIRS — no pre-computed path found in Neo4j. You MUST resolve each of these:\n"]
     for pair in unresolved_pairs:
         from_t = pair.get("from", "")
         to_t = pair.get("to", "")
         candidates = pair.get("candidate_join_columns", [])
+        sem_bridge = pair.get("semantic_bridge_columns", [])
         lines.append(f"  {from_t} → {to_t}")
         if candidates:
             lines.append(f"    candidate_join_columns: {candidates}")
             lines.append("    → Check ADDITIONAL JOINS in SCHEMA REFERENCE first (use ON clause exactly if found).")
             lines.append("    → Otherwise JOIN ON the most semantically specific candidate column.")
+        elif sem_bridge:
+            bridge_strs = [
+                f"{from_t}.{b.get('from_col')} = {to_t}.{b.get('to_col')}"
+                for b in sem_bridge[:2]
+                if b.get("from_col") and b.get("to_col")
+            ]
+            lines.append(f"    semantic_bridge (similarity >= 0.88): {bridge_strs}")
+            lines.append("    → Use the semantic bridge as the ON clause — these columns are semantically equivalent.")
+        hints = vocab_hints.get((from_t, to_t), [])
+        if hints:
+            lines.append("    VOCABULARY OVERLAP HINTS (columns sharing actual data values — strong join candidates):")
+            for fc, tc, shared in hints:
+                total_note = f"{len(shared)} shown" if len(shared) == 5 else f"{len(shared)} total"
+                lines.append(f"      {fc} = {tc}")
+                lines.append(f"        shared ({total_note}): {', '.join(shared)}")
         else:
-            lines.append("    → No candidate columns found. Check ADDITIONAL JOINS in SCHEMA REFERENCE.")
+            lines.append("    (no vocabulary overlap found — use column name and description similarity)")
         lines.append("    → NEVER produce a CROSS JOIN or omit the table.\n")
     return "\n".join(lines)
 
@@ -545,6 +798,14 @@ def _build_candidate_join_paths_section(ir: SemanticIR, col_lookup: dict | None 
         return ""
 
     lines = ["CANDIDATE JOIN PATHS (primary path pre-selected in PRE-COMPUTED JOIN CHAIN; override only when semantically required):"]
+    import re as _re_local
+    _fqn_col_re = _re_local.compile(
+        r"[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\.([a-zA-Z_][a-zA-Z0-9_$]*)"
+    )
+
+    def _clause_has_uuid(clause: str) -> bool:
+        return any(_is_uuid_col(m.group(1)) for m in _fqn_col_re.finditer(clause))
+
     for (from_fqn, to_fqn), path_list in pairs.items():
         lines.append(f"  {from_fqn} → {to_fqn}:")
         for p in path_list:
@@ -552,7 +813,11 @@ def _build_candidate_join_paths_section(ir: SemanticIR, col_lookup: dict | None 
             direction = p.get("direction", "forward")
             hop_count = p.get("hop_count", "?")
             path_tables = p.get("path_tables") or []
-            clauses = p.get("join_clauses") or []
+            raw_clauses = p.get("join_clauses") or []
+            # Strip UUID join clauses — they are unique per row and never produce matches
+            clauses = [c for c in raw_clauses if not _clause_has_uuid(c)]
+            if not clauses and raw_clauses:
+                continue  # all clauses were UUID — skip this path entirely
             intermediate = [t for t in path_tables if t not in (from_fqn, to_fqn)]
             hops_label = f"{hop_count} hop{'s' if hop_count != 1 else ''}"
             via_label = f" via {', '.join(intermediate)}" if intermediate else ""

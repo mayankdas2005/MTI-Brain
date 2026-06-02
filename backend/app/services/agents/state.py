@@ -47,7 +47,7 @@ class AnalyticsState(TypedDict):
     answer: str
     chart_spec: dict | None
     chart_type: str | None
-    alternative_chart_specs: list[str]    # guardrailed type names only — specs built client-side
+    alternative_chart_specs: list[dict]    # full Vega-Lite specs — each: {"chart_type": str, "spec": dict}
     follow_ups: list[str]
 
     # ── Memory / feedback ────────────────────────────────────────────────────

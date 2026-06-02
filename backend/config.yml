@@ -19,6 +19,7 @@ server:
   cors_origins:
     - "http://localhost:3000"
     - "http://127.0.0.1:3000"
+    - "http://100.21.28.155:3000"
 
 postgres:                            # PostgreSQL / PgBouncer connection settings
   port: 5432

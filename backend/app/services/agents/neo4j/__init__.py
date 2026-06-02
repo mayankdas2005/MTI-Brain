@@ -1,17 +1,17 @@
-"""Neo4j client — backward-compat re-export shim.
+"""Neo4j graph client — split into single-responsibility modules.
 
-All implementations have moved to the neo4j/ subpackage.
-Import from here (existing callers) or directly from neo4j/ submodules.
+Import from here for backward compat, or import from submodules directly.
 """
 
-from app.services.agents.neo4j import (
+from .client import (
     init_neo4j,
     close_neo4j,
     get_driver,
     _neo4j_run,
     _neo4j_run_single,
     _neo4j_write,
-    # table search
+)
+from .table_search import (
     search_tables_vector,
     search_tables_fulltext,
     search_tables_via_intents,
@@ -26,7 +26,8 @@ from app.services.agents.neo4j import (
     get_structurally_similar_tables,
     get_community_bridges,
     get_business_term_table_edges,
-    # column search
+)
+from .column_search import (
     search_columns_vector,
     search_columns_fulltext,
     get_columns_for_tables,
@@ -34,7 +35,8 @@ from app.services.agents.neo4j import (
     get_join_critical_columns,
     get_semantically_similar_columns,
     resolve_columns,
-    # join resolution
+)
+from .join_resolution import (
     load_join_path,
     load_join_path_yens,
     load_join_path_dijkstra,
@@ -43,10 +45,12 @@ from app.services.agents.neo4j import (
     get_direct_joins,
     get_join_paths_by_ids,
     search_join_path_by_semantics,
-    # hub detection
+)
+from .hub_detection import (
     get_dimension_hub_for_communities,
     find_common_dimension_hub,
-    # template / pattern / intent / term search
+)
+from .template_search import (
     search_query_templates,
     search_query_templates_fulltext,
     search_query_patterns,
@@ -63,18 +67,15 @@ from app.services.agents.neo4j import (
     get_business_terms_by_terms,
     get_all_domain_names,
     get_all_intent_names,
-    # write
+)
+from .write import (
     write_join_path,
     write_query_pattern,
     write_anti_pattern,
 )
 
-# Legacy aliases that existed before the refactor
-search_tables_via_templates_vector = None   # removed — templates no longer drive table selection
-search_tables_via_templates_fulltext = None  # removed — templates no longer drive table selection
-
 __all__ = [
-    "init_neo4j", "close_neo4j",
+    "init_neo4j", "close_neo4j", "get_driver",
     "search_tables_vector", "search_tables_fulltext",
     "search_tables_via_intents", "search_tables_via_community",
     "search_tables_via_domain", "search_tables_via_joinpaths",
