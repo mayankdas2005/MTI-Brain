@@ -768,6 +768,20 @@ class Neo4jLoader:
         """)
         log.debug("Pass: BRIDGES_TO enhanced with hub_table info.")
 
+    def _pass_relevant_to_match_columns(self):
+        """Populate match_columns on RELEVANT_TO edges with the table's top measurable/groupable columns.
+        Only fills edges where match_columns is currently empty (ontology_class matched edges)."""
+        self._run("""
+            MATCH (t:Table)-[r:RELEVANT_TO]->(i:Intent)
+            WHERE size(coalesce(r.match_columns, [])) = 0
+            OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:Column)
+            WHERE c.is_measurable = true OR c.is_groupable = true
+              OR c.semantic_type IN ['amount', 'measure', 'percentage', 'date']
+            WITH t, r, collect(DISTINCT c.name)[0..5] AS relevant_cols
+            SET r.match_columns = relevant_cols
+        """)
+        log.debug("Pass: match_columns populated on RELEVANT_TO edges.")
+
     def _pass_validate_query_templates(self):
         """Validate anchor FQNs exist; compute template_confidence; set anchor_table_fqns_resolved."""
         # Step 1: resolve verified FQNs

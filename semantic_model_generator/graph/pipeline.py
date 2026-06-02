@@ -960,6 +960,9 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
         # Derive intent_tags on Tables
         loader.set_intent_tags_on_tables()
 
+        # Populate match_columns on RELEVANT_TO edges
+        loader._pass_relevant_to_match_columns()
+
         loader._run("""
             MATCH (i:Intent) WHERE i.description IS NOT NULL AND i.description <> ''
             SET i.enrichment_status = 'complete'
@@ -1044,6 +1047,7 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
                 names = bt.get("related_table_names") or []
                 if not bt.get("related_table_fqns"):
                     bt["related_table_fqns"] = [fqn_by_name_gloss[n] for n in names if n in fqn_by_name_gloss]
+                # Use cached LLM source_column_name; fall back to token-index lookup
                 if not bt.get("source_column_name"):
                     bt["source_column_name"] = next(
                         (_find_source_col(bt, n) for n in names if _find_source_col(bt, n)), ""
@@ -1067,9 +1071,11 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
                 for bt in batch_terms:
                     names = bt.get("related_table_names") or []
                     bt["related_table_fqns"] = [fqn_by_name_gloss[n] for n in names if n in fqn_by_name_gloss]
-                    bt["source_column_name"] = next(
-                        (_find_source_col(bt, n) for n in names if _find_source_col(bt, n)), ""
-                    )
+                    # Use LLM-provided source_column_name; fall back to token-index lookup
+                    if not bt.get("source_column_name"):
+                        bt["source_column_name"] = next(
+                            (_find_source_col(bt, n) for n in names if _find_source_col(bt, n)), ""
+                        )
                 new_terms = [bt for bt in batch_terms if bt["term"] not in existing_term_names]
                 all_terms.extend(new_terms)
                 existing_term_names.update(bt["term"] for bt in new_terms)

@@ -100,6 +100,7 @@ class BusinessTermItem(BaseModel):
                            "policy_reference", "aggregation_scope", "filter_value"] = "concept"
     description: str
     related_table_names: list[str] = Field(default_factory=list)
+    source_column_name: str = ""
 
 
 class GlossaryOutput(BaseModel):
@@ -601,6 +602,8 @@ Identify business terms from the context above. Focus on:
 4. Unit terms: how users express amounts, rates, percentages (million, billion, basis points, bps, %)
 5. Treasury-specific metrics: hedge ratio, blended rate, Days Sales Outstanding, etc.
 
+The context format is: table_name.col_name [semantic_type]: synonyms=[...] aliases=[...] values=[...]
+
 Return ONLY a valid JSON object, no other text:
 {{
   "terms": [
@@ -610,7 +613,8 @@ Return ONLY a valid JSON object, no other text:
       "term_type": "abbreviation|entity_alias|unit|metric|product|concept|status|dimension",
       "term_category": "metric|dimension|entity|concept|status|policy_reference|aggregation_scope|filter_value",
       "description": "short description in treasury context",
-      "related_table_names": ["table_name"]
+      "related_table_names": ["table_name"],
+      "source_column_name": "ONLY set this if the term or one of its variants appears literally in the synonyms, aliases, or values of a specific context line above. Set to the column name (not table.col). Leave empty string if the term is an abstract concept not directly present in any context line."
     }}
   ]
 }}
@@ -648,6 +652,11 @@ def generate_business_glossary(
             t["term_category"] = t.get("term_category", "concept") if t.get("term_category") in valid_categories else "concept"
             t.setdefault("variants", [])
             t.setdefault("related_table_names", [])
+            # Strip table prefix from source_column_name if LLM returned "table.col" format
+            src_col = t.get("source_column_name", "") or ""
+            if "." in src_col:
+                src_col = src_col.split(".")[-1]
+            t["source_column_name"] = src_col.strip()
             terms.append(t)
 
         log.info("Business glossary: %d terms generated. First: %s",
