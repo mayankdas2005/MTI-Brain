@@ -1063,7 +1063,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onChart: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec, chart_type: data.chart_type as string | undefined, alternative_chart_specs: data.alternative_chart_specs as string[] | undefined } }
+            ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec, chart_type: data.chart_type as string | undefined, alternative_chart_specs: data.alternative_chart_specs as { chart_type: string; spec: Record<string, unknown> }[] | undefined } }
             : m,
         );
       },

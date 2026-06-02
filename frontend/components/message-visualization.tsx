@@ -51,7 +51,7 @@ interface MessageVisualizationProps {
   rows?: unknown[][];
   chartSpec?: Record<string, unknown>;
   primaryChartType?: string;
-  alternativeChartSpecs?: string[];      // type names only — specs built by buildSpecForType
+  alternativeChartSpecs?: { chart_type: string; spec: Record<string, unknown> }[];
   conversationId?: string;
 }
 
