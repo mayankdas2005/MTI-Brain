@@ -33,6 +33,7 @@ COPY --from=builder /venv /venv
 ENV PATH="/venv/bin:$PATH"
 
 COPY ./app ./app
+COPY node_names.yml ./node_names.yml
 
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
