@@ -28,6 +28,7 @@ _PATH_WEIGHTS = {
     "domain":         0.80,
     "query_pattern":  1.20,  # ground truth — highest weight
     "joinpath":       0.65,  # expansion pass
+    "entity_value":   0.90,  # direct alias/vocabulary match — strong entity signal
 }
 
 _MAX_ANCHOR_TABLES = 8
@@ -62,6 +63,7 @@ async def run_8_path_discovery(
         _run_path(neo4j_client.search_tables_via_community, embedding),
         _run_path(neo4j_client.search_tables_via_domain, embedding) if domain_detected else _empty_coroutine(),
         _run_path(neo4j_client.search_tables_from_query_patterns, embedding),
+        _run_path(neo4j_client.search_tables_via_filter_values, tokens),  # 9th path: entity value match
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -70,15 +72,17 @@ async def run_8_path_discovery(
         tables_direct_v, tables_direct_fts,
         tables_via_intent, tables_via_bterm, tables_via_columns,
         tables_via_comm, tables_via_domain, tables_via_patterns,
+        tables_via_entity,
     ) = [_safe(r) for r in results]
 
     path_names = [
         "direct_vector", "direct_fts", "intent", "businessterm",
-        "column_search", "community", "domain", "query_pattern",
+        "column_search", "community", "domain", "query_pattern", "entity_value",
     ]
     path_results = [
         tables_direct_v, tables_direct_fts, tables_via_intent, tables_via_bterm,
         tables_via_columns, tables_via_comm, tables_via_domain, tables_via_patterns,
+        tables_via_entity,
     ]
 
     for name, result in zip(path_names, path_results):
@@ -103,6 +107,23 @@ async def run_8_path_discovery(
                 t["retrieval_paths"] = ["joinpath"]
                 tables.append(t)
                 existing.add(t["fqn"])
+            # Add intermediate bridge tables (path_tables[1:-1]) needed for multi-hop JOINs
+            for bridge_fqn in (t.get("path_tables") or [])[1:-1]:
+                if bridge_fqn and bridge_fqn not in existing:
+                    try:
+                        bridge_rows = retry_sync(
+                            lambda _f=bridge_fqn: neo4j_client.get_tables_with_context([_f]),
+                            service="neo4j",
+                        )
+                        if bridge_rows:
+                            bt = dict(bridge_rows[0].get("t") or {})
+                            if bt.get("fqn"):
+                                bt["retrieval_paths"] = ["bridge_table"]
+                                tables.append(bt)
+                                existing.add(bridge_fqn)
+                                logger.info("context_fetcher | bridge_table | fqn={}", bridge_fqn)
+                    except Exception as _e:
+                        logger.warning("context_fetcher | bridge_table_add_failed | fqn={} | error={}", bridge_fqn, _e)
     except Exception as e:
         logger.warning("context_fetcher | joinpath_expansion failed | error={}", e)
 

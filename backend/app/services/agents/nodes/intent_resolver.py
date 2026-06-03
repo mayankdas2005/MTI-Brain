@@ -110,6 +110,24 @@ def _build_schema_candidates_text(semantic_context: dict) -> str:
         "",
     ]
 
+    # ── ENTITY VALUE MATCHES ─────────────────────────────────────────────────
+    entity_hints = semantic_context.get("entity_hints") or []
+    if entity_hints:
+        lines += [
+            "ENTITY VALUE MATCHES — question tokens matched schema vocabulary directly.",
+            "RULE: If the same token matches a primary entity table (e.g., lpp.bank) AND a FK",
+            "      column on a child table (e.g., lpp.bank_account.branch_ref), prefer the PRIMARY",
+            "      entity table: add it to anchor_tables and set the WHERE filter there.",
+            "      The child table's FK column is the join key, NOT the filter column.",
+        ]
+        for eh in entity_hints[:5]:
+            lines.append(
+                f"  '{eh.get('token')}' → {eh.get('table_fqn')}.{eh.get('column')}"
+                f" (matched: {str(eh.get('matched_value', ''))[:80]})"
+                " — add as a WHERE filter on this column"
+            )
+        lines += [""]
+
     # ── TABLES ────────────────────────────────────────────────────────────────
     lines += ["TABLES (ranked by number of discovery paths that confirmed each table):"]
     for t in tables:

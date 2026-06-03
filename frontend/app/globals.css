@@ -101,6 +101,8 @@
   --density-row-gap: 0.25rem;       /* matches gap-1 - within-row gaps */
   --density-list-gap: 0.25rem;      /* matches space-y-1 - between list rows */
   --density-list-row-h: 2.25rem;    /* h-9 */
+  --font-sans:    'Alliance No.1', sans-serif;
+  --font-display: 'Alliance No.1', sans-serif;
 }
 
 /* Compact - ~50% tighter across the board so the mode feels distinct,
@@ -185,8 +187,13 @@ html[data-density="compact"] {
 }
 
 @theme inline {
-  --font-sans: var(--font-geist), 'Geist', system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), 'Geist Mono', ui-monospace, monospace;
+  --font-sans:    'Alliance No.1', sans-serif;
+  --font-display: 'Alliance No.1', sans-serif;
+  --font-mono:    'IBM Plex Mono', ui-monospace, monospace;
+  --text-xs: 0.85rem;
+  --text-xs--line-height: 1.3;
+  --text-sm: 1rem;
+  --text-sm--line-height: 1.5;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -328,6 +335,12 @@ html[data-density="compact"] {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
   }
 }
 

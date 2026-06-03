@@ -592,6 +592,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               freshnessAt={m.data_freshness_at as string | null}
               metric={metric}
               rowCount={m.row_count as number | null}
+              confidence={m.confidence as { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string } | null | undefined}
             />
           </div>
         );
@@ -851,7 +852,7 @@ const ReasoningContent = React.forwardRef<HTMLDivElement, { isStreaming?: boolea
   ({ isStreaming, content }, ref) => {
     const active = !!(isStreaming && content);
     return (
-      <div ref={ref} className="px-3 pb-2 border-t border-border/40 pt-2 text-sm text-muted-foreground leading-relaxed italic">
+      <div ref={ref} className="px-3 pb-2 border-t border-border/40 pt-2 text-sm text-foreground/75 leading-relaxed italic">
         <MarkdownRenderer content={content} />
         {active && <span className="streaming-cursor" aria-hidden />}
       </div>
@@ -935,14 +936,14 @@ function ReasoningPanel({
         }`}
       >
         <AccordionTrigger
-          className="py-2 px-3 text-xs text-muted-foreground hover:text-foreground hover:no-underline"
+          className="py-2 px-3 text-xs text-foreground/65 hover:text-foreground hover:no-underline"
           disabled={!hasSteps && !legacyReasoning}
         >
           {message.isStreaming ? (
             <span className="flex items-center gap-1.5">
               <ThinkingWords label={activeLabel} />
               {hasSteps && (
-                <span className="tabular-nums text-muted-foreground/60">
+                <span className="tabular-nums text-foreground/50">
                   <LiveTimer
                     startTime={new Date(message.created_at).getTime()}
                     anchor={message._timingAnchor}
@@ -993,6 +994,7 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
         const isActive = step.status === 'active';
         const isDone = step.status === 'done';
         const isSkipped = step.status === 'skipped';
+        const isError = step.status === 'error';
 
         const cleanedReasoning = (step.reasoning || '')
           .replace(/^#{1,6}\s+/gm, '')
@@ -1021,12 +1023,15 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
                 isActive
                   ? 'bg-primary step-active'
                   : isDone
-                  ? 'bg-primary/25'
+                  ? 'bg-primary/30 dark:bg-primary/50'
+                  : isError
+                  ? 'bg-destructive/20 dark:bg-destructive/40'
                   : 'bg-muted'
               }`}
               aria-hidden="true"
             >
-              {isDone && <Check className="w-2 h-2 text-primary" strokeWidth={3.5} />}
+              {isDone  && <Check className="w-2 h-2 text-primary dark:text-primary/90" strokeWidth={3.5} />}
+              {isError && <X className="w-2 h-2 text-destructive" strokeWidth={3} />}
             </span>
 
             {/* Step label + duration */}
@@ -1035,9 +1040,11 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
                 className={`text-xs leading-none ${
                   isActive
                     ? 'text-foreground font-medium'
+                    : isError
+                    ? 'text-destructive font-medium'
                     : isSkipped
-                    ? 'text-muted-foreground/50 line-through'
-                    : 'text-muted-foreground'
+                    ? 'text-foreground/35 line-through'
+                    : 'text-foreground/70'
                 }`}
               >
                 {step.message || step.node}
@@ -1045,7 +1052,7 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
               {showDuration && (
                 <span
                   className={`text-[10px] tabular-nums shrink-0 ${
-                    isActive ? 'text-primary' : 'text-muted-foreground/50'
+                    isActive ? 'text-primary' : isError ? 'text-destructive/70' : 'text-foreground/45'
                   }`}
                 >
                   {showDuration}
@@ -1081,7 +1088,7 @@ function StreamingContent({ isStreaming, hasContent, children }: { isStreaming?:
 
 function StepReasoning({ text, active }: { text: string; active: boolean }) {
   return (
-    <div className="mt-1.5 pr-1 text-xs leading-relaxed text-muted-foreground/85">
+    <div className="mt-1.5 pr-1 text-xs leading-relaxed text-foreground/80">
       <MarkdownRenderer content={text} />
       {active && <span className="streaming-cursor" aria-hidden />}
     </div>

@@ -13,6 +13,7 @@ import {
   ListOrdered,
   ScrollText,
   ExternalLink,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   Sheet,
@@ -221,6 +222,31 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
               )}
             </Section>
           )}
+
+          {/* Confidence — only present for SQL-backed answers when backend returns it */}
+          {(() => {
+            const confidence = m?.confidence ?? null;
+            return confidence ? (
+            <Section title="Confidence" icon={ShieldCheck}>
+              <KV label="Score" value={`${confidence.score} / 100`} mono />
+              <KV
+                label="Label"
+                value={
+                  <span className={
+                    confidence.label === 'High'   ? 'text-emerald-600 dark:text-emerald-400 font-medium' :
+                    confidence.label === 'Medium' ? 'text-amber-600 dark:text-amber-400 font-medium'     :
+                                                    'text-red-600 dark:text-red-400 font-medium'
+                  }>
+                    {confidence.label}
+                  </span>
+                }
+              />
+              <p className="mt-2 text-[11px] text-muted-foreground/80 leading-relaxed">
+                {confidence.explanation}
+              </p>
+            </Section>
+          ) : null;
+          })()}
 
           {/* Metric definition */}
           {m?.metric_name && (

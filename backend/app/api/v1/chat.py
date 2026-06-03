@@ -494,8 +494,12 @@ async def ask_question(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     request_time = time.perf_counter()
-    # Register the cancel event BEFORE any DB work so stop works immediately
-    # even if the user presses stop during the pre-SSE query phase.
+    # Cancel any pipeline already running for this thread, then register a fresh event.
+    # The sleep(0) yields to the event loop so the old pipeline's cancel propagates
+    # (CancelledError into its in-flight LangGraph task) before new DB work starts —
+    # reduces SQLAlchemy pool cleanup races that log CancelledError/TimeoutError.
+    cancel_stream(str(thread_id))
+    await asyncio.sleep(0)
     _cancel_ev = asyncio.Event()
     _active_streams[str(thread_id)] = _cancel_ev
 
@@ -578,6 +582,8 @@ async def retry_response(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     request_time = time.perf_counter()
+    cancel_stream(str(thread_id))
+    await asyncio.sleep(0)
     _cancel_ev = asyncio.Event()
     _active_streams[str(thread_id)] = _cancel_ev
 
@@ -645,6 +651,8 @@ async def edit_question(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     request_time = time.perf_counter()
+    cancel_stream(str(thread_id))
+    await asyncio.sleep(0)
     _cancel_ev = asyncio.Event()
     _active_streams[str(thread_id)] = _cancel_ev
 

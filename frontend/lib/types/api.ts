@@ -8,7 +8,7 @@
 export interface PipelineStep {
   node: string;
   message: string;
-  status: 'active' | 'done' | 'skipped';
+  status: 'active' | 'done' | 'skipped' | 'error';
   started_at_ms: number;
   duration_ms: number | null;
   reasoning?: string;
@@ -71,6 +71,11 @@ export interface MessageMetadata {
   token_usage?: TokenUsage;
   langfuse_trace_id?: string;
   langfuse_trace_url?: string;
+  confidence?: {
+    score: number;
+    label: 'High' | 'Medium' | 'Low';
+    explanation: string;
+  };
 }
 
 // ─── Response Types ───

@@ -522,6 +522,11 @@ RULES:
    if joining fact to fact, verify the key is unique on one side.
 3. Never change what is defined in QUERY INTENT above: tables joined, aggregation logic, metric
    definitions, or the semantic meaning of the query.
+3b. FILTER VALUES ARE DB CODES: Every filter value shown in QUERY INTENT is the exact string
+   stored in Redshift — already resolved by filter_resolver before this repair runs.
+   `balance_type = 'CLOSING'` means the column stores the string "CLOSING"; there is no row
+   where balance_type = 'Closing Balance'. `currency_code = 'USD'` stores "USD", not "US Dollar".
+   Never substitute, translate, humanize, or "correct" these values under any circumstances.
 4. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
    the corrected SQL — formatting, ordering, alias style. These override your defaults.
 
@@ -639,6 +644,15 @@ RULES:
    sequence for the first CTE — copy it verbatim. Every table referenced by column name must
    appear in a FROM or JOIN of that CTE; never write schema.table.column for a table that is not
    in the FROM or a JOIN. Never drop or invent tables.
+1c. MULTI-HOP JOIN PATHS: When AVAILABLE JOINS has an entry with hop_count >= 2 and path_tables,
+   the join requires intermediate bridge tables. Include ALL tables in path_tables in the FROM/JOIN
+   chain. The join_clauses list gives the complete JOIN sequence — emit them in order.
+   Bridge tables (path_tables[1:-1]) must appear in JOIN clauses but need no output columns.
+   Example: path_tables=[lpp.bank, lpp.bank_branch, lpp.bank_account],
+            join_clauses=["lpp.bank.code = lpp.bank_branch.bank_ref",
+                          "lpp.bank_branch.code = lpp.bank_account.branch_ref"]:
+     JOIN lpp.bank_branch bb ON <prior_table>.branch_ref = bb.code
+     JOIN lpp.bank b ON bb.bank_ref = b.code
 1b. LOW-CARDINALITY JOIN KEY: When ⚠ LOW-CARDINALITY JOIN KEY appears for a join in the
     PRE-COMPUTED JOIN CHAIN, you MUST add one or more of the listed narrowing candidate columns
     to that ON clause (e.g. AND t.company_ref = u.company_ref). Never remove tables or existing
@@ -646,7 +660,19 @@ RULES:
 2. Use PRE-COMPUTED JOIN CHAIN as shown. You may substitute a different ON clause ONLY when
    VOCABULARY OVERLAP HINTS in UNRESOLVED JOIN PAIRS provide a better-evidenced join column.
 2b. TIME FILTER in QUERY SPECIFICATION → add to WHERE clause verbatim. Never reinterpret or omit it.
-3. FILTER SYNTAX (3 tiers):
+3. FILTER TYPE ENFORCEMENT — check SCHEMA REFERENCE data_type BEFORE writing any predicate.
+   This rule OVERRIDES the [exact] tag when the value conflicts with the column's data_type:
+   • boolean / bool → value MUST be SQL literal TRUE or FALSE (unquoted, never quoted).
+     Mapping: affirmative terms (includes, actual, yes, true, 1, active, on) → TRUE
+              negative terms (excludes, estimated, no, false, 0, inactive, off, missing, non) → FALSE
+     Example: includes_actual = 'Includes Actual'  →  includes_actual = TRUE
+   • integer / bigint / smallint → value MUST be a plain integer literal (strip $, commas, spaces).
+     Example: amount = '$1,000'  →  amount = 1000
+   • numeric / decimal / float / double precision → numeric literal, allow decimal point (strip $, commas).
+     Example: rate = '3.5%'  →  rate = 3.5
+   • varchar / text with [enum: ...] in SCHEMA REFERENCE → value MUST exactly match one of the enum codes.
+     If QUERY SPECIFICATION has a label/description, map it to the nearest enum code.
+3b. FILTER SYNTAX (3 tiers):
    a. Column marked [enum: ...] in SCHEMA REFERENCE → EXACT match only:
         col = 'CODE'   or   col IN ('C1', 'C2')
       Map user's phrasing to nearest code in list. ILIKE is FORBIDDEN on enum columns.

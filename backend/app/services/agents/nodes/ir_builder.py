@@ -38,6 +38,99 @@ def _infer_temporal_grain(timeframe: str | None) -> str | None:
     return _TIMEFRAME_GRAIN.get(timeframe.lower().strip().replace(" ", "_"))
 
 
+def _resolve_boolean_value(raw_value: str) -> str:
+    """Map any human-readable label to SQL TRUE or FALSE for boolean columns."""
+    raw_lower = raw_value.strip().lower()
+    if raw_lower in ("true", "1", "yes", "t", "y", "on", "active", "enabled", "include", "includes"):
+        return "TRUE"
+    if raw_lower in ("false", "0", "no", "f", "n", "off", "inactive", "disabled", "exclude", "excludes"):
+        return "FALSE"
+    NEG = frozenset({"not", "no", "none", "false", "exclude", "excludes", "excluded",
+                     "without", "missing", "absent", "off", "inactive", "disabled", "non"})
+    if set(raw_lower.split()) & NEG:
+        return "FALSE"
+    return "TRUE"
+
+
+def _normalize_numeric(raw: str) -> str | None:
+    """Strip currency/formatting chars; return cleaned numeric string or None if not a number."""
+    import re
+    cleaned = re.sub(r"[$,\s]", "", str(raw).strip())
+    try:
+        float(cleaned)
+        return cleaned
+    except (ValueError, TypeError):
+        return None
+
+
+def _type_aware_filter_spec(
+    f: dict,
+    col_name: str,
+    raw_value: str,
+    raw_op: str,
+    semantic_context: dict,
+    is_having: bool,
+) -> "FilterSpec | None":
+    """Fast-path type dispatch for known column types.
+
+    Returns a FilterSpec for types we can resolve deterministically (boolean, numeric).
+    Returns None to fall through to the existing vocab-matching logic for all other types.
+    """
+    cols = semantic_context.get("columns") or []
+    col_meta = next(
+        (c for c in cols if c.get("table_fqn") == f["table_fqn"] and c.get("name") == col_name),
+        None,
+    )
+    if not col_meta:
+        return None
+
+    data_type = (col_meta.get("data_type") or "").lower().strip()
+
+    # Boolean: deterministic TRUE/FALSE — bypass vocab matching entirely
+    if "bool" in data_type:
+        bool_val = _resolve_boolean_value(raw_value)
+        logger.info("ir_builder | bool_filter | {}.{} | '{}' → {}", f["table_fqn"], col_name, raw_value, bool_val)
+        return FilterSpec(
+            table_fqn=f["table_fqn"],
+            column_name=col_name,
+            operator="=" if raw_op not in ("!=",) else "!=",
+            value=bool_val,
+            raw_user_value=raw_value,
+            resolved=True,
+            is_raw_sql=True,
+            is_having=is_having,
+        )
+
+    # Date/timestamp: skip here — filter_resolver temporal resolver handles these
+    if any(t in data_type for t in ("date", "timestamp", "datetime")):
+        return None
+
+    # Integer/numeric types: strip formatting chars, validate
+    _INT_TYPES = ("integer", "bigint", "smallint", "int2", "int4", "int8")
+    _DEC_TYPES = ("numeric", "decimal", "float", "double", "real")
+    is_numeric = (
+        data_type in _INT_TYPES
+        or data_type == "int"
+        or any(t in data_type for t in _DEC_TYPES)
+    )
+    if is_numeric:
+        clean = _normalize_numeric(raw_value)
+        if clean:
+            logger.info("ir_builder | numeric_filter | {}.{} | '{}' → {}", f["table_fqn"], col_name, raw_value, clean)
+            return FilterSpec(
+                table_fqn=f["table_fqn"],
+                column_name=col_name,
+                operator=raw_op if raw_op in (">", ">=", "<", "<=", "!=", "=") else "=",
+                value=clean,
+                raw_user_value=raw_value,
+                resolved=True,
+                is_raw_sql=True,
+                is_having=is_having,
+            )
+
+    return None
+
+
 def _normalize_fqn(fqn: str) -> str:
     """Trim 3-part FQNs to schema.table.
 
@@ -324,12 +417,45 @@ def _resolve_filter_values(
         return operator, raw_values
 
     filter_values = col_meta.get("filter_values") or []
-    if not filter_values:
+
+    # Build value_aliases map: {DB_code: human_name} from Neo4j list ["CLOSING -> Closing Balance"]
+    raw_aliases = col_meta.get("value_aliases") or []
+    alias_map: dict[str, str] = {}
+    for a in raw_aliases:
+        for sep in (" -> ", " → ", "->", "→"):
+            if sep in str(a):
+                parts = str(a).split(sep, 1)
+                alias_map[parts[0].strip()] = parts[1].strip()
+                break
+
+    if not filter_values and not alias_map:
         return operator, raw_values
 
     resolved, modes = [], []
     for raw in raw_values:
         raw_lower = str(raw).lower().strip()
+
+        # Alias reverse lookup: human label → DB code (runs even when filter_values is empty)
+        if alias_map:
+            # User said the human label (e.g., "Closing Balance") → return DB code ("CLOSING")
+            db_code = next((k for k, v in alias_map.items() if v.lower() == raw_lower), None)
+            if db_code:
+                logger.info("ir_builder | filter alias_reverse | {}.{} | {} → {}", table_fqn, column, raw, db_code)
+                resolved.append(db_code)
+                modes.append("exact")
+                continue
+            # User said the DB code directly (e.g., "CLOSING") → keep as-is
+            matched_key = next((k for k in alias_map if k.lower() == raw_lower), None)
+            if matched_key:
+                logger.info("ir_builder | filter alias_exact | {}.{} | {} → {}", table_fqn, column, raw, matched_key)
+                resolved.append(matched_key)
+                modes.append("exact")
+                continue
+
+        if not filter_values:
+            resolved.append(raw)
+            modes.append("unknown")
+            continue
 
         exact = next((fv for fv in filter_values if str(fv).lower() == raw_lower), None)
         if exact:
@@ -385,6 +511,12 @@ def _build_filter_specs(
         raw_value = f.get("raw_value", "")
         is_comparison = raw_op in _COMPARISON_OPS
         is_having = (f["table_fqn"], col_name) in agg_measure_cols
+
+        # Type-aware fast path: boolean, numeric — deterministic resolution, bypasses vocab matching
+        type_spec = _type_aware_filter_spec(f, col_name, raw_value, raw_op, semantic_context, is_having)
+        if type_spec is not None:
+            filters.append(type_spec)
+            continue
 
         already_a_pattern = raw_op in ("LIKE", "ILIKE") and isinstance(raw_value, str) and "%" in raw_value
         if not is_comparison and not already_a_pattern and raw_op in ("=", "IN", "LIKE", "ILIKE") and isinstance(raw_value, str):

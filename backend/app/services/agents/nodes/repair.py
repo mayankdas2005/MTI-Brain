@@ -23,7 +23,16 @@ Business logic, tables, filters, and metric definitions must stay identical. App
   c. Drop SELECT * and unused CTE columns.
   d. Replace DISTINCT with GROUP BY on explicit columns.
   e. Apply the LIMIT from the original QUERY SPECIFICATION; add LIMIT 100 if absent.
-  f. Flatten CTEs that read the same source into one."""
+  f. Flatten CTEs that read the same source into one.
+  g. CRITICAL — do NOT drop any JOIN that resolves an entity name filter. JOINs to reference
+     tables (e.g., lpp.bank, lpp.counterparty, lpp.currency) translate the user's entity name
+     (e.g., 'JPMorgan') into a DB code (e.g., 'BANK_JPM'). Removing them produces wrong data.
+     If ENTITY VALUE MATCHES appears in SCHEMA REFERENCE, those columns MUST remain in the JOIN chain.
+  h. CRITICAL — do NOT change or invent filter values. The QUERY INTENT section lists the
+     RESOLVED filter values — use them verbatim in the rewrite. If QUERY INTENT says
+     balance_type = 'CLOSING', keep exactly 'CLOSING'; never substitute 'Closing Balance' or
+     any other variant. If QUERY INTENT says branch_ref = 'BR_JPM_NY', keep 'BR_JPM_NY'.
+     Never fabricate reference codes that do not appear in QUERY INTENT or SCHEMA REFERENCE."""
 from app.services.agents.sql_validator_logic import validate_sql
 from app.services.agents.state import AnalyticsState
 
@@ -77,7 +86,7 @@ async def attempt_repair(
     error_msg = "; ".join(errors[:3])
 
     semantic_ir_text = _build_semantic_ir_text(first_ir)
-    schema_reference = _build_schema_reference_for_repair(sc)
+    schema_reference = _build_schema_reference_for_repair(sc, sql=first_sql)
     candidate_paths_section = _build_candidate_paths_section(first_ir)
 
     invalid_cols = _extract_invalid_columns(error_msg)
@@ -114,7 +123,11 @@ async def attempt_repair(
         error_message=error_msg,
         prior_attempts_detail=prior_attempts_detail,
         feedback_section=feedback_section,
-        performance_directive="",
+        performance_directive=_PERFORMANCE_DIRECTIVE if any(
+            kw in e.lower()
+            for e in errors
+            for kw in ("timeout", "canceling", "statement timeout", "query_timeout")
+        ) else "",
         anti_patterns=anti_patterns,
         candidate_paths_section=candidate_paths_section,
         reasoning_directive=REASONING_DIRECTIVE_REPAIR,
@@ -241,7 +254,7 @@ def _build_semantic_ir_text(ir_dict: dict) -> str:
             col = f"{f.get('table_fqn', '')}.{f.get('column_name', '')}"
             op = f.get("operator", "=")
             val = f.get("value", "")
-            filter_strs.append(f"{col} {op} '{val}'")
+            filter_strs.append(f"{col} {op} '{val}'  ← DB CODE (use verbatim, do not change)")
         lines.append(f"Filters:    {', '.join(filter_strs)}")
 
     valid_joins = [c for c in join_clauses if c]
@@ -251,31 +264,72 @@ def _build_semantic_ir_text(ir_dict: dict) -> str:
     return "\n".join(lines)
 
 
-def _build_schema_reference_for_repair(sc: dict) -> str:
+def _build_schema_reference_for_repair(sc: dict, sql: str = "") -> str:
     """Build structured SCHEMA REFERENCE for repair.
 
-    Intentionally minimal: table FQNs + column names + data types only.
-    Neo4j catalog descriptions are omitted — repair is a SQL correction task,
-    not a comprehension task. Descriptions add noise and may be stale.
+    Tables referenced in the failing SQL are shown in full (all columns).
+    All other tables are sampled (5 columns each) to keep the prompt focused.
+    The 25-column hard cap is replaced with per-table prioritization.
     """
     tables = sc.get("tables", [])
     columns = sc.get("columns", [])
 
     lines = ["--- SCHEMA REFERENCE ---", ""]
 
-    if tables:
-        lines.append("TABLES:")
-        for t in tables[:8]:
-            fqn = t.get("fqn", "")
-            lines.append(f"  {fqn}")
+    entity_hints = sc.get("entity_hints") or []
+    if entity_hints:
+        lines.append("ENTITY VALUE MATCHES (authoritative — these tokens matched schema vocabulary directly):")
+        for eh in entity_hints[:5]:
+            lines.append(
+                f"  '{eh.get('token')}' → {eh.get('table_fqn')}.{eh.get('column')}"
+                f" (matched: {str(eh.get('matched_value', ''))[:80]})"
+                " — JOIN to this table and filter on this column"
+            )
         lines.append("")
 
-    if columns:
-        lines.append("PRIMARY COLUMNS (use these to fix column names and types):")
-        for c in columns[:25]:
-            table_fqn = c.get("table_fqn", "")
+    if tables:
+        lines.append("TABLES:")
+        for t in tables[:10]:
+            lines.append(f"  {t.get('fqn', '')}")
+        lines.append("")
+
+    if not columns:
+        return "\n".join(lines)
+
+    # Extract short table names from the failing SQL for prioritization
+    sql_tables: set[str] = set()
+    if sql:
+        try:
+            import sqlglot
+            import sqlglot.expressions as exp
+            for stmt in sqlglot.parse(sql, dialect="redshift"):
+                for tbl in stmt.find_all(exp.Table):
+                    if tbl.name:
+                        sql_tables.add(tbl.name.lower())
+        except Exception:
+            pass
+
+    # Group columns by table_fqn; SQL-referenced tables sort first
+    from collections import defaultdict
+    by_table: dict[str, list] = defaultdict(list)
+    for c in columns:
+        fqn = c.get("table_fqn", "")
+        if fqn:
+            by_table[fqn].append(c)
+
+    lines.append("COLUMNS (tables in failing SQL shown in full; others sampled):")
+    for fqn, cols in sorted(
+        by_table.items(),
+        key=lambda kv: (kv[0].rsplit(".", 1)[-1] not in sql_tables, kv[0]),
+    ):
+        short = fqn.rsplit(".", 1)[-1]
+        in_sql = short in sql_tables
+        shown = cols if in_sql else cols[:5]
+        for c in shown:
             name = c.get("name", "")
             dtype = c.get("data_type", "")
-            lines.append(f"  {table_fqn}.{name:<45} {dtype}")
+            lines.append(f"  {fqn}.{name:<45} {dtype}")
+        if not in_sql and len(cols) > 5:
+            lines.append(f"  ... (+{len(cols) - 5} more columns in {fqn})")
 
     return "\n".join(lines)

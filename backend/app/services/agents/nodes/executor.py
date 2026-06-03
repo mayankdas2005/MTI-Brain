@@ -31,7 +31,7 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
         logger.warning("executor | no SQL to execute | thread={}", state["thread_id"])
         return {"error": "No SQL available to execute.", "no_data": True}
 
-    query_timeout = 60
+    query_timeout = 90
     result_list = []
     all_columns = []
     all_rows = []
@@ -103,6 +103,61 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     if total_rows == 0 and not all_errors:
         probe_result = await zero_row_probe(first_ir, state)
+        probe_type = probe_result.get("probe_type", "unknown")
+        zero_row_rewrite_count = state.get("zero_row_rewrite_count", 0)
+
+        if probe_type == "bad_join" and zero_row_rewrite_count == 0 and repair_count < 2:
+            logger.info(
+                "executor | zero-row bad join — attempting SQL repair | thread={}", state["thread_id"]
+            )
+            repair_result = await attempt_repair(
+                state, sql_list, ir_list,
+                [probe_result.get("reason", "The join produces 0 rows — fix the ON clause using candidate join paths.")],
+                repair_count, config,
+                schema_context=state.get("semantic_context") or {},
+            )
+            if repair_result:
+                return {**repair_result, "zero_row_rewrite_count": 1}
+
+        # Deterministic filter retry: strip the problematic filter(s) and re-execute.
+        # probe_type tells us exactly which strategy to use — max 1 extra Redshift query.
+        _RETRY_PROBE_TYPES = frozenset({"time_filter", "filter_mismatch", "filter_combo"})
+        if probe_type in _RETRY_PROBE_TYPES and zero_row_rewrite_count == 0:
+            relaxed_sql, retry_flag = _build_zero_row_retry_sql(sql_list[0], first_ir, probe_type)
+            if relaxed_sql:
+                try:
+                    relaxed = await _execute_single(relaxed_sql, ir_list[0], state, query_timeout, max_rows)
+                    relaxed_rows = relaxed.get("rows", [])
+                    if relaxed_rows:
+                        relaxed_summary = summarize_results(
+                            columns=relaxed.get("columns", []),
+                            rows=relaxed_rows,
+                            intent=first_ir.intent if first_ir else "",
+                            reliability_flags=[retry_flag],
+                        )
+                        logger.info(
+                            "executor | zero-row retry OK | probe={} | flag={} | rows={} | thread={}",
+                            probe_type, retry_flag, len(relaxed_rows), state["thread_id"],
+                        )
+                        asyncio.create_task(write_audit_log(state, relaxed_sql, len(relaxed_rows), "success"))
+                        return {
+                            "result_list": [{"index": 0, **relaxed}],
+                            "query_summary": relaxed_summary.model_dump(),
+                            "no_data": False,
+                            "zero_row_probe_result": probe_result.get("reason"),
+                            "reliability_flags": [retry_flag],
+                            "error": None,
+                            "execution_error": None,
+                            "_prev_repair_count": repair_count,
+                            "zero_row_rewrite_count": 1,
+                            "needs_clarification": False,
+                            "clarification_reason": None,
+                        }
+                except Exception as e:
+                    logger.warning(
+                        "executor | zero-row retry failed | probe={} | error={}", probe_type, e
+                    )
+
         if probe_result.get("needs_clarification"):
             return {
                 "result_list": result_list,
@@ -212,3 +267,81 @@ def _check_reliability(ir: SemanticIR | None, rows: list, flags: list[str]) -> l
                 flags.append("trend_insufficient_data")
 
     return flags
+
+
+# ── Zero-row retry helpers ────────────────────────────────────────────────────
+
+def _build_zero_row_retry_sql(sql: str, ir: SemanticIR | None, probe_type: str) -> tuple[str | None, str]:
+    """Return (relaxed_sql, reliability_flag) for the given probe_type.
+
+    time_filter  → strip only the time_filter column predicates (surgical)
+    filter_mismatch / filter_combo → strip all WHERE/HAVING (broad)
+    Falls back to broad strip if surgical strip fails or time_filter is not set.
+    """
+    if probe_type == "time_filter" and ir and ir.time_filter:
+        stripped = _strip_col_filter_sql(sql, ir.time_filter.column_name)
+        if stripped:
+            return stripped, "time_filter_relaxed"
+    stripped = _strip_all_where_filters(sql)
+    return stripped, "filters_relaxed"
+
+
+def _strip_col_filter_sql(sql: str, col_name: str) -> str | None:
+    """Remove all predicates referencing col_name from every WHERE clause in the SQL."""
+    import sqlglot
+    import sqlglot.expressions as exp
+    try:
+        stmt = sqlglot.parse_one(sql, dialect="redshift")
+        for sel in stmt.find_all(exp.Select):
+            where = sel.args.get("where")
+            if not where:
+                continue
+            new_cond = _drop_col_predicates(where.this, col_name)
+            sel.set("where", exp.Where(this=new_cond) if new_cond is not None else None)
+        return stmt.sql(dialect="redshift", pretty=True)
+    except Exception:
+        return None
+
+
+def _strip_all_where_filters(sql: str) -> str | None:
+    """Remove all WHERE and HAVING clauses from every SELECT in the SQL."""
+    import sqlglot
+    import sqlglot.expressions as exp
+    try:
+        stmt = sqlglot.parse_one(sql, dialect="redshift")
+        for sel in stmt.find_all(exp.Select):
+            sel.set("where", None)
+            sel.set("having", None)
+        return stmt.sql(dialect="redshift", pretty=True)
+    except Exception:
+        return None
+
+
+def _drop_col_predicates(node, col_name: str):
+    """Walk AND/OR predicate tree; remove any leaf that references col_name.
+
+    Returns None when the entire node should be dropped.
+    """
+    import sqlglot.expressions as exp
+    if node is None:
+        return None
+    # Leaf predicates: drop if they reference the target column
+    if isinstance(node, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between, exp.In)):
+        if any(c.name == col_name for c in node.find_all(exp.Column)):
+            return None
+        return node
+    # AND: propagate drops — if one arm drops, return the other
+    if isinstance(node, exp.And):
+        L = _drop_col_predicates(node.left, col_name)
+        R = _drop_col_predicates(node.right, col_name)
+        if L is None and R is None:
+            return None
+        return R if L is None else (L if R is None else exp.And(this=L, expression=R))
+    # OR: same treatment
+    if isinstance(node, exp.Or):
+        L = _drop_col_predicates(node.left, col_name)
+        R = _drop_col_predicates(node.right, col_name)
+        if L is None and R is None:
+            return None
+        return R if L is None else (L if R is None else exp.Or(this=L, expression=R))
+    return node

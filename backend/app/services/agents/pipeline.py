@@ -23,6 +23,7 @@ from app.services.agents.node_names import (
     NODE_STREAM,
     CHART_AGENT as N_CHART_AGENT,
     COMPRESS as N_COMPRESS,
+    ERROR_RESPONSE as N_ERROR_RESPONSE,
     EXECUTOR as N_EXECUTOR,
     SYNTHESIS as N_SYNTHESIS,
 )
@@ -35,7 +36,7 @@ _STATE_KEYS = {
     "semantic_context", "resolved_intent", "semantic_ir_list", "sql_list",
     "recompile_count", "repair_count", "filter_resolution_needed",
     "result_list", "query_summary", "no_data", "reliability_flags",
-    "low_confidence_filters", "zero_row_probe_result",
+    "low_confidence_filters", "zero_row_probe_result", "zero_row_rewrite_count",
     "answer", "chart_spec", "chart_type", "alternative_chart_specs", "follow_ups", "error", "stopped", "prior_sql",
 }
 
@@ -262,11 +263,28 @@ async def stream_pipeline(
     )
 
     lf_ctx.__enter__()
+    cancel_task: asyncio.Task | None = None
     try:
-        async for ev in graph.astream_events(initial, version="v2", config=config):
+        aiter = graph.astream_events(initial, version="v2", config=config).__aiter__()
+        cancel_task = asyncio.create_task(cancel_event.wait())
+        while True:
+            next_task = asyncio.create_task(aiter.__anext__())
+            done, _ = await asyncio.wait(
+                {next_task, cancel_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
             if cancel_event.is_set():
+                next_task.cancel()
+                try:
+                    await next_task
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
                 stopped = True
                 yield {"event": "stopped", "data": {"message": "Stopped by user"}}
+                break
+            try:
+                ev = next_task.result()
+            except StopAsyncIteration:
                 break
 
             if "|" in ev.get("metadata", {}).get("langgraph_checkpoint_ns", ""):
@@ -373,7 +391,7 @@ async def stream_pipeline(
 
                 if visit_key in _step_by_visit:
                     step = _pipeline_steps[_step_by_visit[visit_key]]
-                    step["status"]      = "done"
+                    step["status"]      = "error" if node == N_ERROR_RESPONSE else "done"
                     step["duration_ms"] = round(node_dur * 1000)
                     step["reasoning"]   = "".join(
                         "".join(_reasoning_entries[i]["tokens"])
@@ -504,6 +522,13 @@ async def stream_pipeline(
         yield {"event": "error", "data": {"message": "Something went wrong while processing your question. Please try again."}}
     finally:
         _active_streams.pop(thread_id, None)
+        # Clean up the cancel wait task if it's still pending
+        if cancel_task is not None and not cancel_task.done():
+            cancel_task.cancel()
+            try:
+                await cancel_task
+            except asyncio.CancelledError:
+                pass
         try:
             lf_ctx.__exit__(None, None, None)
         except Exception:

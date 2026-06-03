@@ -30,8 +30,12 @@ def resolve_tier1_combined(
 
     if isinstance(value_aliases, dict):
         for alias, canonical in value_aliases.items():
+            # Reverse lookup: user said the human label → return the DB code
+            if canonical.lower() == user_lower:
+                return alias, 100.0, []
+            # Forward lookup: user already said the DB code → return it (not the human name)
             if alias.lower() == user_lower:
-                return canonical, 100.0, []
+                return alias, 100.0, []
 
     for v in (filter_values or []):
         if str(v).lower() == user_lower:

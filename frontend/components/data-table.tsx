@@ -219,7 +219,7 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
                       <ContextMenu key={ci}>
                         <ContextMenuTrigger asChild>
                           <TableCell
-                            className={`text-xs whitespace-nowrap py-[var(--density-pad-y)] tabular-nums transition-colors ${isNumeric ? 'text-right font-medium' : ''} ${isFirst ? `sticky left-0 z-10 ${rowBg} md:static md:bg-transparent` : ''} ${isOutlier ? 'bg-warning-soft/50 text-foreground' : ''}`}
+                            className={`text-xs font-mono whitespace-nowrap py-[var(--density-pad-y)] tabular-nums transition-colors ${isNumeric ? 'text-right font-medium' : ''} ${isFirst ? `sticky left-0 z-10 ${rowBg} md:static md:bg-transparent` : ''} ${isOutlier ? 'bg-warning-soft/50 text-foreground' : ''}`}
                           >
                             <span className="inline-flex items-center gap-1 justify-end">
                               {cell === null || cell === undefined ? (

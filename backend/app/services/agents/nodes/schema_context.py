@@ -100,6 +100,48 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
     except Exception:
         pass
 
+    # Multi-hop JoinPath joins: fills pairs not covered by direct JOINS_TO edges.
+    # seen_pairs already populated from get_direct_joins — direct joins always take priority.
+    try:
+        multihop = neo4j_client.get_joinpath_joins(candidate_fqns)
+        bridge_stubs_added: set[str] = {t.get("fqn") for t in tables if t.get("fqn")}
+        for mj in multihop:
+            f_fqn, t_fqn = mj.get("from_fqn"), mj.get("to_fqn")
+            if not (f_fqn and t_fqn):
+                continue
+            pair = (min(f_fqn, t_fqn), max(f_fqn, t_fqn))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            available_joins.append({
+                "from": f_fqn,
+                "to": t_fqn,
+                "join_clauses": mj.get("join_clauses") or [],
+                "join_type": "JOIN",
+                "hop_count": mj.get("hop_count", 2),
+                "path_tables": mj.get("path_tables") or [],
+                "is_multihop": True,
+                "confidence": mj.get("quality_score"),
+            })
+            # Add intermediate bridge table stubs so sql_generator can reference them in FROM
+            for bridge_fqn in (mj.get("path_tables") or [])[1:-1]:
+                if bridge_fqn and bridge_fqn not in bridge_stubs_added:
+                    tables.append({
+                        "fqn": bridge_fqn,
+                        "name": bridge_fqn.rsplit(".", 1)[-1],
+                        "description": "bridge table for multi-hop join path",
+                        "table_type": "dimension",
+                    })
+                    bridge_stubs_added.add(bridge_fqn)
+        if multihop:
+            logger.info(
+                "schema_context | multihop_joins | count={} | pairs={}",
+                len(multihop),
+                [(mj.get("from_fqn"), mj.get("to_fqn")) for mj in multihop],
+            )
+    except Exception:
+        pass
+
     unresolved_pairs = []
     for i in range(len(ir.join_clauses)):
         if not ir.join_clauses[i] and i + 1 < len(ir.path_tables):

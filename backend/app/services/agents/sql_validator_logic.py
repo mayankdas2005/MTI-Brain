@@ -320,6 +320,182 @@ def try_fix_cte_refs(sql: str) -> str | None:
         return None
 
 
+def validate_column_names(sql: str, schema_columns: list[dict]) -> tuple[bool, str]:
+    """Gate 5: validate qualified column refs exist in the known schema.
+
+    Only fires when schema_columns is non-empty — degrades gracefully to (True, "")
+    when no schema info is available. Skips CTE-scoped refs (handled by gates 3.5/3.6).
+    Conservative: skips qualifiers that cannot be resolved to a known table.
+    """
+    if not schema_columns:
+        return True, ""
+
+    import sqlglot
+    import sqlglot.expressions as exp
+
+    # Build lookup: short_table_name_lower → {col_name_lower, ...}
+    #          and  full_table_fqn_lower   → {col_name_lower, ...}
+    schema_lookup: dict[str, set[str]] = {}
+    for col in schema_columns:
+        fqn = (col.get("table_fqn") or "").lower()
+        name = (col.get("name") or "").lower()
+        if not fqn or not name:
+            continue
+        short = fqn.rsplit(".", 1)[-1]          # "counterparty_exposure"
+        schema_lookup.setdefault(fqn, set()).add(name)
+        schema_lookup.setdefault(short, set()).add(name)
+
+    if not schema_lookup:
+        return True, ""
+
+    try:
+        statements = sqlglot.parse(sql, dialect="redshift")
+    except Exception:
+        return True, ""   # Gate 1 handles parse failures
+
+    if not statements:
+        return True, ""
+
+    stmt = statements[0]
+    cte_names: set[str] = {(cte.alias or "").lower() for cte in stmt.find_all(exp.CTE)}
+    errors: list[str] = []
+
+    for select in stmt.find_all(exp.Select):
+        # Build alias → short_table_name for this SELECT scope only
+        alias_map: dict[str, str] = {}
+        for table in select.find_all(exp.Table):
+            if table.find_ancestor(exp.Select) is not select:
+                continue
+            short = (table.name or "").lower()
+            if not short:
+                continue
+            if table.alias:
+                alias_map[table.alias.lower()] = short
+            alias_map[short] = short
+            if table.db:
+                alias_map[f"{table.db.lower()}.{short}"] = short
+
+        for col in select.find_all(exp.Column):
+            if col.find_ancestor(exp.Select) is not select:
+                continue
+            qualifier = (col.table or "").lower()
+            col_name = (col.name or "").lower()
+            if not qualifier or not col_name:
+                continue
+            if qualifier in cte_names:
+                continue   # CTE-scoped, handled by gates 3.5/3.6
+
+            resolved = alias_map.get(qualifier)
+            if resolved is None or resolved in cte_names:
+                continue   # unknown qualifier — be conservative, skip
+            if resolved not in schema_lookup:
+                continue   # table not in our schema (subquery alias, etc.)
+
+            available = schema_lookup[resolved]
+            if col_name not in available:
+                sample = ", ".join(sorted(available)[:12])
+                suffix = " ..." if len(available) > 12 else ""
+                errors.append(
+                    f"column '{col.table}.{col.name}' does not exist in '{resolved}'; "
+                    f"available: {sample}{suffix}"
+                )
+                if len(errors) >= 3:
+                    break
+        if len(errors) >= 3:
+            break
+
+    if errors:
+        return False, "Schema validation: " + " | ".join(errors)
+    return True, ""
+
+
+def validate_filter_types(sql: str, schema_columns: list[dict]) -> tuple[bool, str]:
+    """Gate 6: detect filter value type mismatches against column data types.
+
+    Currently catches boolean columns compared against non-boolean string literals,
+    e.g. `includes_actual = 'Includes Actual'` where includes_actual is boolean.
+
+    Returns (True, "") when valid or schema is empty/unparseable.
+    Returns (False, error_message) when a type mismatch is detected.
+    Conservative: only fires when the column is unambiguously boolean in the schema.
+    """
+    if not schema_columns:
+        return True, ""
+
+    bool_col_names: set[str] = set()
+    bool_cols_by_table: dict[str, set[str]] = {}
+
+    for c in schema_columns:
+        fqn = (c.get("table_fqn") or "").lower()
+        name = (c.get("name") or "").lower()
+        dtype = (c.get("data_type") or "").lower()
+        if not name or "bool" not in dtype:
+            continue
+        bool_col_names.add(name)
+        short = fqn.rsplit(".", 1)[-1] if "." in fqn else fqn
+        bool_cols_by_table.setdefault(short, set()).add(name)
+        bool_cols_by_table.setdefault(fqn, set()).add(name)
+
+    if not bool_col_names:
+        return True, ""
+
+    import sqlglot
+    import sqlglot.expressions as exp
+
+    _VALID_BOOL_STRINGS = {"true", "false", "1", "0", "t", "f", "yes", "no"}
+
+    try:
+        for stmt in sqlglot.parse(sql, dialect="redshift"):
+            if stmt is None:
+                continue
+
+            # Build alias → short table name map across all SELECT scopes
+            alias_map: dict[str, str] = {}
+            for select in stmt.find_all(exp.Select):
+                for table in select.find_all(exp.Table):
+                    if table.find_ancestor(exp.Select) is not select:
+                        continue
+                    short = (table.name or "").lower()
+                    if not short:
+                        continue
+                    if table.alias:
+                        alias_map[table.alias.lower()] = short
+                    alias_map[short] = short
+
+            for eq in stmt.find_all(exp.EQ):
+                left, right = eq.this, eq.expression
+                # Normalise: put column on left, literal on right
+                if isinstance(left, exp.Literal) and isinstance(right, exp.Column):
+                    left, right = right, left
+                if not isinstance(left, exp.Column):
+                    continue
+                if not isinstance(right, exp.Literal) or not right.is_string:
+                    continue
+
+                col_name = (left.name or "").lower()
+                qualifier = (left.table or "").lower()
+
+                is_bool = False
+                if qualifier:
+                    resolved = alias_map.get(qualifier, qualifier)
+                    if col_name in bool_cols_by_table.get(resolved, set()):
+                        is_bool = True
+                elif col_name in bool_col_names:
+                    is_bool = True
+
+                if is_bool:
+                    val = right.this
+                    if val.lower() not in _VALID_BOOL_STRINGS:
+                        return False, (
+                            f"Schema validation: column '{col_name}' is boolean — "
+                            f"use TRUE or FALSE instead of string literal '{val}'"
+                        )
+    except Exception:
+        pass
+
+    return True, ""
+
+
 def _has_cartesian_join(sql: str) -> bool:
     """Detect JOIN without ON or USING clause using sqlglot AST (CTE-safe)."""
     import sqlglot

@@ -32,7 +32,7 @@ export function chartColor(index: number): string {
  * PNG export in message-visualization.tsx can render it without CSS
  * variable resolution.
  */
-export const CHART_FONT = "'Geist', system-ui, sans-serif";
+export const CHART_FONT = "'Alliance No.1', sans-serif";
 
 export const CHART_TICK_FONT_SIZE = 11;
 

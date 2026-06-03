@@ -42,6 +42,7 @@ class AnalyticsState(TypedDict):
     reliability_flags: list[str]
     low_confidence_filters: list[dict]
     zero_row_probe_result: str | None     # human-readable explanation from Z2/Z3 probe
+    zero_row_rewrite_count: int           # tracks zero-row repair attempts (max 1) to prevent infinite loops
 
     # ── Output ───────────────────────────────────────────────────────────────
     answer: str

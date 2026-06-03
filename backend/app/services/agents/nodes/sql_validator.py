@@ -7,7 +7,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.sql_validator_logic import try_fix_cte_refs, validate_sql
+from app.services.agents.sql_validator_logic import try_fix_cte_refs, validate_sql, validate_column_names, validate_filter_types
 from app.services.agents.state import AnalyticsState
 
 
@@ -44,6 +44,28 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
             else:
                 errors.append(f"SQL #{i+1}: {error_msg}")
             failed_indices.append(i)
+
+    if not errors:
+        # Gate 5 — schema-aware column validation (only runs when Gates 1-3.6 pass)
+        schema_cols = (state.get("semantic_context") or {}).get("columns", [])
+        for i, sql in enumerate(fixed_sql_list):
+            if i in failed_indices:
+                continue
+            col_ok, col_err = validate_column_names(sql, schema_cols)
+            if not col_ok:
+                errors.append(f"SQL #{i+1}: {col_err}")
+                failed_indices.append(i)
+
+    if not errors:
+        # Gate 6 — filter type validation: boolean columns must use TRUE/FALSE, not string literals
+        schema_cols = (state.get("semantic_context") or {}).get("columns", [])
+        for i, sql in enumerate(fixed_sql_list):
+            if i in failed_indices:
+                continue
+            type_ok, type_err = validate_filter_types(sql, schema_cols)
+            if not type_ok:
+                errors.append(f"SQL #{i+1}: {type_err}")
+                failed_indices.append(i)
 
     if not errors:
         logger.info("sql_validator DONE | thread={} | all {} SQL(s) valid | auto_fixed={}", state["thread_id"], len(fixed_sql_list), auto_fixed)

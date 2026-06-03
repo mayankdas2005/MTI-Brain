@@ -60,7 +60,7 @@ interface MessageVisualizationProps {
 function getVegaThemeConfig(isDark: boolean): Record<string, unknown> {
   const labelColor = isDark ? '#9ca3af' : '#374151';
   const gridColor  = isDark ? '#374151' : '#e5e7eb';
-  const font       = 'Geist, system-ui, sans-serif';
+  const font       = "'Alliance No.1', sans-serif";
 
   return {
     range:  { category: [...CHART_PALETTE] },

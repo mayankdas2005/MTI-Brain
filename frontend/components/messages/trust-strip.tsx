@@ -1,6 +1,6 @@
 'use client';
 
-import { Database, Clock, Target, Rows3 } from 'lucide-react';
+import { Database, Clock, Target, Rows3, ShieldCheck } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -35,6 +35,8 @@ export interface TrustStripProps {
   } | null;
   /** Authoritative row count from the query. */
   rowCount?: number | null;
+  /** Confidence score from the backend — only present for SQL-backed answers. */
+  confidence?: { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string } | null;
 }
 
 /** Always show only the first table inline; the rest collapse into a "+N"
@@ -129,11 +131,13 @@ function SourceCell({ sources }: { sources: string[] }) {
 
 const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
+
 export function TrustStrip({
   sources,
   freshnessAt,
   metric,
   rowCount,
+  confidence,
 }: TrustStripProps) {
   const isStale =
     freshnessAt != null &&
@@ -204,6 +208,30 @@ export function TrustStrip({
         <span className="tabular-nums">
           {rowCount.toLocaleString('en-US')} {rowCount === 1 ? 'row' : 'rows'}
         </span>
+      </MetadataCell>,
+    );
+  }
+
+  if (confidence) {
+    const labelColor =
+      confidence.label === 'High'   ? 'text-emerald-600 dark:text-emerald-400' :
+      confidence.label === 'Medium' ? 'text-amber-600 dark:text-amber-400'     :
+                                      'text-red-600 dark:text-red-400';
+    cells.push(
+      <MetadataCell
+        key="confidence"
+        icon={<ShieldCheck className="w-3 h-3" />}
+        ariaLabel={`Confidence: ${confidence.label}`}
+        tooltip={
+          <div className="flex flex-col gap-1 max-w-xs">
+            <span className="text-[10px] uppercase tracking-wider opacity-60">
+              Confidence · {confidence.score} / 100
+            </span>
+            <span className="leading-relaxed">{confidence.explanation}</span>
+          </div>
+        }
+      >
+        <span className={`font-medium ${labelColor}`}>{confidence.label}</span>
       </MetadataCell>,
     );
   }

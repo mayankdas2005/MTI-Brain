@@ -516,14 +516,14 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
             section = "HAVING" if f.get("is_having") else "WHERE"
             lines.append(f"  {section}:   {clause}   {label}")
 
-        # Exact = filters: dates/numbers keep = ; string values use ILIKE %value%
+        # Exact = filters: numeric values unquoted, string values quoted
         for (tfqn, col), grp in exact_groups.items():
             section = "HAVING" if grp[0].get("is_having") else "WHERE"
             if len(grp) == 1:
                 val = grp[0].get("value", "")
-                lines.append(f"  {section}:   {tfqn}.{col} = '{val}'   [exact]")
+                lines.append(f"  {section}:   {tfqn}.{col} = {_sql_literal(val)}   [exact]")
             else:
-                vals = ", ".join(f"'{g.get('value', '')}'" for g in grp)
+                vals = ", ".join(_sql_literal(g.get("value", "")) for g in grp)
                 lines.append(f"  {section}:   {tfqn}.{col} IN ({vals})   [exact — multiple values, use IN]")
 
         for (tfqn, col), grp in fuzzy_groups.items():
@@ -605,6 +605,20 @@ Write this query as a senior Redshift DBA. Non-negotiable:
     return "\n".join(lines)
 
 
+def _is_numeric_value(v) -> bool:
+    """True if v is a bare number that must not be quoted in SQL."""
+    try:
+        float(str(v))
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _sql_literal(v) -> str:
+    """Quote v as a SQL string literal unless it is numeric or already a raw SQL expression."""
+    return str(v) if _is_numeric_value(v) else f"'{v}'"
+
+
 def _format_filter_line(f: dict) -> tuple[str, str]:
     """Return (clause_text, label) for a single non-ILIKE filter."""
     tfqn = f.get("table_fqn", "")
@@ -617,10 +631,10 @@ def _format_filter_line(f: dict) -> tuple[str, str]:
         return f"{tfqn}.{col} {op} {value}", ""
 
     if isinstance(value, list):
-        quoted = ", ".join(f"'{v}'" for v in value)
+        quoted = ", ".join(_sql_literal(v) for v in value)
         return f"{tfqn}.{col} IN ({quoted})", "[exact — multiple values, use IN]"
 
-    return f"{tfqn}.{col} {op} '{value}'", "[exact]"
+    return f"{tfqn}.{col} {op} {_sql_literal(value)}", "[exact]"
 
 
 def _build_schema_reference(schema_ctx: dict) -> str:
@@ -692,14 +706,25 @@ def _build_schema_reference(schema_ctx: dict) -> str:
         for j in available_joins:
             from_t = j.get("from", "")
             to_t = j.get("to", "")
-            join_type = j.get("join_type", "INNER JOIN")
-            clauses = j.get("join_clauses", [])
-            lines.append(f"  {from_t} → {to_t}")
-            for clause in clauses:
-                lines.append(f"    {join_type} {to_t} ON {clause}")
-                evidence = _get_join_overlap_evidence(clause, col_lookup)
-                if evidence:
-                    lines.append(f"    -- {evidence}")
+            join_type = j.get("join_type", "JOIN")
+            clauses = j.get("join_clauses") or []
+            path_tables = j.get("path_tables") or []
+            is_multihop = j.get("is_multihop", False)
+            hop_count = j.get("hop_count", 1)
+            if is_multihop and len(path_tables) >= 3:
+                # Multi-hop: show each intermediate table explicitly so LLM writes the full chain
+                lines.append(f"  {from_t} →({hop_count}-hop)→ {to_t} (via {', '.join(path_tables[1:-1])})")
+                for idx, clause in enumerate(clauses):
+                    # Pair clause to the table it joins: path_tables[idx] → path_tables[idx+1]
+                    join_target = path_tables[idx + 1] if idx + 1 < len(path_tables) else to_t
+                    lines.append(f"    {join_type} {join_target} ON {clause}")
+            else:
+                lines.append(f"  {from_t} → {to_t}")
+                for clause in clauses:
+                    lines.append(f"    {join_type} {to_t} ON {clause}")
+                    evidence = _get_join_overlap_evidence(clause, col_lookup)
+                    if evidence:
+                        lines.append(f"    -- {evidence}")
 
     return "\n".join(lines)
 

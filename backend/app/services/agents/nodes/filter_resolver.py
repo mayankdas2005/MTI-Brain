@@ -113,6 +113,10 @@ async def _resolve_filter(
         )
         return None, False
 
+    # Hard guarantee: replace any human-name alias value with DB code before all tiers.
+    # Runs unconditionally — even on filters already marked resolved=True by ir_builder.
+    f = _alias_normalize(f, column_meta)
+
     logger.debug(
         "filter_resolver | column_meta | table={} col={} | data_type={} semantic_type={}",
         f.table_fqn, f.column_name, column_meta.get("data_type"), column_meta.get("semantic_type"),
@@ -153,6 +157,16 @@ async def _resolve_filter(
                 "resolved": True,
             }), False
 
+    # Boolean safety net: catches any boolean filter that slipped through ir_builder
+    if "bool" in data_type:
+        from app.services.agents.nodes.ir_builder import _resolve_boolean_value
+        bool_val = _resolve_boolean_value(f.raw_user_value)
+        logger.info(
+            "filter_resolver | bool_safety_net | {}.{} | '{}' → {}",
+            f.table_fqn, f.column_name, f.raw_user_value, bool_val,
+        )
+        return f.model_copy(update={"value": bool_val, "is_raw_sql": True, "resolved": True}), False
+
     # Tier 1 Combined: aliases → exact → fuzzy (all against Redshift-probed filter_values)
     resolved_val, score, candidates = resolve_tier1_combined(f.raw_user_value, filter_values, value_aliases)
     if resolved_val and score >= 85 and not candidates:
@@ -160,17 +174,32 @@ async def _resolve_filter(
     if resolved_val and 70 <= score < 85:
         return f.model_copy(update={"value": resolved_val, "resolved": True}), True
 
-    # Tier 4: Live Redshift probe — ONLY when value_vocabulary was empty in Neo4j
-    # (numeric columns, very high cardinality, or columns that need re-enrichment)
-    if not filter_values and filter_selectivity != "high":
+    # Tier 4: Live Redshift probe — two cases:
+    # 4a) vocabulary empty → probe to populate it (existing behavior)
+    # 4b) vocabulary partial (has some values) but Tier 1 failed on a code/identifier column
+    #     → probe to catch entities not in stored max-100 values
+    # Skip free-text high-cardinality columns (descriptions, names) to avoid useless probes.
+    _CATEGORICAL_SEMANTICS = frozenset({"dimension", "flag", "code", "identifier", "category"})
+    _is_categorical = (
+        column_meta.get("semantic_type", "") in _CATEGORICAL_SEMANTICS
+        or "bool" in data_type
+        or filter_selectivity not in ("high",)
+    )
+    _CODE_SEMANTICS = frozenset({"code", "identifier"})
+    _partial_vocab = (
+        bool(filter_values) and not resolved_val
+        and column_meta.get("semantic_type", "") in _CODE_SEMANTICS
+    )
+    if (not filter_values and _is_categorical) or _partial_vocab:
+        _probe_reason = "partial_vocabulary" if _partial_vocab else "empty_vocabulary"
         logger.warning(
-            "filter_resolver | TIER4_REDSHIFT | {}.{} | value_vocabulary was empty — "
-            "this column may need re-enrichment in the ingestion pipeline",
-            f.table_fqn, f.column_name,
+            "filter_resolver | TIER4_REDSHIFT | {}.{} | reason={} | val={}",
+            f.table_fqn, f.column_name, _probe_reason, f.raw_user_value,
         )
         probe_result = await _run_redshift_probe(f.table_fqn, f.column_name, f.raw_user_value, state["thread_id"])
         if probe_result:
-            resolved_val, score, candidates = resolve_tier1_combined(f.raw_user_value, probe_result, value_aliases)
+            combined = list(dict.fromkeys([*filter_values, *probe_result]))
+            resolved_val, score, candidates = resolve_tier1_combined(f.raw_user_value, combined, value_aliases)
             if resolved_val and score >= 85 and not candidates:
                 return f.model_copy(update={"value": resolved_val, "resolved": True}), False
             if resolved_val and 70 <= score < 85:
@@ -259,6 +288,47 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
     except Exception as e:
         logger.warning("filter_resolver | tier5 failed | error={}", e)
     return None
+
+
+def _alias_normalize(f: FilterSpec, column_meta: dict) -> FilterSpec:
+    """Replace any human-name alias value with the DB code — runs on ALL filters unconditionally.
+
+    value_aliases format in Neo4j: ["CLOSING -> Closing Balance", ...]
+    key = DB code ("CLOSING"), value = human label ("Closing Balance").
+    If the filter value matches a human label, replace it with the DB code.
+    """
+    raw_aliases = column_meta.get("value_aliases") or []
+    alias_map: dict[str, str] = {}
+    for a in raw_aliases:
+        for sep in (" -> ", " → ", "->", "→"):
+            if sep in str(a):
+                parts = str(a).split(sep, 1)
+                alias_map[parts[0].strip()] = parts[1].strip()
+                break
+    if not alias_map:
+        return f
+
+    def _fix(v: str) -> str:
+        v_lower = v.lower()
+        for db_code, human_name in alias_map.items():
+            if human_name.lower() == v_lower:
+                return db_code
+        return v
+
+    val = f.value
+    if isinstance(val, str):
+        fixed = _fix(val)
+        if fixed != val:
+            logger.info(
+                "filter_resolver | alias_normalize | {}.{} | '{}' → '{}'",
+                f.table_fqn, f.column_name, val, fixed,
+            )
+            return f.model_copy(update={"value": fixed, "resolved": True})
+    elif isinstance(val, list):
+        fixed_list = [_fix(str(v)) for v in val]
+        if fixed_list != [str(v) for v in val]:
+            return f.model_copy(update={"value": fixed_list})
+    return f
 
 
 def _get_column_meta(table_fqn: str, col_name: str, state: AnalyticsState) -> dict:

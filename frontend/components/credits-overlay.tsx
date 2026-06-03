@@ -76,10 +76,10 @@ export function CreditsOverlay({ open, onClose }: CreditsOverlayProps) {
           {/* Hero card — CEO */}
           <div className="flex items-center gap-4 bg-amber-400/5 border border-amber-400/20 rounded-lg p-4 animate-fade-up">
             <div className="w-12 h-12 rounded-full bg-amber-400 flex items-center justify-center shrink-0">
-              <span className="text-[#0d0d0d] font-bold text-lg">MT</span>
+              <span className="text-[#0d0d0d] font-bold text-lg font-display">MT</span>
             </div>
             <div>
-              <p className="font-bold text-amber-400 text-lg tracking-wide leading-none mb-1">Leadership</p>
+              <p className="font-bold text-amber-400 text-lg tracking-wide leading-none mb-1 font-display">Leadership</p>
               <p className="text-[11px] text-white/40 tracking-widest font-mono mb-2">CEO &middot; MILESTONE TECHNOLOGIES</p>
               <p className="text-[13px] text-white/60 italic leading-relaxed">
                 &ldquo;We are the architects of the future for enterprise companies.&rdquo;

@@ -23,7 +23,7 @@ import type {
 export interface StreamingStep {
   node: string;
   message: string;
-  status: 'active' | 'done' | 'skipped';
+  status: 'active' | 'done' | 'skipped' | 'error';
   /** Wall-clock timestamp the client received node.start (used as a tiebreaker). */
   timestamp: number;
   /** Server-relative ms when this step started. Authoritative for ordering. */
@@ -242,6 +242,13 @@ function markStepDone(
     return s;
   });
   return found ? next : steps;
+}
+
+function markStepError(steps: StreamingStep[] | undefined): StreamingStep[] | undefined {
+  if (!steps) return steps;
+  return steps.map((s) =>
+    s.status === 'active' ? { ...s, status: 'error' as const } : s,
+  );
 }
 
 /** Replace streamingSteps with the authoritative final list from `done`. */
@@ -1197,6 +1204,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                   content: data.message || 'Something went wrong. Please try again.',
                   isStreaming: false,
                   conversation_id: data.conversation_id || '',
+                  streamingSteps: markStepError(m.streamingSteps),
                 }
               : m,
           );
@@ -1245,7 +1253,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                     ...m,
                     isStreaming: false,
                     metadata_: { ...m.metadata_, interrupted: true },
-                    streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })),
+                    streamingSteps: markStepError(m.streamingSteps),
                   }
                 : m,
             );
@@ -1545,7 +1553,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         set((state) => ({
           currentMessages: state.currentMessages.map((m) =>
             m.id === assistantMsgId
-              ? { ...m, content: data.message || 'Retry failed.', isStreaming: false, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) }
+              ? { ...m, content: data.message || 'Retry failed.', isStreaming: false, streamingSteps: markStepError(m.streamingSteps) }
               : m,
           ),
           streamingMessages: [],
@@ -1848,7 +1856,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         set((state) => ({
           currentMessages: state.currentMessages.map((m) =>
             m.id === assistantMsgId
-              ? { ...m, content: data.message || 'Edit failed.', isStreaming: false, streamingSteps: (m.streamingSteps || []).map((s) => ({ ...s, status: 'done' as const })) }
+              ? { ...m, content: data.message || 'Edit failed.', isStreaming: false, streamingSteps: markStepError(m.streamingSteps) }
               : m,
           ),
           streamingMessages: [],

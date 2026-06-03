@@ -237,3 +237,43 @@ def get_join_paths_by_ids(path_ids: list[str]) -> list[dict]:
     results = _neo4j_run(query, {"ids": path_ids})
     logger.debug("neo4j | fn=get_join_paths_by_ids | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r["jp"] or {}) for r in results]
+
+
+@neo4j_breaker
+def get_joinpath_joins(candidate_fqns: list[str]) -> list[dict]:
+    """Return multi-hop JoinPath paths where BOTH endpoints are in candidate_fqns.
+
+    Complements get_direct_joins — only called for pairs not covered by JOINS_TO edges.
+    Prefers Dijkstra (k_rank=1) over Yen's alternatives per endpoint pair.
+    quality_score >= 0.3 matches the discovery threshold in search_tables_via_joinpaths.
+    """
+    if len(candidate_fqns) < 2:
+        return []
+    query = """
+    MATCH (jp:JoinPath)
+    WHERE jp.from_fqn IN $fqns
+      AND jp.to_fqn IN $fqns
+      AND jp.hop_count >= 2
+      AND jp.quality_score >= 0.3
+    WITH jp.from_fqn AS from_fqn, jp.to_fqn AS to_fqn, COLLECT(jp) AS paths
+    WITH from_fqn, to_fqn,
+         COALESCE(
+           [p IN paths WHERE p.algorithm = 'dijkstra'][0],
+           paths[0]
+         ) AS best_path
+    WHERE best_path IS NOT NULL
+    RETURN from_fqn, to_fqn,
+           best_path.join_clauses  AS join_clauses,
+           best_path.path_tables   AS path_tables,
+           best_path.hop_count     AS hop_count,
+           best_path.quality_score AS quality_score
+    ORDER BY best_path.quality_score DESC
+    LIMIT 10
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"fqns": candidate_fqns})
+    logger.debug(
+        "neo4j | fn=get_joinpath_joins | ms={:.0f} | hits={}",
+        (time.monotonic() - t0) * 1000, len(results),
+    )
+    return [dict(r) for r in results]

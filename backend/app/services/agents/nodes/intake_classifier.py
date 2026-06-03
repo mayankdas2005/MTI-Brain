@@ -8,6 +8,7 @@ Three-layer classification:
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import re as _re
 
@@ -107,6 +108,19 @@ def _get_classifier_context() -> dict:
             "intent_list": _FALLBACK_INTENTS,
         }
     return _CLASSIFIER_CONTEXT
+
+
+async def warmup_classifier_context() -> None:
+    """Pre-populate the in-process + Redis context cache from Neo4j.
+
+    Called once at startup so the first real query hits L1 (in-process) cache.
+    """
+    ctx = await asyncio.to_thread(_get_classifier_context)
+    logger.info(
+        "warmup | intake_classifier context ready | domains={} | intents={}",
+        len((ctx.get("domain_list") or "").split(",")),
+        len((ctx.get("intent_list") or "").split("\n")),
+    )
 
 
 # ── State-derived prior-turn signal ───────────────────────────────────────────

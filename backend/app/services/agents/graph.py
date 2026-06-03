@@ -241,7 +241,41 @@ async def init_analytics_pipeline() -> None:
 
     _compiled_graph = compile_graph().compile(checkpointer=checkpointer, store=_memory_store)
 
+    # Fire background warmup tasks so the first real user query hits warm connections.
+    # These run after compilation and do not block startup.
+    import asyncio as _asyncio
+    _asyncio.create_task(_warmup_pipeline())
+
     logger.info("Neo4j analytics pipeline initialized")
+
+
+async def _warmup_pipeline() -> None:
+    """Pre-warm Bedrock connections and the intake_classifier context cache.
+
+    Runs as a fire-and-forget background task after init_analytics_pipeline().
+    Any failure is non-fatal — the first real user query will pay the cold-start cost instead.
+    """
+    import asyncio
+
+    async def _warmup_llms() -> None:
+        from app.services.agents.bedrock import get_llm
+        for tier in ("fast", "balanced"):
+            try:
+                llm = get_llm(tier)
+                await llm.ainvoke([{"role": "user", "content": "hi"}])
+                logger.info("warmup | Bedrock OK | tier={}", tier)
+            except Exception as e:
+                logger.warning("warmup | Bedrock failed (non-fatal) | tier={} | error={}", tier, e)
+
+    async def _warmup_classifier() -> None:
+        try:
+            from app.services.agents.nodes.intake_classifier import warmup_classifier_context
+            await warmup_classifier_context()
+        except Exception as e:
+            logger.warning("warmup | classifier context failed (non-fatal) | error={}", e)
+
+    await asyncio.gather(_warmup_llms(), _warmup_classifier(), return_exceptions=True)
+    logger.info("warmup | pipeline warmup complete")
 
 
 async def shutdown_analytics_pipeline() -> None:

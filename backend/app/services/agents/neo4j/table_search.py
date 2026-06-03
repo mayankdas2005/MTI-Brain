@@ -115,8 +115,8 @@ def search_tables_via_joinpaths(candidate_fqns: list[str]) -> list[dict]:
     query = f"""
     MATCH (jp:JoinPath)
     WHERE (jp.from_fqn IN $fqns OR jp.to_fqn IN $fqns)
-      AND jp.quality_score >= 0.8
-      AND jp.hop_count <= 1
+      AND jp.quality_score >= 0.3
+      AND jp.hop_count <= 3
     WITH jp,
          CASE WHEN jp.from_fqn IN $fqns THEN jp.to_fqn ELSE jp.from_fqn END AS target_fqn,
          CASE jp.algorithm WHEN 'dijkstra' THEN 0 ELSE jp.k_rank END AS path_priority
@@ -126,12 +126,87 @@ def search_tables_via_joinpaths(candidate_fqns: list[str]) -> list[dict]:
     MATCH (t:Table {{fqn: target_fqn}})
     RETURN {_TABLE_RETURN},
            best_jp.quality_score AS score,
-           (best_jp.from_fqn + ' -> ' + best_jp.to_fqn) AS matched_via
+           (best_jp.from_fqn + ' -> ' + best_jp.to_fqn) AS matched_via,
+           best_jp.join_clauses  AS join_clauses,
+           best_jp.path_tables   AS path_tables
     ORDER BY best_jp.quality_score DESC LIMIT 5
     """
     t0 = time.monotonic()
     results = _neo4j_run(query, {"fqns": candidate_fqns})
     logger.debug("neo4j | fn=search_tables_via_joinpaths | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_filter_values(tokens: list[str]) -> list[dict]:
+    """Path 9: find tables where question tokens match column value_aliases or distinct_values.
+
+    Primary: value_aliases items e.g. "BANK_JPM -> JPMorgan Chase" — catches human entity names
+    Fallback: distinct_values items when value_aliases is empty — catches code/enum values
+    Secondary: column description text — catches entity names mentioned in schema docs
+    Tokens < 4 chars excluded to avoid common word noise.
+    """
+    if not tokens:
+        return []
+    significant = list({t for t in tokens if len(t) >= 4})[:25]
+    if not significant:
+        return []
+    query = f"""
+    UNWIND $tokens AS token
+    MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+    WHERE (
+      (c.value_aliases IS NOT NULL AND SIZE(c.value_aliases) > 0
+        AND ANY(a IN c.value_aliases WHERE toLower(a) CONTAINS token))
+      OR
+      (
+        (c.value_aliases IS NULL OR SIZE(c.value_aliases) = 0)
+        AND c.distinct_values IS NOT NULL
+        AND ANY(v IN c.distinct_values WHERE toLower(v) CONTAINS token)
+      )
+      OR
+      (c.description IS NOT NULL AND toLower(c.description) CONTAINS token)
+    )
+    WITH t, c, token,
+         CASE
+           WHEN c.value_aliases IS NOT NULL AND SIZE(c.value_aliases) > 0
+             AND ANY(a IN c.value_aliases WHERE toLower(a) CONTAINS token)
+           THEN [a IN c.value_aliases WHERE toLower(a) CONTAINS token][0]
+           WHEN c.distinct_values IS NOT NULL
+             AND ANY(v IN c.distinct_values WHERE toLower(v) CONTAINS token)
+           THEN [v IN c.distinct_values WHERE toLower(v) CONTAINS token][0]
+           ELSE SUBSTRING(c.description, 0, 80)
+         END AS matched_item,
+         CASE
+           WHEN c.value_aliases IS NOT NULL AND SIZE(c.value_aliases) > 0
+             AND ANY(a IN c.value_aliases WHERE toLower(a) CONTAINS token)
+           THEN 3
+           WHEN c.distinct_values IS NOT NULL
+             AND ANY(v IN c.distinct_values WHERE toLower(v) CONTAINS token)
+           THEN 2
+           ELSE 1
+         END AS match_score
+    WHERE matched_item IS NOT NULL
+    WITH t, c.name AS matched_col, matched_item, token,
+         t.pagerank_score AS pagerank, match_score
+    ORDER BY match_score DESC, pagerank DESC
+    WITH t, COLLECT({{col: matched_col, item: matched_item, token: token}})[0] AS best_match,
+         MAX(pagerank) AS top_score,
+         MAX(match_score) AS top_match_score
+    RETURN {_TABLE_RETURN},
+           top_score AS score,
+           best_match.col   AS entity_matched_column,
+           best_match.item  AS entity_matched_value,
+           best_match.token AS entity_matched_token,
+           ('entity:' + best_match.col + '~=' + best_match.token) AS matched_via
+    ORDER BY top_match_score DESC, top_score DESC
+    LIMIT 8
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"tokens": significant})
+    logger.debug(
+        "neo4j | fn=search_tables_via_filter_values | ms={:.0f} | hits={}",
+        (time.monotonic() - t0) * 1000, len(results),
+    )
     return [dict(r) for r in results]
 
 
