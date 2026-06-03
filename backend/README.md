@@ -1,8 +1,8 @@
 # MTI Brain Backend
 
-FastAPI backend for **MTI Brain** — an AI-powered conversational data analytics platform for enterprise treasury intelligence. Provides JWT-authenticated REST APIs for user login, conversation thread management, and project organization, with Server-Sent Events (SSE) streaming support for real-time responses.
+FastAPI backend for **MTI Brain** — an AI-powered conversational data analytics platform for enterprise treasury intelligence. It exposes JWT-authenticated REST APIs with Server-Sent Events (SSE) streaming, backed by a multi-node LangGraph analytics pipeline that translates natural-language questions into SQL, executes them against Redshift, and streams back synthesized answers with chart specifications.
 
-The backend uses an async SQLAlchemy stack against PostgreSQL (with pgvector for embeddings and full-text search).
+---
 
 ## Tech Stack
 
@@ -10,163 +10,349 @@ The backend uses an async SQLAlchemy stack against PostgreSQL (with pgvector for
 |-------|-----------|
 | Framework | FastAPI + Uvicorn / Gunicorn |
 | Language | Python 3.12 |
-| App Database | PostgreSQL + SQLAlchemy (async) + Alembic |
-| Connection Driver | asyncpg |
+| Analytics Pipeline | LangGraph (13 nodes) |
+| LLM Provider | AWS Bedrock — Claude Sonnet, Haiku, Opus |
+| Embeddings | Cohere Embed v4 via AWS Bedrock (1536-dim) |
+| Knowledge Graph | Neo4j (schema graph — table/column/join discovery) |
+| Analytics DB | Amazon Redshift |
+| App Database | PostgreSQL + SQLAlchemy async + Alembic |
 | Vector Search | pgvector (1536-dim) on feedback embeddings |
-| Full-Text Search | PostgreSQL `tsvector` + GIN + `pg_trgm` + `dmetaphone` |
+| Full-Text Search | PostgreSQL `tsvector` + GIN + `pg_trgm` |
+| Caching | Redis |
 | Streaming | SSE via sse-starlette |
 | Auth | Username/password → JWT (PyJWT, HS256, 8-hour expiry) |
 | Resilience | Circuit breakers (pybreaker) + retries (tenacity) |
-| Logging | Loguru (structured, with request-ID and timing context) |
+| Logging | Loguru (structured, request-ID, timing) |
 | Observability | Langfuse (self-hosted) — LLM tracing, token usage, latency per node |
 | Containerization | Docker (multi-stage, non-root, Python 3.12-slim) |
+
+---
 
 ## Project Structure
 
 ```
 backend/
 ├── app/
-│   ├── main.py                  # FastAPI entry point + lifespan (pool warmup / dispose)
+│   ├── main.py                          # FastAPI entry point + lifespan (warmup / shutdown)
 │   ├── api/
-│   │   ├── health.py            # GET /health
+│   │   ├── health.py                    # GET /health, POST /admin/cache/flush
 │   │   └── v1/
-│   │       ├── __init__.py      # v1 router (/api/v1)
-│   │       ├── auth.py          # POST /auth/login, GET /auth/me
-│   │       ├── chat.py          # Thread management + SSE streaming
-│   │       ├── project.py       # Project CRUD
-│   │       ├── playbook.py      # Saved queries (Playbook) CRUD
-│   │       ├── pinned_metrics.py # Pinned metric cards CRUD
-│   │       ├── labels.py        # Thread label apply/remove
-│   │       ├── dashboard.py     # Per-conversation HTML dashboard (S3-backed)
-│   │       └── deps.py          # CurrentUser dependency (JWT validation)
+│   │       ├── __init__.py              # Router aggregation
+│   │       ├── auth.py                  # POST /login, GET /me
+│   │       ├── chat.py                  # Thread CRUD + SSE ask/retry/edit/stop
+│   │       ├── project.py               # Project CRUD + star/move
+│   │       ├── playbook.py              # Saved queries CRUD
+│   │       ├── pinned_metrics.py        # Pinned metric cards CRUD
+│   │       ├── labels.py                # Thread label apply/remove
+│   │       ├── dashboard.py             # Dashboard generate/retrieve/delete/download
+│   │       ├── graph_context.py         # Graph context generate/retrieve/delete/download
+│   │       └── deps.py                  # JWT dependency injection (get_current_user)
 │   ├── core/
-│   │   ├── config.py            # Pydantic Settings (all env vars)
-│   │   ├── logger.py            # Loguru configuration
-│   │   ├── middleware.py        # RequestIDMiddleware + TimingMiddleware + SecurityHeadersMiddleware
-│   │   ├── circuit_breaker.py   # pybreaker instances for external services
-│   │   ├── rate_limit.py        # Shared rate limiter used by route handlers
-│   │   └── langfuse_integration.py    # Langfuse client lifecycle + callback handler + context + score_trace
+│   │   ├── config.py                    # Pydantic Settings (config.yml + .env merge)
+│   │   ├── logger.py                    # Loguru configuration
+│   │   ├── middleware.py                # RequestID, Timing, SecurityHeaders (pure ASGI)
+│   │   ├── circuit_breaker.py           # pybreaker instances (LLM, embeddings, Neo4j, Redis, Postgres)
+│   │   ├── rate_limit.py                # slowapi limiter (5/min login, 30/min ask)
+│   │   └── langfuse_integration.py      # Langfuse lifecycle + callback handler
 │   ├── db/
-│   │   ├── session.py           # SQLAlchemy async engine + session factory + pool warmup + LangGraph DSN helper
-│   │   └── base.py              # Declarative ORM base
+│   │   ├── session.py                   # SQLAlchemy async engine + session factories
+│   │   ├── base.py                      # Declarative ORM base
+│   │   └── __init__.py
 │   ├── models/
-│   │   ├── conversation.py      # MTIBrainProject / MTIBrainThread / MTIBrainMessage / MTIBrainFeedback / MTIBrainDashboard
-│   │   ├── user.py              # MTIBrainUser
-│   │   ├── user_features.py     # UserSavedQuery / UserPinnedMetric / ThreadLabel
-│   │   └── execution_log.py     # MTIBrainExecutionLog (per-run telemetry, stores response_tone)
+│   │   ├── user.py                      # MTIBrainUser
+│   │   ├── conversation.py              # Project, Thread, Message, Feedback, Dashboard, GraphContext
+│   │   ├── user_features.py             # SavedQuery, PinnedMetric, ThreadLabel
+│   │   └── execution_log.py             # MTIBrainExecutionLog (pipeline telemetry)
 │   ├── schemas/
-│   │   ├── chat.py              # Pydantic request/response schemas for chat
-│   │   ├── project.py           # Pydantic schemas for projects
-│   │   └── user_features.py     # Schemas for Playbook / PinnedMetrics / Labels
+│   │   ├── chat.py                      # AskRequest, RetryRequest, EditRequest, ResponseTone
+│   │   ├── project.py                   # Project/Thread schemas
+│   │   └── user_features.py             # Playbook, PinnedMetric, Label schemas
 │   └── services/
-│       ├── auth.py              # Credential validation + JWT issue/decode + user upsert
-│       ├── embeddings.py        # pgvector embedding helpers (Cohere Embed v4 via Bedrock)
-│       ├── dashboard_builder.py # HTML dashboard generation + S3 upload/presign/delete
-│       ├── dashboard_prompt.py  # Prompt templates for dashboard content
-│       ├── agents/              # LangGraph pipeline
-│       │   ├── graph.py         # Graph construction, SSE streaming, active-stream registry
-│       │   ├── state.py         # Shared pipeline State TypedDict
-│       │   ├── bedrock.py       # AWS Bedrock LLM client wrappers (Sonnet/Haiku/Opus)
-│       │   ├── data_pool.py     # asyncpg / psycopg pool for LangGraph checkpointer
-│       │   ├── ontology_loader.py # Fuseki ontology loading at startup
-│       │   ├── fuseki_client.py # Async SPARQL HTTP client
-│       │   ├── prompts.py       # LLM prompt templates
-│       │   ├── helpers.py       # SectionStreamer / MultiSectionStreamer SSE helpers
-│       │   ├── validators.py    # Schema validation helpers
-│       │   └── nodes/           # One file per pipeline node
-│       │       ├── intake.py         # intake_classify / general_chat / rejected
-│       │       ├── domain.py         # domain_specialist_node
-│       │       ├── plan.py           # plan_node
-│       │       ├── plan_validator.py # plan_validator_node
-│       │       ├── executor.py       # executor_node (runs inner graph per sub-question)
-│       │       ├── step_reflector.py # step_reflector_node
-│       │       ├── final_reflector.py # final_reflector_node
-│       │       ├── repairer.py       # repairer_node
-│       │       ├── governance.py     # governance_gate_node
-│       │       ├── brain.py          # brain_retrieval_node
-│       │       ├── compress.py       # compress_node (context compression)
-│       │       ├── graph_reasoning.py # graph_reasoning_node
-│       │       ├── human_loop.py     # human_in_loop_node
-│       │       ├── ontology.py       # ontology_lookup_node
-│       │       ├── sparql_gen.py     # sparql_gen_node
-│       │       ├── sparql_validate.py # sparql_validate_node
-│       │       ├── sparql_execute.py  # sparql_execute_node
-│       │       ├── verifier.py       # verifier_node
-│       │       ├── synthesis.py      # answer_synthesis_node
-│       │       └── visualization.py  # visualization_node
+│       ├── auth.py                      # JWT creation/decode, user upsert
+│       ├── embeddings.py                # Cohere Embed v4 via AWS Bedrock
+│       ├── dashboard_builder.py         # HTML generation + S3 upload/presign
+│       ├── dashboard_prompt.py          # Prompt templates for dashboard synthesis
+│       ├── graph_context_builder.py     # Graph visualization generation + S3
+│       ├── agents/                      # LangGraph analytics pipeline
+│       │   ├── state.py                 # AnalyticsState TypedDict
+│       │   ├── graph.py                 # Graph compilation + lifecycle
+│       │   ├── bedrock.py               # AWS Bedrock LLM wrappers
+│       │   ├── pipeline.py              # SSE streaming + active stream registry
+│       │   ├── prompts.py               # All LLM prompt templates
+│       │   ├── routing.py               # Conditional edge routing logic
+│       │   ├── redis_client.py          # Redis cache client
+│       │   ├── neo4j_client.py          # Neo4j driver + connection pooling
+│       │   ├── redshift_client.py       # Redshift connection + query execution
+│       │   ├── nodes/                   # 13 pipeline node implementations
+│       │   │   ├── intake_classifier.py
+│       │   │   ├── general_chat.py
+│       │   │   ├── context_fetcher.py
+│       │   │   ├── intent_resolver.py
+│       │   │   ├── ir_builder.py
+│       │   │   ├── query_compiler.py
+│       │   │   ├── filter_resolver.py
+│       │   │   ├── sql_generator.py
+│       │   │   ├── sql_validator.py
+│       │   │   ├── executor.py
+│       │   │   ├── synthesis.py
+│       │   │   ├── chart_agent.py
+│       │   │   ├── error_response.py
+│       │   │   ├── compress.py
+│       │   │   ├── zero_row_probe.py
+│       │   │   ├── repair.py
+│       │   │   └── audit.py
+│       │   ├── neo4j/                   # Neo4j schema exploration helpers
+│       │   │   ├── client.py
+│       │   │   ├── table_search.py
+│       │   │   ├── column_search.py
+│       │   │   ├── join_resolution.py
+│       │   │   ├── hub_detection.py
+│       │   │   ├── template_search.py
+│       │   │   └── write.py
+│       │   ├── context/                 # Context enrichment
+│       │   │   ├── fetcher.py
+│       │   │   ├── table_discovery.py
+│       │   │   ├── column_loader.py
+│       │   │   ├── cross_domain.py
+│       │   │   └── helpers.py
+│       │   ├── memory/                  # Conversation memory
+│       │   │   ├── short_term.py
+│       │   │   └── long_term.py
+│       │   └── ir/                      # Intermediate representation
+│       │       └── validation.py
 │       ├── chat/
-│       │   ├── conversation.py  # Thread/message/project CRUD + 3-layer search
-│       │   └── feedback.py      # Feedback storage + pgvector similarity
+│       │   ├── conversation.py          # Thread CRUD, 3-layer search
+│       │   └── feedback.py              # Feedback storage + similarity
 │       ├── user/
-│       │   ├── labels.py        # Thread label CRUD
-│       │   ├── pinned_metrics.py # Pinned metric CRUD
-│       │   └── playbook.py      # Saved query CRUD
+│       │   ├── playbook.py
+│       │   ├── pinned_metrics.py
+│       │   └── labels.py
 │       ├── analysis/
-│       │   └── sql.py           # Trust-strip: source table extraction via sqlglot (Snowflake dialect)
+│       │   └── sql.py                   # sqlglot trust-strip (source table extraction)
 │       └── health/
-│           └── service.py       # Circuit-breaker-protected Postgres health check
+│           └── service.py               # Postgres / Neo4j / Redis health checks
 ├── alembic/
-│   ├── env.py                   # Imports all model modules so autogenerate sees every table
+│   ├── env.py
 │   └── versions/
-│       └── 0001_baseline.py     # Single baseline: extensions + tables + search_vector triggers
+│       └── 0001_baseline.py             # Full schema baseline migration
 ├── scripts/
-│   └── render_graph.py          # Utility: export pipeline graph diagram
-├── requirements.txt
-├── Dockerfile
+│   └── render_graph.py                  # Export pipeline DAG diagram
 ├── alembic.ini
-└── .env.example
+├── config.yml                           # Non-secret configuration (committed)
+├── .env.example                         # Secrets template (not committed)
+├── Dockerfile
+├── requirements.txt
+└── node_names.yml                       # Node label overrides for graph rendering
 ```
 
-## API Endpoints
+---
 
-All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT in the `Authorization: Bearer <token>` header.
+## Getting Started
 
-### Health
+### Prerequisites
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Returns `200 healthy` or `503 unhealthy` based on Postgres status |
+- Python 3.12
+- PostgreSQL 15+ with extensions: `pgvector`, `pg_trgm`, `fuzzystrmatch`
+- Neo4j 5+ (bolt)
+- Redis 7+
+- Amazon Redshift (or compatible endpoint)
+- AWS credentials with Bedrock access (Claude + Cohere Embed v4)
+- AWS S3 bucket for dashboard/graph-context storage
 
-### Auth (`/api/v1/auth`)
+### Installation
 
-> **Okta OIDC migration is planned.** The `MTIBrainUser` model already carries `okta_id` (unique, nullable), but the active flow is still credential-based via `app/services/auth.py`.
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-| Method | Path | Auth required | Description |
-|--------|------|---------------|-------------|
-| POST | `/login` | No | Exchange username + password for JWT |
-| GET | `/me` | Yes | Current user profile |
+### Configuration
+
+Configuration is split into two files:
+
+| File | Contains | Committed? |
+|------|----------|-----------|
+| `config.yml` | Non-secret settings (ports, pool sizes, feature flags) | Yes |
+| `.env` | Secrets (passwords, API keys, ARNs) | No — use `.env.example` as template |
+
+Copy the secrets template and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+### Run Locally
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Interactive docs available at `http://localhost:8000/docs`.
+
+### Database Migrations
+
+```bash
+alembic upgrade head
+```
+
+### Run with Docker
+
+```bash
+docker build -t mti-brain-backend .
+docker run --env-file .env -p 8000:8000 mti-brain-backend
+```
+
+---
+
+## Configuration Reference
+
+### `.env` — Secrets
+
+| Variable | Description |
+|----------|-------------|
+| `POSTGRES_USER` | PostgreSQL username |
+| `POSTGRES_PASSWORD` | PostgreSQL password |
+| `POSTGRES_HOST` | PostgreSQL host (or PgBouncer host) |
+| `POSTGRES_DB` | PostgreSQL database name |
+| `JWT_SECRET` | JWT signing secret (minimum 32 characters) |
+| `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock bearer token |
+| `AWS_REGION` | AWS region (e.g. `us-west-2`) |
+| `AWS_BEDROCK_SONNET_ARN` | Claude Sonnet cross-region inference profile ARN |
+| `AWS_BEDROCK_HAIKU_ARN` | Claude Haiku cross-region inference profile ARN |
+| `AWS_BEDROCK_OPUS_ARN` | Claude Opus cross-region inference profile ARN |
+| `AWS_BEDROCK_COHERE_EMBED_V4_ARN` | Cohere Embed v4 ARN |
+| `AWS_ACCESS_KEY_ID` | AWS access key ID |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret access key |
+| `AWS_BOTO3_BUCKET_NAME` | S3 bucket for dashboards and graph context files |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse project public key |
+| `LANGFUSE_SECRET_KEY` | Langfuse project secret key |
+| `LANGFUSE_BASE_URL` | Langfuse server URL (default: `http://localhost:3100`) |
+| `NEO4J_URI` | Neo4j bolt URL (e.g. `bolt://localhost:7687`) |
+| `NEO4J_USER` | Neo4j username |
+| `NEO4J_PASSWORD` | Neo4j password |
+| `NEO4J_DB` | Neo4j database name |
+| `REDSHIFT_USER` | Redshift username |
+| `REDSHIFT_PASSWORD` | Redshift password |
+| `REDSHIFT_HOST` | Redshift cluster host |
+| `REDSHIFT_PORT` | Redshift port (default: `5439`) |
+| `REDSHIFT_DB` | Redshift database name |
+| `REDSHIFT_SCHEMA` | Redshift schema |
+| `REDIS_HOST` | Redis host |
+| `REDIS_PASSWORD` | Redis password |
+| `REDIS_PORT` | Redis port (default: `6379`) |
+| `REDIS_URL` | Full Redis connection URL |
+
+### `config.yml` — Non-Secret Settings
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `ENVIRONMENT` | `development` | `development` or `production` |
+| `DEBUG` | `false` | Enable debug mode |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed browser origins |
+| `POSTGRES_PORT` | `5432` | PostgreSQL port |
+| `DATABASE_SSL_MODE` | `disable` | `disable`, `require`, `verify-ca`, `verify-full` |
+| `DATABASE_SSL_ROOT_CERT` | `""` | Path to CA certificate |
+| `DB_POOL_SIZE` | `2` | SQLAlchemy base pool size |
+| `DB_MAX_OVERFLOW` | `8` | Max overflow connections |
+| `DB_POOL_RECYCLE` | `500` | Recycle connections older than N seconds |
+| `DB_POOL_TIMEOUT` | `30` | Wait timeout for free connection (seconds) |
+| `CHECKPOINT_POOL_MIN` | `1` | LangGraph checkpoint psycopg3 pool minimum |
+| `CHECKPOINT_POOL_MAX` | `5` | LangGraph checkpoint psycopg3 pool maximum |
+| `CB_FAIL_MAX` | `5` | Circuit breaker failure threshold |
+| `CB_RESET_TIMEOUT` | `30` | Circuit breaker reset timeout (seconds) |
+| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
+| `JWT_EXPIRY_HOURS` | `8` | JWT token lifetime (hours) |
+| `RATE_LIMIT_LOGIN_PER_MINUTE` | `5` | Login rate limit per IP |
+| `RATE_LIMIT_ASK_PER_MINUTE` | `30` | Ask/retry/edit rate limit per IP |
+| `LLM_ROUTING_ENABLED` | `true` | Enable model-tier routing in the pipeline |
+| `AWS_BEDROCK_PROMPT_CACHE` | `true` | Enable Bedrock prompt caching |
+| `PIPELINE_RECURSION_LIMIT` | `80` | LangGraph recursion limit |
+| `NEO4J_MAX_POOL_SIZE` | `10` | Neo4j driver connection pool size |
+| `NEO4J_CONNECTION_TIMEOUT` | `10.0` | Neo4j connection timeout (seconds) |
+| `NEO4J_ACQUISITION_TIMEOUT` | `10.0` | Neo4j pool acquisition timeout (seconds) |
+| `REDIS_MAX_CONNECTIONS` | `20` | Redis connection pool size |
+| `REDIS_HEALTH_CHECK_INTERVAL` | `30` | Redis health check interval (seconds) |
+| `LANGFUSE_ENABLED` | `false` | Enable Langfuse LLM tracing |
+
+---
+
+## API Reference
+
+All endpoints under `/api/v1/*` require `Authorization: Bearer <token>` except `/api/v1/auth/login`.
+
+### Health & Admin
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/health` | No | Readiness probe — returns status of Postgres, Neo4j, Redis, and circuit breakers |
+| `POST` | `/admin/cache/flush` | Yes | Flush all Redis keys |
+
+**Health response:**
+```json
+{
+  "status": "ok",
+  "postgres": "ok",
+  "neo4j": "ok",
+  "redis": "ok",
+  "circuit_breakers": { "postgres": "closed", "llm": "closed", ... }
+}
+```
+
+---
+
+### Auth — `/api/v1/auth`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/v1/auth/login` | No | Exchange credentials for JWT |
+| `GET` | `/api/v1/auth/me` | Yes | Get current user profile |
 
 **Login request:**
 ```json
-{ "username": "admin", "password": "admin123" }
+{ "username": "admin@milestone.tech", "password": "..." }
 ```
 
-> **Development note:** Credentials are currently hardcoded in `app/services/auth.py`. Do not deploy with default credentials in production.
+**Login response:**
+```json
+{
+  "token": "<jwt>",
+  "user": { "user_id": "...", "email": "...", "name": "...", "groups": [...] }
+}
+```
 
-### Chat (`/api/v1/chat`)
+---
+
+### Chat — `/api/v1/chat`
+
+#### Thread Management
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/new` | Create a new conversation thread |
-| GET | `/recents` | List / search recent threads (`search`, `project_id`, `limit`, `offset`) |
-| POST | `/bulk/delete` | Bulk delete threads |
-| POST | `/bulk/move` | Bulk move threads to a project |
-| GET | `/{thread_id}` | Get thread with all messages |
-| DELETE | `/{thread_id}` | Delete a thread |
-| PATCH | `/{thread_id}/star` | Toggle thread star |
-| PATCH | `/{thread_id}/rename` | Rename thread |
-| PATCH | `/{thread_id}/move` | Move thread to a project |
-| POST | `/{thread_id}/ask` | Ask a question (SSE streaming) |
-| POST | `/{thread_id}/retry` | Retry last response (SSE streaming) |
-| POST | `/{thread_id}/edit` | Edit last question (SSE streaming) |
-| POST | `/{thread_id}/stop` | Stop active stream |
-| POST | `/{thread_id}/conversations/{conversation_id}/feedback` | Submit thumbs-up/down + comment |
+| `POST` | `/api/v1/chat/new` | Create a new conversation thread |
+| `GET` | `/api/v1/chat/recents` | List/search recent threads (`?search=&project_id=&limit=&offset=`) |
+| `GET` | `/api/v1/chat/{thread_id}` | Get thread with all messages |
+| `DELETE` | `/api/v1/chat/{thread_id}` | Delete a thread |
+| `PATCH` | `/api/v1/chat/{thread_id}/star` | Toggle thread star |
+| `PATCH` | `/api/v1/chat/{thread_id}/rename` | Rename thread |
+| `PATCH` | `/api/v1/chat/{thread_id}/move` | Move thread to a project |
+| `POST` | `/api/v1/chat/bulk/delete` | Bulk delete threads |
+| `POST` | `/api/v1/chat/bulk/move` | Bulk move threads to a project |
 
-#### Ask Request Body (`POST /{thread_id}/ask`)
+#### SSE Streaming
 
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/chat/{thread_id}/ask` | Ask a question — SSE streaming response |
+| `POST` | `/api/v1/chat/{thread_id}/retry` | Retry the last question — SSE streaming |
+| `POST` | `/api/v1/chat/{thread_id}/edit` | Edit the last question — SSE streaming |
+| `POST` | `/api/v1/chat/{thread_id}/stop` | Cancel an active stream |
+
+**Ask request body:**
 ```json
 {
-  "question": "What is our total cash balance as of yesterday?",
+  "question": "What were total cash inflows last quarter?",
   "response_tone": "analyst",
   "max_rows": 100,
   "deep_analysis": false,
@@ -175,477 +361,353 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require a valid JWT
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `question` | string | required | User's natural-language question (1–2000 chars) |
-| `response_tone` | string | `"analyst"` | One of `analyst`, `manager`, `director`, `executive` |
-| `max_rows` | int | `100` | Result row limit (10–500) |
-| `deep_analysis` | bool | `false` | When `true`, the pipeline uses extended multi-step reasoning (slower, more thorough) |
-| `source_conversation_id` | UUID \| null | `null` | ID of the prior assistant turn this question follows from (for version branching) |
-| `prior_sql` | string \| null | `null` | SQL from a specific prior answer to refine ("Refine this query" flow) |
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `question` | string | 1–2000 chars | required |
+| `response_tone` | string | `analyst` \| `manager` \| `director` \| `executive` | `analyst` |
+| `max_rows` | integer | 10–500 | `100` |
+| `deep_analysis` | boolean | — | `false` |
+| `source_conversation_id` | uuid \| null | For version branching | `null` |
+| `prior_sql` | string \| null | SQL to refine (Refine this query flow) | `null` |
 
-### Projects (`/api/v1/projects`)
+**SSE event stream:**
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | List all projects (`search` query param) |
-| POST | `/create` | Create a project |
-| GET | `/{project_id}` | Get project with its threads |
-| PUT | `/{project_id}` | Update name / description |
-| DELETE | `/{project_id}` | Delete project (threads are unlinked, not deleted) |
-| PATCH | `/{project_id}/star` | Toggle project star |
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `context` | `{ "tables": [...] }` | Schema context resolved from Neo4j |
+| `status` | `{ "message": "..." }` | Pipeline progress updates |
+| `token` | `{ "text": "..." }` | Streamed answer tokens |
+| `chart` | `{ "spec": {...} }` | Vega-Lite chart specification |
+| `done` | `{ "conversation_id": "...", "sql": "...", "rows": [...], "langfuse_trace_id": "..." }` | Final result |
 
-### Playbook (`/api/v1/playbook`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | List saved queries for the current user |
-| POST | `/` | Create a saved query |
-| PATCH | `/{query_id}` | Update a saved query |
-| DELETE | `/{query_id}` | Delete a saved query |
-
-### Pinned Metrics (`/api/v1/pinned-metrics`)
+#### Feedback
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | List pinned metric cards for the current user |
-| POST | `/` | Pin a new metric |
-| PATCH | `/{metric_id}` | Update a pinned metric (label, position, source query) |
-| DELETE | `/{metric_id}` | Remove a pinned metric |
+| `POST` | `/api/v1/chat/{thread_id}/conversations/{conversation_id}/feedback` | Submit thumbs up/down |
 
-### Labels (`/api/v1/labels`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | List all labels the user has applied across all threads |
-| GET | `/thread/{thread_id}` | List labels applied to a specific thread |
-| POST | `/thread/{thread_id}` | Apply a label to a thread |
-| DELETE | `/thread/{thread_id}/{label_id}` | Remove a label from a thread |
-
-### Dashboard (`/api/v1/dashboard`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/generate/{conversation_id}` | Queue background HTML dashboard generation; returns `202` immediately |
-| GET | `/{conversation_id}` | Poll status (`pending` / `ready` / `error`) and retrieve S3 presigned URL |
-| DELETE | `/{conversation_id}` | Remove dashboard from S3 and the database |
-| GET | `/{conversation_id}/download` | Stream the generated dashboard file as a direct download (`Content-Disposition: attachment`) |
-
-### API Docs
-
-| URL | Description |
-|-----|-------------|
-| `http://localhost:8000/docs` | Swagger UI |
-| `http://localhost:8000/redoc` | ReDoc |
-| `http://localhost:8000/openapi.json` | OpenAPI spec |
-
-## Schema Reference
-
-### ResponseTone
-
-```python
-ResponseTone = Literal["analyst", "manager", "director", "executive"]
+**Feedback request:**
+```json
+{ "liked": true, "comment": "Accurate breakdown by entity." }
 ```
-
-| Value | Meaning |
-|-------|---------|
-| `analyst` | Data-driven, detailed breakdowns (default) |
-| `manager` | Actionable insights with context |
-| `director` | Strategic summaries with key metrics |
-| `executive` | High-level, decision-ready answers |
-
-> **Note:** The tone is passed through to the pipeline and stored in `execution_log.response_tone`. The backend does not currently branch pipeline logic on this value — it is available for the LLM prompt to use.
-
-### Deep Analysis
-
-When `deep_analysis: true` is sent, `_build_sse_generator` receives the flag and can activate extended reasoning in the LLM call. The flag is stored in `execution_log` for telemetry. Currently the flag is wired end-to-end but pipeline branching on it is pending LLM integration work.
-
-## Database Models
-
-| Model | Table | Purpose |
-|-------|-------|---------|
-| **MTIBrainUser** | `mti_brain_user` | User record keyed by email. Fields: `id`, `okta_id`, `email`, `name`, `groups` (JSONB), `organization`, `last_login`, `created_at`. |
-| **MTIBrainProject** | `mti_brain_project` | Named collection of threads. Fields: `id`, `user_id`, `name`, `description`, `starred`, `search_vector` (tsvector GIN), timestamps. |
-| **MTIBrainThread** | `mti_brain_thread` | Conversation thread. Fields: `id`, `user_id`, `project_id`, `title`, `starred`, `search_vector` (tsvector GIN). |
-| **MTIBrainMessage** | `mti_brain_message` | Individual user or assistant message. Fields: `id`, `thread_id`, `conversation_id`, `parent_conversation_id`, `role`, `content`, `reasoning`, `metadata` (JSONB: `sql`, `chart_spec`, `intent`, `columns`, `rows`, `follow_ups`, etc.), `search_vector`. |
-| **MTIBrainFeedback** | `mti_brain_feedback` | Thumbs-up/down + optional comment. Fields: `id`, `message_id`, `thread_id`, `liked`, `comment`, `embedding` (Vector 1536). |
-| **MTIBrainDashboard** | `mti_brain_dashboard` | Per-conversation HTML dashboard record. Fields: `id`, `conversation_id`, `user_id`, `status` (`pending`/`ready`/`error`), `s3_key`, `s3_url`, `error_msg`, timestamps. |
-| **MTIBrainExecutionLog** | `mti_brain_execution_log` | Per-run telemetry. Includes `response_tone` (string, max 30 chars) and `deep_analysis` fields for analytics. |
-| **UserSavedQuery** | `mti_brain_saved_query` | Playbook entry. Fields: `id`, `user_id`, `name` (max 255), `query_text`, timestamps. |
-| **UserPinnedMetric** | `mti_brain_pinned_metric` | Home-page metric card. Fields: `id`, `user_id`, `label`, `source_query`, `position`, timestamps. |
-| **ThreadLabel** | `mti_brain_thread_label` | Colored label applied to a thread. Fields: `id`, `thread_id`, `user_id`, `name`, `color`, `created_at`. |
-
-## AI Pipeline (LangGraph)
-
-The pipeline is a compiled LangGraph state machine in `app/services/agents/graph.py`. Two graphs share the same `AsyncPostgresSaver` checkpoint pool:
-
-- **`_main_graph`** — starts at `intake_classify`; routes to `general_chat`, `rejected`, the simple/complex domain path, or the advanced Plan/Execute/Reflect loop.
-- **`_inner_graph`** — starts at `domain_specialist`; used by `executor_node` to process each sub-question in a complex plan.
-
-### Pipeline nodes
-
-| Node | Purpose |
-|------|---------|
-| `intake_classify` | Classify question type (`kg_query`, `general_chat`, `rejected`) and complexity (`simple`, `complex`, `advanced`) |
-| `general_chat` | Handle non-analytics questions (greetings, clarifications) |
-| `rejected` | Return a rejection message for out-of-scope questions |
-| `domain_specialist` | Select the relevant knowledge domain and identify the correct ontology classes |
-| `ontology_lookup` | Look up entity IRIs and property paths from the loaded ontology |
-| `sparql_gen` | Generate a SPARQL query for the Fuseki endpoint |
-| `sparql_validate` | Validate the generated SPARQL syntax before execution |
-| `sparql_execute` | Execute the SPARQL query against Fuseki and return result bindings |
-| `verifier` | Verify result quality; trigger repair if results are empty or malformed |
-| `graph_reasoning` | Apply graph-level reasoning over SPARQL results |
-| `brain_retrieval` | Retrieve relevant prior context from the LangGraph memory store |
-| `compress` | Compress accumulated context when it exceeds the token budget |
-| `plan` | Decompose a complex question into an ordered list of sub-questions |
-| `plan_validator` | Validate the generated plan before execution |
-| `executor` | Run the inner graph for each sub-question in the plan |
-| `step_reflector` | Reflect on each executed step; decide whether to continue or repair |
-| `final_reflector` | Final quality check over the completed plan execution |
-| `repairer` | Rewrite a failing SPARQL query or re-plan after repeated step failure |
-| `governance_gate` | Enforce data-access governance rules before synthesis |
-| `human_in_loop` | Pause for optional human review in long-running plans |
-| `answer_synthesis` | Synthesise all sub-results into a single structured answer |
-| `visualization` | Produce chart spec and table data from the synthesised answer |
-
-### Deep Analysis
-
-When `deep_analysis: true` is sent, the pipeline activates extended multi-step reasoning (typically the advanced Plan/Execute/Reflect/Repair loop). The flag is stored in `MTIBrainExecutionLog` for telemetry.
-
-### SPARQL Generation Sub-pipeline
-
-The inner SPARQL loop runs inside the main graph and handles KG queries against Apache Jena Fuseki. The retry budget is controlled by `_MAX_SPARQL_RETRIES = 2` in `verifier.py`.
-
-```
-sparql_gen → sparql_validate → sparql_execute → verifier
-                  ↑                                  |
-                  └──── sparql_fix (on FAIL/0-rows) ←┘
-```
-
-| Step | What happens |
-|------|-------------|
-| `sparql_gen` | LLM generates SPARQL from the question + ontology summary + resolved terms + intent hints |
-| `sparql_validate` | Syntax check (`rdflib.prepareQuery`) + predicate existence check against the in-memory ontology dict; domain/range checked for single-subject queries |
-| `sparql_execute` | POST to Fuseki `/sparql` with HTTP Basic Auth; results parsed into columns + rows |
-| `verifier` | Row count vs intent range; monetary sign sanity; 0-row handler (HAVING-aware); LLM semantic check via `VERIFIER_PROMPT` |
-| `sparql_fix` | If verifier sets `sparql_error`, the fix node rewrites the query guided by the error message + `SPARQL_FIX_PROMPT` |
-
-**Verifier 0-row behaviour:** when a query returns 0 rows, the verifier reads `state["sparql"]` to detect a `HAVING` clause. If HAVING is present, the error message instructs the fix agent to _remove HAVING_ (the threshold may filter all groups) rather than change predicates, graphs, or dates. Without HAVING, the error message lists the three most common causes: wrong predicate, missing `FROM` graph, date literal mismatch.
-
-### SPARQL Domain Patterns
-
-These rules are embedded in `SPARQL_GEN_PROMPT` and `SPARQL_FIX_PROMPT` in `prompts.py`. They encode R2RML materialization facts that the LLM cannot infer from the ontology alone. **Keep them in sync when the R2RML mapping changes.**
-
-#### Named Graphs
-
-| Named Graph | Classes |
-|-------------|---------|
-| `<graph:treasury:all>` | `lpp:BankAccount`, `lpp:BankBranch`, `lpp:BalanceSnapshot`, `lpp:CashPosition`, `lpp:Company`, `lpp:FxRate`, `lpp:ForecastActual`, `lpp:ForecastLine`, `lpp:Receipt`, `lpp:Disbursement` |
-| `<graph:fx:current>` | `lpp:FxForward`, `lpp:FxExposure` |
-| `<graph:investments:all>` | `lpp:InvestmentPosition`, `lpp:FinancialInstrument` |
-
-> `lpp:FxRate` is in `<graph:treasury:all>`, **not** `<graph:fx:current>`. The name is misleading — the fx hedges graph only holds forward contracts.
-
-#### Payment class hierarchy
-
-```
-lpp:Transaction  (ABSTRACT — CASH_FLOW table: Receipt + Disbursement)
-└── lpp:PaymentTransaction  (ABSTRACT — TRANSFER table rows)
-    ├── lpp:WireTransfer
-    ├── lpp:AchTransaction  (→ lpp:AchDebit / lpp:AchCredit)
-    ├── lpp:RtpTransaction
-    ├── lpp:FedNowTransaction
-    ├── lpp:CheckPayment
-    ├── lpp:CardTransaction  (→ lpp:VirtualCardTransaction / lpp:CommercialCardTransaction)
-    └── lpp:CrossBorderPayment
-```
-
-Always use the **concrete subclass**, not the abstract base. `lpp:Transaction` has no `lpp:paymentMethod` triples in Fuseki — payment rail discrimination is done purely by class.
-
-"Receipts" and "disbursements" map to `lpp:Receipt` / `lpp:Disbursement` (CASH_FLOW table), not to `lpp:AchTransaction` or `lpp:WireTransfer`.
-
-#### Key per-class constraints
-
-| Class | Critical rules |
-|-------|---------------|
-| `lpp:BalanceSnapshot` | Use `lpp:forAccount` (not `lpp:sourceAccount`); current balance = `lpp:isLatestSnapshot true` |
-| `lpp:BankAccount` | No `lpp:status` property — "open accounts" = all accounts; geography via `lpp:atBranch → lpp:countryCode` |
-| `lpp:FxRate` | Currency filter: `?from lpp:code "USD"` — not `lppid:USD` (wrong IRI path) and not `lpp:currencyCode` (wrong class) |
-| `lpp:ForecastActual` | Only `lpp:forecastedOutflow` / `lpp:actualOutflow` — no `forecastedInflow` / `actualInflow`; April data has `lpp:asOfDate = "2026-03-31"` (anchored to last day of previous month); entity comparisons require `GROUP BY ?entity` + `HAVING` + `IF(SUM(?fcst)=0, 0, ...)` guard |
-
-#### Ontology loading
-
-`ontology_loader.py` performs two passes over `lpp-ontology.ttl`:
-1. Classes declared with `rdf:type owl:Class`
-2. Classes declared only via `rdfs:subClassOf` (no explicit `owl:Class` triple — all `PaymentTransaction` subclasses fall into this category)
-
-Both passes are needed because rdflib only finds `owl:Class` subjects in the first pass.
-
-#### Validator domain check
-
-`validators.py` `validate_predicates()` uses a transitive `rdfs:subClassOf` closure (`_build_subclass_map`) to check property domains. A predicate declared with domain `lpp:BankAccount` is accepted when the query subject type is `lpp:OperatingAccount` (a subclass). The domain check is suppressed for queries with more than one explicit subject type (`?var a lpp:Cls`) to avoid false positives on join queries.
-## Observability (Langfuse)
-
-LLM tracing via a self-hosted [Langfuse](https://langfuse.com) instance. Disabled by default — set `LANGFUSE_ENABLED=true` in `.env` to activate.
-
-Each pipeline run produces one **trace** in Langfuse. Each LLM call within that run produces one **observation** under that trace, capturing the prompt, response, token counts, latency, and model used.
-
-| What is recorded | Details |
-|------------------|---------|
-| Trace | `session_id` (thread), `user_id`, `tags`, `environment`, total duration |
-| Observation | Prompt, response, input tokens, output tokens, latency, model ARN, node name |
-| Score | User feedback score (thumbs up/down) linked to a trace via `langfuse_trace_id` |
-
-### Traced nodes
-
-| Node | LLM tier |
-|------|----------|
-| `intake_classify` | fast (Haiku) |
-| `general_chat` | fast (Haiku) |
-| `plan_validator` | fast (Haiku) |
-| `step_reflector` | fast (Haiku) |
-| `domain_specialist` | balanced (Sonnet) |
-| `ontology_lookup` | balanced (Sonnet) |
-| `brain_retrieval` | balanced (Sonnet) |
-| `sparql_validate` | balanced (Sonnet) |
-| `graph_reasoning` | balanced (Sonnet) |
-| `plan` | balanced (Sonnet) |
-| `final_reflector` | balanced (Sonnet) |
-| `answer_synthesis` | balanced (Sonnet) |
-| `visualization` | balanced (Sonnet) |
-| `compress` | balanced (Sonnet) |
-| `sparql_gen` | deep (Opus) |
-| `executor` | inner-graph sub-question LLM calls captured per sub-question |
-
-> `sparql_execute`, `governance_gate`, `verifier`, and `rejected` are not traced — they make no LLM calls.
-
-### Configuration
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `LANGFUSE_ENABLED` | No (default: `false`) | Set to `true` to enable tracing |
-| `LANGFUSE_HOST` | Yes (if enabled) | Langfuse server URL (e.g. `http://100.21.28.155:3100/`) |
-| `LANGFUSE_PUBLIC_KEY` | Yes (if enabled) | Project public key (`pk-lf-...`) |
-| `LANGFUSE_SECRET_KEY` | Yes (if enabled) | Project secret key (`sk-lf-...`) |
-
-### Key files
-
-| File | Purpose |
-|------|---------|
-| `app/core/langfuse_integration.py` | Client lifecycle (`init_langfuse`, `shutdown_langfuse`), `create_callback_handler`, `langfuse_context`, `score_trace` |
-| `app/core/config.py` | Reads the four `LANGFUSE_*` settings from `.env` |
-| `app/main.py` | Calls `init_langfuse()` on startup and `shutdown_langfuse()` on shutdown |
-| `app/services/agents/graph.py` | Attaches `CallbackHandler` to LangGraph config; wraps `stream_pipeline` with `langfuse_context`; includes `langfuse_trace_id` in the `done` SSE event |
 
 ---
 
-## Middleware
+### Projects — `/api/v1/projects`
 
-`app/core/middleware.py` (pure ASGI — no `BaseHTTPMiddleware` to avoid Windows ProactorEventLoop deadlocks):
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/projects/` | List all projects (`?search=`) |
+| `POST` | `/api/v1/projects/create` | Create a project |
+| `GET` | `/api/v1/projects/{project_id}` | Get project with all threads |
+| `PUT` | `/api/v1/projects/{project_id}` | Update name/description |
+| `DELETE` | `/api/v1/projects/{project_id}` | Delete project (threads unlinked, not deleted) |
+| `PATCH` | `/api/v1/projects/{project_id}/star` | Toggle project star |
 
-| Middleware | Purpose |
-|-----------|---------|
-| **RequestIDMiddleware** | Generates and attaches `X-Request-ID` to every request/response |
-| **TimingMiddleware** | Logs `METHOD /path → STATUS (Nms)` for every non-health request; attaches `X-Response-Time` |
-| **SecurityHeadersMiddleware** | Adds `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`; strict CSP on API responses (skipped for `/docs`, `/redoc`, `/openapi.json`) |
+---
 
-Starlette built-ins wired in `app/main.py`:
+### Playbook — `/api/v1/playbook`
 
-| Middleware | Purpose |
-|-----------|---------|
-| **CORSMiddleware** | Origins controlled by `CORS_ORIGINS`; credentials enabled |
-| **TrustedHostMiddleware** | Wildcard in dev (intentional — team works across many laptops/VMs) |
+Saved queries for re-use.
 
-## Resilience
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/playbook/` | List saved queries |
+| `POST` | `/api/v1/playbook/` | Create saved query `{ "name": "...", "query_text": "..." }` |
+| `PATCH` | `/api/v1/playbook/{query_id}` | Update saved query |
+| `DELETE` | `/api/v1/playbook/{query_id}` | Delete saved query |
 
-- **Circuit breakers** (pybreaker) on Postgres health — prevents cascading failures when the DB is unavailable.
-- **Tenacity retries** available for transient external service errors.
-- **Graceful pool warmup** — 3 connections pre-opened at startup; engine disposed cleanly on shutdown.
-- **Rate limiting** — `5/minute` on `POST /auth/login` via slowapi.
+---
 
-## Migrations
+### Pinned Metrics — `/api/v1/pinned-metrics`
 
-Single baseline at [`alembic/versions/0001_baseline.py`](alembic/versions/0001_baseline.py):
+Home-page metric cards.
 
-- Installs `pg_trgm`, `fuzzystrmatch`, and `vector` extensions (idempotent).
-- Creates every `mti_brain_*` table with FKs and GIN trigram indexes.
-- Installs `search_vector` trigger functions and triggers on `mti_brain_thread`, `mti_brain_message`, and `mti_brain_project`.
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/pinned-metrics/` | List pinned metrics |
+| `POST` | `/api/v1/pinned-metrics/` | Create metric `{ "label": "...", "source_query": "...", "position": 1 }` |
+| `PATCH` | `/api/v1/pinned-metrics/{metric_id}` | Update label or position |
+| `DELETE` | `/api/v1/pinned-metrics/{metric_id}` | Remove metric |
 
-> **Trigger functions are not autogenerated.** If you change `search_vector` semantics, hand-edit the new revision to also `CREATE OR REPLACE FUNCTION` the trigger.
+---
 
-The migrating role needs `CREATE EXTENSION` privilege. If it doesn't, install the three extensions once as a superuser first — the migration's `IF NOT EXISTS` guards make repeat runs safe.
+### Labels — `/api/v1/labels`
 
-## Getting Started
+Per-thread color labels.
 
-### Prerequisites
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/labels/` | List all labels applied by the current user |
+| `GET` | `/api/v1/labels/thread/{thread_id}` | List labels on a specific thread |
+| `POST` | `/api/v1/labels/thread/{thread_id}` | Apply label `{ "label": "...", "color": "#RRGGBB" }` |
+| `DELETE` | `/api/v1/labels/{label_id}` | Remove label |
 
-- Python 3.12+
-- PostgreSQL 15+ with `pgvector`, `pg_trgm`, `fuzzystrmatch` extensions
-- (Optional) Docker and Docker Compose
+---
 
-### Local setup
+### Dashboard — `/api/v1/dashboard`
 
-```bash
-# 1. Create and activate virtual environment
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-source .venv/bin/activate       # Linux / macOS
+Generates an HTML analytics dashboard from a conversation's query results, stored in S3.
 
-# 2. Install dependencies
-pip install -r requirements.txt
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/dashboard/generate/{conversation_id}` | Queue dashboard generation → **202 Accepted** |
+| `GET` | `/api/v1/dashboard/{conversation_id}` | Poll status + retrieve presigned URL |
+| `DELETE` | `/api/v1/dashboard/{conversation_id}` | Remove dashboard from S3 + DB |
+| `GET` | `/api/v1/dashboard/{conversation_id}/download` | Stream dashboard HTML as attachment |
 
-# 3. Configure secrets
-cp .env.example .env
-# Edit .env — fill in: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_DB, JWT_SECRET
-# Non-secret settings (CORS, pool sizes, log level, etc.) live in config.yml — edit there if needed
-
-# 4. Run database migrations
-alembic upgrade head
-
-# 5. Start the development server
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+**Status response:**
+```json
+{ "status": "pending|ready|error", "message": "...", "url": "https://s3.presigned..." }
 ```
 
-> **Windows / VS Code note:** If `http://localhost:8000/docs` doesn't load and there are no backend logs, check VS Code's Ports panel (`View → Ports`). VS Code Insiders can auto-forward port 8000 and intercept all connections. Stop the forwarding or run on a different port (`--port 8001`) and update `NEXT_PUBLIC_API_URL` in the frontend accordingly.
+---
+
+### Graph Context — `/api/v1/graph-context`
+
+Generates an HTML graph visualization of the Neo4j schema context relevant to a conversation.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/graph-context/generate/{conversation_id}` | Queue graph context generation → **202 Accepted** |
+| `GET` | `/api/v1/graph-context/{conversation_id}` | Poll status + retrieve presigned URL |
+| `DELETE` | `/api/v1/graph-context/{conversation_id}` | Remove from S3 + DB |
+| `GET` | `/api/v1/graph-context/{conversation_id}/download` | Stream graph context HTML as attachment |
+
+Generation is idempotent: if a `ready` result already exists for the conversation, it is returned immediately without re-running. Stale `pending` rows (older than 120 seconds) are reset and re-queued.
+
+---
+
+## Analytics Pipeline
+
+The pipeline is a LangGraph DAG compiled at startup (`app/services/agents/graph.py`) and run per question. State is checkpointed to PostgreSQL via `AsyncPostgresSaver`.
+
+### Node DAG
+
+```
+START → intake_classifier
+          ├─[general]──→ general_chat ──→ END
+          └─[analytics]─→ context_fetcher
+                            └→ intent_resolver
+                               └→ query_compiler
+                                  └→ filter_resolver
+                                     └→ sql_generator
+                                        └→ sql_validator
+                                           └→ executor
+                                              ├─[zero rows]─→ zero_row_probe
+                                              ├─[error]─────→ repair (max 2×) ──→ executor
+                                              └─[ok]────────→ synthesis
+                                                               └→ chart_agent ──→ END
+          [any node error] ──→ error_response ──→ END
+```
+
+Additional cross-cutting nodes: `compress` (context truncation), `audit` (execution log write).
+
+### Node Descriptions
+
+| Node | Model | Role |
+|------|-------|------|
+| `intake_classifier` | Haiku | Classify question: `general_chat` or `analytics` |
+| `general_chat` | Haiku | Answer non-analytics questions directly |
+| `context_fetcher` | — | Semantic table/column discovery from Neo4j |
+| `intent_resolver` | Sonnet | Extract structured intent + domain routing |
+| `query_compiler` | — | Pattern matching + intermediate representation (IR) compilation |
+| `filter_resolver` | Sonnet | Resolve dynamic filters (dates, entities, thresholds) |
+| `sql_generator` | Opus | Generate SQL from IR + Neo4j schema context |
+| `sql_validator` | — | Validate SQL syntax and schema against Neo4j graph |
+| `executor` | — | Execute SQL on Redshift, paginate results |
+| `zero_row_probe` | Sonnet | Diagnose and explain empty result sets |
+| `repair` | Sonnet | Rewrite failing SQL based on error (max 2 attempts) |
+| `synthesis` | Sonnet | Synthesize natural-language answer from query results |
+| `chart_agent` | Sonnet | Generate Vega-Lite chart spec + alternative specs |
+| `compress` | Sonnet | Truncate state context when approaching token limits |
+| `audit` | — | Write execution telemetry to `mti_brain_execution_log` |
+| `error_response` | — | Produce user-facing error message |
+
+### Pipeline State (`AnalyticsState`)
+
+Key fields in the `TypedDict`:
+
+| Group | Fields |
+|-------|--------|
+| Conversation | `messages`, `user_id`, `thread_id`, `persona`, `question` |
+| Routing | `question_type`, `needs_clarification`, `clarification_count` |
+| Pipeline | `semantic_context`, `resolved_intent`, `semantic_ir_list`, `sql_list` |
+| Execution | `result_list`, `query_summary`, `no_data`, `reliability_flags`, `repair_count` |
+| Output | `answer`, `chart_spec`, `chart_type`, `alternative_chart_specs`, `follow_ups` |
+| Memory | `feedback_context`, `summary` |
+| Audit | `user_email`, `pipeline_start_ms`, `pattern_matched`, `pattern_name`, `is_retry` |
+| Control | `error`, `execution_error`, `stopped`, `deep_analysis`, `max_rows` |
+
+### Checkpoint Storage
+
+LangGraph state is persisted using `AsyncPostgresSaver` with a dedicated psycopg3 connection pool (`CHECKPOINT_POOL_MIN`/`CHECKPOINT_POOL_MAX`). The pool reconnects after each node to stay compatible with PgBouncer transaction-mode pooling.
+
+---
+
+## Database Schema
+
+### PostgreSQL Tables
+
+| Table | Description |
+|-------|-------------|
+| `mti_brain_user` | Authenticated users (email, name, groups JSONB, keycloak_sub, last_login) |
+| `mti_brain_project` | Thread collections (user_id FK, name, description, starred, search_vector) |
+| `mti_brain_thread` | Conversation threads (user_id FK, project_id FK, title, starred, search_vector) |
+| `mti_brain_message` | Messages (thread_id FK, conversation_id, role, content, reasoning, metadata JSONB) |
+| `mti_brain_feedback` | Thumbs up/down (message_id FK, liked bool, comment, embedding pgvector 1536) |
+| `mti_brain_dashboard` | Dashboard jobs (conversation_id, status, s3_key, s3_url, error_msg) |
+| `mti_brain_graph_context` | Graph context jobs (conversation_id, thread_id, user_id FK, status, s3_key, s3_url) |
+| `mti_brain_execution_log` | Pipeline telemetry (user_id FK, thread_id FK, conversation_id, response_tone, deep_analysis, duration_ms, token_usage, langfuse_trace_id) |
+| `mti_brain_saved_query` | Playbook entries (user_id FK, name, query_text) |
+| `mti_brain_pinned_metric` | Pinned metric cards (user_id FK, label, source_query, position) |
+| `mti_brain_thread_label` | Thread labels (thread_id FK, user_id FK, name, color) |
+
+### PostgreSQL Extensions
+
+| Extension | Purpose |
+|-----------|---------|
+| `pgvector` | 1536-dim embedding storage and similarity search on feedback |
+| `pg_trgm` | Trigram GIN indexes for fuzzy thread/message search |
+| `fuzzystrmatch` | Levenshtein matching for user-facing search |
+
+### Search Vectors
+
+Full-text `tsvector` columns are maintained automatically by database triggers:
+
+| Column | Indexed content |
+|--------|----------------|
+| `mti_brain_thread.search_vector` | Thread title (English) |
+| `mti_brain_message.search_vector` | Message content (English) |
+| `mti_brain_project.search_vector` | Project name (weight A) + description (weight B) |
+
+### Thread Search — 3-Layer Strategy
+
+The `/chat/recents` search runs three passes and merges results:
+
+1. **Full-text** — `search_vector @@ to_tsquery(...)` with GIN index
+2. **Trigram** — `title % query` using `gin_trgm_ops` GIN index (fuzzy)
+3. **Semantic** — pgvector cosine similarity on feedback embeddings
+
+### Neo4j Knowledge Graph
+
+Neo4j stores the relational schema as a property graph: tables and columns as nodes, join paths as edges, with synonym/alias relationships. The `context_fetcher` node queries Neo4j to discover relevant tables and columns for a given question. The `sql_validator` node checks the generated SQL against the same graph to catch schema mismatches before execution.
+
+---
+
+## Architecture Notes
+
+### Middleware Stack
+
+Registered in this order (outermost first):
+
+1. **SlowAPIMiddleware** — Rate limiting via slowapi
+2. **SecurityHeadersMiddleware** — CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`
+3. **RequestIDMiddleware** — Propagates or generates `X-Request-ID`
+4. **TimingMiddleware** — Logs `METHOD /path → STATUS (Nms)`, adds `X-Response-Time`
+5. **CORSMiddleware** — Origin allowlist, credentials enabled
+6. **TrustedHostMiddleware** — Wildcard in development
+
+All custom middleware is implemented as pure ASGI callables (no `BaseHTTPMiddleware`) for Windows compatibility.
+
+### Circuit Breakers
+
+| Breaker | Fail threshold | Reset timeout |
+|---------|---------------|---------------|
+| `postgres_breaker` | 5 | 30s |
+| `llm_breaker` | 3 | 60s |
+| `embedding_breaker` | 3 | 60s |
+| `external_api_breaker` | 3 | 60s |
+| `neo4j_breaker` | 3 | 30s |
+| `redis_breaker` | 10 | 10s |
+
+State changes are logged via `LoggingListener`. The `/health` endpoint exposes current breaker states.
+
+### Rate Limiting
+
+| Endpoint group | Limit |
+|----------------|-------|
+| `POST /api/v1/auth/login` | 5 per minute per IP |
+| `POST .../ask`, `.../retry`, `.../edit` | 30 per minute per IP |
+
+### Dashboard & Graph Context — Async S3 Flow
+
+1. Client calls `POST .../generate/{conversation_id}` → **202 Accepted**, DB row set to `pending`
+2. Background task generates HTML and uploads to `s3://{bucket}/{user_id}/{conversation_id}.html`
+3. DB row updated to `ready` with S3 key
+4. Client polls `GET .../{conversation_id}` → receives presigned URL (1-hour TTL) when status is `ready`
+5. Client calls `GET .../{conversation_id}/download` to stream the file directly
+
+---
+
+## Deployment
 
 ### Docker
 
+The `Dockerfile` uses a multi-stage build:
+
+- **Stage 1 (builder):** installs dependencies into a virtual environment
+- **Stage 2 (runtime):** Python 3.12-slim, copies venv, runs as non-root `appuser`
+
+Built-in `HEALTHCHECK` hits `GET /health` every 120 seconds.
+
 ```bash
 docker build -t mti-brain-backend .
-docker run -p 8000:8000 --env-file .env mti-brain-backend
+docker run --env-file .env -p 8000:8000 mti-brain-backend
 ```
 
-### Production
+### Production (Gunicorn + Uvicorn)
 
 ```bash
 gunicorn app.main:app \
-  --bind 0.0.0.0:8000 \
-  --worker-class uvicorn.workers.UvicornWorker \
-  --workers 2 \
-  --threads 2 \
-  --timeout 480 \
-  --graceful-timeout 30 \
-  --keep-alive 5 \
-  --max-requests 1000 \
-  --max-requests-jitter 50 \
-  --forwarded-allow-ips "*" \
-  --access-logfile - \
-  --error-logfile - \
-  --log-level info
+  -k uvicorn.workers.UvicornWorker \
+  -w 2 --threads 2 \
+  --timeout 480 --graceful-timeout 30 \
+  --max-requests 1000 --max-requests-jitter 50 \
+  --forwarded-allow-ips="*" \
+  -b 0.0.0.0:8000
 ```
 
-## Configuration
+### PgBouncer Requirements
 
-Configuration is split across two files:
+When using PgBouncer in **transaction-mode pooling**:
 
-| File | Purpose | Committed? |
-|------|---------|------------|
-| `config.yml` | All non-secret settings (timeouts, pool sizes, log level, CORS, JWT expiry, etc.) | **Yes** |
-| `.env` | Secrets only (DB credentials, JWT secret, API keys) | **No** — git-ignored |
-
-**Adding a new config value:**
-1. Add it under the relevant section in `config.yml` with a sensible default.
-2. Add the matching `Field` to `Settings` in `app/core/config.py`, reading from `_yml`.
-3. If it needs to be a secret, add it to `.env.example` and `Settings` as a required field with no default.
-
-**Override at deploy-time:** any `config.yml` value can be overridden without editing the file by setting the matching environment variable (e.g. `CORS_ORIGINS=["https://app.yourdomain.com"]` in CodeDeploy or the shell). Priority: env var > `.env` file > `config.yml` default.
-
-### `.env` — Secrets (required)
-
-Copy `.env.example` to `.env` and fill in real values.
-
-| Variable | Description |
-|----------|-------------|
-| `POSTGRES_USER` | Database username |
-| `POSTGRES_PASSWORD` | Database password |
-| `POSTGRES_HOST` | Database host |
-| `POSTGRES_DB` | Database name |
-| `JWT_SECRET` | Secret for signing JWTs — generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
-| `AWS_REGION` | AWS region for Bedrock (e.g. `us-west-2`) |
-| `AWS_BEDROCK_SONNET_ARN` | ARN for the Claude Sonnet model on Bedrock |
-| `AWS_BEDROCK_HAIKU_ARN` | ARN for the Claude Haiku model on Bedrock |
-| `AWS_BEDROCK_OPUS_ARN` | ARN for the Claude Opus model on Bedrock |
-| `AWS_BEDROCK_COHERE_EMBED_V4_ARN` | ARN for the Cohere Embed v4 model on Bedrock |
-| `AWS_ACCESS_KEY_ID` | AWS access key (used for S3 dashboard storage and Bedrock) |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
-| `AWS_BOTO3_BUCKET_NAME` | S3 bucket name for storing generated dashboards |
-| `FUSEKI_URL` | Jena Fuseki base URL (e.g. `http://localhost:3030`) |
-| `FUSEKI_DATASET` | Fuseki dataset name for the main knowledge graph |
-| `FUSEKI_USER` | Fuseki HTTP Basic Auth username (leave blank if auth is disabled) |
-| `FUSEKI_PASSWORD` | Fuseki HTTP Basic Auth password (leave blank if auth is disabled) |
-| `TRIBAL_GRAPH_URL` | Fuseki base URL for the tribal/secondary graph |
-| `TRIBAL_GRAPH_DATASET` | Dataset name for the tribal graph |
-
-Optional secret overrides (uncomment in `.env` when needed):
-
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_SSL_ROOT_CERT` | Path to CA cert when `ssl_mode` is `verify-ca` or `verify-full` |
-| `ENVIRONMENT` | Override `app.environment` from `config.yml` (`development` or `production`) |
-| `LOG_LEVEL` | Override `app.log_level` from `config.yml` |
-| `CORS_ORIGINS` | Override `server.cors_origins` from `config.yml` (JSON array or comma-separated) |
-
-### `config.yml` — Non-secret config
-
-| Section → key | Default | Description |
-|---------------|---------|-------------|
-| `app.environment` | `development` | `development` or `production` |
-| `app.debug` | `false` | FastAPI + SQLAlchemy echo mode |
-| `app.log_level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `server.cors_origins` | `[localhost:3000, 127.0.0.1:3000]` | Allowed browser origins |
-| `database.port` | `5432` | Postgres port |
-| `database.ssl_mode` | `disable` | `disable` / `require` / `verify-ca` / `verify-full` |
-| `database.pool.size` | `2` | Base connection pool size (kept small — PgBouncer handles concurrency) |
-| `database.pool.max_overflow` | `8` | Max extra connections above pool size |
-| `database.pool.recycle_seconds` | `500` | Recycle connections older than N seconds (must be < PgBouncer `SERVER_IDLE_TIMEOUT`) |
-| `database.pool.timeout_seconds` | `30` | Seconds to wait for a connection |
-| `circuit_breaker.fail_max` | `5` | Consecutive failures before opening circuit |
-| `circuit_breaker.reset_timeout_seconds` | `30` | Seconds before circuit half-opens |
-| `jwt.algorithm` | `HS256` | JWT signing algorithm |
-| `jwt.expiry_hours` | `8` | JWT token lifetime |
-| `rate_limit.login_per_minute` | `5` | Max login attempts per IP per minute |
-| `rate_limit.ask_per_minute` | `30` | Max `/ask`, `/retry`, `/edit` requests per IP per minute |
-| `model_routing.llm_routing_enabled` | `true` | Enable per-question Haiku / Sonnet / Opus routing |
-| `prompt_cache.aws_bedrock_prompt_cache` | `true` | Enable AWS Bedrock prompt caching |
-| `fuseki.timeout_seconds` | `60` | HTTP timeout for SPARQL queries against Fuseki |
-| `pipeline.recursion_limit` | `80` | LangGraph recursion limit (complex multi-step queries need headroom) |
+- Disable prepared statements: set `statement_cache_size=0` in asyncpg
+- Pool size: 2–8 connections per app worker
+- `DB_POOL_RECYCLE` must be less than PgBouncer's `SERVER_IDLE_TIMEOUT`
+- The LangGraph checkpoint pool uses psycopg3 (not asyncpg) and also reconnects per-node for transaction-mode compatibility
 
 ---
 
-## Known Limitations / Future Enhancements
+## Observability
 
-### INTENT_CLASSES — Hardcoded intent-to-class mapping
+### Langfuse Tracing
 
-`app/services/agents/nodes/ontology.py` contains a static `INTENT_CLASSES` dict that maps LangGraph intent labels (e.g. `"payment_operations"`) to a list of ontology class names used as hint context for SPARQL generation. This mapping is **manually maintained** and must be updated whenever a new class is added to `lpp-ontology.ttl`.
+Enable by setting `LANGFUSE_ENABLED=true` in `config.yml`.
 
-**Known risk:** A class present in the ontology and R2RML mappings (i.e. materialized in Fuseki) but absent from `INTENT_CLASSES` will never be surfaced as a generation hint. The LLM falls back to abstract base classes (e.g. `lpp:Transaction` instead of `lpp:WireTransfer`) and generates queries that return 0 rows.
+Each pipeline invocation creates a single Langfuse trace:
 
-**Checklist when adding a new class to `lpp-ontology.ttl` and `lpp-r2rml.ttl`:**
-1. Add the class to the relevant intent key(s) in `INTENT_CLASSES`
-2. If the class is a `PaymentTransaction` subclass, also add it to `"payment_operations"` and `"cost_and_fee_analysis"` as appropriate
-3. Add a keyword→class mapping example to the `TRANSACTION CLASS SELECTION` section of `SPARQL_GEN_PROMPT` and `SPARQL_FIX_PROMPT` in `prompts.py`
-4. If the class has domain-specific constraints (e.g. non-obvious property names, graph placement, date anchoring conventions), add a domain pattern block to `SPARQL_GEN_PROMPT` and a compact entry to the relevant section in `SPARQL_FIX_PROMPT`
+| Trace attribute | Value |
+|----------------|-------|
+| `session_id` | `thread_id` |
+| `user_id` | `user_email` |
+| Observations | One per LLM call (prompt, response, model ARN, token counts, latency) |
 
-**Future enhancement:** Drive `INTENT_CLASSES` from an `lpp:intentDomain` annotation property in `lpp-ontology.ttl`, parsed by `ontology_loader.py` at startup. This would eliminate the manual sync requirement entirely.
+The `langfuse_trace_id` is included in the SSE `done` event and stored in `mti_brain_execution_log`.
 
-### SPARQL Domain Patterns — Manual maintenance required
+### Execution Log
 
-`prompts.py` contains domain pattern blocks (`BANK ACCOUNT DOMAIN PATTERNS`, `FX RATE DOMAIN PATTERNS`, `FORECAST ACTUAL DOMAIN PATTERNS`, etc.) that encode R2RML materialization facts the LLM cannot derive from the ontology alone — which properties are actually loaded, which named graph the class lives in, and any schema quirks (e.g. date anchoring conventions, absent properties that seem like they should exist).
+Every pipeline run writes a row to `mti_brain_execution_log` with:
 
-These blocks must be kept in sync with `lpp-r2rml.ttl`. If a property is added or removed from an R2RML TriplesMap, the corresponding domain pattern block needs updating. A stale pattern silently generates queries that return 0 rows.
+- `response_tone`, `deep_analysis` flags
+- `duration_ms`, `token_usage`
+- `langfuse_trace_id` for cross-linking to Langfuse
+- `thread_id`, `conversation_id`, `user_id`
 
-### Verifier 0-row retry — HAVING detection heuristic
+### Pipeline Graph Export
 
-`nodes/verifier.py` detects the word `HAVING` in the SPARQL text to decide whether a 0-row result is likely caused by an over-strict threshold (in which case the fix agent is told to remove HAVING) vs a structural query error (wrong predicate, wrong graph, wrong date). This is a string match — it is not aware of query semantics. An edge case where HAVING is present but the real cause is a wrong predicate will still receive the HAVING-specific guidance and may take an extra retry cycle to resolve.
+To export a visual diagram of the LangGraph DAG:
 
----
-
-## Related Documentation
-
-| Component | README |
-|-----------|--------|
-| Root (architecture + quick start) | [../README.md](../README.md) |
-| Frontend (Next.js) | [../frontend/README.md](../frontend/README.md) |
-| Database (PostgreSQL + PgBouncer) | [../database/README.md](../database/README.md) |
-| Deployment (AWS CodeDeploy) | [../deploy/README.md](../deploy/README.md) |
+```bash
+python scripts/render_graph.py
+```
