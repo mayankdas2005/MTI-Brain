@@ -83,7 +83,7 @@ backend/
 │       │   ├── redis_client.py          # Redis cache client
 │       │   ├── neo4j_client.py          # Neo4j driver + connection pooling
 │       │   ├── redshift_client.py       # Redshift connection + query execution
-│       │   ├── nodes/                   # 13 pipeline node implementations
+│       │   ├── nodes/                   # 13 pipeline node implementations + post-processing helpers
 │       │   │   ├── intake_classifier.py
 │       │   │   ├── general_chat.py
 │       │   │   ├── context_fetcher.py
@@ -100,7 +100,8 @@ backend/
 │       │   │   ├── compress.py
 │       │   │   ├── zero_row_probe.py
 │       │   │   ├── repair.py
-│       │   │   └── audit.py
+│       │   │   ├── audit.py
+│       │   │   └── confidence.py        # Post-processing confidence scorer
 │       │   ├── neo4j/                   # Neo4j schema exploration helpers
 │       │   │   ├── client.py
 │       │   │   ├── table_search.py
@@ -378,7 +379,8 @@ All endpoints under `/api/v1/*` require `Authorization: Bearer <token>` except `
 | `status` | `{ "message": "..." }` | Pipeline progress updates |
 | `token` | `{ "text": "..." }` | Streamed answer tokens |
 | `chart` | `{ "spec": {...} }` | Vega-Lite chart specification |
-| `done` | `{ "conversation_id": "...", "sql": "...", "rows": [...], "langfuse_trace_id": "..." }` | Final result |
+| `confidence` | `{ "score": <0-100>, "label": "<High\|Medium\|Low\|Very Low>", "explanation": "<string>" }` | Answer confidence score — fires after `done` (see [Confidence Scoring](#confidence-scoring)) |
+| `done` | `{ "answer": "...", "sql": "...", "rows": [...], "confidence": {...}, "langfuse_trace_id": "..." }` | Final result |
 
 #### Feedback
 
@@ -538,6 +540,63 @@ Key fields in the `TypedDict`:
 | Memory | `feedback_context`, `summary` |
 | Audit | `user_email`, `pipeline_start_ms`, `pattern_matched`, `pattern_name`, `is_retry` |
 | Control | `error`, `execution_error`, `stopped`, `deep_analysis`, `max_rows` |
+
+### Confidence Scoring
+
+After the LangGraph pipeline completes, `pipeline.py` calls `compute_confidence()` from `nodes/confidence.py`. This is **not a graph node** — it is a post-processing step that makes a single Haiku LLM call and returns a confidence score (0–100) displayed below the response in the UI.
+
+#### How it works
+
+```
+astream_events loop runs  (all 13 nodes complete, answer already streamed token-by-token)
+          ↓
+_done_rows / _done_cols computed          ← row/col extraction, shared with done event
+          ↓
+await compute_confidence(state)           ← single Haiku call, ~200–400 ms
+          ↓
+yield {"event": "confidence", "data": {score, label, explanation}}
+          ↓
+yield {"event": "done", "data": {..., "confidence": {score, label, explanation}}}
+```
+
+The answer is fully visible to the user before confidence is computed (streamed via `answer.delta` during synthesis). The confidence badge appears just before the `done` event fires. `confidence` is included in both the dedicated SSE event and the `done` payload so the UI can choose which to use.
+
+`general_chat` questions always return `null` — no badge is applicable since there is no data to ground against.
+
+#### What is sent to the LLM
+
+| Input | Source | Purpose |
+|-------|--------|---------|
+| `question` | User's original question (injected from `stream_pipeline` closure — not in node state) | Verify the answer addresses what was asked |
+| `semantic_context` | `state["semantic_context"]` — intents, business terms, query patterns detected by `context_fetcher` | What domain concepts were resolved |
+| `resolved_intent` | `state["resolved_intent"]` — intent label, anchor tables, template ID from `intent_resolver` | Which tables and intent drove the SQL |
+| `no_data` | `state["no_data"]` | Whether the query returned zero rows |
+| `total_corrections` | `repair_count + recompile_count` | Number of times SQL had to be auto-corrected |
+| `reliability_flags` | `state["reliability_flags"]` | Pipeline-detected quality concerns (e.g. filter approximated) |
+| `error` | `state["error"]` or `state["execution_error"]` | Any SQL or pipeline error message |
+| `data_profile` | `helpers._build_data_profile(cols, rows, query_summary)` | Column types + stats + NULL-free spread sample (up to 20 rows) |
+| `answer` | `state["answer"]` — full text, no truncation | The narrative to be scored |
+
+`data_profile` is produced by `helpers._build_data_profile()`: computes column dtypes, min/max/mean/median for numerics, distinct counts and top values for strings, date ranges for dates, and uses a spread sample of up to 20 non-null rows. NULL rows are filtered before sampling. Same profile used by the synthesis and chart nodes.
+
+#### Score labels
+
+| Score range | Label |
+|-------------|-------|
+| 80–100 | High |
+| 60–79 | Medium |
+| 40–59 | Low |
+| 0–39 | Very Low |
+
+#### Database storage
+
+`confidence` is saved in the `metadata` JSONB column of `mti_brain_message` (field: `metadata.confidence`) when the assistant message is persisted in `chat.py`. Value is `null` when confidence was not computed.
+
+#### Prompt location
+
+`CONFIDENCE_JUDGE_PROMPT` is defined in `app/services/agents/prompts.py` and imported by `nodes/confidence.py`.
+
+---
 
 ### Checkpoint Storage
 

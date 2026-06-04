@@ -1136,3 +1136,42 @@ Do NOT summarise the SQL queries themselves — only the intent and findings.
 [Concise summary here. Max 350 words. Lead with entity identifiers, then intents, findings, and offered follow-ups.]
 </summary>"""
 )
+
+# ─── Confidence Grounding Judge ──────────────────────────────────────────────
+
+CONFIDENCE_JUDGE_PROMPT = """\
+You are a confidence scorer for a financial analytics assistant.
+Given a business question, semantic context, pipeline signals, query result data, \
+and the generated answer, return a confidence score.
+
+Question: {question}
+
+Semantic context:
+{semantic_context}
+
+Resolved intent:
+{resolved_intent}
+
+Pipeline signals:
+- No data found: {no_data}
+- Query corrections needed: {total_corrections}
+- Reliability flags: {reliability_flags}
+- Error: {error}
+
+{data_profile}
+
+Generated answer:
+{answer}
+
+Respond with ONLY valid JSON — no markdown fences, no explanation outside the JSON:
+{{
+  "score": <integer 0–100>,
+  "explanation": "<one concise sentence for a business user explaining the confidence level>"
+}}
+
+Scoring guide:
+  80–100  Answer is accurate and fully supported by the data
+  60–79   Answer is mostly correct with minor gaps
+  40–59   Answer is partially supported; some claims are uncertain
+  20–39   Answer is questionable; significant unsupported claims or errors
+  0–19    Answer is likely incorrect or no data was found"""

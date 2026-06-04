@@ -147,6 +147,7 @@ def _build_sse_generator(
                 "langfuse_trace_id": save_data.get("langfuse_trace_id"),
                 "langfuse_trace_url": save_data.get("langfuse_trace_url"),
                 "graph_context": save_data.get("graph_context"),
+                "confidence": save_data.get("confidence"),
             }),
         )
         try:
