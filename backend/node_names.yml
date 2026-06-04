@@ -77,7 +77,7 @@ nodes:
     stream: [reasoning, reasoning.delta]
 
   - id: error_response
-    label: "Error occurred"
+    label: null
     tier: none
     stream: null
 

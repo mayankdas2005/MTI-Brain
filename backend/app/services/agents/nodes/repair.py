@@ -18,6 +18,24 @@ from app.services.agents.prompts import REASONING_DIRECTIVE_REPAIR, REPAIR_PROMP
 _PERFORMANCE_DIRECTIVE = """--- PERFORMANCE DIRECTIVES ---
 If the error is a timeout or the query is slow, rewrite for Redshift performance as a senior DBA.
 Business logic, tables, filters, and metric definitions must stay identical. Apply in order:
+  PRE-FLIGHT (always apply regardless of error type):
+  0a. VALUES: FILTER DIRECTIVE DB codes are authoritative — preserve verbatim.
+      Do not substitute human labels ('Active') for DB codes ('OUTSTANDING').
+  0b. JOINS: SCHEMA DIRECTIVE JOIN_CHAIN ON clauses must be preserved. Do not substitute
+      weak joins (company_ref) when the chain specifies a FK join (facility_ref = code).
+  0c. EXECUTE INSTRUCTIONS: COMPUTATION formulas, COMPUTED_FILTER predicates (IS NULL,
+      thresholds), BENCHMARK_RATE_FILTER, and any SQL execution instruction in QUERY DIRECTIVE
+      must be preserved — they are required for semantic correctness.
+  0d. NON-ANCHOR: Remove WHERE/EXISTS on tables tagged [WARNING: non-anchor table] in FILTER
+      DIRECTIVE. These are entity_hint injections for unrelated tables.
+  0e. TABLES: SCHEMA DIRECTIVE ANCHOR_TABLES is the closed set — no extra joins.
+  0f. REDSHIFT DIALECT: INTERVAL with months/years is NOT supported. Fix any occurrence:
+      ✗ INTERVAL '1 year' / INTERVAL '3 months' / INTERVAL '4 weeks' / date + INTERVAL '...'
+      ✓ DATEADD(year,-1,date) / DATEADD(month,-3,date) / DATEADD(week,4,date)
+
+  i. CRITICAL (do this first) — REMOVE any EXISTS / IN / ANY subquery referencing a table that
+     is NOT in the ANCHOR TABLES of QUERY INTENT. These are hallucinations that eliminate rows.
+     Removing them is always correct and is the first action before any other performance fix.
   a. Push WHERE filters into CTEs — never scan full tables and filter at the outer level.
   b. Aggregate before joining — one aggregation CTE per table, then join small results.
   c. Drop SELECT * and unused CTE columns.
@@ -42,9 +60,14 @@ def _format_sql(sql: str) -> str:
         return sql
     try:
         import sqlglot
-        return sqlglot.transpile(sql, read="redshift", write="redshift", pretty=True)[0]
+        parsed = sqlglot.parse_one(
+            sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE
+        )
+        if parsed:
+            return parsed.sql(dialect="redshift", pretty=True)
     except Exception:
-        return sql.strip()
+        pass
+    return sql.strip()
 
 
 async def attempt_repair(
@@ -116,12 +139,16 @@ async def attempt_repair(
         if fb else ""
     )
 
+    from app.services.agents.helpers import build_directive_section
+    directive_section = build_directive_section(state)
+
     prompt = REPAIR_PROMPT.format_messages(
         semantic_ir_text=semantic_ir_text,
         schema_reference=schema_reference,
         original_sql=first_sql,
         error_message=error_msg,
         prior_attempts_detail=prior_attempts_detail,
+        directive_section=directive_section,
         feedback_section=feedback_section,
         performance_directive=_PERFORMANCE_DIRECTIVE if any(
             kw in e.lower()

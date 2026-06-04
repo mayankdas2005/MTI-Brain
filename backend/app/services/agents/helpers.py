@@ -154,7 +154,8 @@ def _build_data_profile(
                 vals = sorted(str(r[i]) for r in rows if i < len(r) and r[i] is not None)
                 mn, mx = (vals[0], vals[-1]) if vals else (None, None)
             if mn:
-                lines.append(f"    Range: {mn}  →  {mx}")
+                distinct_dates = len(set(str(r[i]) for r in rows if i < len(r) and r[i] is not None))
+                lines.append(f"    Range: {mn}  →  {mx}   Distinct: {distinct_dates} periods")
 
         else:  # varchar / text / string
             distinct = meta.get("distinct_count")
@@ -243,6 +244,68 @@ def parse_json_from_response(text: str) -> dict:
         return result if isinstance(result, dict) else {}
     except Exception:
         return {}
+
+
+# ─── Directive section builder ────────────────────────────────────────────────
+
+def build_directive_section(state: dict) -> str:
+    """Build the three-directive block for LLM prompts.
+
+    Three directives injected before QUERY SPECIFICATION:
+    - EXECUTE INSTRUCTIONS: SQL execution requirements from intent resolver (formulas, computed predicates)
+    - CONTEXT: Structural guidance from intent resolver (tables, joins, schema gaps)
+    - SCHEMA DIRECTIVE: Code-verified structure from ir_builder (confirmed tables, join clauses)
+    - FILTER DIRECTIVE: Code-verified values from filter_resolver (DB codes, temporal SQL)
+    - CONFLICT RESOLUTION: explicit authority rules for all filter and join types
+
+    Returns empty string if no directives are present.
+    """
+    instructions = (state.get("intent_directive_instructions") or "").strip()
+    context      = (state.get("intent_directive_context")      or "").strip()
+    # Fallback: old-format directive (no sub-sections) → treat as context
+    if not instructions and not context:
+        context = (state.get("intent_directive") or "").strip()
+
+    schema  = (state.get("schema_directive")  or "").strip()
+    filters = (state.get("filter_directive")  or "").strip()
+    parts: list[str] = []
+
+    if instructions:
+        parts.append(
+            "QUERY DIRECTIVE — EXECUTE THESE SQL INSTRUCTIONS (required, implement exactly):\n"
+            + instructions
+        )
+    if context:
+        parts.append(
+            "QUERY DIRECTIVE — CONTEXT (structural guidance, informational):\n" + context
+        )
+    if schema:
+        parts.append(
+            "SCHEMA DIRECTIVE — code-verified structure "
+            "(authoritative: confirmed anchor tables, join ON clauses, measures/dimensions):\n"
+            + schema
+        )
+    if filters:
+        parts.append(
+            "FILTER DIRECTIVE — code-verified values "
+            "(authoritative: DB codes, normalized numerics, temporal SQL; "
+            "skip [WARNING: non-anchor] entries):\n"
+            + filters
+        )
+
+    if any([instructions, context, schema, filters]):
+        parts.append(
+            "CONFLICT RESOLUTION:\n"
+            "  EXECUTE INSTRUCTIONS: implement verbatim — these are SQL requirements\n"
+            "  STRUCTURE: SCHEMA DIRECTIVE tables/joins are authoritative\n"
+            "    (CONTEXT JOIN_PATH already incorporated at build time via Tier 0)\n"
+            "  VALUES: FILTER DIRECTIVE values override CONTEXT value suggestions\n"
+            "    (DB codes, normalized numerics, temporal SQL beats human labels)\n"
+            "  CONTEXT: shapes intent, output format, schema gaps — not SQL predicates\n"
+            "  CONFIDENCE_NOTE < 0.70: prefer simpler SQL; flag partial schema coverage\n"
+            "  NON-ANCHOR: [WARNING: non-anchor table] in FILTER DIRECTIVE → omit"
+        )
+    return "\n\n".join(parts) if parts else ""
 
 
 # ─── Section streamers (mirror quest exactly) ─────────────────────────────────

@@ -9,7 +9,7 @@ Three-layer classification:
 from __future__ import annotations
 
 import asyncio
-import json as _json
+import json_repair as _json
 import re as _re
 
 from langchain_core.runnables import RunnableConfig
@@ -49,7 +49,7 @@ _CAPABILITY_RE = _re.compile(
 _CLASSIFIER_CONTEXT: dict = {}
 
 _REDIS_CTX_KEY = "classifier:context:v1"
-_REDIS_CTX_TTL = 3600  # 1 hour
+_REDIS_CTX_TTL = 86400  # 1 Day
 
 _FALLBACK_DOMAINS = (
     "banking, cash_and_liquidity, payments, fx_and_hedging, "
@@ -66,7 +66,7 @@ def _get_classifier_context() -> dict:
     """Load domain + intent context — three tiers: in-process → Redis → Neo4j.
 
     L1 (in-process): ~0ms, survives for process lifetime after first load.
-    L2 (Redis): ~1ms, survives restarts and is shared across workers, TTL 1h.
+    L2 (Redis): ~1ms, survives restarts and is shared across workers, TTL 1 day.
     L3 (Neo4j): authoritative source; result written to both Redis and in-process.
     Falls back to hardcoded defaults if all tiers fail.
     """

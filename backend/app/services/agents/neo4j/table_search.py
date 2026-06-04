@@ -167,27 +167,25 @@ def search_tables_via_filter_values(tokens: list[str]) -> list[dict]:
       (c.description IS NOT NULL AND toLower(c.description) CONTAINS token)
     )
     WITH t, c, token,
+         [a IN coalesce(c.value_aliases, [])   WHERE toLower(a) CONTAINS token] AS alias_hits,
+         [v IN coalesce(c.distinct_values, []) WHERE toLower(v) CONTAINS token] AS dv_hits,
+         coalesce(c.description, '')                                             AS col_desc,
+         size(coalesce(c.value_aliases, []))                                     AS va_size
+    WITH t,
+         c.name             AS matched_col,
+         token,
+         t.pagerank_score   AS pagerank,
          CASE
-           WHEN c.value_aliases IS NOT NULL AND SIZE(c.value_aliases) > 0
-             AND ANY(a IN c.value_aliases WHERE toLower(a) CONTAINS token)
-           THEN [a IN c.value_aliases WHERE toLower(a) CONTAINS token][0]
-           WHEN c.distinct_values IS NOT NULL
-             AND ANY(v IN c.distinct_values WHERE toLower(v) CONTAINS token)
-           THEN [v IN c.distinct_values WHERE toLower(v) CONTAINS token][0]
-           ELSE SUBSTRING(c.description, 0, 80)
+           WHEN size(alias_hits) > 0                  THEN alias_hits[0]
+           WHEN va_size = 0 AND size(dv_hits) > 0     THEN dv_hits[0]
+           ELSE substring(col_desc, 0, 80)
          END AS matched_item,
          CASE
-           WHEN c.value_aliases IS NOT NULL AND SIZE(c.value_aliases) > 0
-             AND ANY(a IN c.value_aliases WHERE toLower(a) CONTAINS token)
-           THEN 3
-           WHEN c.distinct_values IS NOT NULL
-             AND ANY(v IN c.distinct_values WHERE toLower(v) CONTAINS token)
-           THEN 2
+           WHEN size(alias_hits) > 0                  THEN 3
+           WHEN va_size = 0 AND size(dv_hits) > 0     THEN 2
            ELSE 1
          END AS match_score
     WHERE matched_item IS NOT NULL
-    WITH t, c.name AS matched_col, matched_item, token,
-         t.pagerank_score AS pagerank, match_score
     ORDER BY match_score DESC, pagerank DESC
     WITH t, COLLECT({{col: matched_col, item: matched_item, token: token}})[0] AS best_match,
          MAX(pagerank) AS top_score,
@@ -419,3 +417,81 @@ def get_business_term_table_edges(bt_terms: list[str], anchor_fqns: list[str]) -
     results = _neo4j_run(query, {"bt_terms": bt_terms, "anchor_fqns": anchor_fqns})
     logger.debug("neo4j | fn=get_business_term_table_edges | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def search_tables_via_query_templates(embedding: list[float]) -> list[dict]:
+    """Path T: QueryTemplate → REQUIRES_TABLE → Table.
+
+    QueryTemplates encode known query structures for specific business questions.
+    Their REQUIRES_TABLE edges pin anchor tables that are structurally required.
+    Only fires on high-similarity matches (score > 0.75).
+    """
+    query = f"""CYPHER 25
+    MATCH (qt:QueryTemplate)
+    SEARCH qt IN (VECTOR INDEX `querytemplate_cohere` FOR $embedding LIMIT 3)
+    SCORE AS score
+    WHERE score > 0.75
+    MATCH (qt)-[:REQUIRES_TABLE]->(t:Table)
+    RETURN {_TABLE_RETURN}, score, qt.id AS matched_via
+    ORDER BY score DESC LIMIT 15
+    """
+    t0 = time.monotonic()
+    try:
+        results = _neo4j_run(query, {"embedding": embedding})
+        logger.debug("neo4j | fn=search_tables_via_query_templates | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_tables_via_query_templates failed | error={}", e)
+        return []
+
+
+@neo4j_breaker
+def get_business_terms_with_related_tables(embedding: list[float], query_text: str) -> list[dict]:
+    """Return high-confidence BusinessTerm matches with their related_table_fqns.
+
+    Used for entity pinning in table_discovery — related_table_fqns on high-score
+    BusinessTerms are pinned and survive the MAX_ANCHOR_TABLES cap.
+    Returns: [{term, score, related_table_fqns: list[str], variants: list[str]}]
+    """
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    vector_query = """CYPHER 25
+    MATCH (bt:BusinessTerm)
+    SEARCH bt IN (VECTOR INDEX `businessterm_cohere` FOR $embedding LIMIT 5)
+    SCORE AS score
+    WHERE score > 0.72 AND bt.related_table_fqns IS NOT NULL
+    RETURN bt.term AS term, bt.variants AS variants,
+           bt.related_table_fqns AS related_table_fqns, score
+    """
+    try:
+        rows = _neo4j_run(vector_query, {"embedding": embedding})
+        for r in rows:
+            term = r.get("term")
+            if term and term not in seen:
+                seen.add(term)
+                results.append(dict(r))
+    except Exception as e:
+        logger.warning("neo4j | get_business_terms_with_related_tables vector failed | error={}", e)
+
+    fts_query = """
+    CALL db.index.fulltext.queryNodes('businessterm_ft', $query)
+    YIELD node AS bt, score
+    WHERE score > 0.6 AND bt.related_table_fqns IS NOT NULL
+    RETURN bt.term AS term, bt.variants AS variants,
+           bt.related_table_fqns AS related_table_fqns, score
+    LIMIT 5
+    """
+    try:
+        rows = _neo4j_run(fts_query, {"query": query_text})
+        for r in rows:
+            term = r.get("term")
+            if term and term not in seen:
+                seen.add(term)
+                results.append(dict(r))
+    except Exception as e:
+        logger.warning("neo4j | get_business_terms_with_related_tables fts failed | error={}", e)
+
+    logger.debug("neo4j | fn=get_business_terms_with_related_tables | hits={}", len(results))
+    return results

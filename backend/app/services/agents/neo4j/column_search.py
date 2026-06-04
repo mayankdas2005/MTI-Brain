@@ -218,6 +218,41 @@ def get_columns_by_ids(col_ids: list[str]) -> list[dict]:
 
 
 @neo4j_breaker
+def find_join_by_value_overlap(from_fqn: str, to_fqn: str) -> list[dict]:
+    """Find candidate join column pairs by distinct_value overlap.
+
+    Checks every column pair (c1 from from_fqn, c2 from to_fqn) where both have
+    stored distinct_values and at least one value appears in both lists.
+    Returns rows sorted by overlap_count DESC — more shared values = stronger FK signal.
+
+    Used when no JOINS_TO / JoinPath edge exists between two tables, as an alternative
+    to the bridge-table search which can pick semantically wrong intermediaries.
+    """
+    query = """
+    MATCH (t1:Table {fqn: $from_fqn})-[:HAS_COLUMN]->(c1:Column)
+    MATCH (t2:Table {fqn: $to_fqn})-[:HAS_COLUMN]->(c2:Column)
+    WHERE c1.distinct_values IS NOT NULL
+      AND c2.distinct_values IS NOT NULL
+      AND size(c1.distinct_values) > 0
+      AND size(c2.distinct_values) > 0
+      AND any(v IN c1.distinct_values WHERE v IN c2.distinct_values)
+    WITH c1.name  AS from_col,
+         c2.name  AS to_col,
+         [v IN c1.distinct_values WHERE v IN c2.distinct_values] AS shared
+    RETURN from_col, to_col, size(shared) AS overlap_count
+    ORDER BY overlap_count DESC
+    LIMIT 5
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"from_fqn": from_fqn, "to_fqn": to_fqn})
+    logger.debug(
+        "neo4j | fn=find_join_by_value_overlap | from={} to={} | ms={:.0f} | hits={}",
+        from_fqn, to_fqn, (time.monotonic() - t0) * 1000, len(results),
+    )
+    return [dict(r) for r in results]
+
+
+@neo4j_breaker
 def resolve_columns(table_fqn: str, column_names: list[str]) -> list[dict]:
     """Direct column lookup by table + name list. Used as last-resort in filter_resolver."""
     query = """

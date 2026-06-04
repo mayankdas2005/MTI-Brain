@@ -226,18 +226,19 @@ function appendStepReasoning(
   return steps;
 }
 
-/** Mark a specific node's step as done with its authoritative duration. */
+/** Mark a specific node's step as done or error with its authoritative duration. */
 function markStepDone(
   steps: StreamingStep[] | undefined,
   node: string,
   duration_ms: number,
+  status: 'done' | 'error' = 'done',
 ): StreamingStep[] | undefined {
   if (!steps) return steps;
   let found = false;
   const next = steps.map((s) => {
     if (!found && s.node === node && s.status === 'active') {
       found = true;
-      return { ...s, status: 'done' as const, duration_ms };
+      return { ...s, status, duration_ms };
     }
     return s;
   });
@@ -1074,6 +1075,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             : m,
         );
       },
+      onConfidence: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, metadata_: { ...m.metadata_, confidence: data } }
+            : m,
+        );
+      },
       onVizSkip: () => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, chartReady: true } : m,
@@ -1082,7 +1090,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onNodeDone: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms) }
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done') }
             : m,
         );
       },
@@ -1441,6 +1449,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec, chart_type: data.chart_type as string | undefined, alternative_chart_specs: data.alternative_chart_specs as { chart_type: string; spec: Record<string, unknown> }[] | undefined } } : m,
         );
       },
+      onConfidence: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, confidence: data } } : m,
+        );
+      },
       onVizSkip: () => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, chartReady: true } : m,
@@ -1449,7 +1462,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onNodeDone: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms) }
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done') }
             : m,
         );
       },
@@ -1751,6 +1764,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId ? { ...m, chartReady: true, metadata_: { ...m.metadata_, chart_spec: data.spec, chart_type: data.chart_type as string | undefined, alternative_chart_specs: data.alternative_chart_specs as { chart_type: string; spec: Record<string, unknown> }[] | undefined } } : m,
         );
       },
+      onConfidence: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, confidence: data } } : m,
+        );
+      },
       onVizSkip: () => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, chartReady: true } : m,
@@ -1759,7 +1777,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onNodeDone: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms) }
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done') }
             : m,
         );
       },

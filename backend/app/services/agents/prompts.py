@@ -24,7 +24,7 @@ _REASONING_FORMAT = (
     "- `backtick` for every class name, property, variable, value, or SQL term\n"
     "- Bullet points (- item) for lists of options, observations, or reasoning steps\n"
     "- Blank line between distinct thoughts — never write a wall of text\n"
-    "- NO markdown headers (##/###), numbered labels (Step 1 —, 1.), or horizontal rules.\n"
+    "- NO markdown headers (##/###) whatsoever, numbered labels (Step 1 —, 1.), or horizontal rules.\n"
     "- Write as flowing sentences and bullets, not a structured checklist."
 )
 
@@ -55,11 +55,15 @@ REASONING_DIRECTIVE_BRIEF = (
 )
 
 REASONING_DIRECTIVE_SQL = (
-    "You are executing a pre-validated spec — the join clauses, tables, and filters are correct. "
-    "Do NOT question or reinterpret them. Reason only about: "
-    "(1) which columns each CTE must forward, "
+    "You are generating SQL from a pre-computed specification. "
+    "Anchor tables, measures, dimensions, and resolved filters are authoritative. "
+    "Pre-computed join clauses are valid when provided — use them verbatim. "
+    "For any UNRESOLVED JOIN PAIR, use the candidate columns listed to determine the correct join predicate. "
+    "Never invent table names, column names, or schema prefixes not listed in the schema reference. "
+    "Reason only about: (1) which columns each CTE must forward, "
     "(2) which columns are aggregated vs grouped, "
-    "(3) what expression to write for each derived alias. "
+    "(3) what expression to write for each derived alias, "
+    "(4) how to resolve any unresolved join pairs from the evidence provided. "
     "3–5 sentences max."
     + _REASONING_NO_LEAK
 )
@@ -216,21 +220,36 @@ AGGREGATION — always set, never null:
 
 ---
 
+FILTER VALUE TAXONOMY — classify every filter before writing it:
+
+TYPE A — Named entity (bank name, company, counterparty, account name, person):
+  → Include the lookup table as an anchor table.
+  → Set raw_value = user's words exactly. Do NOT guess or invent DB codes.
+  → The system resolves the user's words to DB codes downstream.
+  → Example: "JPMorgan" → anchor=lpp.bank, raw_value="JPMorgan"
+
+TYPE B — Enumerated category (status, type, direction, code field):
+  → Include the table that owns the column.
+  → Set raw_value = user's words exactly. Resolver maps to DB code.
+  → CATEGORICAL FILTER DETECTION: Scan for IMPLIED values too. When a column has
+    values: listed and the question implies one, include it.
+  → Example: "closing balance" → raw_value="closing balance" (resolves to "CLOSING")
+
+TYPE C — User-stated numeric constant ($200M, 0.05, 100%, "> 50"):
+  → Do NOT include a lookup table. Use the number directly as the filter value.
+  → Use the correct comparison operator: > >= < <= (NEVER "=" for thresholds).
+  → Example: "below $200M" → operator="<", raw_value="200000000"
+
+TYPE D — Computed position threshold ("where liquidity < $200M", "net position drops below X"):
+  → This requires a CTE computation, NOT a simple filter on a raw column.
+  → Set result_shape="time_series" or "comparison" and add a cte_steps entry describing
+    the computation: "compute cumulative_net_position and flag where < 200000000"
+  → Do NOT add a policy/lookup table as an anchor for a Type D threshold.
+
 FILTER RULES:
 1. Every filter must have an operator. Default: "=". Valid: = | != | > | >= | < | <= | IN | LIKE | BETWEEN
-2. Numeric comparisons ("greater than 10%", "more than 5") → use the correct operator (>, >=, <, <=).
-   Never put the operator symbol inside raw_value.
-3. Categorical filters: use the exact DB code shown under `values:` for that column in COLUMNS below.
-   If `meanings:` is shown, map the user's business term to the corresponding DB code first, then use
-   that code as raw_value. Always include every filter the user explicitly stated — the system validates
-   exact values downstream.
-   CATEGORICAL FILTER DETECTION: Scan the question for IMPLIED categorical values too.
-   When a column has values: listed and the question semantically implies one, include it as a filter.
-   Example: question mentions "interest income" + schema shows direction values: INCOME, EXPENSE
-            → output filter: direction, raw_value = "income"  (resolver maps to exact DB code)
-   This rule applies ONLY to categorical columns with values: listed — NOT numeric thresholds
-   ("above $100M", "> 50") which use operator: ">"/">=" instead.
-4. ONE VALUE PER FILTER OBJECT: Each filter object must contain exactly one value.
+2. Use the TYPE taxonomy above to decide whether to include a lookup table.
+3. ONE VALUE PER FILTER OBJECT: Each filter object must contain exactly one value.
    For multi-value filters ("USD and CAD", "status A or B"), output one filter object per value.
 
 TOP-N RULE:
@@ -312,13 +331,35 @@ When timeframe is set, decide whether the date column should appear in SELECT/GR
       - timeframe is a pure filter with no breakdown ("active accounts as of today")
       - no other breakdown dimensions AND result_shape ≠ "time_series"
 
-  temporal_grain values: "day" | "week" | "month" | "quarter" | "year" | null
-    timeframe > 1 month OR "by month" / "monthly"   → "month"
-    timeframe ≤ 1 month OR "by week" / "weekly"     → "week"
-    timeframe ≤ 2 weeks OR "by day" / "daily"       → "day"
-    "by quarter" / "quarterly"                      → "quarter"
-    "by year" / "annually"                          → "year"
-    pure filter / no grouping intent                → null
+  temporal_grains — list, most granular first. Use [] when no temporal breakdown.
+    Single:  ["month"] | ["week"] | ["day"] | ["quarter"] | ["year"]
+    Dual horizon ("4 weeks AND 3 months"): ["week", "month"]
+    No temporal breakdown or pure filter: []
+
+    Grain selection:
+      timeframe > 1 month OR "by month"/"monthly"       → "month"
+      timeframe ≤ 1 month OR "by week"/"weekly"         → "week"
+      timeframe ≤ 2 weeks OR "by day"/"daily"           → "day"
+      "by quarter"/"quarterly"                          → "quarter"
+      "by year"/"annually"                              → "year"
+      forward window ("next 4 weeks", "coming quarter") → grain of the forward period
+
+FORWARD-LOOKING TEMPORAL EXPRESSIONS — output as timeframe string exactly:
+  "next 4 weeks"    → timeframe = "next_4_weeks",    temporal_grains = ["week"]
+  "next 3 months"   → timeframe = "next_3_months",   temporal_grains = ["month"]
+  "next quarter"    → timeframe = "next_quarter",     temporal_grains = ["quarter"]
+  "next 90 days"    → timeframe = "next_90_days",     temporal_grains = ["day"]
+  The system resolves these to SQL date range expressions downstream.
+
+IMPLICIT DIMENSION RULE — include context columns users expect to see in output:
+1. TIME AXIS: When time_filter is set AND result_shape ≠ "kpi", ALWAYS include the date
+   column in dimensions (same column as the timeframe column). Users must see WHAT DATE the data is for.
+   This applies whether or not the user explicitly named the date column.
+2. ENTITY CONTEXT: When filtering by a named entity (account, company, bank, counterparty),
+   include the entity identifier column in dimensions so users see WHICH entity each row covers.
+3. COMPARISON SHAPE: "match X against Y", "compare X to Y", "reconcile", "discrepancies" →
+   result_shape = "comparison". Include both X value and Y value as separate measures.
+   Add a cte_steps entry describing the delta: "compute variance = X - Y".
 
 ---
 
@@ -379,7 +420,8 @@ USER QUESTION: {question}
 
 {reasoning_directive}
 
-Output your reasoning in <reasoning>...</reasoning>, then the resolved intent in <output>...</output>.
+Output your reasoning in <reasoning>...</reasoning>, then the resolved intent in <output>...</output>,
+then the structured directive in <directive>...</directive> with <instructions> and <context> sub-sections.
 
 <reasoning>
 If PREVIOUS EXECUTION FAILURE section appears above: identify which table, column, or join caused
@@ -406,7 +448,48 @@ anchor_tables and timeframe before adding new dimensions or filters.
   "limit": null,
   "order_by": []
 }}
-</output>"""
+</output>
+<directive>
+After <output>, emit this directive with two sub-sections — written from your same reasoning context.
+
+<instructions>
+SQL execution requirements NOT already handled by the filter system. Be exhaustive.
+Use the CORRECT key for each type — these have different SQL effects:
+
+COMPUTATION — adds a derived column to a CTE (does NOT filter rows from output):
+    e.g. COMPUTATION: breach_flag = CASE WHEN cumulative_cash < liquidity_floor THEN TRUE ELSE FALSE END
+    e.g. COMPUTATION: headroom = cumulative_cash - liquidity_floor
+    e.g. COMPUTATION: weighted_avg_yield = SUM(yield*market_value)/NULLIF(SUM(market_value),0)
+
+COMPUTED_FILTER — adds WHERE clause to FILTER which rows appear in final output (removes rows):
+    e.g. COMPUTED_FILTER: WHERE cumulative_cash < 200000000  ("highlight breach weeks" → show ONLY those weeks)
+    e.g. COMPUTED_FILTER: WHERE bank_deposit_ts IS NULL  ("pending" → show only pending rows)
+    e.g. COMPUTED_FILTER: WHERE headroom < 0  (only negative headroom rows)
+    The derived column is computed in an upstream CTE; the WHERE is applied in the final SELECT.
+
+CTE PATTERNS — deduplication or latest-row selection (not a filter, a CTE structure):
+    e.g. BENCHMARK_RATE_FILTER: ROW_NUMBER() OVER (PARTITION BY benchmark_code ORDER BY rate_date DESC) = 1
+
+Do NOT include standard value filters (status='X', amount>N, type IN(...)) — those are
+resolved by the filter system and appear in FILTER DIRECTIVE. Do not duplicate them.
+Max 120 chars/line.
+</instructions>
+
+<context>
+Structural guidance and informational context (not SQL predicates):
+- ANCHOR_TABLES: which tables are needed
+- JOIN_PATH: explicit FK join hints (table.col = table.col)
+- TIME_FILTER: time period (natural language or Redshift SQL expression)
+- RESULT_SHAPE, PERIOD_GRAIN: output structure and grouping
+- NO_EXTRA_FILTERS: when hallucination risk is high
+- SCHEMA_GAP: concepts the schema cannot answer
+- CONFIDENCE_NOTE: uncertainty and schema coverage gaps
+Standard value filters (status, facility_type, amount thresholds on existing columns)
+belong here as context — the filter system will verify and normalize them.
+Any other judgment call, workaround, or business logic note the SQL generator needs.
+Max 120 chars/line.
+</context>
+</directive>"""
 )
 
 # ─── Node C: Clarification ───────────────────────────────────────────────────
@@ -466,9 +549,15 @@ One sentence: which numbered entry matches (by direct match or meaning label) an
 # ─── Repair Node ──────────────────────────────────────────────────────────────
 
 REPAIR_PROMPT = ChatPromptTemplate.from_template(
-    """You are fixing broken Redshift SQL.
+    """You are fixing broken Amazon Redshift SQL. Redshift is NOT PostgreSQL.
+INTERVAL syntax with months/years is NOT supported — replace with DATEADD:
+  ✗ INTERVAL '1 year'  →  DATEADD(year, -1, date)
+  ✗ date + INTERVAL '3 months'  →  DATEADD(month, 3, date)
+  ✗ INTERVAL '4 weeks'  →  DATEADD(week, 4, date)
 
 {prior_attempts_detail}
+
+{directive_section}
 
 ---
 
@@ -502,6 +591,11 @@ ANTI-PATTERNS (do not repeat these):
 ---
 
 RULES:
+0. EXISTS SUBQUERY PROHIBITION — ABSOLUTE: Do NOT add, keep, or reintroduce EXISTS / IN / ANY
+   subqueries for tables that are not in the ANCHOR TABLES listed in QUERY INTENT.
+   If the broken SQL contains such subqueries, REMOVE them — they are hallucinations that
+   eliminate all rows. A column's description or its filter_values list is documentation,
+   never a filter value. The only valid WHERE predicates are those explicitly listed in QUERY INTENT.
 1. Fix ONLY: syntax errors, wrong column names, wrong schema prefix, type mismatches,
    Redshift dialect issues, invalid ON clauses, incorrect filter logic, broken CTE structure.
    Broken CTE structure includes:
@@ -552,6 +646,10 @@ fixed SQL here
 CTE_COLUMN_PLANNER_PROMPT = ChatPromptTemplate.from_template(
     """Solve a CTE column forwarding problem. Do NOT write SQL — output only a column plan.
 
+{directive_section}
+
+{prior_error_section}
+
 {query_blueprint}
 
 ---
@@ -569,6 +667,10 @@ COLUMN FORWARDING RULES:
   - Final SELECT reads ONLY from the last CTE's SELECT list.
   - Include ALL columns needed by any downstream scope: measures (raw, for aggregation), GROUP BY dimensions, filter columns, display columns.
   - If a downstream CTE needs a raw table column, the FIRST CTE must forward it with an alias.
+  - REDSHIFT ALIAS RULE: A SELECT alias defined in CTE N CANNOT be used in another expression
+    in the SAME CTE N SELECT clause. If computed column B depends on computed column A, they
+    MUST be in different CTEs: CTE N defines A, CTE N+1 defines B using A.
+    Example: chargeback_ratio in one CTE, visa_breach_flag referencing chargeback_ratio in the NEXT CTE.
   - DERIVED ALIASES (alias differs from column name, e.g. 'period' from DATE_TRUNC, or 'rate' from a CAST):
     The FIRST CTE defines them as an expression (e.g. DATE_TRUNC('month', batch_close_ts) AS period).
     Every downstream CTE between definition and the final SELECT MUST include the alias in its SELECT list
@@ -610,9 +712,25 @@ list every CTE and final SELECT with their required columns here
 # ─── SQL Generator ────────────────────────────────────────────────────────────
 
 SQL_GENERATE_PROMPT = ChatPromptTemplate.from_template(
-    """You are writing a Redshift SQL query.
+    """You are writing an Amazon Redshift SQL query. Redshift is NOT PostgreSQL — the following
+PostgreSQL constructs are INVALID and will cause runtime errors:
+  ✗ INTERVAL '1 year' / INTERVAL '3 months' / INTERVAL '4 weeks'  → use DATEADD(year,-1,date)
+  ✗ date + INTERVAL '...'                                          → use DATEADD(unit, n, date)
+  ✗ CURRENT_DATE - INTERVAL '...'                                  → use DATEADD(unit, -n, CURRENT_DATE)
+  ✗ GENERATE_SERIES, WITH RECURSIVE, FILTER (WHERE ...)           → not supported
+  ✗ SELECT alias forward-reference: referencing a SELECT alias in another expression in the
+    SAME SELECT clause is INVALID (Redshift evaluates all SELECT expressions in parallel):
+      WRONG:  SELECT a/b AS ratio, CASE WHEN ratio > 0.01 THEN TRUE END AS flag   ← ratio undefined
+      CORRECT: put ratio in an upstream CTE, then reference it:
+        ratio_cte AS (SELECT a/b AS ratio, ... FROM ...)
+        SELECT ratio, CASE WHEN ratio > 0.01 THEN TRUE END AS flag FROM ratio_cte
+Correct Redshift date arithmetic:
+  DATEADD(year,  -1, date)   DATEADD(month, -3, date)   DATEADD(week, 4, date)   DATEADD(day, -30, date)
+  DATE_TRUNC('month', date)  DATEDIFF(day, d1, d2)      GETDATE()  CURRENT_DATE
 
 {cross_domain_section}
+
+{directive_section}
 
 {unresolved_joins_section}
 
@@ -644,6 +762,10 @@ RULES:
    sequence for the first CTE — copy it verbatim. Every table referenced by column name must
    appear in a FROM or JOIN of that CTE; never write schema.table.column for a table that is not
    in the FROM or a JOIN. Never drop or invent tables.
+1d. SCHEMA DIRECTIVE JOIN_CHAIN (in DIRECTIVES above): when present, gives confirmed ON clauses.
+   If SCHEMA DIRECTIVE JOIN_CHAIN and PRE-COMPUTED JOIN CHAIN disagree on the ON clause for the
+   same pair, trust SCHEMA DIRECTIVE — it incorporates intent resolver Tier 0 overrides (e.g.
+   facility_ref = code is preferred over company_ref = company_ref for the same table pair).
 1c. MULTI-HOP JOIN PATHS: When AVAILABLE JOINS has an entry with hop_count >= 2 and path_tables,
    the join requires intermediate bridge tables. Include ALL tables in path_tables in the FROM/JOIN
    chain. The join_clauses list gives the complete JOIN sequence — emit them in order.
@@ -660,6 +782,12 @@ RULES:
 2. Use PRE-COMPUTED JOIN CHAIN as shown. You may substitute a different ON clause ONLY when
    VOCABULARY OVERLAP HINTS in UNRESOLVED JOIN PAIRS provide a better-evidenced join column.
 2b. TIME FILTER in QUERY SPECIFICATION → add to WHERE clause verbatim. Never reinterpret or omit it.
+   STALE-DATA FALLBACK: If you add an OR-branch to catch data when no recent rows exist, use the
+   raw MAX value — do NOT wrap it in DATE_TRUNC:
+     CORRECT:  col >= DATEADD(month,-2,CURRENT_DATE) OR col >= (SELECT MAX(col) FROM tbl)
+     WRONG:    col >= DATEADD(month,-2,CURRENT_DATE) OR col >= DATE_TRUNC('MONTH',(SELECT MAX(col) FROM tbl))
+   DATE_TRUNC on a MAX subquery shifts the cutoff to month-start, which is wrong for a "most recent
+   data available" fallback. The raw MAX value is the correct boundary.
 3. FILTER TYPE ENFORCEMENT — check SCHEMA REFERENCE data_type BEFORE writing any predicate.
    This rule OVERRIDES the [exact] tag when the value conflicts with the column's data_type:
    • boolean / bool → value MUST be SQL literal TRUE or FALSE (unquoted, never quoted).
@@ -730,6 +858,12 @@ RULES:
    exists, use a subquery or CTE to pre-aggregate one side before joining.
 9. Apply LIMIT shown in QUERY SPECIFICATION to the final SELECT.
 10. Start with WITH. One statement. No semicolons.
+10b. WHERE FILTERS ARE CLOSED — do NOT invent EXISTS, IN, or ANY subqueries for tables that are
+    not in ANCHOR TABLES or PRE-COMPUTED JOIN CHAIN. Every filter in QUERY SPECIFICATION already
+    lists the exact table and column. The columns in SCHEMA REFERENCE are there for JOIN discovery
+    only — their description, filter_values, or any other metadata field is NEVER a filter value.
+    In particular: a column's description text is documentation, not a DB value. Never use it in
+    WHERE. Use only the values listed under `[enum: ...]` or the values in FILTERS.
 11. UNRESOLVED JOIN PAIRS (if the section appears above): you MUST provide an ON clause for every
     listed table pair. Priority order:
     a. VOCABULARY OVERLAP HINTS in that section — these show columns with actual shared data values.
@@ -747,7 +881,11 @@ RULES:
     every clause. These override your default choices for formatting, ordering, and style.
 15. CTE COLUMN PLAN (if the section appears above between QUERY SPECIFICATION and SCHEMA REFERENCE):
     this plan is pre-solved and authoritative. Each CTE's SELECT MUST include at minimum every
-    column listed for it. The final SELECT MUST use only columns listed for it. Do not deviate.
+    column listed for it. The final SELECT MUST use only columns listed for it.
+    EXCEPTION: If PREVIOUS SQL ATTEMPT shows a validation error for this exact plan (same CTE names,
+    same structure), the plan itself is wrong — deviate from it to fix the error. In particular,
+    if a computed column (e.g. chargeback_ratio) needs to be referenced in another expression
+    (e.g. visa_breach_flag), add an intermediate CTE even if the plan did not include one.
 17. DATE_TRUNC OUTPUT FORMAT: when DIMENSIONS shows a date column with alias "period_<grain>",
     format the DATE_TRUNC result for clean human-readable output based on the grain:
       day     → DATE_TRUNC('day',     col)::DATE                     → YYYY-MM-DD
@@ -968,17 +1106,12 @@ Output only the JSON array inside the tags."""
 # ─── Node 5: Chart Spec Generator (type + labels) ────────────────────────────
 
 CHART_LABEL_PROMPT = ChatPromptTemplate.from_template(
-    """You are a financial data visualization expert. Choose the single best chart type for the data, then name 2 valid alternatives.
-
-NOTE: The rules below are guidelines — the final choice must be driven by the actual data shape,
-column types, and row counts in DATA PROFILE. Override any guideline when the data clearly calls
-for a different chart type.
-
----
+    """You are a senior BI developer with deep Power BI and financial dashboard expertise.
+Your job: choose the single chart type that creates the MAXIMUM INSIGHT for this specific question and data.
+Not "what renders" — what a finance director would immediately understand at a glance.
 
 QUESTION: {question}
 Intent:   {intent}
-Persona:  {persona}
 
 ---
 
@@ -995,116 +1128,143 @@ Persona:  {persona}
 ---
 
 STEP 1 — CLASSIFY YOUR COLUMNS (from COLUMN PROFILES above):
-  date_cols   = columns whose Range shows YYYY-MM-DD dates
-  string_cols = varchar/string columns (Top values shown)
-  number_cols = columns with Min / Max (numeric)
+  date_cols   = columns whose Range shows YYYY-MM-DD dates (check Distinct count — tells you how many periods)
+  string_cols = varchar/string columns (check Distinct count — tells you cardinality)
+  number_cols = columns with Min / Max
 
 ---
 
-STEP 2 — PICK PRIMARY CHART TYPE (first matching rule wins):
+STEP 2 — THINK LIKE A SENIOR BI DEVELOPER
 
-  SCALAR RESULT:
-  → Total rows == 1 AND number_cols ≥ 1                            → kpi_card
-  → Total rows ≤ 5 AND ALL cols are number                         → kpi_card
+First ask: "What question type is this?"
 
-  TIME SERIES (date_cols ≥ 1):
-  → date_cols=1, number_cols=1, string_cols=0                      → line  (area for executive/director)
-  → date_cols=1, string_cols=1, number_cols=1:
-      Ask: do the series VALUES ADD UP to a meaningful total?
-        YES (e.g. spend by category, revenue by product line)      → stacked_area
-        NO  (e.g. balance per account, KPI per entity)             → multi_line
-      RULE: default to multi_line when unsure.
-            stacked_area implies series[0] + series[1] = total — if that is false, it misleads.
-            Two accounts, two entities, two independent metrics = multi_line, never stacked_area.
+  QUESTION TYPE                              HIGHEST-IMPACT CHART
+  ─────────────────────────────────────────  ──────────────────────────────────────────
+  "What is the total / current value?"       → kpi_card  (single number at a glance)
+  "How is X trending over time?"             → line  (precision matters, not area fill)
+  "How is cumulative X building up?"         → area  (fill emphasises accumulation)
+  "How do A, B, C compare?"                 → bar sorted descending (ranking is instant)
+  "What changed and why? (variance/bridge)" → waterfall  (signed increments → total)
+  "What's the composition over time?"        → stacked_area (only if series sum to total)
+  "How do multiple entities move together?"  → multi_line  (each entity = one line)
+  "What share does each part hold?"          → donut (≤5 slices only; finance standard)
+  "Side-by-side comparison across groups"    → grouped_bar
+  "Breakdown of total by two dimensions"     → stacked_bar
+  "Correlation between two metrics?"         → scatter
+  "Two metrics at different scales?"         → dual_axis
 
-  CATEGORICAL (no date_cols, string_cols ≥ 1):
-  → string_cols=1, number_cols=1:
-      ≤ 6 distinct values AND (executive OR director)              → donut
-      ≤ 7 distinct values AND question asks share/breakdown        → pie or donut
-      labels > 20 chars OR many categories                         → bar
-      otherwise                                                     → bar
-  → string_cols=2, number_cols=1:
-      question asks share/composition (parts of a whole)           → stacked_bar
-      question asks side-by-side comparison                        → grouped_bar
+━━━ CHART TYPE GUIDE ━━━
+  kpi_card       — single scalar or a small set of headline KPIs; no axis; maximum executive impact
+  bar            — ranked comparison, sorted descending; DEFAULT for categorical; ≤ 30 categories
+  bar_horizontal — bar rotated; use when category labels are > 15 chars (counterparty names, descriptions)
+  line           — ONE metric trend over time; add point markers; use for rates, flows, returns
+  area           — cumulative/stock metric over time; positive values only; fills emphasise magnitude
+  multi_line     — MULTIPLE INDEPENDENT series over time; one line per entity/metric; independent y values
+  stacked_area   — time series where series genuinely sum to total (e.g. spend by dept = total spend)
+  donut          — part-of-whole; ≤ 5 slices in finance context; centre hole shows total
+  pie            — same as donut without hole; use donut by default in finance
+  grouped_bar    — side-by-side bars for 2-3 groups; direct visual comparison
+  stacked_bar    — composition of totals; each bar = 100%; use for budget vs actual split
+  scatter        — two continuous numeric axes; use for correlation / risk analysis
+  waterfall      — variance / P&L bridge / cash flow; positive increments stack up, negative stack down
+  heatmap        — two categorical axes, one numeric intensity; use for calendar/matrix patterns
+  bubble         — scatter + third numeric as bubble size; use for 3-dimension analysis
+  dual_axis      — two metrics at incompatible scales on one time axis (e.g. volume + yield)
 
-  PURE NUMERIC (no date_cols, no string_cols):
-  → exactly 2 number_cols AND analyst persona                      → scatter
-  → otherwise                                                      → bar
+━━━ DATA PATTERN → CHART MAPPING ━━━
+  rows=1, any cols                                                     → kpi_card
+  date Distinct=1, string=0, number ≥1                                → kpi_card (snapshot, not a time series)
+  date Distinct=1, string ≥1, number=1                                → bar (categories for a single snapshot)
+  date ≥1, string=0, number=1, Min≥0                                  → area or line
+  date ≥1, string=0, number=1, Min<0                                  → line (negatives; area fill misleads)
+  date ≥1, string=0, number ≥2                                        → multi_line (fold: each numeric = a series)
+  date ≥1, string=1, number=1, series ADD UP to total                 → stacked_area
+  date ≥1, string=1, number=1, series are INDEPENDENT                 → multi_line
+  date=0, string=1, number=1, Distinct(string) ≤ 5, "share/%" asked  → donut
+  date=0, string=1, number=1                                          → bar sorted desc
+  date=0, string=1, number=1, labels > 15 chars                       → bar_horizontal
+  date=0, string=2, number=1, comparison intent                       → grouped_bar
+  date=0, string=2, number=1, composition/breakdown intent            → stacked_bar
+  date=0, string=0, number=2, correlation                             → scatter
+  ordered items with ± increments building toward total               → waterfall
+  2 numeric dimensions + category intensity (e.g. entity × period × amount) → heatmap
 
-  WIDE / MANY ROWS:
-  → Total rows > 30 AND no date_cols                               → bar
-  → number_cols > 5                                                → bar
+━━━ POWER BI BEST PRACTICES ━━━
+  • Bar charts: ALWAYS sort descending by value. Top performer on left. Maximum contrast.
+  • Waterfall: the go-to for ANY "what changed" or "bridge" analysis. Never use bar for this.
+  • Donut: in finance, donut beats pie — the hole can show the total value as a label.
+  • Avoid stacked_area unless the stack literally equals a known total. Otherwise multi_line.
+  • Line with point markers beats plain line — individual data points are identifiable.
+  • KPI card with negative values still renders correctly — show it, don't hide it.
+  • Grouped bar limit: ≤ 3 groups. More than 3 becomes unreadable; use small multiples or table.
+  • Dual axis: use ONLY when scales truly differ by 10× or more (e.g. $B vs %).
 
-  PERSONA OVERRIDES (apply on top of above):
-  → executive: never scatter, never grouped_bar — prefer kpi_card > donut > area > bar
-  → director:  never scatter — prefer area > bar > donut
-  → manager:   prefer bar > line > table — avoid scatter
-  → analyst:   any type valid
+━━━ CRITICAL PITFALLS ━━━
+  ✗ stacked_area when entities cover different or sparse date windows → spiky disconnected arcs; use multi_line
+  ✗ area when any value is negative → fill below zero is visually wrong; use line
+  ✗ pie/donut with > 5 categories in finance context → wedges too small; use bar
+  ✗ pie/donut when any value is negative → arc theta breaks; use bar
+  ✗ line/area/multi_line/stacked_area when date Distinct=1 → not a trend; use bar or kpi_card
+  ✗ kpi_card just because rows ≤ 5 — if the data IS a time series, use line or bar
+  ✗ stacked_area for independent entity balances → sum is meaningless; use multi_line
+  ✗ line with only 2–3 data points → a slope conveys no trend; use bar instead
+  ✗ grouped_bar with > 3 groups → too crowded; collapse to stacked_bar or table
+  ✗ multi_line with > 10 series → legend overload; reduce to top-N or use heatmap/table
+  ✗ bar when a date column has multiple distinct periods → it IS a time series; use line/area
+  ✗ ignoring a single-value string column (Distinct=1) as a dimension → it adds nothing; treat as if it doesn't exist
 
-  USER CHART PREFERENCES (if section appears above): override all rules above.
+  USER CHART PREFERENCES (if section appears above): override all patterns above.
 
 ---
 
-STEP 3 — PICK 2 ALTERNATIVES (must be structurally valid for the SAME columns):
-  Alternatives must work with the exact same date_cols/string_cols/number_cols you have.
-  Do NOT suggest a type that needs a different column structure.
+STEP 3 — PICK UP TO 2 ALTERNATIVES (structurally valid for the SAME columns):
+  Do NOT suggest a type that needs different columns. If no valid alternative exists, use [].
 
-  primary = line / area           → alternatives: [multi_line (only if string_col exists), bar]
-  primary = multi_line            → alternatives: [stacked_area, line]
-  primary = stacked_area          → alternatives: [multi_line, bar]
-  primary = bar                   → alternatives: [grouped_bar, waterfall]
-  primary = donut / pie           → alternatives: [bar, stacked_bar]
-  primary = grouped_bar           → alternatives: [stacked_bar, bar]
-  primary = stacked_bar           → alternatives: [grouped_bar, bar]
-  primary = scatter               → alternatives: [bar, dual_axis]
-  primary = waterfall             → alternatives: [bar, stacked_bar]
-  primary = kpi_card              → alternatives: []
-  Maximum 2 alternatives. Remove any type that cannot render with the current column structure.
+  primary = line / area            → alternatives: [multi_line (only if string_col exists), bar]
+  primary = multi_line             → alternatives: [stacked_area (only if series sum to total), line]
+  primary = stacked_area           → alternatives: [multi_line, bar]
+  primary = bar / bar_horizontal   → alternatives: [waterfall (if ± values), grouped_bar (if 2 string cols)]
+  primary = donut / pie            → alternatives: [bar]
+  primary = grouped_bar            → alternatives: [stacked_bar, bar]
+  primary = stacked_bar            → alternatives: [grouped_bar, bar]
+  primary = scatter                → alternatives: [bar, dual_axis]
+  primary = waterfall              → alternatives: [bar]
+  primary = kpi_card               → alternatives: []
+  primary = dual_axis              → alternatives: [multi_line, bar]
+  primary = heatmap                → alternatives: [grouped_bar, bar]
+  primary = bubble                 → alternatives: [scatter, bar]
 
 ---
 
 STEP 4 — VALUE FORMAT
-  Use COLUMN METADATA descriptions above — they tell you what the column actually is.
-  Then confirm with Min/Max from COLUMN PROFILES.
+  Use COLUMN METADATA (desc= field) first, then confirm scale with Min/Max.
 
-  SEMANTIC RULES (descriptions take priority over magnitude alone):
-    Column described as USD / dollar / usd_amount / payment amount → "$,.2f"
-    Column described as INR / rupee / indian rupee                 → "₹,.0f"
-    Column described as GBP / pound                                → "£,.2f"
-    Column described as EUR / euro                                 → "€,.2f"
-    Column described as JPY / yen                                  → "¥,.0f"
-    Column is a count, volume, number of transactions              → ",.0f"
-    Column is a ratio or rate between 0 and 1 (e.g. 0.045)        → ".1%"   (Vega multiplies by 100)
-    Column is already-converted percent (e.g. 4.5 meaning 4.5%)   → ",.1f"
-    No description or ambiguous                                    → use magnitude rules below
+  USD / dollar / usd_amount / payment amount → "$,.2f"
+  INR / rupee / indian rupee                 → "₹,.0f"
+  GBP / pound                                → "£,.2f"
+  EUR / euro                                 → "€,.2f"
+  JPY / yen                                  → "¥,.0f"
+  count / volume / number of transactions    → ",.0f"
+  ratio or rate between 0 and 1 (e.g. 0.045)→ ".1%"   (Vega multiplies by 100)
+  already-converted percent (e.g. 4.5 = 4.5%)→ ",.1f"
+  no description or ambiguous               → Max > 1,000 → ",.0f"  |  Max ≤ 1,000 → ",.2f"
 
-  MAGNITUDE FALLBACK (only when description gives no currency/type signal):
-    Max > 1,000    → ",.0f"
-    Max ≤ 1,000    → ",.2f"
-
-  IMPORTANT — do NOT use ".2s". The system will handle large-number display (K/M/B/T) automatically.
-  Your job is to signal the right BASE format and currency symbol.
-  A value of 500,000,000,000 with format "$,.2f" will be displayed as "$500B" — not "$500,000,000,000".
+  NEVER use ".2s". System handles K/M/B/T conversion automatically.
+  "$,.2f" on a 500B value renders as "$500B".
 
 ---
 
-STEP 5 — LEGEND LABELS (humanize raw column values for the color/series dimension):
-  If the color dimension values are raw identifiers (snake_case, SCREAMING_CASE, prefixed):
-    Map each raw value → human-readable label.
-    IHB_USD_INVESTMENT   → "IHB Investment"
-    IHB_USD_DISBURSEMENT → "IHB Disbursement"
-    ach_return_code      → "ACH Return Code"
+STEP 5 — LEGEND LABELS
+  Humanize raw identifiers in the color/series dimension.
+  IHB_USD_INVESTMENT → "IHB Investment"  |  lpp.bank_account → "Bank Account"
   Leave legend_labels as {{}} if values are already human-readable.
 
 ---
 
-AXIS LABEL ORIENTATION:
-  x_axis_label = BOTTOM (horizontal) axis label
-  y_axis_label = LEFT   (vertical)   axis label
-
-  bar (vertical):     x = category name,  y = measure name
-  line / area:        x = "Date",         y = measure name
-  multi_line / stacked_area: x = "Date",  y = measure name  (color dimension → legend only)
+AXIS LABELS:
+  x_axis_label = BOTTOM axis label.  y_axis_label = LEFT axis label.
+  bar: x=category, y=measure.  line/area/multi_line: x="Date", y=measure.
+  kpi_card / donut / pie: leave both blank.
 
 ---
 
@@ -1113,11 +1273,13 @@ AXIS LABEL ORIENTATION:
 Begin IMMEDIATELY with <reasoning>. No text before it. Then output <chart>. No text after </chart>.
 
 <reasoning>
-1. Column classification: list date_cols, string_cols, number_cols from COLUMN PROFILES.
-2. Composition vs comparison check (if time series with category): do the series values sum to a meaningful total? State your answer explicitly before choosing stacked_area or multi_line.
-3. Value format: read the column description from COLUMN METADATA, state what type it is (currency / count / ratio / pct), then confirm with Max value. State the chosen format string.
-4. Legend humanization: list any raw identifiers in the color dimension and their human labels.
-5. Alternatives: confirm each alternative is valid for the current column structure.
+1. Question type: which row in "QUESTION TYPE → HIGHEST-IMPACT CHART" matches? State it.
+2. Column classification: date_cols (with Distinct count), string_cols (with Distinct count), number_cols.
+3. Data pattern match: which DATA PATTERN row fits? State it explicitly.
+4. Composition check (if time series + string category): do the series values literally add up to a meaningful total? State yes/no.
+5. Pitfall check: does my chosen type hit any CRITICAL PITFALL? State explicitly.
+6. Value format: what is the column type (currency/count/ratio/pct)? State format string chosen.
+7. Alternatives: are they structurally valid for the same columns?
 </reasoning>
 <chart>
 {{
@@ -1167,37 +1329,98 @@ Do NOT summarise the SQL queries themselves — only the intent and findings.
 
 CONFIDENCE_JUDGE_PROMPT = """\
 You are a confidence scorer for a financial analytics assistant.
-Given a business question, semantic context, pipeline signals, query result data, \
-and the generated answer, return a confidence score.
 
-Question: {question}
+STRUCTURED EVIDENCE (use as primary grounding — do not ignore these signals):
 
-Semantic context:
-{semantic_context}
+=== SCHEMA COVERAGE (intent resolver's assessment) ===
+{intent_context}
 
-Resolved intent:
-{resolved_intent}
+=== FILTER RESOLUTION QUALITY ===
+{filter_directive_summary}
 
-Pipeline signals:
+=== JOIN / STRUCTURE QUALITY ===
+{schema_directive_summary}
+
+=== PIPELINE SIGNALS ===
 - No data found: {no_data}
-- Query corrections needed: {total_corrections}
+- SQL repairs needed: {repair_count}
+- Intent recompiles: {recompile_count}
 - Reliability flags: {reliability_flags}
 - Error: {error}
 
+=== QUESTION AND RESULT ===
+Question: {question}
 {data_profile}
+Answer excerpt: {answer}
 
-Generated answer:
-{answer}
+SCORING RULES (apply in order):
+1. Start from CONFIDENCE_NOTE in SCHEMA COVERAGE (e.g. "0.42" → base 42/100). If absent, start at 75.
+2. Each SCHEMA_GAP line in SCHEMA COVERAGE: -8 points (max -30 total).
+3. Each [low confidence] or [fuzzy match] line in FILTER RESOLUTION: -8 points (max -24 total).
+4. Each unresolved join pair line (↔) in JOIN QUALITY: -15 points (max -30 total).
+5. SQL repairs > 0: -10 per repair (max -20 total).
+6. No data found: -15 points.
+7. Adjust ±10 using your own judgment for whether the answer coherently addresses the question
+   given the data profile (column coverage, row count, value distributions).
 
-Respond with ONLY valid JSON — no markdown fences, no explanation outside the JSON:
+Return ONLY valid JSON — no markdown:
 {{
   "score": <integer 0–100>,
-  "explanation": "<one concise sentence for a business user explaining the confidence level>"
+  "explanation": "<one sentence for a business user — cite the main reason for the score>"
+}}"""
+
+# ─── Temporal Expression Resolver (Tier 3.5) ─────────────────────────────────
+
+TEMPORAL_RESOLVE_PROMPT = ChatPromptTemplate.from_template(
+    """Convert a temporal expression to a Redshift SQL date range. Return JSON only — no explanation.
+
+Use ONLY these Redshift functions: CURRENT_DATE, DATEADD(unit, n, CURRENT_DATE), DATE_TRUNC('unit', CURRENT_DATE)
+Negative n for past periods, positive n for future periods.
+
+Output formats:
+  Date range:   {{"operator": "BETWEEN_SQL", "start": "<sql_expr>", "end": "<sql_expr>"}}
+  Single bound: {{"operator": ">=", "value": "<sql_expr>"}}
+  Not temporal: {{"operator": null}}
+
+Examples:
+  "next 4 weeks"      → {{"operator":"BETWEEN_SQL","start":"CURRENT_DATE","end":"DATEADD(week,4,CURRENT_DATE)"}}
+  "next 3 months"     → {{"operator":"BETWEEN_SQL","start":"CURRENT_DATE","end":"DATEADD(month,3,CURRENT_DATE)"}}
+  "next quarter"      → {{"operator":"BETWEEN_SQL","start":"CURRENT_DATE","end":"DATEADD(quarter,1,CURRENT_DATE)"}}
+  "coming 90 days"    → {{"operator":"BETWEEN_SQL","start":"CURRENT_DATE","end":"DATEADD(day,90,CURRENT_DATE)"}}
+  "last 30 days"      → {{"operator":">=","value":"DATEADD(day,-30,CURRENT_DATE)"}}
+  "this month"        → {{"operator":">=","value":"DATE_TRUNC('month',CURRENT_DATE)"}}
+  "last quarter"      → {{"operator":"BETWEEN_SQL","start":"DATE_TRUNC('quarter',DATEADD(quarter,-1,CURRENT_DATE))","end":"DATEADD(day,-1,DATE_TRUNC('quarter',CURRENT_DATE))"}}
+  "Q3 2024"           → {{"operator":"BETWEEN_SQL","start":"2024-07-01","end":"2024-09-30"}}
+  "CONFIRMED"         → {{"operator":null}}
+  "last_30_days"      → {{"operator":">=","value":"DATEADD(day,-30,CURRENT_DATE)"}}
+
+Expression: {expression}"""
+)
+
+
+# ─── Zero-Row Probe (Opus LLM diagnostic) ────────────────────────────────────
+
+ZERO_ROW_PROBE_PROMPT = ChatPromptTemplate.from_template(
+    """Given this Redshift SQL that returned 0 rows, produce 3 diagnostic COUNT(*) variants.
+Each variant removes filter conditions progressively to identify the cause.
+Return JSON only — no explanation, no markdown fences.
+
+Rules:
+- Keep all CTEs (WITH clauses) intact in all variants
+- Keep all JOINs intact in all three variants
+- Only remove WHERE/HAVING conditions as instructed per variant
+- Output only valid Redshift SQL
+- bare_join_sql may simplify to a basic COUNT(*) from the primary tables with their join
+- Do NOT invent new table names, column names, or aliases not in the original SQL
+
+Output format:
+{{
+  "no_time_filter_sql":  "<COUNT(*) query — same structure, time filter removed, all other filters kept>",
+  "no_any_filter_sql":   "<COUNT(*) query — all WHERE and HAVING removed, CTEs and JOINs preserved>",
+  "bare_join_sql":       "<COUNT(*) query — all filters removed, simplified to test join cardinality only>",
+  "diagnosis_hint":      "<one sentence: most likely reason for zero rows>"
 }}
 
-Scoring guide:
-  80–100  Answer is accurate and fully supported by the data
-  60–79   Answer is mostly correct with minor gaps
-  40–59   Answer is partially supported; some claims are uncertain
-  20–39   Answer is questionable; significant unsupported claims or errors
-  0–19    Answer is likely incorrect or no data was found"""
+Original SQL:
+{original_sql}"""
+)

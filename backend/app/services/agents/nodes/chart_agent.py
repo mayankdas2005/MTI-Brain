@@ -18,10 +18,46 @@ from app.services.agents.prompts import CHART_LABEL_PROMPT, REASONING_DIRECTIVE_
 from app.services.agents.state import AnalyticsState
 
 _VALID_CHART_TYPES = {
-    "kpi_card", "bar", "line", "area", "multi_line",
+    "kpi_card", "bar", "bar_horizontal", "line", "area", "multi_line",
     "stacked_area", "pie", "donut", "grouped_bar", "stacked_bar",
     "scatter", "bubble", "heatmap", "waterfall", "dual_axis",
 }
+
+
+def _build_col_type_map(columns: list[str], rows: list[list]) -> dict[str, str]:
+    """Build a normalized col_type_map using pandas on the actual data.
+
+    Redshift returns raw dtype strings like 'timestamp without time zone',
+    'double precision', 'character varying' — these cannot be directly compared
+    against 'date'/'numeric'/'string'. Pandas infers types from actual values,
+    which is authoritative and handles all Redshift type variants.
+
+    Returns: {col_name: 'numeric' | 'date' | 'string'}
+    """
+    import pandas as pd
+    if not rows or not columns:
+        return {}
+    sample = rows[:200]
+    try:
+        df = pd.DataFrame(sample, columns=columns)
+    except Exception:
+        return {c: "string" for c in columns}
+
+    result: dict[str, str] = {}
+    for i, col in enumerate(columns):
+        series = df[col].dropna()
+        if series.empty:
+            result[col] = "string"
+            continue
+        if pd.api.types.is_numeric_dtype(series):
+            result[col] = "numeric"
+            continue
+        str_series = series.astype(str)
+        if str_series.str.match(r"^\d{4}-\d{2}-\d{2}").any():
+            result[col] = "date"
+            continue
+        result[col] = "string"
+    return result
 
 # ─── SQL column source extraction (sqlglot) ──────────────────────────────────
 
@@ -170,21 +206,22 @@ def _build_column_metadata(columns: list[str], state: AnalyticsState) -> str:
         if key[0] or key[1]:
             col_meta[key] = c
 
-    lines = ["COLUMN METADATA (semantic type and data type — use to pick format, axis labels, color scheme):"]
+    lines = ["COLUMN METADATA (semantic type, data type, and description — use to pick format, axis labels, value scale, and chart type):"]
     for col in columns:
         src = col_sources.get(col)
         meta = col_meta.get(src) if src else None
 
-        # Descriptions are omitted — they are verbose and confuse axis/format selection.
-        # Only semantic_type and data_type are passed to the chart LLM.
-        sem_type = (meta.get("semantic_type") or "") if meta else ""
-        data_type = (meta.get("data_type") or "") if meta else ""
+        sem_type   = (meta.get("semantic_type") or "") if meta else ""
+        data_type  = (meta.get("data_type") or "") if meta else ""
+        description = (meta.get("description") or "") if meta else ""
 
         parts: list[str] = []
         if data_type:
             parts.append(f"type={data_type}")
         if sem_type:
             parts.append(f"semantic={sem_type}")
+        if description:
+            parts.append(f"desc={description[:80]}")
 
         suffix = "   " + "   ".join(parts) if parts else "   (no catalog entry)"
         lines.append(f"  {col}{suffix}")
@@ -362,26 +399,21 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
     intent = ir_list[0].get("intent", "") if ir_list else ""
     persona = state.get("persona", "executive")
 
-    col_type_map: dict[str, str] = {
-        c["name"]: c.get("dtype", "string")
-        for c in (query_summary.get("columns") or [])
-    }
+    # Build col_type_map from actual data using pandas — raw Redshift dtype strings
+    # like "timestamp without time zone" / "double precision" are not reliable for
+    # direct string comparison. Pandas infers from values, which is always correct.
+    col_type_map = _build_col_type_map(all_columns, all_rows)
 
     n_rows = len(all_rows)
-
-    # Fast path: if guardrails would force the type regardless, skip the LLM call
-    forced_type = _apply_guardrails("__probe__", all_columns, col_type_map, n_rows)
-    if forced_type == "kpi_card":
-        logger.info("chart_agent | fast-path kpi_card (no LLM) | thread={}", state["thread_id"])
-        spec = _build_vega_lite_spec("kpi_card", all_columns, all_rows, {}, col_type_map)
-        return {"chart_spec": spec, "chart_type": "kpi_card", "alternative_chart_specs": []}
 
     chart_type, labels = await _select_chart_and_labels(
         all_columns, all_rows, query_summary, state, config, intent, persona
     )
 
-    # Safety guardrails that override LLM choice
+    # Safety guardrails: structural impossibilities (no date col for time series, unknown type)
     chart_type = _apply_guardrails(chart_type, all_columns, col_type_map, n_rows)
+    # Data-aware sanitizer: requires inspecting actual values (negative pie theta, etc.)
+    chart_type = _sanitize_chart_type(chart_type, all_columns, all_rows, col_type_map)
 
     logger.info("chart_agent | selected type={} | thread={} | rows={}", chart_type, state["thread_id"], len(all_rows))
 
@@ -393,6 +425,13 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
         _build_vega_lite_spec(chart_type, all_columns, all_rows, labels, col_type_map),
         all_columns, all_rows, labels,
     )
+
+    if not _validate_spec(spec, chart_type):
+        logger.info(
+            "chart_agent | spec validation failed — returning null | type={} | thread={}",
+            chart_type, state["thread_id"],
+        )
+        return {"chart_spec": None, "chart_type": None, "alternative_chart_specs": []}
 
     raw_alternatives = labels.get("alternative_types") or []
     alternative_specs = _build_alternative_specs(raw_alternatives, chart_type, all_columns, all_rows, labels, col_type_map)
@@ -437,26 +476,67 @@ def _build_alternative_specs(
     return result
 
 
+def _sanitize_chart_type(
+    chart_type: str,
+    columns: list[str],
+    rows: list[list],
+    col_type_map: dict,
+) -> str:
+    """Data-aware corrections that require inspecting actual row values.
+
+    Called AFTER _apply_guardrails. Catches cases the structural guardrail can't
+    detect without looking at the data (e.g. negative values in pie/donut).
+    """
+    if chart_type in ("pie", "donut"):
+        for i, c in enumerate(columns):
+            if col_type_map.get(c) == "numeric":
+                try:
+                    if any(i < len(r) and r[i] is not None and float(r[i]) < 0 for r in rows[:50]):
+                        return "bar"   # arc theta must be positive
+                except (TypeError, ValueError):
+                    pass
+    return chart_type
+
+
+def _validate_spec(spec: dict, chart_type: str) -> bool:
+    """Return True only if the spec is structurally renderable by vega-embed.
+
+    Returns False for specs that would crash the frontend (missing mark, wrong
+    encoding structure, empty kpi values). Does NOT validate data content.
+    """
+    if not spec:
+        return False
+    if spec.get("type") == "kpi_card":
+        return bool(spec.get("values"))
+    if not spec.get("$schema"):
+        return False
+    # dual_axis uses a layered spec — no top-level mark, validate layers instead
+    if chart_type == "dual_axis":
+        layers = spec.get("layer")
+        return isinstance(layers, list) and len(layers) >= 2
+    if not spec.get("mark"):
+        return False
+    enc = spec.get("encoding") or {}
+    if chart_type in ("line", "area", "multi_line", "stacked_area"):
+        x_type = (enc.get("x") or {}).get("type")
+        if x_type != "temporal":
+            return False
+    if chart_type in ("pie", "donut"):
+        return bool(enc.get("theta"))
+    if chart_type not in ("pie", "donut", "kpi_card", "heatmap"):
+        if not enc.get("x") or not enc.get("y"):
+            return False
+    return True
+
+
 def _apply_guardrails(chart_type: str, columns: list[str], col_type_map: dict, n_rows: int = 0) -> str:
-    """Hard rules that override LLM choice regardless of reasoning."""
-    n_numeric = sum(1 for c in columns if col_type_map.get(c) == "numeric")
-    n_date = sum(1 for c in columns if col_type_map.get(c) == "date")
-
-    if n_rows == 1 and n_numeric >= 1:
-        return "kpi_card"
-
-    if n_rows <= 5 and n_numeric == len(columns) and n_numeric >= 1:
-        return "kpi_card"
-
-    if chart_type in ("line", "area", "multi_line", "stacked_area") and n_date == 0:
-        return "bar"
-
-    if chart_type == "scatter" and (n_numeric < 2 or n_date > 0):
-        return "bar"
-
+    """Minimal structural guardrails — only overrides structurally impossible chart types."""
     if chart_type not in _VALID_CHART_TYPES:
         return "bar"
-
+    n_date = sum(1 for c in columns if col_type_map.get(c) == "date")
+    if chart_type in ("line", "area", "multi_line", "stacked_area") and n_date == 0:
+        # Time series charts require at least one date column — structurally impossible without one
+        return "bar"
     return chart_type
 
 
@@ -579,6 +659,20 @@ def _safe_value_format(fmt: str, rows: list[list], col_idx: int) -> str:
     return fmt
 
 
+_FONT = "Inter, sans-serif"
+
+_BASE_CONFIG = {
+    "axis":   {"labelFont": _FONT, "titleFont": _FONT, "labelFontSize": 11, "titleFontSize": 11},
+    "legend": {"labelFont": _FONT, "titleFont": _FONT, "labelFontSize": 11},
+    "title":  {"font": _FONT, "fontSize": 13, "fontWeight": 500},
+    "bar":    {"strokeWidth": 0, "cornerRadiusTopLeft": 2, "cornerRadiusTopRight": 2},
+    "arc":    {"strokeWidth": 1, "stroke": "white"},
+    "line":   {"strokeWidth": 2},
+    "area":   {"strokeWidth": 0, "fillOpacity": 0.75},
+    "point":  {"strokeWidth": 0, "size": 60},
+}
+
+
 def _build_vega_lite_spec(
     chart_type: str,
     columns: list[str],
@@ -602,7 +696,11 @@ def _build_vega_lite_spec(
     def _date() -> str:
         return date_cols[0] if date_cols else (columns[0] if columns else "date")
 
-    spec = {
+    val_fmt = labels.get("value_format", ",.0f")
+    y_title = labels.get("y_axis_label", "")
+    x_title = labels.get("x_axis_label", "")
+
+    base = {
         "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
         "width": "container",
         "height": 350,
@@ -611,129 +709,328 @@ def _build_vega_lite_spec(
         "data": {"values": [dict(zip(columns, row)) for row in rows[:500]]},
     }
 
+    # ── KPI card (not a Vega spec — frontend renders it directly) ──────────────
+    if chart_type == "kpi_card":
+        base["type"] = "kpi_card"
+        base["values"] = [dict(zip(columns, row)) for row in rows[:3]]
+        return base
+
+    # ── Vertical bar ───────────────────────────────────────────────────────────
     if chart_type == "bar":
         y_col = _num()
-        x_col = _str(exclude=y_col)
-        val_format = _safe_value_format(labels.get("value_format", ",.0f"), rows, columns.index(y_col) if y_col in columns else -1)
-        spec["mark"] = "bar"
-        spec["encoding"] = {
-            "x": {"field": x_col, "type": "nominal",
-                  "axis": {"title": labels.get("x_axis_label", x_col)}, "sort": "-y"},
-            "y": {"field": y_col, "type": "quantitative",
-                  "axis": {"title": labels.get("y_axis_label", y_col), "format": val_format}},
-        }
-
-    elif chart_type in ("line", "area"):
-        x_col = _date()
-        y_col = _num(exclude=x_col)
-        spec["mark"] = chart_type
-        spec["encoding"] = {
-            "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
-                  "axis": {"title": labels.get("x_axis_label", x_col), "format": "%b %d, %Y"}},
-            "y": {"field": y_col, "type": "quantitative",
-                  "axis": {"title": labels.get("y_axis_label", y_col), "format": labels.get("value_format", ",.0f")}},
-        }
-
-    elif chart_type in ("multi_line", "stacked_area"):
-        x_col = _date()
-        cat_col = _str(exclude=x_col)
-        y_col = _num(exclude=x_col)
-        mark = "line" if chart_type == "multi_line" else "area"
-        spec["mark"] = mark
-        enc: dict = {
-            "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
-                  "axis": {"title": labels.get("x_axis_label", x_col), "format": "%b %d, %Y"}},
-            "y": {"field": y_col, "type": "quantitative",
-                  "axis": {"title": labels.get("y_axis_label", y_col)}},
-            "color": {"field": cat_col, "type": "nominal"},
-        }
-        if chart_type == "stacked_area":
-            enc["y"]["stack"] = "zero"
-        spec["encoding"] = enc
-
-    elif chart_type in ("pie", "donut"):
-        name_col = _str()
-        value_col = _num()
-        spec["mark"] = {"type": "arc", "innerRadius": 50 if chart_type == "donut" else 0}
-        spec["encoding"] = {
-            "theta": {"field": value_col, "type": "quantitative"},
-            "color": {"field": name_col, "type": "nominal"},
-        }
-
-    elif chart_type == "kpi_card":
-        spec["type"] = "kpi_card"
-        spec["values"] = [dict(zip(columns, row)) for row in rows[:3]]
+        # When no string col exists (e.g. snapshot date + N numerics), fold numeric
+        # columns into metric/value pairs so each metric becomes a bar.
+        if not string_cols and numeric_cols:
+            fold_cols = numeric_cols
+            safe_fmt = _safe_value_format(val_fmt, rows, columns.index(fold_cols[0]) if fold_cols[0] in columns else 0)
+            spec = {**base,
+                "transform": [{"fold": fold_cols, "as": ["_metric", "_value"]}],
+                "mark": "bar",
+                "encoding": {
+                    "x": {"field": "_metric", "type": "nominal", "sort": None,
+                          "axis": {"title": x_title or "Metric", "labelAngle": -30}},
+                    "y": {"field": "_value", "type": "quantitative",
+                          "axis": {"title": y_title or "Value", "format": safe_fmt}},
+                    "color": {"field": "_metric", "type": "nominal", "legend": None},
+                },
+            }
+        else:
+            x_col = _str(exclude=y_col)
+            safe_fmt = _safe_value_format(val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
+            # Color bars by sign — positive steel-blue, negative coral-red (Power BI best practice)
+            has_neg = any(
+                i < len(r) and r[i] is not None and float(r[i]) < 0
+                for r in rows[:50]
+                for i in [columns.index(y_col)] if y_col in columns
+            )
+            color_enc: dict = (
+                {"condition": {"test": f"datum['{y_col}'] < 0", "value": "#e45755"}, "value": "#4c78a8"}
+                if has_neg else {}
+            )
+            enc: dict = {
+                "x": {"field": x_col, "type": "nominal", "sort": "-y",
+                      "axis": {"title": x_title or x_col, "labelAngle": -30, "labelLimit": 120}},
+                "y": {"field": y_col, "type": "quantitative",
+                      "axis": {"title": y_title or y_col, "format": safe_fmt}},
+            }
+            if color_enc:
+                enc["color"] = color_enc
+            spec = {**base, "mark": "bar", "encoding": enc}
+        spec["config"] = _BASE_CONFIG
         return spec
 
-    elif chart_type in ("grouped_bar", "stacked_bar"):
-        x_col = string_cols[0] if string_cols else columns[0]
-        cat_col = string_cols[1] if len(string_cols) > 1 else x_col
-        y_col = _num()
-        spec["mark"] = "bar"
+    # ── Horizontal bar ─────────────────────────────────────────────────────────
+    if chart_type == "bar_horizontal":
+        x_col = _num()
+        y_col = _str(exclude=x_col)
+        safe_fmt = _safe_value_format(val_fmt, rows, columns.index(x_col) if x_col in columns else -1)
+        has_neg = any(
+            i < len(r) and r[i] is not None and float(r[i]) < 0
+            for r in rows[:50]
+            for i in [columns.index(x_col)] if x_col in columns
+        )
+        color_enc = (
+            {"condition": {"test": f"datum['{x_col}'] < 0", "value": "#e45755"}, "value": "#4c78a8"}
+            if has_neg else {}
+        )
         enc = {
-            "x": {"field": x_col, "type": "nominal",
-                  "axis": {"title": labels.get("x_axis_label", x_col)}},
+            "y": {"field": y_col, "type": "nominal", "sort": "-x",
+                  "axis": {"title": y_title or y_col, "labelLimit": 200}},
+            "x": {"field": x_col, "type": "quantitative",
+                  "axis": {"title": x_title or x_col, "format": safe_fmt}},
+        }
+        if color_enc:
+            enc["color"] = color_enc
+        spec = {**base, "mark": "bar", "encoding": enc, "config": _BASE_CONFIG}
+        return spec
+
+    # ── Line / Area ────────────────────────────────────────────────────────────
+    if chart_type in ("line", "area"):
+        x_col = _date()
+        y_col = _num(exclude=x_col)
+        # Add color dimension if a string column exists (single-series line per entity)
+        cat_col = string_cols[0] if string_cols else None
+        enc = {
+            "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
+                  "axis": {"title": x_title or "Date", "format": "%b %d, %Y"}},
             "y": {"field": y_col, "type": "quantitative",
-                  "axis": {"title": labels.get("y_axis_label", y_col), "format": labels.get("value_format", ",.0f")}},
+                  "axis": {"title": y_title or y_col, "format": val_fmt}},
+        }
+        if cat_col:
+            enc["color"] = {"field": cat_col, "type": "nominal"}
+        mark: dict | str = {"type": chart_type, "point": True} if chart_type == "line" else chart_type
+        spec = {**base, "mark": mark, "encoding": enc, "config": _BASE_CONFIG}
+        return spec
+
+    # ── Multi-line / Stacked area ──────────────────────────────────────────────
+    if chart_type in ("multi_line", "stacked_area"):
+        x_col = _date()
+        mark_type = "line" if chart_type == "multi_line" else "area"
+
+        if string_cols:
+            # Category column drives color — one line/area per category value
+            cat_col = _str(exclude=x_col)
+            y_col   = _num(exclude=x_col)
+            enc = {
+                "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
+                      "axis": {"title": x_title or "Date", "format": "%b %d, %Y"}},
+                "y": {"field": y_col, "type": "quantitative",
+                      "axis": {"title": y_title or y_col, "format": val_fmt}},
+                "color": {"field": cat_col, "type": "nominal"},
+            }
+            if chart_type == "stacked_area":
+                enc["y"]["stack"] = "zero"
+            mark_spec: dict | str = {"type": "line", "point": True} if chart_type == "multi_line" else "area"
+            spec = {**base, "mark": mark_spec, "encoding": enc, "config": _BASE_CONFIG}
+        else:
+            # No string column — fold multiple numeric columns into series
+            # e.g. (date, usd_balance, eur_balance, gbp_balance) → 3 lines
+            series_cols = [c for c in numeric_cols if c != x_col]
+            if not series_cols:
+                series_cols = numeric_cols[:1]
+            enc = {
+                "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
+                      "axis": {"title": x_title or "Date", "format": "%b %d, %Y"}},
+                "y": {"field": "_value", "type": "quantitative",
+                      "axis": {"title": y_title or "Value", "format": val_fmt}},
+                "color": {"field": "_series", "type": "nominal"},
+            }
+            if chart_type == "stacked_area":
+                enc["y"]["stack"] = "zero"
+            fold_mark: dict | str = {"type": "line", "point": True} if chart_type == "multi_line" else "area"
+            spec = {
+                **base,
+                "transform": [{"fold": series_cols, "as": ["_series", "_value"]}],
+                "mark": fold_mark,
+                "encoding": enc,
+                "config": _BASE_CONFIG,
+            }
+        return spec
+
+    # ── Pie / Donut ────────────────────────────────────────────────────────────
+    if chart_type in ("pie", "donut"):
+        name_col  = _str()
+        value_col = _num()
+        inner = 65 if chart_type == "donut" else 0
+        spec = {
+            **base,
+            "mark": {"type": "arc", "innerRadius": inner, "padAngle": 0.015, "cornerRadius": 3},
+            "encoding": {
+                "theta": {"field": value_col, "type": "quantitative", "stack": True},
+                "color": {"field": name_col,  "type": "nominal"},
+                "tooltip": [
+                    {"field": name_col,  "type": "nominal",     "title": name_col},
+                    {"field": value_col, "type": "quantitative", "title": value_col, "format": val_fmt},
+                ],
+            },
+            "config": _BASE_CONFIG,
+        }
+        return spec
+
+    # ── Grouped bar / Stacked bar ──────────────────────────────────────────────
+    if chart_type in ("grouped_bar", "stacked_bar"):
+        x_col   = string_cols[0] if string_cols else (date_cols[0] if date_cols else columns[0])
+        cat_col = string_cols[1] if len(string_cols) > 1 else (string_cols[0] if string_cols else columns[0])
+        y_col   = _num()
+        x_type  = "temporal" if x_col in date_cols else "nominal"
+        safe_fmt = _safe_value_format(val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
+        enc = {
+            "x": {"field": x_col, "type": x_type,
+                  "axis": {"title": x_title or x_col, "labelAngle": -30}},
+            "y": {"field": y_col, "type": "quantitative",
+                  "axis": {"title": y_title or y_col, "format": safe_fmt}},
             "color": {"field": cat_col, "type": "nominal"},
         }
         if chart_type == "stacked_bar":
             enc["y"]["stack"] = "zero"
         else:
             enc["xOffset"] = {"field": cat_col}
-        spec["encoding"] = enc
+        spec = {**base, "mark": "bar", "encoding": enc, "config": _BASE_CONFIG}
+        return spec
 
-    elif chart_type == "scatter":
-        x_col = _num()
-        y_col = _num(exclude=x_col)
-        spec["mark"] = "point"
-        spec["encoding"] = {
+    # ── Scatter ────────────────────────────────────────────────────────────────
+    if chart_type == "scatter":
+        x_col   = _num()
+        y_col   = _num(exclude=x_col)
+        cat_col = string_cols[0] if string_cols else None
+        enc = {
             "x": {"field": x_col, "type": "quantitative",
-                  "axis": {"title": labels.get("x_axis_label", x_col)}},
+                  "axis": {"title": x_title or x_col}},
             "y": {"field": y_col, "type": "quantitative",
-                  "axis": {"title": labels.get("y_axis_label", y_col)}},
+                  "axis": {"title": y_title or y_col}},
+            "tooltip": [
+                {"field": x_col, "type": "quantitative"},
+                {"field": y_col, "type": "quantitative"},
+            ],
         }
+        if cat_col:
+            enc["color"] = {"field": cat_col, "type": "nominal"}
+            enc["tooltip"].append({"field": cat_col, "type": "nominal"})  # type: ignore[attr-defined]
+        spec = {**base, "mark": {"type": "point", "filled": True}, "encoding": enc, "config": _BASE_CONFIG}
+        return spec
 
-    elif chart_type == "waterfall":
-        x_col = _str()
-        y_col = _num()
-        spec["mark"] = "bar"
-        spec["transform"] = [
-            {"window": [{"op": "sum", "field": y_col, "as": "_wf_sum"}], "frame": [None, 0]},
-            {"calculate": f"datum._wf_sum - datum['{y_col}']", "as": "_wf_prev"},
-        ]
-        spec["encoding"] = {
-            "x": {"field": x_col, "type": "nominal", "sort": None,
-                  "axis": {"title": labels.get("x_axis_label", x_col)}},
-            "y": {"field": "_wf_sum", "type": "quantitative",
-                  "axis": {"title": labels.get("y_axis_label", y_col),
-                           "format": labels.get("value_format", ",.0f")}},
-            "y2": {"field": "_wf_prev"},
-            "color": {
-                "condition": {"test": f"datum['{y_col}'] < 0", "value": "#e45755"},
-                "value": "#4c78a8",
+    # ── Bubble ─────────────────────────────────────────────────────────────────
+    if chart_type == "bubble":
+        x_col    = numeric_cols[0] if len(numeric_cols) >= 1 else columns[0]
+        y_col    = numeric_cols[1] if len(numeric_cols) >= 2 else x_col
+        size_col = numeric_cols[2] if len(numeric_cols) >= 3 else y_col
+        cat_col  = string_cols[0] if string_cols else None
+        enc = {
+            "x":    {"field": x_col,    "type": "quantitative", "axis": {"title": x_title or x_col}},
+            "y":    {"field": y_col,    "type": "quantitative", "axis": {"title": y_title or y_col}},
+            "size": {"field": size_col, "type": "quantitative"},
+        }
+        if cat_col:
+            enc["color"] = {"field": cat_col, "type": "nominal"}
+        spec = {**base, "mark": {"type": "point", "filled": True, "opacity": 0.7},
+                "encoding": enc, "config": _BASE_CONFIG}
+        return spec
+
+    # ── Heatmap ────────────────────────────────────────────────────────────────
+    if chart_type == "heatmap":
+        x_col   = string_cols[0] if string_cols else (date_cols[0] if date_cols else columns[0])
+        y_col   = string_cols[1] if len(string_cols) > 1 else (string_cols[0] if string_cols else columns[0])
+        val_col = _num()
+        x_type  = "temporal" if x_col in date_cols else "nominal"
+        spec = {
+            **base,
+            "mark": {"type": "rect"},
+            "encoding": {
+                "x":     {"field": x_col,   "type": x_type,        "axis": {"title": x_title or x_col}},
+                "y":     {"field": y_col,   "type": "nominal",     "axis": {"title": y_title or y_col}},
+                "color": {"field": val_col, "type": "quantitative", "scale": {"scheme": "blues"},
+                          "legend": {"title": val_col, "format": val_fmt}},
+                "tooltip": [
+                    {"field": x_col,   "type": x_type},
+                    {"field": y_col,   "type": "nominal"},
+                    {"field": val_col, "type": "quantitative", "format": val_fmt},
+                ],
             },
+            "config": _BASE_CONFIG,
         }
+        return spec
 
-    else:
+    # ── Waterfall (cash flow bridge / P&L attribution) ─────────────────────────
+    if chart_type == "waterfall":
         x_col = _str()
         y_col = _num()
-        spec["mark"] = "bar"
-        spec["encoding"] = {
-            "x": {"field": x_col, "type": "nominal"},
-            "y": {"field": y_col, "type": "quantitative"},
+        safe_fmt = _safe_value_format(val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
+        spec = {
+            **base,
+            "mark": {"type": "bar", "cornerRadiusTopLeft": 2, "cornerRadiusTopRight": 2},
+            "transform": [
+                {"window": [{"op": "sum", "field": y_col, "as": "_wf_sum"}], "frame": [None, 0]},
+                {"calculate": f"datum._wf_sum - datum['{y_col}']", "as": "_wf_prev"},
+            ],
+            "encoding": {
+                "x": {"field": x_col, "type": "nominal", "sort": None,
+                      "axis": {"title": x_title or x_col, "labelAngle": -30, "labelLimit": 120}},
+                "y":  {"field": "_wf_sum",  "type": "quantitative",
+                       "axis": {"title": y_title or y_col, "format": safe_fmt}},
+                "y2": {"field": "_wf_prev"},
+                "color": {
+                    "condition": {"test": f"datum['{y_col}'] < 0", "value": "#e45755"},
+                    "value": "#4c78a8",
+                },
+                "tooltip": [
+                    {"field": x_col,       "type": "nominal"},
+                    {"field": y_col,       "type": "quantitative", "format": safe_fmt, "title": "Change"},
+                    {"field": "_wf_sum",   "type": "quantitative", "format": safe_fmt, "title": "Running Total"},
+                ],
+            },
+            "config": _BASE_CONFIG,
         }
+        return spec
 
-    spec["config"] = {
-        "axis": {"labelFont": "Inter, sans-serif", "titleFont": "Inter, sans-serif"},
-        "legend": {"labelFont": "Inter, sans-serif"},
-        "bar": {"strokeWidth": 0},
-        "arc": {"strokeWidth": 0},
-        "line": {"strokeWidth": 2},
-        "area": {"strokeWidth": 0},
-        "point": {"strokeWidth": 0},
+    # ── Dual axis (layered: primary line + secondary line on right y-axis) ─────
+    if chart_type == "dual_axis":
+        x_col  = date_cols[0] if date_cols else (string_cols[0] if string_cols else columns[0])
+        x_type = "temporal" if x_col in date_cols else "nominal"
+        x_axis_cfg = ({"timeUnit": "yearmonthdate", "axis": {"title": x_title or "Date", "format": "%b %d, %Y"}}
+                      if x_type == "temporal" else {"axis": {"title": x_title or x_col}})
+        y1_col = numeric_cols[0] if numeric_cols else columns[-1]
+        y2_col = numeric_cols[1] if len(numeric_cols) > 1 else y1_col
+        y1_fmt = _safe_value_format(val_fmt, rows, columns.index(y1_col) if y1_col in columns else -1)
+        spec = {
+            **base,
+            "layer": [
+                {
+                    "mark": {"type": "line", "color": "#4c78a8", "strokeWidth": 2,
+                             "point": {"filled": True, "color": "#4c78a8", "size": 50}},
+                    "encoding": {
+                        "x": {"field": x_col, "type": x_type, **x_axis_cfg},
+                        "y": {"field": y1_col, "type": "quantitative",
+                              "axis": {"title": y1_col, "format": y1_fmt, "titleColor": "#4c78a8"}},
+                    },
+                },
+                {
+                    "mark": {"type": "line", "color": "#f58518", "strokeWidth": 2,
+                             "strokeDash": [4, 2],
+                             "point": {"filled": True, "color": "#f58518", "size": 50}},
+                    "encoding": {
+                        "x": {"field": x_col, "type": x_type},
+                        "y": {"field": y2_col, "type": "quantitative",
+                              "axis": {"title": y2_col, "orient": "right", "titleColor": "#f58518"}},
+                    },
+                },
+            ],
+            "resolve": {"scale": {"y": "independent"}},
+            "config": _BASE_CONFIG,
+        }
+        return spec
+
+    # ── Fallback ───────────────────────────────────────────────────────────────
+    x_col = string_cols[0] if string_cols else (date_cols[0] if date_cols else columns[0])
+    y_col = _num()
+    return {
+        **base,
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": x_col, "type": "nominal", "sort": "-y"},
+            "y": {"field": y_col, "type": "quantitative", "axis": {"format": val_fmt}},
+        },
+        "config": _BASE_CONFIG,
     }
-    return spec
 
 
 def _build_table_spec(columns: list[str], rows: list[list]) -> dict:

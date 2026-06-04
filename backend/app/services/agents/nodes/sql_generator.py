@@ -32,7 +32,20 @@ async def generate_sql_llm(
     state: AnalyticsState,
     config: RunnableConfig,
 ) -> str:
-    schema_ctx_full = build_schema_context(ir, semantic_context)
+    # On recompile, the IR/schema haven't changed — reuse the cached schema context
+    # to avoid redundant Neo4j queries (build_schema_context + fetch_anti_patterns +
+    # fetch_query_patterns all hit Neo4j; running them 3× per query is pure waste).
+    recompile_count = state.get("recompile_count", 0)
+    _cached = state.get("_sql_schema_ctx_cache") if recompile_count > 0 else None
+    if _cached:
+        schema_ctx_full = dict(_cached)
+        logger.info("sql_generator | schema_ctx cache HIT | recompile={}", recompile_count)
+    else:
+        schema_ctx_full = build_schema_context(ir, semantic_context)
+        # Store in state for subsequent retries (in-place mutation is safe here —
+        # this is a private key not read by any LangGraph reducer)
+        state["_sql_schema_ctx_cache"] = dict(schema_ctx_full)
+
     unresolved_pairs = schema_ctx_full.pop("_unresolved_pairs", [])
     schema_ctx = {k: v for k, v in schema_ctx_full.items()}
 
@@ -75,7 +88,9 @@ async def generate_sql_llm(
         "result_shape": ir.result_shape,
         "order_by": ir.order_by,
         "limit": ir.limit or state.get("max_rows", 100),
-        "temporal_grain": ir.temporal_grain,
+        "temporal_grains": ir.temporal_grains,          # list, most granular first
+        "temporal_grain": ir.temporal_grain,            # compat: first grain or None
+        "unresolved_join_pairs": ir.unresolved_join_pairs or [],   # explicit failure signal
     }
 
     logger.info(
@@ -93,8 +108,21 @@ async def generate_sql_llm(
         ),
     )
 
-    anti_patterns = await fetch_anti_patterns(state)
-    query_patterns, pattern_matched, pattern_name = await fetch_query_patterns(state)
+    # Also cache anti-patterns and query patterns — same Neo4j data on every retry
+    if _cached and "_anti_patterns" in state:
+        anti_patterns = state["_anti_patterns"]
+        query_patterns, pattern_matched, pattern_name = (
+            state.get("_query_patterns", []),
+            state.get("_pattern_matched", False),
+            state.get("_pattern_name"),
+        )
+    else:
+        anti_patterns = await fetch_anti_patterns(state)
+        query_patterns, pattern_matched, pattern_name = await fetch_query_patterns(state)
+        state["_anti_patterns"] = anti_patterns
+        state["_query_patterns"] = query_patterns
+        state["_pattern_matched"] = pattern_matched
+        state["_pattern_name"] = pattern_name
 
     logger.info(
         "sql_generator | context_injection | anti_patterns={} | query_pattern={} | thread={}",
@@ -120,20 +148,32 @@ async def generate_sql_llm(
     prior_sql_section = _build_prior_sql_section(state)
 
     recompile_count = state.get("recompile_count", 0)
+    # Show candidate join paths on first try when intent directive has JOIN_PATH lines —
+    # the intent resolver may have identified better join columns than the primary path.
+    import re as _re_sg
+    _has_intent_joins = bool(
+        _re_sg.search(r"^\s*JOIN_PATH:", state.get("intent_directive") or "", _re_sg.MULTILINE)
+    )
+    _show_candidates = recompile_count > 0 or (_has_intent_joins and ir.candidate_join_paths)
     candidate_join_paths_section = (
-        _build_candidate_join_paths_section(ir, col_lookup) if recompile_count > 0 else ""
+        _build_candidate_join_paths_section(ir, col_lookup) if _show_candidates else ""
     )
     reasoning_directive = REASONING_DIRECTIVE_SQL
 
     # Cross-domain section — injected before QUERY SPECIFICATION when applicable
     cross_domain_section = _build_cross_domain_section(semantic_context)
 
-    cte_plan = await _plan_cte_columns(spec, query_blueprint, schema_reference, state, config)
+    # Combined intent + filter directive — authoritative context from intent_resolver + filter_resolver
+    from app.services.agents.helpers import build_directive_section
+    directive_section = build_directive_section(state)
+
+    cte_plan = await _plan_cte_columns(spec, query_blueprint, schema_reference, state, config, directive_section)
     cte_column_plan = _build_cte_plan_section(cte_plan)
 
     from app.services.agents.prompts import SQL_GENERATE_PROMPT
     prompt = SQL_GENERATE_PROMPT.format_messages(
         cross_domain_section=cross_domain_section,
+        directive_section=directive_section,
         query_blueprint=query_blueprint,
         schema_reference=schema_reference,
         anti_patterns=anti_patterns,
@@ -170,6 +210,7 @@ async def _plan_cte_columns(
     schema_reference: str,
     state: AnalyticsState,
     config: RunnableConfig,
+    directive_section: str = "",
 ) -> str:
     """Fast pre-pass: ask a focused model to solve CTE column forwarding before SQL is written.
 
@@ -182,7 +223,22 @@ async def _plan_cte_columns(
     from app.services.agents.bedrock import get_llm
     try:
         llm = get_llm("fast")
+        # On recompile, pass the previous error so the planner generates a DIFFERENT plan.
+        recompile_count = state.get("recompile_count", 0)
+        prior_error = state.get("error") or ""
+        if recompile_count > 0 and prior_error:
+            prior_error_section = (
+                "PREVIOUS PLAN FAILED VALIDATION — generate a different plan that avoids this error:\n"
+                f"  {prior_error}\n"
+                "If the error is about a SELECT alias forward-reference (e.g. chargeback_ratio used\n"
+                "in visa_breach_flag in the same SELECT), add an intermediate CTE to compute the\n"
+                "first alias before the second references it."
+            )
+        else:
+            prior_error_section = ""
         prompt = CTE_COLUMN_PLANNER_PROMPT.format_messages(
+            directive_section=directive_section,
+            prior_error_section=prior_error_section,
             query_blueprint=query_blueprint,
             schema_reference=schema_reference,
             reasoning_directive=REASONING_DIRECTIVE_NORMAL,
@@ -419,7 +475,16 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
         tf_col = f"{primary_fqn}.{time_filter.get('column', '')}"
         tf_op  = time_filter.get("operator", ">=")
         tf_val = time_filter.get("value", "")
+        col_name = time_filter.get("column", "")
+        grain_unit = spec.get("temporal_grain") or "month"
         lines.append(f"TIME FILTER:\n  {tf_col} {tf_op} {tf_val}   [primary]")
+        # Stale data fallback — always add OR MAX subquery so query returns most recent
+        # available data when the requested period has no rows (database may not be current).
+        # Use SAME table_fqn and column as the time_filter. Do NOT invent new tables.
+        lines.append(
+            f"  OR {tf_col} >= DATE_TRUNC('{grain_unit}', (SELECT MAX({col_name}) FROM {primary_fqn}))"
+            f"   [stale-data-fallback — returns most recent available data if period is empty]"
+        )
         extra = []
         for t in schema_ctx.get("tables", []):
             fqn  = t.get("fqn", "")
@@ -464,7 +529,8 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
         lines.append("")
 
         if dimensions:
-            temporal_grain = spec.get("temporal_grain")
+            temporal_grains = spec.get("temporal_grains") or []
+            temporal_grain  = temporal_grains[0] if temporal_grains else spec.get("temporal_grain")
             lines.append("DIMENSIONS (must be in GROUP BY):")
             for d in dimensions:
                 fqn = d.get("table_fqn", "")
@@ -479,6 +545,18 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
                 else:
                     lines.append(f"  {fqn}.{col}          alias: {alias}")
             lines.append("")
+            # Multi-grain instruction: when user asked for two time horizons
+            if len(temporal_grains) > 1:
+                grains_str = " → ".join(temporal_grains)
+                lines.append(
+                    f"MULTI-GRAIN OUTPUT ({grains_str}):\n"
+                    f"  1. Build base CTE at '{temporal_grains[0]}' grain "
+                    f"(DATE_TRUNC('{temporal_grains[0]}', date_col)).\n"
+                    f"  2. Build a rollup CTE at '{temporal_grains[1]}' grain by aggregating the base CTE "
+                    f"(DATE_TRUNC('{temporal_grains[1]}', period_{temporal_grains[0]})).\n"
+                    f"  3. Final SELECT combines both via UNION ALL or joins them side by side."
+                )
+                lines.append("")
     else:
         lines.append("RESULT TYPE: flat lookup — no GROUP BY")
         lines.append("")
@@ -516,15 +594,32 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
             section = "HAVING" if f.get("is_having") else "WHERE"
             lines.append(f"  {section}:   {clause}   {label}")
 
-        # Exact = filters: numeric values unquoted, string values quoted
+        # Exact = filters: annotate with data_type so LLM knows quoting rules
+        # Numeric/boolean values: NEVER quoted. VARCHAR: always quoted.
         for (tfqn, col), grp in exact_groups.items():
             section = "HAVING" if grp[0].get("is_having") else "WHERE"
+            col_key = f"{tfqn}.{col}"
+            # Look up data_type from schema context for quoting annotation
+            _dtype = ""
+            for _c in schema_ctx.get("columns", []):
+                if _c.get("table_fqn") == tfqn and _c.get("name") == col:
+                    _dtype = _c.get("data_type", "").lower()
+                    break
+            if any(t in _dtype for t in ("int", "numeric", "decimal", "float", "double", "real")):
+                _type_tag = "[numeric — do NOT quote]"
+            elif "bool" in _dtype:
+                _type_tag = "[boolean — no quotes, write TRUE or FALSE]"
+            elif any(t in _dtype for t in ("date", "timestamp", "datetime")):
+                _type_tag = "[date/sql expression — do NOT quote sql expressions]"
+            else:
+                _type_tag = "[varchar — quote required]"
+
             if len(grp) == 1:
                 val = grp[0].get("value", "")
-                lines.append(f"  {section}:   {tfqn}.{col} = {_sql_literal(val)}   [exact]")
+                lines.append(f"  {section}:   {tfqn}.{col} = {_sql_literal(val)}   [exact] {_type_tag}")
             else:
                 vals = ", ".join(_sql_literal(g.get("value", "")) for g in grp)
-                lines.append(f"  {section}:   {tfqn}.{col} IN ({vals})   [exact — multiple values, use IN]")
+                lines.append(f"  {section}:   {tfqn}.{col} IN ({vals})   [exact — multiple values, use IN] {_type_tag}")
 
         for (tfqn, col), grp in fuzzy_groups.items():
             section = "HAVING" if grp[0].get("is_having") else "WHERE"
@@ -934,9 +1029,14 @@ def _format_sql(sql: str) -> str:
         return sql
     try:
         import sqlglot
-        return sqlglot.transpile(sql, read="redshift", write="redshift", pretty=True)[0]
+        parsed = sqlglot.parse_one(
+            sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE
+        )
+        if parsed:
+            return parsed.sql(dialect="redshift", pretty=True)
     except Exception:
-        return sql.strip()
+        pass
+    return sql.strip()
 
 
 def parse_decomposition(raw: str, thread_id: str) -> dict | None:

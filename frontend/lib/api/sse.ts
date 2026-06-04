@@ -34,6 +34,7 @@ export interface SSEHandlers {
   onChart?: (data: { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[] }) => void;
   onVizSkip?: () => void;
   onFollowUps?: (data: { questions: string[] }) => void;
+  onConfidence?: (data: { score: number; label: string; explanation: string }) => void;
   onStopped?: (data: { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number }) => void;
   onDone?: (data: Record<string, unknown>) => void;
   onError?: (data: { message: string; conversation_id?: string }) => void;
@@ -160,7 +161,7 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       });
       break;
     case 'node.done':
-      handlers.onNodeDone?.(data as { node: string; duration_ms: number });
+      handlers.onNodeDone?.(data as { node: string; duration_ms: number; status?: 'done' | 'error' });
       break;
     case 'chart':
       handlers.onChart?.(data as { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[] });
@@ -170,6 +171,9 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       break;
     case 'follow_ups':
       handlers.onFollowUps?.(data as { questions: string[] });
+      break;
+    case 'confidence':
+      handlers.onConfidence?.(data as { score: number; label: string; explanation: string });
       break;
     case 'stopped':
       handlers.onStopped?.(data as { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number });

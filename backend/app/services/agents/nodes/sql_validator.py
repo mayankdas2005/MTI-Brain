@@ -78,3 +78,25 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.warning("sql_validator | validation failed | thread={} | failed_indices={} | error={}", state["thread_id"], failed_indices, combined_error)
 
     return {"error": combined_error, "recompile_count": recompile_count + 1, "failed_sql_indices": failed_indices}
+
+
+def is_safe_count_query(sql: str) -> bool:
+    """Validate that a LLM-generated probe SQL is a safe COUNT(*) query.
+
+    Used by zero_row_probe to guard against executing malformed or unsafe probe SQL.
+    Returns True if the SQL looks like a safe COUNT query, False otherwise.
+    """
+    if not sql or not sql.strip():
+        return False
+    sql_upper = sql.strip().upper()
+    # Must start with SELECT or WITH (CTEs allowed)
+    if not (sql_upper.startswith("SELECT") or sql_upper.startswith("WITH")):
+        return False
+    # Must not contain destructive statements
+    _DANGEROUS = ("DROP ", "DELETE ", "TRUNCATE ", "INSERT ", "UPDATE ", "ALTER ", "CREATE ", "GRANT ", "REVOKE ")
+    if any(d in sql_upper for d in _DANGEROUS):
+        return False
+    # Should contain COUNT — probe SQL should be a count query
+    if "COUNT" not in sql_upper:
+        return False
+    return True

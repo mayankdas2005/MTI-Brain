@@ -34,7 +34,10 @@ _active_streams: dict[str, asyncio.Event] = {}
 
 _STATE_KEYS = {
     "question", "question_type", "persona", "needs_clarification", "clarification_count",
-    "semantic_context", "resolved_intent", "semantic_ir_list", "sql_list",
+    "semantic_context", "resolved_intent",
+    "intent_directive", "intent_directive_instructions", "intent_directive_context",
+    "filter_directive", "schema_directive",
+    "semantic_ir_list", "sql_list",
     "recompile_count", "repair_count", "filter_resolution_needed",
     "result_list", "query_summary", "no_data", "reliability_flags",
     "low_confidence_filters", "zero_row_probe_result", "zero_row_rewrite_count",
@@ -192,6 +195,11 @@ async def stream_pipeline(
         "clarification_reason": None,
         "semantic_context": None,
         "resolved_intent": None,
+        "intent_directive": "",
+        "intent_directive_instructions": "",
+        "intent_directive_context": "",
+        "filter_directive": "",
+        "schema_directive": "",
         "semantic_ir_list": [],
         "sql_list": [],
         "recompile_count": 0,
@@ -392,7 +400,14 @@ async def stream_pipeline(
 
                 if visit_key in _step_by_visit:
                     step = _pipeline_steps[_step_by_visit[visit_key]]
-                    step["status"]      = "error" if node == N_ERROR_RESPONSE else "done"
+                    # A node that wrote error into state has failed even if it completed cleanly.
+                    # Mark it error immediately so the frontend doesn't flash a blue checkmark
+                    # before error_response arrives.
+                    node_set_error = (
+                        node == N_ERROR_RESPONSE
+                        or (isinstance(output, dict) and bool(output.get("error")))
+                    )
+                    step["status"]      = "error" if node_set_error else "done"
                     step["duration_ms"] = round(node_dur * 1000)
                     step["reasoning"]   = "".join(
                         "".join(_reasoning_entries[i]["tokens"])
@@ -400,7 +415,11 @@ async def stream_pipeline(
                     )
                     yield {
                         "event": "node.done",
-                        "data": {"node": node, "duration_ms": step["duration_ms"]},
+                        "data": {
+                            "node":        node,
+                            "duration_ms": step["duration_ms"],
+                            "status":      step["status"],
+                        },
                     }
 
                 if node == N_EXECUTOR:
@@ -457,6 +476,7 @@ async def stream_pipeline(
             "_cols": _done_cols,
         }) if not stopped else None
         if _confidence:
+            logger.info("[{}] confidence | score={} | label={}", run_id[:8], _confidence.get("score"), _confidence.get("label"))
             yield {"event": "confidence", "data": _confidence}
 
         _graph_context = _build_graph_context_snapshot(state)

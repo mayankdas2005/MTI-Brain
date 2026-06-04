@@ -19,19 +19,21 @@ async def _run_path(fn, *args) -> list:
 
 # Path weights for merge scoring — templates are NOT a discovery path
 _PATH_WEIGHTS = {
-    "direct_vector":  1.00,
-    "direct_fts":     0.90,
-    "intent":         0.80,
-    "businessterm":   0.85,
-    "column_search":  0.75,
-    "community":      0.70,
-    "domain":         0.80,
-    "query_pattern":  1.20,  # ground truth — highest weight
-    "joinpath":       0.65,  # expansion pass
-    "entity_value":   0.90,  # direct alias/vocabulary match — strong entity signal
+    "direct_vector":     1.00,
+    "direct_fts":        0.90,
+    "intent":            0.80,
+    "businessterm":      0.85,
+    "column_search":     0.75,
+    "community":         0.70,
+    "domain":            0.80,
+    "domain_fallback":   0.60,   # domain path when not explicitly detected — lower confidence
+    "query_pattern":     1.20,   # ground truth — highest weight
+    "query_template":    0.95,   # REQUIRES_TABLE structural hint
+    "joinpath":          0.65,   # expansion pass
+    "entity_value":      0.90,   # direct alias/vocabulary match — strong entity signal
 }
 
-_MAX_ANCHOR_TABLES = 8
+_MAX_ANCHOR_TABLES = 14   # increased from 8 — pinned entity tables don't count against this
 
 
 def _safe(result) -> list[dict]:
@@ -46,24 +48,30 @@ async def run_8_path_discovery(
     tokens: list[str],
     question: str,
     domain_detected: bool,
-) -> list[dict]:
-    """Run all 8 table discovery paths in parallel.
+) -> tuple[list[dict], list[str], list[dict]]:
+    """Run all discovery paths in parallel.
+
+    Returns: (tables, entity_pinned_fqns, business_term_hits)
+      - tables: merged and ranked table list
+      - entity_pinned_fqns: FQNs that must survive the MAX cap (entity + BT related)
+      - business_term_hits: raw BT results for downstream (filter hints etc.)
 
     Any path that errors returns [] — pipeline continues with remaining paths.
-    Templates are queried separately and NOT included in discovery.
     """
-    search_query = " ".join(tokens[:30])  # use tokenized form for FTS
+    search_query = " ".join(tokens[:50])  # increased from 30 to cover longer questions
 
     tasks = [
-        _run_path(neo4j_client.search_tables_vector, embedding),
-        _run_path(neo4j_client.search_tables_fulltext, search_query),
-        _run_path(neo4j_client.search_tables_via_intents, embedding),
-        _run_path(neo4j_client.search_tables_via_business_terms, embedding, search_query),
-        _run_path(neo4j_client.search_tables_via_columns, embedding, search_query),
-        _run_path(neo4j_client.search_tables_via_community, embedding),
-        _run_path(neo4j_client.search_tables_via_domain, embedding) if domain_detected else _empty_coroutine(),
-        _run_path(neo4j_client.search_tables_from_query_patterns, embedding),
-        _run_path(neo4j_client.search_tables_via_filter_values, tokens),  # 9th path: entity value match
+        _run_path(neo4j_client.search_tables_vector, embedding),             # 0: direct_vector
+        _run_path(neo4j_client.search_tables_fulltext, search_query),        # 1: direct_fts
+        _run_path(neo4j_client.search_tables_via_intents, embedding),        # 2: intent (RELEVANT_TO)
+        _run_path(neo4j_client.search_tables_via_business_terms, embedding, search_query),  # 3: businessterm
+        _run_path(neo4j_client.search_tables_via_columns, embedding, search_query),         # 4: column_search
+        _run_path(neo4j_client.search_tables_via_community, embedding),      # 5: community
+        _run_path(neo4j_client.search_tables_via_domain, embedding),         # 6: domain (always runs now)
+        _run_path(neo4j_client.search_tables_from_query_patterns, embedding),# 7: query_pattern
+        _run_path(neo4j_client.search_tables_via_query_templates, embedding),# 8: query_template (REQUIRES_TABLE)
+        _run_path(neo4j_client.search_tables_via_filter_values, tokens),     # 9: entity_value match
+        _run_path(neo4j_client.get_business_terms_with_related_tables, embedding, search_query),  # 10: BT pinning data
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -72,27 +80,50 @@ async def run_8_path_discovery(
         tables_direct_v, tables_direct_fts,
         tables_via_intent, tables_via_bterm, tables_via_columns,
         tables_via_comm, tables_via_domain, tables_via_patterns,
-        tables_via_entity,
+        tables_via_templates, tables_via_entity,
+        bt_pin_data,
     ) = [_safe(r) for r in results]
+
+    # Determine domain path weight based on whether it was explicitly detected
+    domain_path_name = "domain" if domain_detected else "domain_fallback"
 
     path_names = [
         "direct_vector", "direct_fts", "intent", "businessterm",
-        "column_search", "community", "domain", "query_pattern", "entity_value",
+        "column_search", "community", domain_path_name, "query_pattern",
+        "query_template", "entity_value",
     ]
     path_results = [
         tables_direct_v, tables_direct_fts, tables_via_intent, tables_via_bterm,
         tables_via_columns, tables_via_comm, tables_via_domain, tables_via_patterns,
-        tables_via_entity,
+        tables_via_templates, tables_via_entity,
     ]
 
     for name, result in zip(path_names, path_results):
         if result:
             logger.info("context_fetcher | path={} | tables={}", name, [t.get("fqn") for t in result])
 
-    tables = _merge_table_sources(dict(zip(path_names, path_results)))
+    # Collect entity-pinned FQNs BEFORE merge — these survive the MAX cap
+    pinned_fqns: set[str] = set()
+
+    # Pin 1: entity_value path — table directly holds the user's entity value
+    for t in tables_via_entity:
+        if t.get("fqn"):
+            pinned_fqns.add(t["fqn"])
+
+    # Pin 2: BusinessTerm related_table_fqns where score >= 0.72
+    for bt in bt_pin_data:
+        if bt.get("score", 0) >= 0.72:
+            for fqn in bt.get("related_table_fqns") or []:
+                if fqn:
+                    pinned_fqns.add(fqn)
+
+    if pinned_fqns:
+        logger.info("context_fetcher | pinned_fqns | count={} | fqns={}", len(pinned_fqns), list(pinned_fqns))
+
+    tables = _merge_table_sources(dict(zip(path_names, path_results)), pinned_fqns)
     logger.info("context_fetcher | merged_tables | fqns={}", [t.get("fqn") for t in tables])
 
-    # JoinPath expansion — adds directly-connected tables not found by 8 paths
+    # JoinPath expansion — adds directly-connected tables not found by main paths
     semantic_fqns = {t["fqn"] for t in tables if t.get("fqn")}
     try:
         tables_via_joins = retry_sync(
@@ -127,16 +158,22 @@ async def run_8_path_discovery(
     except Exception as e:
         logger.warning("context_fetcher | joinpath_expansion failed | error={}", e)
 
-    return tables
+    return tables, list(pinned_fqns), bt_pin_data
 
 
-def _merge_table_sources(sources: dict[str, list[dict]]) -> list[dict]:
+def _merge_table_sources(
+    sources: dict[str, list[dict]],
+    pinned_fqns: set[str],
+) -> list[dict]:
     """Merge all path results into a ranked, deduplicated table list.
 
     Scoring:
     - weighted_score = max(prev_score, new_score × path_weight) + 0.05 per additional source
-    - Bonus: +0.10 if is_dimension_hub=True (hubs often needed for cross-domain joins)
+    - Bonus: +0.10 if is_dimension_hub=True
     - Sort: source_count DESC, score DESC, pagerank_score DESC
+
+    Pinning: entity-matched tables (pinned_fqns) are guaranteed to survive the
+    _MAX_ANCHOR_TABLES cap. They are partitioned out before the cap is applied.
     """
     seen: dict[str, dict] = {}
     for path_name, table_list in sources.items():
@@ -171,7 +208,13 @@ def _merge_table_sources(sources: dict[str, list[dict]]) -> list[dict]:
         ),
         reverse=True,
     )
-    return merged[:_MAX_ANCHOR_TABLES]
+
+    # Partition: pinned tables always survive, non-pinned fill remaining slots
+    pinned = [e for e in merged if e.get("fqn") in pinned_fqns]
+    non_pinned = [e for e in merged if e.get("fqn") not in pinned_fqns]
+    result = pinned + non_pinned[:max(_MAX_ANCHOR_TABLES - len(pinned), 4)]
+
+    return result
 
 
 def merge_template_results(vector_results: list[dict], fts_results: list[dict]) -> list[dict]:

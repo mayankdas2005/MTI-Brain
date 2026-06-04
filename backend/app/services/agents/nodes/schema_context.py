@@ -11,16 +11,39 @@ from app.services.agents import neo4j_client
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
-# Primary table columns: full metadata (default_aggregation excluded — infer from data_type instead)
+# Primary table columns shown to the SQL generation LLM.
+# Only filter_values is included for vocabulary — it contains cleaned DB codes only.
+# value_aliases, value_vocabulary, sample_values are intentionally excluded:
+#   - value_aliases: raw "CODE -> Human Name" strings cause LLM to use the full alias as a filter value
+#   - value_vocabulary: may also store "CODE -> Human Name" format; filter_values already has extracted codes
+#   - sample_values: actual data samples may include UUIDs or raw alias strings the LLM misuses
 _COL_FIELDS_SQL = {
     "name", "table_fqn", "data_type", "semantic_type",
     "is_measurable", "is_groupable", "filter_selectivity",
-    "sample_values", "filter_values", "value_vocabulary", "value_aliases",
+    "filter_values",
     "description",
     "temporal_grain",        # "day"/"month"/... for date cols, "none" for non-date
     "referenced_table_fqn",  # semantic FK target table (empty for non-reference cols)
     "referenced_column",     # semantic FK target column
 }
+
+_UUID_SUFFIXES = ("_uuid", "_guid", "_uid")
+
+
+def _is_uuid_col_name(col_name: str) -> bool:
+    n = col_name.lower()
+    return n == "uuid" or any(n.endswith(s) for s in _UUID_SUFFIXES)
+
+
+def _has_uuid_in_join_clause(clause: str) -> bool:
+    """True if either side of a join clause references a UUID column."""
+    for part in clause.split("="):
+        col = part.strip().rsplit(".", 1)[-1]
+        if _is_uuid_col_name(col):
+            return True
+    return False
+
+
 # Secondary (non-anchor) table columns: minimal fields only
 _COL_FIELDS_SECONDARY = {"name", "table_fqn", "data_type", "semantic_type"}
 
@@ -88,6 +111,9 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
             if pair in seen_pairs:
                 continue
             seen_pairs.add(pair)
+            if _is_uuid_col_name(fc) or _is_uuid_col_name(tc):
+                logger.debug("schema_context | skip UUID join | {}.{} = {}.{}", f, fc, t, tc)
+                continue
             available_joins.append({
                 "from": f,
                 "to": t,
@@ -113,10 +139,15 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
             if pair in seen_pairs:
                 continue
             seen_pairs.add(pair)
+            raw_clauses = mj.get("join_clauses") or []
+            valid_clauses = [c for c in raw_clauses if not _has_uuid_in_join_clause(c)]
+            if not valid_clauses and raw_clauses:
+                logger.debug("schema_context | skip UUID multihop join | {} → {}", f_fqn, t_fqn)
+                continue
             available_joins.append({
                 "from": f_fqn,
                 "to": t_fqn,
-                "join_clauses": mj.get("join_clauses") or [],
+                "join_clauses": valid_clauses,
                 "join_type": "JOIN",
                 "hop_count": mj.get("hop_count", 2),
                 "path_tables": mj.get("path_tables") or [],

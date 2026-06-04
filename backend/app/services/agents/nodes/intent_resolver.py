@@ -34,6 +34,22 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         return {"error": "LLM unavailable", "needs_clarification": False}
 
     raw = response.content or ""
+    directive_raw = parse_tag(raw, "directive") or ""
+    # Extract structured sub-sections from the directive
+    instructions_text = parse_tag(directive_raw, "instructions").strip()
+    context_text      = parse_tag(directive_raw, "context").strip()
+    # Fallback: if no sub-sections (old format), treat full directive as context
+    if not instructions_text and not context_text:
+        context_text = directive_raw
+
+    if directive_raw:
+        logger.info(
+            "intent_resolver | DIRECTIVE | thread={}\n"
+            "=INSTRUCTIONS=\n{}\n=CONTEXT=\n{}",
+            state["thread_id"], instructions_text or "(none)", context_text or "(none)",
+        )
+    else:
+        logger.warning("intent_resolver | no <directive> tag emitted | thread={}", state["thread_id"])
     resolved = _parse_response(raw, state["thread_id"])
 
     if resolved is None:
@@ -52,6 +68,9 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     )
     return {
         "resolved_intent": resolved,
+        "intent_directive": directive_raw,
+        "intent_directive_instructions": instructions_text,
+        "intent_directive_context": context_text,
         "needs_clarification": False,
         "clarification_reason": None,
         "execution_error": None,

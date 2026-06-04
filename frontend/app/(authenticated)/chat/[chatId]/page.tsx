@@ -137,26 +137,31 @@ export default function ChatPage({ params }: ChatPageProps) {
       return;
     }
 
-    // Streaming delta → keep content in view
-    // For retry/edit: always track the streaming message (ignore autoScroll,
-    // because handleScroll sets it false when we're not near the bottom).
+    // Streaming delta → keep content in view only if user hasn't scrolled away.
+    // Use 'instant' (not 'smooth') — smooth on every delta creates continuous
+    // animation that fights user scroll input and makes the outer scroll uncontrollable.
     if (isStreaming) {
       const origin = useThreadStore.getState().streamingOrigin;
       if (origin === 'retry' || origin === 'edit') {
-        const msgId = useThreadStore.getState().streamingMessageId;
-        if (msgId) {
-          const el = document.getElementById(`msg-${msgId}`);
-          if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'end' });
-            return;
+        // For retry/edit: only follow if user hasn't manually scrolled away.
+        // (Initial scroll-to-message on isNewMessage already positioned them there.)
+        if (autoScrollRef.current) {
+          const msgId = useThreadStore.getState().streamingMessageId;
+          if (msgId) {
+            const el = document.getElementById(`msg-${msgId}`);
+            if (el) {
+              el.scrollIntoView({ behavior: 'instant' as ScrollBehavior, block: 'end' });
+              return;
+            }
           }
         }
+        return;
       }
     }
 
-    // Normal: scroll to bottom only if already following
+    // Normal: scroll to bottom only if already following, and use instant to avoid fighting
     if (autoScrollRef.current && scrollRef.current) {
-      scrollRef.current.scrollIntoView({ behavior: 'smooth' });
+      scrollRef.current.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
     }
   }, [displayedMessages, autoScroll, isStreaming]);
 
@@ -202,10 +207,14 @@ export default function ChatPage({ params }: ChatPageProps) {
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    autoScrollRef.current = isNearBottom;
-    setAutoScroll(isNearBottom);
-    if (isNearBottom) setHasNewResponse(false);
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Tight threshold: only consider "at bottom" when truly within 40px.
+    // The previous 120px was too wide — as streaming adds content the user
+    // could scroll up 80px and still be pulled back down.
+    const isAtBottom = distFromBottom < 40;
+    autoScrollRef.current = isAtBottom;
+    setAutoScroll(isAtBottom);
+    if (isAtBottom) setHasNewResponse(false);
   };
 
   const scrollToBottom = () => {

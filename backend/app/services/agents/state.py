@@ -29,6 +29,11 @@ class AnalyticsState(TypedDict):
     # ── Pipeline ─────────────────────────────────────────────────────────────
     semantic_context: dict | None         # output of context_fetcher
     resolved_intent: dict | None          # output of intent_resolver
+    intent_directive: str | None              # raw directive from intent_resolver <directive> tag
+    intent_directive_instructions: str | None  # <instructions> sub-section: SQL execution requirements
+    intent_directive_context: str | None       # <context> sub-section: structural guidance, informational
+    filter_directive: str | None          # resolved filter list from filter_resolver (DB codes + confidence)
+    schema_directive: str | None          # code-verified structure from ir_builder (tables, joins, measures)
     semantic_ir_list: list[dict]          # list of SemanticIR (always 1 — decomposition removed)
     sql_list: list[str]                   # compiled SQL (always 1 entry)
     recompile_count: int                  # max 1

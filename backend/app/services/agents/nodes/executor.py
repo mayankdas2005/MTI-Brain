@@ -291,7 +291,9 @@ def _strip_col_filter_sql(sql: str, col_name: str) -> str | None:
     import sqlglot
     import sqlglot.expressions as exp
     try:
-        stmt = sqlglot.parse_one(sql, dialect="redshift")
+        stmt = sqlglot.parse_one(sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE)
+        if stmt is None:
+            return None
         for sel in stmt.find_all(exp.Select):
             where = sel.args.get("where")
             if not where:
@@ -308,7 +310,9 @@ def _strip_all_where_filters(sql: str) -> str | None:
     import sqlglot
     import sqlglot.expressions as exp
     try:
-        stmt = sqlglot.parse_one(sql, dialect="redshift")
+        stmt = sqlglot.parse_one(sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE)
+        if stmt is None:
+            return None
         for sel in stmt.find_all(exp.Select):
             sel.set("where", None)
             sel.set("having", None)

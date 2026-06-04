@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from app.core.logger import logger
 from app.services.agents import neo4j_client
+from app.services.agents.context.column_loader import get_filter_values as _get_filter_values
 from app.services.agents.semantic_ir import ColumnRef, FilterSpec, SemanticIR
 
 
@@ -170,17 +171,26 @@ def _normalize_resolved_fqns(resolved: dict) -> dict:
     return {**resolved, **changes} if changes else resolved
 
 
-def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
+async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict | None = None) -> SemanticIR:
     resolved = _normalize_resolved_fqns(resolved)
     anchor_tables = list(resolved.get("anchor_tables") or _extract_anchor_tables(resolved))
 
+    # Extend anchor_tables from tables referenced in measures/dimensions/filters
     ref_tables = _extract_anchor_tables(resolved)
     missing = [t for t in ref_tables if t not in anchor_tables]
     if missing:
         anchor_tables = anchor_tables + missing
         logger.info("ir_builder | anchor_tables extended | added={} | final={}", missing, anchor_tables)
 
-    join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths = _load_join_paths(anchor_tables)
+    # Inject cross-domain hub table into anchor_tables (must be at front for joins)
+    hub_info = (semantic_context or {}).get("cross_domain_hub") or {}
+    hub_fqn = hub_info.get("hub_table_fqn")
+    if hub_fqn and hub_fqn not in anchor_tables:
+        anchor_tables.insert(0, hub_fqn)
+        logger.info("ir_builder | hub_injected | fqn={}", hub_fqn)
+
+    join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs = \
+        _load_join_paths(anchor_tables, intent_directive=(state or {}).get("intent_directive") or "")
 
     raw_measures = resolved.get("measures", [])
     raw_dimensions = resolved.get("dimensions", [])
@@ -190,12 +200,57 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
     measures = _enrich_aggregations(measures, semantic_context)
 
     filters = _build_filter_specs(resolved.get("filters", []), raw_measures, semantic_context)
-    time_filter = _build_time_filter(resolved.get("timeframe"), anchor_tables, semantic_context)
+    time_filter = await _build_time_filter(resolved.get("timeframe"), anchor_tables, semantic_context, state)
+
+    # Auto-generate FilterSpec from entity_hints that the LLM didn't already produce.
+    # Only inject for tables already in anchor_tables — entity hints for non-anchor tables
+    # are schema discovery signals, not query filters. Injecting them produces EXISTS
+    # subqueries on unrelated tables, the exact hallucination NO_EXTRA_FILTERS prohibits.
+    # matched_value may be a raw "CODE -> Human Name" alias entry — extract just the CODE.
+    from app.services.agents.context.column_loader import _extract_db_code
+    existing_filter_cols = {(f.table_fqn, f.column_name) for f in filters}
+    for hint in (semantic_context or {}).get("entity_hints", []):
+        key = (hint.get("table_fqn", ""), hint.get("column", ""))
+        if key[0] not in anchor_tables:
+            logger.debug(
+                "ir_builder | entity_hint_skipped (not anchor) | {}.{}", key[0], key[1],
+            )
+            continue
+        if key[0] and key[1] and key not in existing_filter_cols:
+            raw_mv = hint["matched_value"]
+            clean_mv = _extract_db_code(str(raw_mv)) if raw_mv else raw_mv
+            filters.append(FilterSpec(
+                table_fqn=key[0],
+                column_name=key[1],
+                operator="=",
+                value=clean_mv,
+                raw_user_value=hint.get("token", clean_mv),
+                resolved=True,
+                is_raw_sql=False,
+                is_having=False,
+            ))
+            existing_filter_cols.add(key)
+            logger.info(
+                "ir_builder | entity_hint_filter | {}.{} = '{}' (raw='{}')",
+                key[0], key[1], clean_mv, raw_mv,
+            )
 
     template_id = resolved.get("template_id", "")
     cte_steps = _get_cte_steps(template_id, semantic_context)
 
-    temporal_grain = resolved.get("temporal_grain") or _infer_temporal_grain(resolved.get("timeframe"))
+    # temporal_grains: read list from resolved, fall back to single temporal_grain str.
+    # Flatten nested lists — the LLM occasionally emits [["month"]] instead of ["month"].
+    raw_grains = resolved.get("temporal_grains")
+    if isinstance(raw_grains, list) and raw_grains:
+        temporal_grains = []
+        for g in raw_grains:
+            if isinstance(g, list):
+                temporal_grains.extend(str(x) for x in g if x)
+            elif g:
+                temporal_grains.append(str(g))
+    else:
+        single = resolved.get("temporal_grain") or _infer_temporal_grain(resolved.get("timeframe"))
+        temporal_grains = [single] if single else []
 
     ir = SemanticIR(
         template_id=template_id,
@@ -211,21 +266,22 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
         dimensions=dimensions,
         filters=filters,
         time_filter=time_filter,
-        temporal_grain=temporal_grain,
+        temporal_grains=temporal_grains,
         cte_steps=cte_steps,
         order_by=_coerce_list(resolved.get("order_by")),
         limit=resolved.get("limit"),
         sub_query_index=None,
         candidate_join_paths=candidate_join_paths or None,
+        unresolved_join_pairs=unresolved_pairs,
     )
 
-    # Backstop: inject DATE_TRUNC dimension when temporal_grain is known but LLM didn't add
-    # the date column to dimensions. Fires only for multi-dim breakdowns or time_series shape.
-    # Skipped for pure summary queries (no dimensions, not time_series).
+    # Backstop: inject DATE_TRUNC dimension when grain is known but LLM didn't include the date
+    # column in dimensions. Always fires for non-KPI shapes when time_filter is set —
+    # users expect to see the date axis regardless of whether they named the column explicitly.
     if (
         ir.temporal_grain
         and ir.time_filter
-        and (ir.dimensions or ir.result_shape == "time_series")
+        and ir.result_shape != "kpi"
         and not any(d.column_name == ir.time_filter.column_name for d in ir.dimensions)
     ):
         period_alias = f"period_{ir.temporal_grain}"
@@ -236,17 +292,39 @@ def build_semantic_ir(resolved: dict, semantic_context: dict) -> SemanticIR:
             semantic_type="date",
         ))
         logger.info(
-            "ir_builder | injected date dim (backstop) | grain={} | col={} | alias={}",
+            "ir_builder | injected date dim | grain={} | col={} | alias={}",
             ir.temporal_grain, ir.time_filter.column_name, period_alias,
         )
+
+    # Inferred dimensions: store entity filter columns so SQL generator shows context cols
+    ir.inferred_dimensions = [
+        ColumnRef(
+            table_fqn=hint.get("table_fqn", ""),
+            column_name=hint.get("column", ""),
+            alias=hint.get("column", ""),
+            semantic_type="identifier",
+        )
+        for hint in (semantic_context or {}).get("entity_hints", [])
+        if hint.get("table_fqn") and hint.get("column")
+    ]
+
+    if unresolved_pairs:
+        logger.warning(
+            "ir_builder | unresolved_join_pairs | count={} | pairs={}",
+            len(unresolved_pairs), [(p["from"], p["to"]) for p in unresolved_pairs],
+        )
+
     logger.info(
-        "ir_builder | ir_built | template={} | anchor_tables={} | measures={} | time_filter={}.{} | filters={}",
+        "ir_builder | ir_built | template={} | anchor_tables={} | measures={} | time_filter={}.{} | "
+        "filters={} | temporal_grains={} | unresolved_pairs={}",
         template_id,
         anchor_tables,
         [(m.column_name, m.aggregation) for m in measures],
         time_filter.table_fqn if time_filter else None,
         time_filter.column_name if time_filter else None,
         [(f.column_name, f.operator, str(f.value)[:20], f.is_having) for f in filters],
+        temporal_grains,
+        len(unresolved_pairs),
     )
     return ir
 
@@ -277,9 +355,28 @@ import re as _re
 _JOIN_COL_RE = _re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_$]*)")
 
 
+_UUID_SUFFIXES_IR = ("_uuid", "_guid", "_uid")
+
+
+def _is_uuid_col_ir(col_name: str) -> bool:
+    n = col_name.lower()
+    return n == "uuid" or any(n.endswith(s) for s in _UUID_SUFFIXES_IR)
+
+
+def _path_has_uuid_clauses(path: dict) -> bool:
+    """True if any join clause in the path references a UUID column."""
+    for clause in (path.get("join_clauses") or []):
+        for part in clause.split("="):
+            col = part.strip().rsplit(".", 1)[-1]
+            if _is_uuid_col_ir(col):
+                return True
+    return False
+
+
 def _pick_valid_primary_path(paths: list[dict]) -> dict | None:
     """Return the first path whose join columns are confirmed valid in the Redis schema cache.
 
+    Prefers non-UUID paths — UUID-based joins always return 0 rows (UUIDs are unique per row).
     Only checks Redis (synchronous) — no Redshift round-trips. Paths for tables whose
     schema isn't cached yet are treated as valid (can't prove otherwise).
     Falls back to the first path if none pass or all are uncacheable.
@@ -302,60 +399,137 @@ def _pick_valid_primary_path(paths: list[dict]) -> dict | None:
                     return False
         return True
 
-    # Try each path in order; return first confirmed-valid one
-    for path in paths:
+    # Prefer non-UUID paths — UUID joins always return 0 rows
+    non_uuid = [p for p in paths if not _path_has_uuid_clauses(p)]
+    uuid_paths = [p for p in paths if _path_has_uuid_clauses(p)]
+
+    for path in non_uuid:
         if _cols_valid(path):
             return path
 
-    # All paths failed validation (or no paths) — return first as fallback
+    # UUID paths as last resort only
+    for path in uuid_paths:
+        if _cols_valid(path):
+            logger.warning(
+                "ir_builder | uuid_path_selected | tier={} | clauses={}",
+                path.get("tier"), path.get("join_clauses"),
+            )
+            return path
+
     return next(iter(paths), None)
 
 
-def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list, list]:
+def _load_join_paths(anchor_tables: list[str], intent_directive: str = "") -> tuple[list, list, list, list, list, list]:
     """Load join paths for consecutive table pairs.
 
     Collects ALL available paths via collect_all_join_paths (JOINS_TO + dijkstra k1-3
     forward/reverse + yens k1-3 forward/reverse). Primary join_clauses are set from the
     first-priority path (JOINS_TO → dijkstra k=1 → yens k=1) for backward compat.
     All paths are stored in candidate_join_paths for the SQL generator to choose from.
+
+    When no direct path exists between a pair, tries a 2-hop bridge via find_bridge_table().
+    If a bridge is found, it is inserted into the pair list and re-resolved.
+    If no bridge found, the pair is added to unresolved_join_pairs — NOT an empty string.
+
+    Returns: (join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs)
     """
     if len(anchor_tables) <= 1:
-        return [], [], list(anchor_tables), [], []
+        return [], [], list(anchor_tables), [], [], []
 
     join_path_ids: list[str] = []
     all_join_clauses: list[str] = []
     all_path_tables: list[str] = [anchor_tables[0]]
     join_types: list[str] = []
     candidate_join_paths: list[dict] = []
+    unresolved_pairs: list[dict] = []
 
-    for i in range(len(anchor_tables) - 1):
-        from_table = anchor_tables[i]
-        to_table = anchor_tables[i + 1]
+    # Pre-parse explicit JOIN_PATH clauses from intent directive — Tier 0 (highest priority).
+    # Format: "JOIN_PATH: lpp.borrowing.facility_ref = lpp.credit_facility.code"
+    # Bidirectional: stored for both (from,to) and (to,from) orderings.
+    _intent_joins: dict[tuple[str, str], str] = {}
+    if intent_directive:
+        for _line in intent_directive.splitlines():
+            if _line.strip().upper().startswith("JOIN_PATH:"):
+                _m = _re.search(r"(\w+\.\w+)\.(\w+)\s*=\s*(\w+\.\w+)\.(\w+)", _line)
+                if _m:
+                    _f, _t = _m.group(1), _m.group(3)
+                    _clause = f"{_m.group(1)}.{_m.group(2)} = {_m.group(3)}.{_m.group(4)}"
+                    _intent_joins[(_f, _t)] = _clause
+                    _intent_joins[(_t, _f)] = _clause
+
+    # Work on a mutable copy — bridge insertions may expand the list
+    work_tables = list(anchor_tables)
+    i = 0
+    while i < len(work_tables) - 1:
+        from_table = work_tables[i]
+        to_table = work_tables[i + 1]
 
         all_paths = neo4j_client.collect_all_join_paths(from_table, to_table)
 
-        # Tag each path with from/to for SQL generator context
+        # Tier 0: inject intent directive JOIN_PATH at the front (highest priority)
+        if (from_table, to_table) in _intent_joins:
+            intent_clause = _intent_joins[(from_table, to_table)]
+            all_paths.insert(0, {
+                "id": "", "join_clauses": [intent_clause],
+                "path_tables": [from_table, to_table], "hop_count": 1,
+                "tier": "intent_directive", "direction": "forward",
+                "from_fqn": from_table, "to_fqn": to_table,
+            })
+            logger.info(
+                "ir_builder | intent_join_injected | from={} to={} | clause={}",
+                from_table, to_table, intent_clause,
+            )
+
         for p in all_paths:
             p.setdefault("from_fqn", from_table)
             p.setdefault("to_fqn", to_table)
         candidate_join_paths.extend(all_paths)
 
-        # Primary path: first path whose join columns are confirmed valid in Redis cache.
-        # Redis is already populated by context_fetcher for semantic_context tables.
-        # If no path passes sync validation (e.g. cache miss), fall back to first path.
         jp = _pick_valid_primary_path(all_paths)
         if not jp:
-            logger.warning(
-                "ir_builder | NO join found | from={} to={} | sentinel added",
-                from_table, to_table,
-            )
-            all_join_clauses.append("")
-            all_path_tables.append(to_table)
-            join_types.append("JOIN")
-            continue
+            # Tier A: value-overlap join — data-driven FK discovery from distinct_values.
+            # Preferred over bridge-table search: it verifies actual shared values rather
+            # than relying on graph topology (which picks high-in_degree tables like fraud_loss).
+            try:
+                overlap_cols = neo4j_client.find_join_by_value_overlap(from_table, to_table)
+            except Exception:
+                overlap_cols = []
+
+            if overlap_cols:
+                best = overlap_cols[0]
+                clause = f"{from_table}.{best['from_col']} = {to_table}.{best['to_col']}"
+                all_join_clauses.append(clause)
+                join_types.append("JOIN")
+                if to_table not in all_path_tables:
+                    all_path_tables.append(to_table)
+                logger.info(
+                    "ir_builder | value_overlap_join | from={} to={} | clause={} | overlap={}",
+                    from_table, to_table, clause, best["overlap_count"],
+                )
+                i += 1
+                continue
+
+            # Tier B: 2-hop bridge via JOINS_TO-JOINS_TO (dimension/reference tables only).
+            # Fact/event bridge tables are excluded by find_bridge_table's Cypher filter.
+            bridge_fqn = neo4j_client.find_bridge_table(from_table, to_table)
+            if bridge_fqn and bridge_fqn not in work_tables:
+                work_tables.insert(i + 1, bridge_fqn)
+                logger.info(
+                    "ir_builder | bridge_inserted | bridge={} | between={} and {}",
+                    bridge_fqn, from_table, to_table,
+                )
+                continue
+            else:
+                logger.warning(
+                    "ir_builder | unresolved_pair | from={} to={} | no path, overlap, or bridge found",
+                    from_table, to_table,
+                )
+                unresolved_pairs.append({"from": from_table, "to": to_table, "reason": "no_path"})
+                i += 1
+                continue
 
         logger.info(
-            "ir_builder | join resolved | from={} to={} | primary_tier={} | hops={} | total_paths={} | clauses={}",
+            "ir_builder | join resolved | from={} to={} | tier={} | hops={} | paths={} | clauses={}",
             from_table, to_table,
             jp.get("tier", "unknown"),
             jp.get("hop_count"),
@@ -377,7 +551,9 @@ def _load_join_paths(anchor_tables: list[str]) -> tuple[list, list, list, list, 
             if tbl not in all_path_tables:
                 all_path_tables.append(tbl)
 
-    return join_path_ids, all_join_clauses, all_path_tables, join_types, candidate_join_paths
+        i += 1
+
+    return join_path_ids, all_join_clauses, all_path_tables, join_types, candidate_join_paths, unresolved_pairs
 
 
 def _qualify_join_clause(clause: str, left_table: str, right_table: str) -> str:
@@ -416,17 +592,17 @@ def _resolve_filter_values(
     if not col_meta:
         return operator, raw_values
 
-    filter_values = col_meta.get("filter_values") or []
+    # Use get_filter_values() for consistent vocabulary assembly (distinct_values primary)
+    filter_values = _get_filter_values(col_meta)
 
-    # Build value_aliases map: {DB_code: human_name} from Neo4j list ["CLOSING -> Closing Balance"]
+    # Build value_aliases map: {DB_code: human_name} — parse " -> " separator
+    # DB code is left side, human label is right side
     raw_aliases = col_meta.get("value_aliases") or []
     alias_map: dict[str, str] = {}
     for a in raw_aliases:
-        for sep in (" -> ", " → ", "->", "→"):
-            if sep in str(a):
-                parts = str(a).split(sep, 1)
-                alias_map[parts[0].strip()] = parts[1].strip()
-                break
+        if isinstance(a, str) and " -> " in a:
+            parts = a.split(" -> ", 1)
+            alias_map[parts[0].strip()] = parts[1].strip()
 
     if not filter_values and not alias_map:
         return operator, raw_values
@@ -437,6 +613,16 @@ def _resolve_filter_values(
 
         # Alias reverse lookup: human label → DB code (runs even when filter_values is empty)
         if alias_map:
+            # Handle raw "CODE -> Human Name" format — LLM sometimes outputs the full alias entry
+            if " -> " in raw:
+                code_part = raw.split(" -> ")[0].strip()
+                matched_raw = next((k for k in alias_map if k.lower() == code_part.lower()), None)
+                if matched_raw:
+                    logger.info("ir_builder | filter alias_raw_fmt | {}.{} | {} → {}", table_fqn, column, raw, matched_raw)
+                    resolved.append(matched_raw)
+                    modes.append("exact")
+                    continue
+
             # User said the human label (e.g., "Closing Balance") → return DB code ("CLOSING")
             db_code = next((k for k, v in alias_map.items() if v.lower() == raw_lower), None)
             if db_code:
@@ -555,12 +741,31 @@ def _build_filter_specs(
     return filters
 
 
-def _build_time_filter(timeframe: str | None, anchor_tables: list[str], semantic_context: dict) -> FilterSpec | None:
+async def _build_time_filter(
+    timeframe: str | None,
+    anchor_tables: list[str],
+    semantic_context: dict,
+    state: dict | None = None,
+) -> FilterSpec | None:
+    """Resolve a timeframe string to a FilterSpec.
+
+    Resolution order:
+    1. Sync pre-check: today / yesterday / exact ISO date / ISO range — deterministic, no LLM.
+    2. Everything else → _tier35_temporal_llm (Haiku). Handles any natural language temporal
+       expression: 'last 2 months', 'this month vs last month', 'Q3 2024', 'past 90 days', etc.
+    """
     if not timeframe:
         return None
-    table_fqn, date_col = _find_date_column(anchor_tables, semantic_context)
+    intent_directive = (state or {}).get("intent_directive") or ""
+    table_fqn, date_col = _find_date_column(anchor_tables, semantic_context, intent_directive)
+
     from app.services.agents.filter_resolver_logic import resolve_tier3_temporal
     result = resolve_tier3_temporal(timeframe)
+
+    if result is None:
+        from app.services.agents.nodes.filter_resolver import _tier35_temporal_llm
+        result = await _tier35_temporal_llm(timeframe, state or {})
+
     if not result:
         return FilterSpec(
             table_fqn=table_fqn,
@@ -584,26 +789,87 @@ def _build_time_filter(timeframe: str | None, anchor_tables: list[str], semantic
 _DATE_GRAINS = {"day", "week", "month", "quarter", "year", "hour", "minute", "date"}
 
 
-def _find_date_column(anchor_tables: list[str], semantic_context: dict) -> tuple[str, str]:
+def _find_date_column(
+    anchor_tables: list[str],
+    semantic_context: dict,
+    intent_directive: str = "",
+) -> tuple[str, str]:
+    """Metadata-driven date column selection — five ranked passes, no hardcoded names.
+
+    Pass 0: TIME_FILTER column in intent directive — highest priority. The intent resolver
+            often identifies the correct time column from business context (e.g. repayment_date
+            for a maturity query) even when metadata points to a different column (drawdown_date).
+    Pass 1: table.time_dimension_col — authoritative field set during ingestion.
+    Pass 2: column.temporal_grain is set.
+    Pass 3: date/timestamp data_type on a time-series table.
+    Pass 4: any date/timestamp data_type (last resort).
+    """
+    import re as _re
     columns = semantic_context.get("columns", [])
+
+    # Pass 0: column named in intent directive TIME_FILTER line wins over metadata.
+    # e.g. "TIME_FILTER: lpp.borrowing.repayment_date BETWEEN ..." → use repayment_date
+    if intent_directive:
+        for line in intent_directive.splitlines():
+            if line.strip().upper().startswith("TIME_FILTER:"):
+                m = _re.search(r"(\w+)\.(\w+)\.(\w+)\s*(?:BETWEEN|>=|<=|=|>|<)", line)
+                if m:
+                    candidate_fqn = f"{m.group(1)}.{m.group(2)}"
+                    candidate_col = m.group(3)
+                    if candidate_fqn in anchor_tables:
+                        for c in columns:
+                            if c.get("table_fqn") == candidate_fqn and c.get("name") == candidate_col:
+                                logger.info(
+                                    "ir_builder | date_col | table={} col={} via=intent_directive",
+                                    candidate_fqn, candidate_col,
+                                )
+                                return candidate_fqn, candidate_col
+                break
+    tables_meta = {t["fqn"]: t for t in (semantic_context.get("tables") or []) if t.get("fqn")}
+
     _DATE_TYPES = {"date", "timestamp", "datetime"}
     _DATE_SEMANTICS = {"date", "datetime", "timestamp"}
 
+    # Pass 1: time_dimension_col on a time-series table
+    for table in anchor_tables:
+        t_meta = tables_meta.get(table, {})
+        if t_meta.get("is_time_series") and t_meta.get("time_dimension_col"):
+            col_name = t_meta["time_dimension_col"]
+            logger.info("ir_builder | date_col | table={} col={} via=time_dimension_col", table, col_name)
+            return table, col_name
+
+    # Pass 2: column.temporal_grain is set
     for table in anchor_tables:
         for col in columns:
             if col.get("table_fqn") != table:
                 continue
-            name = col["name"]
-            # Whitelist check — "none" and empty strings are falsy-equivalent here
             if col.get("temporal_grain", "").lower() in _DATE_GRAINS:
-                logger.info("ir_builder | date_col | table={} col={} via=temporal_grain", table, name)
-                return table, name
+                logger.info("ir_builder | date_col | table={} col={} via=temporal_grain", table, col["name"])
+                return table, col["name"]
+
+    # Pass 3: date/timestamp column on a time-series table
+    for table in anchor_tables:
+        t_meta = tables_meta.get(table, {})
+        if not t_meta.get("is_time_series"):
+            continue
+        for col in columns:
+            if col.get("table_fqn") != table:
+                continue
             if col.get("data_type", "").lower() in _DATE_TYPES:
-                logger.info("ir_builder | date_col | table={} col={} via=data_type({})", table, name, col.get("data_type"))
-                return table, name
+                logger.info("ir_builder | date_col | table={} col={} via=data_type+is_time_series", table, col["name"])
+                return table, col["name"]
+
+    # Pass 4: any date/timestamp column
+    for table in anchor_tables:
+        for col in columns:
+            if col.get("table_fqn") != table:
+                continue
+            if col.get("data_type", "").lower() in _DATE_TYPES:
+                logger.info("ir_builder | date_col | table={} col={} via=data_type(fallback)", table, col["name"])
+                return table, col["name"]
             if col.get("semantic_type", "").lower() in _DATE_SEMANTICS:
-                logger.info("ir_builder | date_col | table={} col={} via=semantic_type({})", table, name, col.get("semantic_type"))
-                return table, name
+                logger.info("ir_builder | date_col | table={} col={} via=semantic_type(fallback)", table, col["name"])
+                return table, col["name"]
 
     fallback_table = anchor_tables[0] if anchor_tables else ""
     logger.warning("ir_builder | date_col not found | anchor_tables={} | fallback={}.transaction_date", anchor_tables, fallback_table)

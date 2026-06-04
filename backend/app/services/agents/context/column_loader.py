@@ -1,8 +1,9 @@
 """Column loading with join-critical prioritization.
 
 Key design decisions:
-- filter_values = value_vocabulary (not sample_values — too few values)
-- _column_lookup is built from UNTRIMMED full data (preserves 30-item vocabulary)
+- filter_values built from all three vocabulary sources (distinct_values primary)
+- _column_lookup is built from UNTRIMMED full data
+- UUID columns stripped everywhere — they are internal row IDs, never join keys or filters
 - trim_objects() applies only to display columns shown to LLM
 - _join_critical columns are guaranteed T1 priority in merge
 """
@@ -15,12 +16,57 @@ from app.services.agents import neo4j_client
 MAX_PER_TABLE = 12
 GLOBAL_CAP    = 80
 
+# UUID column detection — these are internal row identifiers, never valid for joins/filters
+_UUID_SUFFIXES = ("_uuid", "_guid", "_uid")
+
+
+def _is_uuid_col(col_name: str) -> bool:
+    """True if column is a UUID/GUID/UID — internal row identifier, useless for joins."""
+    if not col_name:
+        return False
+    n = col_name.lower()
+    return n == "uuid" or any(n.endswith(s) for s in _UUID_SUFFIXES)
+
+
+def _extract_db_code(raw: str) -> str:
+    """If raw is 'CODE -> Human Name', return just CODE. Otherwise return raw unchanged."""
+    if " -> " in raw:
+        return raw.split(" -> ")[0].strip()
+    return raw
+
+
+def get_filter_values(col_meta: dict) -> list[str]:
+    """Assemble all available DB codes for filter value matching.
+
+    Priority: distinct_values (actual Redshift stats) → value_vocabulary (may be LLM-generated)
+    → left-side codes from value_aliases.
+    All three sources are combined and deduplicated.
+    Any 'CODE -> Human Name' format is stripped to just the CODE in all three sources.
+    """
+    distinct = list(col_meta.get("distinct_values") or [])
+    vocab    = list(col_meta.get("value_vocabulary") or [])
+    alias_codes = []
+    for a in (col_meta.get("value_aliases") or []):
+        if isinstance(a, str) and " -> " in a:
+            code = a.split(" -> ")[0].strip()
+            if code:
+                alias_codes.append(code)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for v in distinct + vocab + alias_codes:
+        sv = _extract_db_code(str(v).strip()) if v is not None else ""
+        if sv and sv not in seen:
+            seen.add(sv)
+            result.append(sv)
+    return result
+
 
 def get_join_critical_cols(tables: list[dict]) -> set[tuple]:
     """Get join-critical (table_fqn, col_name) pairs using 4 sources.
 
     Sources A+B+C+D are all Cypher-based (see neo4j/column_search.py).
-    Augmented with Table.pk_columns (non-surrogate) and time_dimension_col from table metadata.
+    UUID columns are stripped — they are surrogate keys, never valid join columns.
     """
     fqns = [t["fqn"] for t in tables if t.get("fqn")]
     if not fqns:
@@ -32,21 +78,22 @@ def get_join_critical_cols(tables: list[dict]) -> set[tuple]:
         rows = neo4j_client.get_join_critical_columns(fqns)
         for r in rows:
             if isinstance(r, tuple):
-                join_critical.add(r)
+                fqn, col = r
             elif isinstance(r, dict) and r.get("table_fqn") and r.get("col_name"):
-                join_critical.add((r["table_fqn"], r["col_name"]))
+                fqn, col = r["table_fqn"], r["col_name"]
+            else:
+                continue
+            if not _is_uuid_col(col):
+                join_critical.add((fqn, col))
         logger.debug("column_loader | join_critical from graph | count={}", len(join_critical))
     except Exception as e:
         logger.warning("column_loader | get_join_critical_columns failed | error={}", e)
 
-    # Augment with table metadata (pk_columns, time_dimension_col)
+    # Augment from table metadata — time_dimension_col only (pk_columns excluded: always uuid)
     for t in tables:
         fqn = t.get("fqn", "")
-        for pk in (t.get("pk_columns") or []):
-            if pk and pk != "uuid" and not pk.endswith("_uuid"):
-                join_critical.add((fqn, pk))
         tdim = t.get("time_dimension_col")
-        if tdim and tdim != "uuid":
+        if tdim and not _is_uuid_col(tdim):
             join_critical.add((fqn, tdim))
 
     logger.info("column_loader | join_critical_total | count={}", len(join_critical))
@@ -59,11 +106,13 @@ def load_and_prioritize(
     search_query: str,
     join_critical_cols: set[tuple],
 ) -> tuple[list[dict], dict]:
-    """Load all columns, mark join-critical, set filter_values, build _column_lookup.
+    """Load all columns, mark join-critical, build filter_values, build _column_lookup.
 
     Returns: (display_columns, _column_lookup)
     - display_columns: per-table prioritized T1-T4, capped at MAX_PER_TABLE and GLOBAL_CAP
     - _column_lookup: full untrimmed dict keyed by (table_fqn, col_name)
+
+    UUID columns are stripped from BOTH display_columns and _column_lookup.
     """
     candidate_fqns = {t["fqn"] for t in tables if t.get("fqn")}
     if not candidate_fqns:
@@ -77,31 +126,36 @@ def load_and_prioritize(
     logger.info("column_loader | cols_graph={} | cols_vector={} | cols_fts={}",
                 len(columns_graph), len(columns_v), len(columns_fts))
 
+    # Strip UUID columns immediately — they are never useful for joins, filters, or display
+    columns_graph = [c for c in columns_graph if not _is_uuid_col(c.get("name", ""))]
+
     # Mark join-critical BEFORE any processing
     for col in columns_graph:
         key = (col.get("table_fqn"), col.get("name"))
         col["_join_critical"] = key in join_critical_cols
 
-    # Set filter_values from value_vocabulary BEFORE trimming
-    # value_vocabulary = distinct_values[0..30] from ingestion pipeline
-    # sample_values has only 5-10 values — NOT sufficient for filter resolution
+    # Build filter_values from all vocabulary sources (distinct_values is primary)
     for col in columns_graph:
-        col["filter_values"] = col.get("value_vocabulary") or []
+        col["filter_values"] = get_filter_values(col)
 
-    # Build _column_lookup from FULL UNTRIMMED data
+    # Build _column_lookup from FULL UNTRIMMED data (no UUID cols)
     column_lookup = {
         (col["table_fqn"], col["name"]): col
         for col in columns_graph
         if col.get("table_fqn") and col.get("name")
     }
 
-    # Build per-table semantic scores from vector + fts
+    # Build per-table semantic scores from vector + fts (exclude UUID cols)
     semantic_scores: dict[tuple, float] = {}
     for c in columns_v:
+        if _is_uuid_col(c.get("name", "")):
+            continue
         key = (c.get("table_fqn"), c.get("name"))
         if key[0] in candidate_fqns:
             semantic_scores[key] = max(semantic_scores.get(key, 0.0), c.get("score") or 0.0)
     for c in columns_fts:
+        if _is_uuid_col(c.get("name", "")):
+            continue
         key = (c.get("table_fqn"), c.get("name"))
         if key[0] in candidate_fqns:
             semantic_scores[key] = max(semantic_scores.get(key, 0.0), (c.get("score") or 0.0) + 0.05)
@@ -113,6 +167,36 @@ def load_and_prioritize(
     )
 
     return display_columns, column_lookup
+
+
+def load_for_bridge_tables(
+    bridge_fqns: list[str],
+    embedding: list[float],
+    search_query: str,
+    join_critical_cols: set[tuple],
+) -> tuple[list[dict], dict]:
+    """Load columns for bridge/intermediate tables added during join expansion.
+
+    These tables weren't in the initial discovery so weren't loaded by load_and_prioritize.
+    Uses same logic but with a smaller per-table cap (bridge tables need fewer cols for display).
+    """
+    if not bridge_fqns:
+        return [], {}
+
+    bridge_tables = [{"fqn": fqn, "retrieval_paths": ["bridge_table"]} for fqn in bridge_fqns]
+    display_cols, col_lookup = load_and_prioritize(
+        bridge_tables, embedding, search_query, join_critical_cols
+    )
+    # Bridge tables only need up to 8 display columns (join cols + key measures)
+    by_table: dict[str, list[dict]] = {}
+    for col in display_cols:
+        by_table.setdefault(col.get("table_fqn", ""), []).append(col)
+    bridge_display = []
+    for fqn in bridge_fqns:
+        bridge_display.extend(by_table.get(fqn, [])[:8])
+
+    logger.info("column_loader | bridge_cols_loaded | fqns={} | total_cols={}", bridge_fqns, len(bridge_display))
+    return bridge_display, col_lookup
 
 
 def _merge_column_sources(

@@ -37,7 +37,15 @@ def _run_gates(sql: str) -> tuple[bool, str]:
         return False, "Multiple statements detected — only single SELECT allowed"
 
     stmt = statements[0]
-    if not isinstance(stmt, sqlglot.expressions.Select):
+    # UNION / UNION ALL are read-only set operations on SELECT statements — allow them.
+    # sqlglot parses "SELECT ... UNION ALL SELECT ..." as Union, not Select.
+    _READ_ONLY_TYPES = (
+        sqlglot.expressions.Select,
+        sqlglot.expressions.Union,
+        sqlglot.expressions.Intersect,
+        sqlglot.expressions.Except,
+    )
+    if not isinstance(stmt, _READ_ONLY_TYPES):
         stmt_type = type(stmt).__name__
         logger.warning("sql_validator DDL/DML rejected | stmt_type={}", stmt_type)
         return False, f"DDL/DML rejected: {stmt_type} is not allowed — only SELECT statements"

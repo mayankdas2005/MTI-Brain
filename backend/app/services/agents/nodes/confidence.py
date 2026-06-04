@@ -10,7 +10,7 @@ Returns a dict: {score: int 0-100, label: str, explanation: str}
 Returns None for general_chat (no data grounding applicable).
 """
 
-import json
+import json_repair
 
 from langchain_core.messages import HumanMessage
 
@@ -30,60 +30,62 @@ def _label(score: int) -> str:
 
 
 async def compute_confidence(state: dict) -> dict | None:
-
     if state.get("question_type") == "general_chat":
         return None
 
-    # ── Result data (pre-computed in pipeline.py, same values used in done event) ──
+    # ── Directive signals (new — richer grounding than old semantic_context) ──
+    intent_context   = (state.get("intent_directive_context") or "").strip()
+    filter_directive = (state.get("filter_directive") or "").strip()
+    schema_directive = (state.get("schema_directive") or "").strip()
+
+    # Summarize filter directive: keep only quality-signal lines (low confidence, warnings, list complete)
+    _filter_kw = ("[low confidence", "[fuzzy match", "[warning:", "low_confidence_filters", "filter_list_complete")
+    filter_lines = [ln for ln in filter_directive.splitlines()
+                    if any(kw in ln.lower() for kw in _filter_kw)]
+    filter_directive_summary = (
+        "\n".join(filter_lines) if filter_lines
+        else "(all filters resolved at high confidence)"
+    )
+
+    # Summarize schema directive: anchor tables, join chain, unresolved pairs, measures/dimensions
+    _schema_kw = ("ANCHOR_TABLES", "JOIN_CHAIN", "UNRESOLVED_PAIRS", "↔", "MEASURES", "DIMENSIONS")
+    schema_lines = [ln for ln in schema_directive.splitlines()
+                    if any(kw in ln.upper() for kw in _schema_kw)]
+    schema_directive_summary = (
+        "\n".join(schema_lines[:15]) if schema_lines
+        else "(schema structure not available)"
+    )
+
+    # ── Result data — same shared builder used by synthesis and chart_agent ──
     all_rows: list = state.get("_rows") or []
     all_cols: list = state.get("_cols") or []
-
-
     data_profile = _build_data_profile(
         columns=all_cols,
         rows=all_rows,
         query_summary=state.get("query_summary"),
     )
 
-    # ── Semantic context ─────────────────────────────────────────────────────
-    sc = state.get("semantic_context") or {}
-    ri = state.get("resolved_intent") or {}
-
-    semantic_context_str = (
-        f"Intents: {', '.join(str(i) for i in sc.get('intents') or []) or 'None'}\n"
-        f"Business terms: {', '.join(str(t) for t in sc.get('business_terms') or []) or 'None'}\n"
-        f"Query patterns: {', '.join(str(p) for p in sc.get('query_patterns') or []) or 'None'}"
-    )
-
-    resolved_intent_str = (
-        f"Intent: {ri.get('intent') or 'None'}\n"
-        f"Anchor tables: {', '.join(str(t) for t in ri.get('anchor_tables') or []) or 'None'}\n"
-        f"Template ID: {ri.get('template_id') or 'None'}"
-    )
-
-    # ── Pipeline signals ─────────────────────────────────────────────────────
+    # ── Pipeline signals ────────────────────────────────────────────────────
     reliability_flags = state.get("reliability_flags") or []
-    total_corrections = (state.get("repair_count", 0) or 0) + (state.get("recompile_count", 0) or 0)
-    error = state.get("error") or state.get("execution_error") or "None"
 
     prompt = CONFIDENCE_JUDGE_PROMPT.format(
-        question=state.get("question", ""),
-        semantic_context=semantic_context_str,
-        resolved_intent=resolved_intent_str,
+        intent_context=intent_context[:1200] or "(not available)",
+        filter_directive_summary=filter_directive_summary,
+        schema_directive_summary=schema_directive_summary,
         no_data=state.get("no_data", False),
-        total_corrections=total_corrections,
+        repair_count=state.get("repair_count", 0) or 0,
+        recompile_count=state.get("recompile_count", 0) or 0,
         reliability_flags=", ".join(reliability_flags) if reliability_flags else "None",
-        error=error,
+        error=state.get("error") or state.get("execution_error") or "None",
+        question=state.get("question", ""),
         data_profile=data_profile,
-        answer=state.get("answer", "") or "",
+        answer=(state.get("answer", "") or "")[:500],
     )
-    
+
     try:
         response = await get_llm("fast").ainvoke([HumanMessage(content=prompt)])
-        raw = (response.content if hasattr(response, "content") else str(response)).strip()
-        if raw.startswith("```"):
-            raw = raw.replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(raw)
+        raw = (response.content or "").strip()
+        parsed = json_repair.loads(raw)
         if not isinstance(parsed, dict):
             return None
         raw_score = parsed.get("score")

@@ -27,6 +27,8 @@ from .table_search import (
     get_structurally_similar_tables,
     get_community_bridges,
     get_business_term_table_edges,
+    search_tables_via_query_templates,
+    get_business_terms_with_related_tables,
 )
 from .column_search import (
     search_columns_vector,
@@ -36,6 +38,7 @@ from .column_search import (
     get_join_critical_columns,
     get_semantically_similar_columns,
     resolve_columns,
+    find_join_by_value_overlap,
 )
 from .join_resolution import (
     load_join_path,
@@ -47,6 +50,7 @@ from .join_resolution import (
     get_join_paths_by_ids,
     search_join_path_by_semantics,
     get_joinpath_joins,
+    find_bridge_table,
 )
 from .hub_detection import (
     get_dimension_hub_for_communities,
@@ -85,12 +89,14 @@ __all__ = [
     "search_tables_from_query_patterns", "search_tables_via_filter_values",
     "get_tables_with_context", "get_table_relevant_intents",
     "get_structurally_similar_tables", "get_community_bridges", "get_business_term_table_edges",
+    "search_tables_via_query_templates", "get_business_terms_with_related_tables",
     "search_columns_vector", "search_columns_fulltext",
     "get_columns_for_tables", "get_columns_by_ids", "get_join_critical_columns",
-    "get_semantically_similar_columns", "resolve_columns",
+    "get_semantically_similar_columns", "resolve_columns", "find_join_by_value_overlap",
     "load_join_path", "load_join_path_yens", "load_join_path_dijkstra",
     "collect_all_join_paths", "load_best_join_path", "get_direct_joins",
     "get_join_paths_by_ids", "search_join_path_by_semantics", "get_joinpath_joins",
+    "find_bridge_table",
     "get_dimension_hub_for_communities", "find_common_dimension_hub",
     "search_query_templates", "search_query_templates_fulltext",
     "search_query_patterns", "search_query_patterns_fulltext",

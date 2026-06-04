@@ -49,8 +49,9 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         tokens    = helpers.tokenize_with_bigrams(search_query)
         domain_detected = helpers.domain_keyword_detected(search_query)
 
-        # ── 8-path table discovery (parallel, already uses asyncio.to_thread) ──
-        tables = await table_discovery.run_8_path_discovery(
+        # ── Table discovery: all paths in parallel ────────────────────────────
+        # Returns (tables, pinned_fqns, bt_pin_data) — pinned_fqns survive the cap
+        tables, pinned_fqns, _bt_pin_data = await table_discovery.run_8_path_discovery(
             embedding, tokens, search_query, domain_detected
         )
 
@@ -189,7 +190,25 @@ async def _fetch_group_b(
         column_loader.load_and_prioritize, tables, embedding, search_query, join_crit_cols
     )
 
-    # Collect entity hints from entity_value-discovered tables for intent_resolver
+    # Load columns for bridge/intermediate tables added during join expansion
+    # These weren't in initial discovery so their columns aren't in col_lookup yet
+    initial_fqns = set(col_lookup.keys())
+    bridge_fqns = [
+        t["fqn"] for t in tables
+        if t.get("fqn") and (t.get("fqn"), "id") not in initial_fqns
+        and "bridge_table" in (t.get("retrieval_paths") or [])
+    ]
+    if bridge_fqns:
+        bridge_display, bridge_lookup = await asyncio.to_thread(
+            column_loader.load_for_bridge_tables,
+            bridge_fqns, embedding, search_query, join_crit_cols
+        )
+        col_lookup.update(bridge_lookup)
+        display_columns.extend(bridge_display)
+        logger.info("context_fetcher | bridge_cols_merged | fqns={}", bridge_fqns)
+
+    # Collect entity hints from entity_value-discovered tables for intent_resolver.
+    # UUID columns are excluded — they are internal row identifiers, never filter targets.
     entity_hints = [
         {
             "table_fqn": t["fqn"],
@@ -199,6 +218,7 @@ async def _fetch_group_b(
         }
         for t in tables
         if t.get("entity_matched_column") and t.get("fqn")
+        and not column_loader._is_uuid_col(t["entity_matched_column"])
     ]
 
     return tables, hub_info, is_cross_domain, join_crit_cols, display_columns, col_lookup, entity_hints

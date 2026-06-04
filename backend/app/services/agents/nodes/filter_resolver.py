@@ -9,6 +9,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 import json
+import json_repair
 
 from app.core.logger import logger
 from app.services.agents.helpers import parse_tag
@@ -19,7 +20,7 @@ from app.services.agents.filter_resolver_logic import (
     resolve_tier1_combined,
     resolve_tier3_temporal,
 )
-from app.services.agents.prompts import FILTER_DISAMBIGUATE_PROMPT
+from app.services.agents.prompts import FILTER_DISAMBIGUATE_PROMPT, TEMPORAL_RESOLVE_PROMPT
 from app.services.agents.semantic_ir import FilterSpec, SemanticIR
 from app.services.agents.state import AnalyticsState
 
@@ -83,10 +84,20 @@ async def filter_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         })
         updated_ir_list.append(updated_ir.model_dump())
 
-    logger.info("filter_resolver DONE | thread={} | filters_resolved={}", state["thread_id"], len(updated_ir_list))
+    anchor_tables = list({
+        tbl
+        for ir_dict in updated_ir_list
+        for tbl in (ir_dict.get("anchor_tables") or [])
+    })
+    filter_directive = _build_filter_directive(updated_ir_list, low_confidence_filters, anchor_tables=anchor_tables)
+    logger.info(
+        "filter_resolver DONE | thread={} | filters_resolved={}\nFILTER DIRECTIVE:\n{}",
+        state["thread_id"], len(updated_ir_list), filter_directive,
+    )
     return {
         "semantic_ir_list": updated_ir_list,
         "low_confidence_filters": low_confidence_filters,
+        "filter_directive": filter_directive,
         "filter_resolution_needed": False,
         "needs_clarification": False,
     }
@@ -145,10 +156,14 @@ async def _resolve_filter(
     else:
         value_aliases = {}
 
-    # Temporal (date columns and time_filter) — handle before value matching
+    # Temporal (date columns and time_filter) — handle before value matching.
+    # Sync pre-check handles today/yesterday/ISO dates. Everything else goes to
+    # _tier35_temporal_llm (Haiku) which resolves any natural language temporal phrase.
     data_type = column_meta.get("data_type", "").lower()
     if data_type in ("date", "timestamp", "datetime") or f == ir.time_filter:
         temporal = resolve_tier3_temporal(f.raw_user_value)
+        if temporal is None:
+            temporal = await _tier35_temporal_llm(f.raw_user_value, state)
         if temporal:
             return f.model_copy(update={
                 "operator": temporal["operator"],
@@ -217,6 +232,38 @@ async def _resolve_filter(
         f.table_fqn, f.column_name, f.raw_user_value,
     )
     return f.model_copy(update={"resolved": True}), True
+
+
+async def _tier35_temporal_llm(raw_value: str, state: AnalyticsState) -> dict | None:
+    """Tier 3.5: LLM resolves temporal expressions that resolve_tier3_temporal couldn't handle.
+
+    Only fires for date/timestamp columns when Tier 3 (keyword map) returns None.
+    Uses Haiku with a structured JSON prompt. Returns {operator, value, is_raw_sql} or None.
+    """
+    try:
+        from app.services.agents.bedrock import get_llm
+        llm = get_llm("fast")
+        messages = TEMPORAL_RESOLVE_PROMPT.format_messages(expression=raw_value)
+        response = await llm.ainvoke(messages)
+        text = (response.content or "").strip()
+        # Extract JSON from response — may be wrapped in markdown code fence
+        if "```" in text:
+            text = text.split("```")[1].lstrip("json").strip()
+        parsed = json_repair.loads(text)
+        if not parsed.get("operator"):
+            return None   # LLM said this is not a temporal expression
+        op = parsed["operator"]
+        if op == "BETWEEN_SQL":
+            value = [str(parsed.get("start", "")), str(parsed.get("end", ""))]
+        else:
+            value = str(parsed.get("value", ""))
+        if not value or (isinstance(value, list) and not all(value)):
+            return None
+        logger.info("filter_resolver | tier35_temporal_llm | '{}' → op={} val={}", raw_value, op, value)
+        return {"operator": op, "value": value, "is_raw_sql": True}
+    except Exception as e:
+        logger.warning("filter_resolver | tier35_temporal_llm failed | val={} | error={}", raw_value, e)
+        return None
 
 
 async def _run_redshift_probe(table_fqn: str, col_name: str, user_value: str, thread_id: str) -> list[str]:
@@ -310,6 +357,13 @@ def _alias_normalize(f: FilterSpec, column_meta: dict) -> FilterSpec:
 
     def _fix(v: str) -> str:
         v_lower = v.lower()
+        # Handle raw "CODE -> Human Name" format — extract the DB code from the left side
+        if " -> " in v:
+            code_part = v.split(" -> ")[0].strip()
+            matched = next((k for k in alias_map if k.lower() == code_part.lower()), None)
+            if matched:
+                return matched
+        # Normal human-label reverse lookup
         for db_code, human_name in alias_map.items():
             if human_name.lower() == v_lower:
                 return db_code
@@ -329,6 +383,70 @@ def _alias_normalize(f: FilterSpec, column_meta: dict) -> FilterSpec:
         if fixed_list != [str(v) for v in val]:
             return f.model_copy(update={"value": fixed_list})
     return f
+
+
+def _build_filter_directive(
+    updated_ir_list: list[dict],
+    low_confidence_filters: list[dict],
+    anchor_tables: list[str] | None = None,
+) -> str:
+    """Build a compact filter directive from resolved FilterSpecs.
+
+    Lists every resolved filter with an annotation explaining HOW it was resolved
+    and how much to trust it. Downstream agents (sql_generator, repair) use this
+    as the authoritative, complete filter list — no extra WHERE/EXISTS should be added.
+    """
+    low_conf_cols = {f["column"] for f in (low_confidence_filters or [])}
+
+    lines = ["RESOLVED_FILTERS:"]
+    for ir_dict in updated_ir_list:
+        ir = SemanticIR(**ir_dict)
+        all_f = list(ir.filters)
+        time_col = ir.time_filter.column_name if ir.time_filter else None
+        if ir.time_filter and ir.time_filter.resolved:
+            all_f.append(ir.time_filter)
+
+        ir_anchors = set(ir.anchor_tables or [])
+        effective_anchors = set(anchor_tables or []) or ir_anchors
+
+        for f in all_f:
+            if not f.resolved:
+                continue
+            col = f"{f.table_fqn}.{f.column_name}"
+            is_time = (f.column_name == time_col)
+            is_low = f.column_name in low_conf_cols
+            is_non_anchor = bool(effective_anchors) and f.table_fqn not in effective_anchors
+
+            if is_non_anchor:
+                tag = "[WARNING: non-anchor table — skip this filter, do NOT add EXISTS subquery]"
+            elif f.operator in ("BETWEEN", "BETWEEN_SQL"):
+                tag = "[time — deterministic]" if is_time else "[exact — high confidence]"
+            elif f.is_raw_sql:
+                tag = "[time — deterministic]" if is_time else "[SQL expression]"
+            elif is_low:
+                tag = "[fuzzy match — low confidence, suspect if 0 rows]"
+            else:
+                tag = "[exact DB code — high confidence]"
+
+            if f.operator in ("BETWEEN", "BETWEEN_SQL") and not is_non_anchor:
+                v = f.value
+                v0, v1 = (v[0], v[1]) if isinstance(v, list) else (v, v)
+                lines.append(f"  {col} BETWEEN {v0} AND {v1}  {tag}")
+            elif f.is_raw_sql and not is_non_anchor:
+                lines.append(f"  {col} {f.operator} {f.value}  {tag}")
+            else:
+                if isinstance(f.value, list):
+                    val_str = "IN (" + ", ".join(f"'{x}'" for x in f.value) + ")"
+                    lines.append(f"  {col} {val_str}  {tag}")
+                else:
+                    lines.append(f"  {col} {f.operator} '{f.value}'  {tag}")
+
+    lines.append("FILTER_LIST_COMPLETE: do not add WHERE/EXISTS beyond the above")
+    low_cols = [f["column"] for f in (low_confidence_filters or [])]
+    if low_cols:
+        lines.append(f"LOW_CONFIDENCE_FILTERS: {', '.join(low_cols)} — check these first if 0 rows")
+
+    return "\n".join(lines)
 
 
 def _get_column_meta(table_fqn: str, col_name: str, state: AnalyticsState) -> dict:

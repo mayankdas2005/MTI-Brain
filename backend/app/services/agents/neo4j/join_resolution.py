@@ -277,3 +277,38 @@ def get_joinpath_joins(candidate_fqns: list[str]) -> list[dict]:
         (time.monotonic() - t0) * 1000, len(results),
     )
     return [dict(r) for r in results]
+
+
+@neo4j_breaker
+def find_bridge_table(from_fqn: str, to_fqn: str) -> str | None:
+    """Find a 2-hop bridge table between two tables using JOINS_TO edges.
+
+    When no direct JOINS_TO or JoinPath exists between A and C, this finds
+    a table X such that A-[:JOINS_TO]-X-[:JOINS_TO]-C.
+
+    Prefers dimension/reference/lookup tables as bridges.
+    Rejects fact/event tables — they share FK columns with many tables but are
+    semantically wrong as join intermediaries (e.g. fraud_loss bridging bank_account
+    to card_settlement_line produces business-nonsense joins).
+
+    Returns the best bridge table FQN, or None if no suitable bridge exists.
+    """
+    query = """
+    MATCH (a:Table {fqn: $from_fqn})-[:JOINS_TO]-(bridge:Table)-[:JOINS_TO]-(c:Table {fqn: $to_fqn})
+    WHERE bridge.fqn <> $from_fqn AND bridge.fqn <> $to_fqn
+      AND NOT coalesce(bridge.table_type, '') IN ['fact', 'event', 'transaction', 'log', 'audit']
+    RETURN bridge.fqn AS fqn
+    ORDER BY bridge.in_degree DESC
+    LIMIT 3
+    """
+    t0 = time.monotonic()
+    try:
+        results = _neo4j_run(query, {"from_fqn": from_fqn, "to_fqn": to_fqn})
+        logger.debug(
+            "neo4j | fn=find_bridge_table | from={} to={} | ms={:.0f} | found={}",
+            from_fqn, to_fqn, (time.monotonic() - t0) * 1000, len(results),
+        )
+        return results[0]["fqn"] if results else None
+    except Exception as e:
+        logger.warning("neo4j | find_bridge_table failed | from={} to={} | error={}", from_fqn, to_fqn, e)
+        return None

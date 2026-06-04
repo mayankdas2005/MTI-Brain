@@ -150,6 +150,12 @@ def _build_sse_generator(
                 "confidence": save_data.get("confidence"),
             }),
         )
+        _conf = save_data.get("confidence")
+        if _conf:
+            logger.debug(
+                "chat | confidence saved | score={} | label={}",
+                _conf.get("score"), _conf.get("label"),
+            )
         try:
             async with async_session_factory() as save_db:
                 await conv_service.save_message(save_db, **msg_kwargs)

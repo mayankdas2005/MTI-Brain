@@ -14,6 +14,8 @@ Entry points:
 
 from __future__ import annotations
 
+import asyncio
+
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from psycopg import AsyncConnection
@@ -70,6 +72,7 @@ _checkpoint_pool: AsyncConnectionPool | None = None
 _compiled_graph = None
 _memory_store = None
 _memory_store_exit = None
+_warmup_task = None
 
 
 def get_memory_store():
@@ -173,7 +176,12 @@ def get_compiled_graph():
 
 async def init_analytics_pipeline() -> None:
     """Initialize Neo4j, Redis, Redshift, checkpoint store, and compile graph."""
-    global _checkpoint_pool, _compiled_graph, _memory_store, _memory_store_exit
+    global _checkpoint_pool, _compiled_graph, _memory_store, _memory_store_exit, _warmup_task
+
+    # Cancel any stale warmup from a previous lifespan (hot-reload safety)
+    if _warmup_task and not _warmup_task.done():
+        _warmup_task.cancel()
+        _warmup_task = None
 
     neo4j_client.init_neo4j()
     redis_client.init_redis()
@@ -242,9 +250,9 @@ async def init_analytics_pipeline() -> None:
     _compiled_graph = compile_graph().compile(checkpointer=checkpointer, store=_memory_store)
 
     # Fire background warmup tasks so the first real user query hits warm connections.
-    # These run after compilation and do not block startup.
+    # Store the task so shutdown can cancel it before closing Neo4j.
     import asyncio as _asyncio
-    _asyncio.create_task(_warmup_pipeline())
+    _warmup_task = _asyncio.create_task(_warmup_pipeline())
 
     logger.info("Neo4j analytics pipeline initialized")
 
@@ -280,7 +288,17 @@ async def _warmup_pipeline() -> None:
 
 async def shutdown_analytics_pipeline() -> None:
     """Shut down all analytics pipeline resources."""
-    global _checkpoint_pool, _memory_store_exit
+    global _checkpoint_pool, _memory_store_exit, _warmup_task
+
+    # Cancel warmup task first — it accesses Neo4j and must stop before we close the driver.
+    # asyncio.CancelledError is BaseException (not Exception) in Python 3.8+, so catch both.
+    if _warmup_task and not _warmup_task.done():
+        _warmup_task.cancel()
+        try:
+            await _warmup_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _warmup_task = None
 
     try:
         from app.services.agents.redshift_client import close_redshift

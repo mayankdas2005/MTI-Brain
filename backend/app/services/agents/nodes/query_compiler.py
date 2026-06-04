@@ -26,6 +26,51 @@ _LIST_SEP_RE = _re.compile(r"[,;|]")
 _NUMERIC_START_RE = _re.compile(r"^[\$\-\+]?\d")
 
 
+def _build_schema_directive(ir: SemanticIR) -> str:
+    """Compact code-verified structural summary from SemanticIR for downstream agents.
+
+    Gives the sql_generator, CTE planner, and repair agent an authoritative spec of:
+    - Which tables are the closed set (ANCHOR_TABLES)
+    - The exact confirmed join ON clauses from Neo4j
+    - Any unresolved pairs and their candidate columns
+    - Compact list of measures and dimensions
+    """
+    lines = ["SCHEMA DIRECTIVE — code-verified structure from ir_builder:"]
+    lines.append(f"ANCHOR_TABLES: {', '.join(ir.anchor_tables)}")
+    lines.append("  (use exactly these tables — do not add or remove)")
+
+    if ir.join_clauses:
+        lines.append("JOIN_CHAIN (copy ON clauses verbatim):")
+        for i, clause in enumerate(ir.join_clauses):
+            if not clause:
+                continue
+            jtype = (ir.join_types[i] if i < len(ir.join_types) else "JOIN") or "JOIN"
+            lines.append(f"  {jtype}: {clause}")
+    else:
+        lines.append("JOIN_CHAIN: single table — no joins needed")
+
+    if ir.unresolved_join_pairs:
+        lines.append("UNRESOLVED_PAIRS (no confirmed path — use AVAILABLE JOINS in SCHEMA REFERENCE):")
+        for p in ir.unresolved_join_pairs:
+            candidates = ", ".join(p.get("candidate_join_columns") or [])
+            lines.append(
+                f"  {p['from']} ↔ {p['to']}"
+                + (f" — candidate cols: {candidates}" if candidates else "")
+            )
+
+    if ir.measures:
+        m_strs = [f"{m.column_name} ({m.aggregation or 'SUM'})" for m in ir.measures]
+        lines.append(f"MEASURES: {', '.join(m_strs)}")
+    if ir.dimensions:
+        d_strs = [
+            d.column_name + (f" → {d.alias}" if d.alias and d.alias != d.column_name else "")
+            for d in ir.dimensions
+        ]
+        lines.append(f"DIMENSIONS: {', '.join(d_strs)}")
+
+    return "\n".join(lines)
+
+
 def _split_multi_value_filters(ir: SemanticIR) -> SemanticIR:
     """Split filters like 'USD, CAD' into separate FilterSpec objects.
 
@@ -89,7 +134,7 @@ async def _handle_single(
     thread_id = str(state["thread_id"])
 
     try:
-        ir = build_semantic_ir(resolved, semantic_context)
+        ir = await build_semantic_ir(resolved, semantic_context, state)
     except Exception as e:
         logger.error("query_compiler | IR build failed | thread={} | error={}", thread_id, e)
         return {
@@ -123,9 +168,33 @@ async def _handle_single(
     if ir.time_filter and not ir.time_filter.resolved:
         has_unresolved = True
 
+    # Build a filter_directive from the current IR so the sql_generator always receives one,
+    # even when filter_resolver is skipped (all filters already resolved by ir_builder).
+    # Covers time filters, numeric filters, and string exact-matches resolved in ir_builder.
+    # When filter_resolver DOES run, it overwrites this with the fully-resolved version.
+    from app.services.agents.nodes.filter_resolver import _build_filter_directive
+    filter_directive = _build_filter_directive([ir.model_dump()], [], anchor_tables=ir.anchor_tables)
+    if filter_directive:
+        logger.info("query_compiler | FILTER DIRECTIVE | thread={}\n{}", thread_id, filter_directive)
+    else:
+        logger.warning("query_compiler | FILTER DIRECTIVE empty (no resolved filters yet) | thread={}", thread_id)
+
+    schema_directive = _build_schema_directive(ir)
+    logger.info("query_compiler | SCHEMA DIRECTIVE | thread={}\n{}", thread_id, schema_directive)
+
     if has_unresolved:
         logger.info("query_compiler | unresolved filters | routing to filter_resolver | thread={}", thread_id)
-        return {"semantic_ir_list": [ir.model_dump()], "filter_resolution_needed": True}
+        return {
+            "semantic_ir_list": [ir.model_dump()],
+            "filter_resolution_needed": True,
+            "filter_directive": filter_directive,
+            "schema_directive": schema_directive,
+        }
 
     logger.info("query_compiler | all filters resolved | routing to sql_generator | thread={}", thread_id)
-    return {"semantic_ir_list": [ir.model_dump()], "filter_resolution_needed": False}
+    return {
+        "semantic_ir_list": [ir.model_dump()],
+        "filter_resolution_needed": False,
+        "filter_directive": filter_directive,
+        "schema_directive": schema_directive,
+    }
