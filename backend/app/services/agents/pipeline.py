@@ -27,6 +27,7 @@ from app.services.agents.node_names import (
     EXECUTOR as N_EXECUTOR,
     SYNTHESIS as N_SYNTHESIS,
 )
+from app.services.agents.nodes.confidence import compute_confidence
 from app.services.agents.state import AnalyticsState
 
 _active_streams: dict[str, asyncio.Event] = {}
@@ -449,6 +450,15 @@ async def stream_pipeline(
             if not _done_cols and _r.get("columns"):
                 _done_cols = _r["columns"]
 
+        _confidence = await compute_confidence({
+            **state,
+            "question": question,
+            "_rows": _done_rows,
+            "_cols": _done_cols,
+        }) if not stopped else None
+        if _confidence:
+            yield {"event": "confidence", "data": _confidence}
+
         _graph_context = _build_graph_context_snapshot(state)
 
         try:
@@ -469,6 +479,7 @@ async def stream_pipeline(
                     "alternative_chart_specs": state.get("alternative_chart_specs", []),
                     "answer":            state.get("answer", ""),
                     "follow_ups":        state.get("follow_ups", []),
+                    "confidence":        _confidence,
                     "duration_ms":       duration_ms,
                     "langfuse_trace_id": _lf_trace_id,
                     "langfuse_trace_url": _lf_trace_url,
