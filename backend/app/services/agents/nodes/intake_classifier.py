@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json_repair as _json
 import re as _re
+import json
 
 from langchain_core.runnables import RunnableConfig
 
@@ -94,7 +95,7 @@ def _get_classifier_context() -> dict:
         }
         try:
             from app.services.agents import redis_client as _rc
-            _rc.cache_set(_REDIS_CTX_KEY, _json.dumps(_CLASSIFIER_CONTEXT), ttl_seconds=_REDIS_CTX_TTL)
+            _rc.cache_set(_REDIS_CTX_KEY, json.dumps(_CLASSIFIER_CONTEXT), ttl_seconds=_REDIS_CTX_TTL)
         except Exception:
             pass
         logger.info(

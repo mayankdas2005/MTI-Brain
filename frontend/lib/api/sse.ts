@@ -30,11 +30,11 @@ export interface SSEHandlers {
     metric_owner?: string | null;
     metric_defined_at?: string | null;
   }) => void;
-  onNodeDone?: (data: { node: string; duration_ms: number }) => void;
+  onNodeDone?: (data: { node: string; duration_ms: number; status?: 'done' | 'error' }) => void;
   onChart?: (data: { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[] }) => void;
   onVizSkip?: () => void;
   onFollowUps?: (data: { questions: string[] }) => void;
-  onConfidence?: (data: { score: number; label: string; explanation: string }) => void;
+  onConfidence?: (data: { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string }) => void;
   onStopped?: (data: { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number }) => void;
   onDone?: (data: Record<string, unknown>) => void;
   onError?: (data: { message: string; conversation_id?: string }) => void;
@@ -173,7 +173,7 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       handlers.onFollowUps?.(data as { questions: string[] });
       break;
     case 'confidence':
-      handlers.onConfidence?.(data as { score: number; label: string; explanation: string });
+      handlers.onConfidence?.(data as { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string });
       break;
     case 'stopped':
       handlers.onStopped?.(data as { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number });

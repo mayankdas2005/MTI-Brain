@@ -78,6 +78,9 @@ from .write import (
     write_join_path,
     write_query_pattern,
     write_anti_pattern,
+    update_pattern_feedback,
+    promote_pattern_to_template,
+    write_schema_gap,
 )
 
 __all__ = [
@@ -107,4 +110,5 @@ __all__ = [
     "get_anti_patterns_by_ids", "get_business_terms_by_terms",
     "get_all_domain_names", "get_all_intent_names",
     "write_join_path", "write_query_pattern", "write_anti_pattern",
+    "update_pattern_feedback", "promote_pattern_to_template", "write_schema_gap",
 ]

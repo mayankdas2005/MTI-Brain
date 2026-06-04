@@ -21,18 +21,28 @@ async def save_feedback(
     thread_id: uuid.UUID,
     liked: bool,
     comment: str | None = None,
-) -> tuple[MTIBrainFeedback, str | None]:
+) -> tuple[MTIBrainFeedback, str | None, str | None, dict | None]:
     """Save feedback and embed the question for future similarity search.
 
     Embedding is async and non-blocking. If it fails, feedback is still
     saved — just without an embedding (similarity search won't find it).
 
-    Returns ``(feedback, langfuse_trace_id)`` where ``langfuse_trace_id`` is
-    the Langfuse trace linked to this conversation, or ``None`` when unavailable.
+    Returns ``(feedback, langfuse_trace_id, pattern_id, neo4j_context)``
+    where neo4j_context carries the action + data needed for graph writes:
+      action='dislike'              → write :AntiPattern (any confidence)
+      action='like_without_pattern' → retroactively write :QueryPattern (low-confidence like)
+      None                          → no extra graph write needed
     """
     result = await db.execute(
         text(
-            "SELECT id, metadata->>'langfuse_trace_id' AS langfuse_trace_id "
+            "SELECT id, "
+            "       metadata->>'langfuse_trace_id' AS langfuse_trace_id, "
+            "       metadata->>'pattern_id' AS pattern_id, "
+            "       metadata->>'sql' AS sql, "
+            "       metadata->>'tables_used' AS tables_used, "
+            "       metadata->>'intent' AS intent, "
+            "       metadata->>'complexity' AS complexity, "
+            "       metadata->'confidence'->>'score' AS confidence_score "
             "FROM mti_brain_message "
             "WHERE conversation_id = :cid AND role = 'assistant' LIMIT 1"
         ),
@@ -41,6 +51,7 @@ async def save_feedback(
     row = result.one_or_none()
     message_id = row.id if row else None
     langfuse_trace_id: str | None = row.langfuse_trace_id if row else None
+    pattern_id: str | None = row.pattern_id if row else None
 
     # Embed the user's question so future similar questions can find this feedback
     question_result = await db.execute(
@@ -84,7 +95,38 @@ async def save_feedback(
         )
 
     await db.flush()
-    return feedback, langfuse_trace_id
+
+    _sql = (row.sql or "") if row else ""
+    _tables = (row.tables_used or "") if row else ""
+    _intent = (row.intent or "") if row else ""
+    _complexity = (row.complexity or "") if row else ""
+    _conf_score = int(row.confidence_score) if (row and row.confidence_score) else 0
+
+    neo4j_context: dict | None = None
+    if not liked:
+        neo4j_context = {
+            "action": "dislike",
+            "question": question_text,
+            "sql": _sql,
+            "tables_used": _tables,
+            "intent": _intent,
+            "complexity": _complexity,
+            "embedding": embedding,
+            "comment": comment,
+        }
+    elif liked and not pattern_id:
+        neo4j_context = {
+            "action": "like_without_pattern",
+            "question": question_text,
+            "sql": _sql,
+            "tables_used": _tables,
+            "intent": _intent,
+            "complexity": _complexity,
+            "confidence_score": _conf_score,
+            "embedding": embedding,
+        }
+
+    return feedback, langfuse_trace_id, pattern_id, neo4j_context
 
 
 _FIND_THREAD_FEEDBACK_SQL = text("""

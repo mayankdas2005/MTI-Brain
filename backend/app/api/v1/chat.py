@@ -148,6 +148,10 @@ def _build_sse_generator(
                 "langfuse_trace_url": save_data.get("langfuse_trace_url"),
                 "graph_context": save_data.get("graph_context"),
                 "confidence": save_data.get("confidence"),
+                "pattern_id": save_data.get("pattern_id"),
+                "tables_used": ",".join(save_data.get("tables_used") or []),
+                "intent": save_data.get("intent") or "",
+                "complexity": save_data.get("complexity") or "",
             }),
         )
         _conf = save_data.get("confidence")
@@ -747,7 +751,7 @@ async def submit_feedback(
     db: AsyncSession = Depends(get_async_session),
 ):
     try:
-        feedback, langfuse_trace_id = await fb_service.save_feedback(
+        feedback, langfuse_trace_id, pattern_id, neo4j_context = await fb_service.save_feedback(
             db,
             conversation_id=conversation_id,
             thread_id=thread_id,
@@ -757,6 +761,79 @@ async def submit_feedback(
     except Exception:
         logger.exception("Feedback save failed")
         raise HTTPException(status_code=500, detail="Failed to save feedback")
+
+    # Neo4j feedback loops — run in thread pool (sync Neo4j writes)
+    if pattern_id or neo4j_context:
+        from app.services.agents import neo4j_client
+        _liked = body.liked
+        _comment = body.comment
+
+        def _neo4j_feedback_update() -> None:
+            try:
+                # Loop 2a: update existing QueryPattern counts + promote on like
+                if pattern_id:
+                    neo4j_client.update_pattern_feedback(pattern_id, _liked)
+                    if _liked:
+                        neo4j_client.promote_pattern_to_template(pattern_id)
+
+                if neo4j_context:
+                    action = neo4j_context["action"]
+
+                    # Loop 2b: dislike → write :AntiPattern (any confidence level)
+                    if action == "dislike":
+                        neo4j_client.write_anti_pattern({
+                            "id": str(uuid.uuid4()),
+                            "question_text": (neo4j_context["question"] or "")[:500],
+                            "sql_fragment": (neo4j_context["sql"] or "")[:500],
+                            "error_type": "user_dislike",
+                            "error_summary": (_comment or "User rated response negatively")[:300],
+                            "failing_element": "",
+                            "tables_involved": neo4j_context["tables_used"] or "",
+                            "intent": neo4j_context["intent"] or "",
+                            "complexity": neo4j_context["complexity"] or "",
+                            "cohere_embedding": neo4j_context["embedding"],
+                        })
+                        logger.info(
+                            "chat | AntiPattern written from dislike | pattern_id={} | intent={}",
+                            pattern_id, neo4j_context.get("intent"),
+                        )
+
+                    # Loop 2c: low-confidence like → retroactively write :QueryPattern
+                    elif action == "like_without_pattern":
+                        _tables = [
+                            t.strip()
+                            for t in (neo4j_context["tables_used"] or "").split(",")
+                            if t.strip()
+                        ]
+                        neo4j_client.write_query_pattern({
+                            "id": str(uuid.uuid4()),
+                            "question_text": (neo4j_context["question"] or "")[:500],
+                            "sql_cte_outline": "",
+                            "join_outline": "",
+                            "filter_summary": "",
+                            "tables_used": _tables,
+                            "intent": neo4j_context["intent"] or "",
+                            "complexity": neo4j_context["complexity"] or "simple",
+                            "recompile_count": 0,
+                            "repair_count": 0,
+                            "confidence_score": neo4j_context["confidence_score"],
+                            "row_count": None,
+                            "user_id": "",
+                            "cohere_embedding": neo4j_context["embedding"],
+                            "promotion_status": "active",
+                            "liked_count": 1,
+                            "disliked_count": 0,
+                        })
+                        logger.info(
+                            "chat | QueryPattern written from low-confidence like | confidence={} | intent={}",
+                            neo4j_context.get("confidence_score"), neo4j_context.get("intent"),
+                        )
+
+            except Exception as _e:
+                logger.warning("chat | neo4j feedback update failed | pattern_id={} | error={}", pattern_id, _e)
+
+        asyncio.get_running_loop().run_in_executor(None, _neo4j_feedback_update)
+        logger.debug("chat | neo4j feedback queued | pattern_id={} | liked={}", pattern_id, body.liked)
 
     # Forward the thumbs-up/down score to Langfuse so it appears on the trace.
     # Runs in a background task so it never blocks the API response.

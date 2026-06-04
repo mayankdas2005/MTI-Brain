@@ -3,7 +3,7 @@
 Implementation is split across:
   repair.py         — LLM-based SQL repair (_attempt_repair)
   zero_row_probe.py — 3-stage zero-row diagnosis
-  audit.py          — write_audit_log, write_query_pattern, write_anti_pattern
+  audit.py          — write_audit_log, write_query_pattern (called from pipeline.py), write_anti_pattern
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import asyncio
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.nodes.audit import write_audit_log, write_query_pattern
+from app.services.agents.nodes.audit import write_audit_log
 from app.services.agents.nodes.repair import attempt_repair
 from app.services.agents.nodes.zero_row_probe import zero_row_probe
 from app.services.agents.result_summarizer import summarize_results
@@ -184,8 +184,6 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
     )
 
     asyncio.create_task(write_audit_log(state, sql_list[0] if sql_list else "", total_rows, "success"))
-    if not all_errors and total_rows > 0:
-        asyncio.create_task(write_query_pattern(state, sql_list[0] if sql_list else "", first_ir))
 
     logger.info(
         "executor DONE | thread={} | total_rows={} | columns={} | no_data=False | flags={} | passing to synthesis",

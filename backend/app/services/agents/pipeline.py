@@ -27,7 +27,9 @@ from app.services.agents.node_names import (
     EXECUTOR as N_EXECUTOR,
     SYNTHESIS as N_SYNTHESIS,
 )
+from app.services.agents.nodes.audit import write_query_pattern, write_schema_gaps
 from app.services.agents.nodes.confidence import compute_confidence
+from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
 _active_streams: dict[str, asyncio.Event] = {}
@@ -242,7 +244,7 @@ async def stream_pipeline(
     _reasoning_entries: list[dict] = []
     _reasoning_idx: dict[str, int] = {}
     _step_reasoning_idx: dict[str, list[int]] = {}
-    state: dict = {}
+    state: dict = dict(initial)
     pipeline_start = time.perf_counter()
     stopped = False
 
@@ -479,6 +481,20 @@ async def stream_pipeline(
             logger.info("[{}] confidence | score={} | label={}", run_id[:8], _confidence.get("score"), _confidence.get("label"))
             yield {"event": "confidence", "data": _confidence}
 
+        # ── Loop 1: write QueryPattern (confidence-gated) + SchemaGaps ─────────
+        _confidence_score = _confidence.get("score", 0) if _confidence else 0
+        _pattern_id: str | None = None
+        if not stopped and _done_rows and _confidence_score >= 60:
+            _ir_list = state.get("semantic_ir_list", [])
+            _first_ir = SemanticIR(**_ir_list[0]) if _ir_list else None
+            _sql = state.get("sql_list", [""])[0] if state.get("sql_list") else ""
+            if _first_ir and _sql:
+                _pattern_id = str(uuid.uuid4())
+                asyncio.create_task(
+                    write_query_pattern(state, _sql, _first_ir, _confidence_score, _pattern_id)
+                )
+        asyncio.create_task(write_schema_gaps(state))
+
         _graph_context = _build_graph_context_snapshot(state)
 
         try:
@@ -491,6 +507,9 @@ async def stream_pipeline(
                     "stopped":           stopped,
                     "persona":           state.get("persona", ""),
                     "sql":               state.get("sql_list", [""])[0] if state.get("sql_list") else "",
+                    "tables_used":       (state.get("semantic_ir_list") or [{}])[0].get("anchor_tables") or [],
+                    "intent":            (state.get("semantic_ir_list") or [{}])[0].get("intent") or "",
+                    "complexity":        (state.get("semantic_ir_list") or [{}])[0].get("complexity") or "",
                     "columns":           _done_cols,
                     "rows":              _done_rows,
                     "row_count":         len(_done_rows),
@@ -517,6 +536,7 @@ async def stream_pipeline(
                     "reliability_flags": state.get("reliability_flags", []),
                     "token_usage":       aggregate_token_usage(_token_records) if _token_records else {},
                     "graph_context":     _graph_context,
+                    "pattern_id":        _pattern_id,
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

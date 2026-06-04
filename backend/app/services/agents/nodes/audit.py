@@ -6,6 +6,7 @@ nodes to Neo4j — all as fire-and-forget background tasks.
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 
@@ -13,6 +14,8 @@ from app.core.logger import logger
 from app.services.agents import neo4j_client
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
+
+_MIN_CONFIDENCE_FOR_PATTERN = 60
 
 
 async def write_audit_log(state: AnalyticsState, sql: str, row_count: int, status: str) -> None:
@@ -54,20 +57,28 @@ async def write_audit_log(state: AnalyticsState, sql: str, row_count: int, statu
         logger.warning("audit | log write failed | error={}", e)
 
 
-async def write_query_pattern(state: AnalyticsState, sql: str, ir: SemanticIR | None) -> None:
+async def write_query_pattern(
+    state: AnalyticsState,
+    sql: str,
+    ir: SemanticIR | None,
+    confidence_score: int = 0,
+    pattern_id: str | None = None,
+) -> None:
     if not ir:
         return
-    # Only save patterns worth learning from: complex queries or ones that needed repair/recompile.
-    # Simple flat lookups with no retries add noise to the vector space.
+    if confidence_score < _MIN_CONFIDENCE_FOR_PATTERN:
+        logger.debug(
+            "audit | QueryPattern skipped (low confidence) | score={} | threshold={}",
+            confidence_score, _MIN_CONFIDENCE_FOR_PATTERN,
+        )
+        return
     recompile = state.get("recompile_count", 0)
     repair = state.get("repair_count", 0)
-    if ir.complexity == "simple" and recompile == 0 and repair == 0:
-        return
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
         pattern_data = {
-            "id": str(uuid.uuid4()),
+            "id": pattern_id or str(uuid.uuid4()),
             "question_text": state["question"],
             "sql_cte_outline": _extract_cte_outline(sql),
             "join_outline": _extract_join_outline(sql),
@@ -77,17 +88,42 @@ async def write_query_pattern(state: AnalyticsState, sql: str, ir: SemanticIR | 
             "complexity": ir.complexity,
             "recompile_count": recompile,
             "repair_count": repair,
+            "confidence_score": confidence_score,
             "row_count": state.get("query_summary", {}).get("total_rows") if state.get("query_summary") else None,
             "user_id": state.get("user_id", ""),
             "cohere_embedding": embedding,
+            "promotion_status": "active",
+            "liked_count": 0,
+            "disliked_count": 0,
         }
         neo4j_client.write_query_pattern(pattern_data)
-        logger.debug(
-            "audit | QueryPattern saved | intent={} | complexity={} | recompile={} | repair={}",
-            ir.intent, ir.complexity, recompile, repair,
+        logger.info(
+            "audit | QueryPattern saved | id={} | confidence={} | intent={} | complexity={}",
+            pattern_data["id"][:8], confidence_score, ir.intent, ir.complexity,
         )
     except Exception as e:
         logger.warning("audit | write_query_pattern failed | error={}", e)
+
+
+async def write_schema_gaps(state: AnalyticsState) -> None:
+    """Extract SCHEMA_GAP lines from intent_directive_context and upsert :SchemaGap nodes."""
+    intent_context = (state.get("intent_directive_context") or "").strip()
+    if not intent_context:
+        return
+    gaps = re.findall(r"SCHEMA_GAP:\s*(.+?)(?:\n|$)", intent_context, re.IGNORECASE)
+    if not gaps:
+        return
+    ir_list = state.get("semantic_ir_list", [])
+    tables = ir_list[0].get("anchor_tables", []) if ir_list else []
+    thread_id = str(state.get("thread_id", ""))
+    for raw in gaps:
+        concept = raw.strip().rstrip(".,;")
+        if concept:
+            try:
+                neo4j_client.write_schema_gap(concept, tables, thread_id)
+            except Exception as e:
+                logger.warning("audit | write_schema_gap failed | concept={} | error={}", concept, e)
+    logger.debug("audit | {} schema gap(s) recorded | {}", len(gaps), [g.strip() for g in gaps[:3]])
 
 
 async def write_anti_pattern(
@@ -122,7 +158,6 @@ async def write_anti_pattern(
 
 
 def _extract_cte_outline(sql: str) -> str:
-    import re
     if not sql:
         return ""
     cte_names = re.findall(r"(\w+)\s+AS\s*\(", sql, re.IGNORECASE)
@@ -132,7 +167,6 @@ def _extract_cte_outline(sql: str) -> str:
 
 def _extract_join_outline(sql: str) -> str:
     """Extract the JOIN clauses from the first CTE so future queries know the join keys."""
-    import re
     if not sql:
         return ""
     joins = re.findall(
@@ -161,12 +195,9 @@ def _extract_filter_summary(ir: SemanticIR) -> str:
 
 def _extract_failing_element(error_msg: str) -> str:
     """Pull the most specific identifier from an error message (column/table name)."""
-    import re
-    # Redshift: column "foo" does not exist / relation "lpp.bar" does not exist
     m = re.search(r'(?:column|relation|table)\s+"([^"]+)"', error_msg, re.IGNORECASE)
     if m:
         return m.group(1)
-    # Generic: word after "undefined" or "unknown"
     m = re.search(r'(?:undefined|unknown|invalid)\s+(\S+)', error_msg, re.IGNORECASE)
     if m:
         return m.group(1).rstrip(".,;")

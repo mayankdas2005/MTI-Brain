@@ -107,7 +107,7 @@ def _build_schema_candidates_text(semantic_context: dict) -> str:
     filter_values = value_vocabulary (set in context_fetcher, not from Redshift).
     """
     templates     = semantic_context.get("templates", [])[:5]
-    tables_raw    = semantic_context.get("tables", [])[:10]
+    tables_raw    = semantic_context.get("tables", [])[:14]
     columns_raw   = semantic_context.get("columns", [])[:80]
     business_terms = semantic_context.get("business_terms", [])[:5]
     intents       = semantic_context.get("intents", [])[:3]
