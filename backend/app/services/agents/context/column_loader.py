@@ -207,12 +207,14 @@ def _merge_column_sources(
 ) -> list[dict]:
     """Per-table T1-T4 prioritized column selection.
 
-    T1: _join_critical columns — always shown regardless of semantic score
+    T1: _join_critical columns — guaranteed for EVERY table regardless of GLOBAL_CAP.
+        Without this guarantee, tables ranked 8-14 get zero columns when the global
+        cap is hit by earlier tables, leaving the LLM blind to join keys it needs.
     T2: semantically matched by question (from vector + fts)
     T3: is_measurable or is_groupable
     T4: everything else
 
-    MAX_PER_TABLE=12, GLOBAL_CAP=80
+    MAX_PER_TABLE=12, GLOBAL_CAP=80 (T2-T4 only; T1 is additive)
     """
     by_table: dict[str, list[dict]] = {}
     for col in graph_cols:
@@ -220,12 +222,25 @@ def _merge_column_sources(
         if fqn:
             by_table.setdefault(fqn, []).append(col)
 
-    result: list[dict] = []
+    # Phase 1: collect T1 (join-critical) for ALL tables — no cap applies
+    guaranteed: list[dict] = []
+    guaranteed_keys: set[tuple] = set()
+    for fqn in sorted(by_table, key=lambda f: table_priority.get(f, 0), reverse=True):
+        for col in by_table[fqn]:
+            if col.get("_join_critical"):
+                guaranteed.append(col)
+                guaranteed_keys.add((col.get("table_fqn"), col.get("name")))
+
+    # Phase 2: fill remaining budget with T2-T4 in table-priority order
+    budget = max(0, GLOBAL_CAP - len(guaranteed))
+    optional: list[dict] = []
 
     for fqn in sorted(by_table, key=lambda f: table_priority.get(f, 0), reverse=True):
+        if budget <= 0:
+            break
         cols = by_table[fqn]
+        t1_count = sum(1 for c in cols if c.get("_join_critical"))
 
-        t1 = [c for c in cols if c.get("_join_critical")]
         t2 = sorted(
             [c for c in cols if not c.get("_join_critical") and (fqn, c.get("name")) in semantic_scores],
             key=lambda c: semantic_scores.get((fqn, c.get("name", "")), 0.0),
@@ -237,11 +252,11 @@ def _merge_column_sources(
             and (fqn, c.get("name")) not in semantic_scores
             and (c.get("is_measurable") or c.get("is_groupable"))
         ]
-        t4 = [c for c in cols if c not in t1 + t2 + t3]
+        t4 = [c for c in cols if c not in [cc for cc in cols if cc.get("_join_critical")] + t2 + t3]
 
-        selected = (t1 + t2 + t3 + t4)[:MAX_PER_TABLE]
-        result.extend(selected)
-        if len(result) >= GLOBAL_CAP:
-            break
+        non_t1 = (t2 + t3 + t4)[:max(0, MAX_PER_TABLE - t1_count)]
+        take = min(len(non_t1), budget)
+        optional.extend(non_t1[:take])
+        budget -= take
 
-    return result[:GLOBAL_CAP]
+    return guaranteed + optional

@@ -6,6 +6,7 @@ Nodes only populate the fields they produce; unset fields remain at defaults.
 
 from __future__ import annotations
 
+import operator
 from typing import Annotated
 
 from langgraph.graph.message import add_messages
@@ -27,8 +28,11 @@ class AnalyticsState(TypedDict):
     clarification_reason: str | None
 
     # ── Pipeline ─────────────────────────────────────────────────────────────
-    semantic_context: dict | None         # output of context_fetcher
-    resolved_intent: dict | None          # output of intent_resolver
+    semantic_context: dict | None         # output of context_fetcher (Phase 1: tables + Group A, no columns)
+    enriched_schema: dict | None          # output of schema_enricher — complete columns for anchor_tables only
+    anchor_tables_resolved: list[str]     # output of anchor_resolver — 2-4 anchor tables before ir_builder
+    specialist_outputs: Annotated[list[dict], operator.add]  # accumulates from 3 parallel specialists via Send
+    resolved_intent: dict | None          # output of intent_assembler (same format as old intent_resolver)
     intent_directive: str | None              # raw directive from intent_resolver <directive> tag
     intent_directive_instructions: str | None  # <instructions> sub-section: SQL execution requirements
     intent_directive_context: str | None       # <context> sub-section: structural guidance, informational
@@ -39,6 +43,7 @@ class AnalyticsState(TypedDict):
     recompile_count: int                  # max 1
     repair_count: int                     # max 2 across all repair types
     filter_resolution_needed: bool
+    repair_history: list[dict]            # [{attempt, error, sql_fingerprint|sql_fragment}] — prevents circular repair
 
     # ── Execution ────────────────────────────────────────────────────────────
     result_list: list[dict]               # raw query results per sub-query
@@ -48,6 +53,10 @@ class AnalyticsState(TypedDict):
     low_confidence_filters: list[dict]
     zero_row_probe_result: str | None     # human-readable explanation from Z2/Z3 probe
     zero_row_rewrite_count: int           # tracks zero-row repair attempts (max 1) to prevent infinite loops
+
+    # ── Data quality (pre-synthesis gate) ────────────────────────────────────
+    data_quality_flag: bool               # True if DATA_INTEGRITY_GATE triggered by data_quality_checker
+    data_quality_reason: str | None       # One-sentence reason from data_quality_checker (shown as ### Data Quality Concern)
 
     # ── Output ───────────────────────────────────────────────────────────────
     answer: str
@@ -71,6 +80,7 @@ class AnalyticsState(TypedDict):
     # ── Audit / lineage ───────────────────────────────────────────────────────
     user_email: str | None               # caller email — written to execution log
     pipeline_start_ms: float             # time.perf_counter() at pipeline entry — used to compute duration_ms in audit log
+    current_date: str                    # ISO date (YYYY-MM-DD) at pipeline start — synthesis uses this for temporal calculations
     pattern_matched: bool                # set True by query_compiler when a QueryPattern is found and used
     pattern_name: str | None             # intent of the top matched pattern
     is_retry: bool                       # True when triggered from /retry or /edit endpoint

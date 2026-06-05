@@ -33,9 +33,10 @@ Business logic, tables, filters, and metric definitions must stay identical. App
       ✗ INTERVAL '1 year' / INTERVAL '3 months' / INTERVAL '4 weeks' / date + INTERVAL '...'
       ✓ DATEADD(year,-1,date) / DATEADD(month,-3,date) / DATEADD(week,4,date)
 
-  i. CRITICAL (do this first) — REMOVE any EXISTS / IN / ANY subquery referencing a table that
-     is NOT in the ANCHOR TABLES of QUERY INTENT. These are hallucinations that eliminate rows.
-     Removing them is always correct and is the first action before any other performance fix.
+  i. CONDITIONAL — If the error message mentions a subquery, EXISTS, or IN clause AND those
+     tables are not in the ANCHOR TABLES of QUERY INTENT → remove those subqueries as the first
+     action before any other performance fix. Otherwise skip Rule i and proceed to Rule a.
+     When applicable: these are hallucinations that eliminate rows; removing them is correct.
   a. Push WHERE filters into CTEs — never scan full tables and filter at the outer level.
   b. Aggregate before joining — one aggregation CTE per table, then join small results.
   c. Drop SELECT * and unused CTE columns.
@@ -119,16 +120,39 @@ async def attempt_repair(
         if invalid_cols else ""
     )
 
-    prior_attempts_detail = ""
-    if repair_count > 0 and state.get("execution_error"):
-        prior_attempts_detail = (
-            f"PRIOR REPAIR ATTEMPTS:\n"
-            f"This is repair attempt {repair_count + 1}. "
-            f"The PREVIOUS repair attempt produced this NEW error: {state['execution_error']}\n"
+    # Build repair history context — prevents circular repairs by showing what was tried
+    repair_history: list[dict] = list(state.get("repair_history") or [])
+    prior_attempts_detail = f"PRIOR REPAIR ATTEMPTS:\nThis is repair attempt {repair_count + 1}."
+
+    if repair_history:
+        # Show only the most recent prior attempt — more than 1 entry causes negative
+        # anchoring where the LLM produces variations of failed approaches rather than
+        # genuinely different ones. Framed as structural observation, not prohibition.
+        last = repair_history[-1]
+        fp = last.get("sql_fingerprint")
+        err = last.get("error", "")
+        if fp:
+            prior_attempts_detail += (
+                f"\nPREVIOUS ATTEMPT STRUCTURE (attempt {last['attempt']}) produced error: '{err}'\n"
+                f"  That approach used: tables={fp.get('tables',[])} | "
+                f"joins={fp.get('join_ons',[])} | CTEs={fp.get('cte_count',0)} | "
+                f"GROUP BY={'yes' if fp.get('has_group_by') else 'no'}\n"
+                "  Choose a structurally different approach — different join strategy, "
+                "CTE decomposition, or aggregation order."
+            )
+        elif last.get("sql_fragment"):
+            prior_attempts_detail += (
+                f"\nPREVIOUS ATTEMPT (attempt {last['attempt']}) produced error: '{err}'\n"
+                f"  SQL preview: {last['sql_fragment'][:300]}\n"
+                "  Choose a structurally different approach."
+            )
+        else:
+            prior_attempts_detail += f"\nPREVIOUS ATTEMPT (attempt {last['attempt']}) failed: '{err}'"
+    elif repair_count > 0 and state.get("execution_error"):
+        prior_attempts_detail += (
+            f"\nThe PREVIOUS repair attempt produced this NEW error: {state['execution_error']}\n"
             "Do NOT try the same fix again — use a completely different approach."
         )
-    else:
-        prior_attempts_detail = f"PRIOR REPAIR ATTEMPTS:\nThis is repair attempt {repair_count + 1}."
 
     if invalid_cols_section:
         prior_attempts_detail += invalid_cols_section
@@ -164,7 +188,8 @@ async def attempt_repair(
 
     @llm_breaker
     async def _call():
-        return await llm.ainvoke(prompt, config=config)
+        from app.core.retry import retry_async
+        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-repair", max_attempts=2, backoff_base=5.0)
 
     try:
         response = await _call()
@@ -190,9 +215,32 @@ async def attempt_repair(
     from app.services.agents.nodes.audit import write_anti_pattern, write_audit_log
     asyncio.create_task(write_anti_pattern(state, first_sql, first_ir, error_msg, error_type="repair_input"))
     asyncio.create_task(write_audit_log(state, first_sql, 0, "repaired"))
+
+    # Record this attempt in repair_history for future repair iterations
+    new_history_entry: dict = {"attempt": repair_count + 1, "error": error_msg[:300]}
+    try:
+        import sqlglot
+        import sqlglot.expressions as _exp
+        tree = sqlglot.parse_one(first_sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE)
+        if tree:
+            new_history_entry["sql_fingerprint"] = {
+                "tables": [t.name for t in tree.find_all(_exp.Table)][:10],
+                "join_ons": [j.args["on"].sql() for j in tree.find_all(_exp.Join) if j.args.get("on")][:5],
+                "agg_types": list({type(a).__name__ for a in tree.find_all(_exp.AggFunc)})[:5],
+                "has_group_by": bool(tree.find(_exp.Group)),
+                "cte_count": len(list(tree.find_all(_exp.With))),
+            }
+        else:
+            raise ValueError("parse returned None")
+    except Exception:
+        import re as _re_hist
+        new_history_entry["sql_fingerprint"] = None
+        new_history_entry["sql_fragment"] = first_sql[:500]
+
     return {
         "sql_list": new_sql_list,
         "repair_count": repair_count + 1,
+        "repair_history": repair_history + [new_history_entry],
         "error": None,
     }
 

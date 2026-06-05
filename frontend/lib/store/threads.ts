@@ -477,8 +477,21 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           });
         } else {
           const items = result as ThreadSummary[];
+          const currentThreads = get().threads;
+          // Merge: preserve starred threads not returned by the server (they age
+          // out of the top-20 recency window but must stay visible in the sidebar).
+          // Also preserve any optimistic starred flag set during an in-flight
+          // starThread() call that hasn't persisted to the server yet.
+          const responseIds = new Set(items.map((i) => i.id));
+          const starredOrphans = append
+            ? []
+            : currentThreads.filter((t) => t.starred && !responseIds.has(t.id));
+          const mergedItems = items.map((item) => {
+            const existing = currentThreads.find((t) => t.id === item.id);
+            return existing ? { ...item, starred: existing.starred } : item;
+          });
           set({
-            threads: append ? [...threads, ...items] : items,
+            threads: append ? [...threads, ...mergedItems] : [...mergedItems, ...starredOrphans],
             searchResults: [],
             threadsOffset: offset + items.length,
             hasMore: items.length === limit,

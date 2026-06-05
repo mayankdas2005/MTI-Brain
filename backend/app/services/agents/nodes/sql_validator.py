@@ -6,6 +6,8 @@ No LLM. Applies 4 gates, routes to recompile (max 1) or error_response on second
 from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
+import re as _re
+
 from app.core.logger import logger
 from app.services.agents.sql_validator_logic import try_fix_cte_refs, validate_sql, validate_column_names, validate_filter_types
 from app.services.agents.state import AnalyticsState
@@ -47,7 +49,17 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     if not errors:
         # Gate 5 — schema-aware column validation (only runs when Gates 1-3.6 pass)
-        schema_cols = (state.get("semantic_context") or {}).get("columns", [])
+        # Use _column_lookup (full Neo4j data) for validation — same source as ir_validation.
+        # Using display columns (trimmed) causes false negatives: ir_validation allows a column
+        # that the display set doesn't include, then sql_validator rejects it, burning a repair.
+        sc = state.get("semantic_context") or {}
+        col_lookup_keys = sc.get("_column_lookup") or {}
+        if col_lookup_keys:
+            # Build schema_cols list from _column_lookup for Gate 5
+            schema_cols = [{"table_fqn": tfqn, "name": cname}
+                           for (tfqn, cname) in col_lookup_keys]
+        else:
+            schema_cols = sc.get("columns", [])
         for i, sql in enumerate(fixed_sql_list):
             if i in failed_indices:
                 continue
@@ -72,6 +84,49 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
         result: dict = {"error": None, "failed_sql_indices": []}
         if auto_fixed:
             result["sql_list"] = fixed_sql_list
+
+        # Structural warnings — non-blocking, added to reliability_flags so synthesis caveats them.
+        new_flags: list[str] = list(state.get("reliability_flags") or [])
+        col_lookup = {
+            (c.get("table_fqn"), c.get("name")): c
+            for c in (state.get("semantic_context") or {}).get("columns", [])
+            if c.get("table_fqn") and c.get("name")
+        }
+        ir_list = state.get("semantic_ir_list") or []
+        join_clauses = ir_list[0].get("join_clauses", []) if ir_list else []
+
+        for sql in fixed_sql_list:
+            # Gate A: LIMIT without ORDER BY — non-deterministic row selection
+            has_limit = bool(_re.search(r'\bLIMIT\b', sql, _re.IGNORECASE))
+            has_order = bool(_re.search(r'\bORDER\s+BY\b', sql, _re.IGNORECASE))
+            if has_limit and not has_order and "limit_without_order" not in new_flags:
+                new_flags.append("limit_without_order")
+                logger.debug("sql_validator | flag=limit_without_order | thread={}", state["thread_id"])
+
+        # Gate B: NULL-able join keys — uses IR join_clauses + column_lookup, no SQLGlot
+        for clause in (join_clauses or []):
+            if not clause:
+                continue
+            sides = clause.split("=")
+            if len(sides) != 2:
+                continue
+            for side in sides:
+                parts = side.strip().split(".")
+                if len(parts) == 3:
+                    fqn = f"{parts[0]}.{parts[1]}"
+                    col = parts[2]
+                    meta = col_lookup.get((fqn, col), {})
+                    null_frac = meta.get("null_frac") or 0.0
+                    if null_frac > 0.05 and "nullable_join_key" not in new_flags:
+                        new_flags.append("nullable_join_key")
+                        logger.debug(
+                            "sql_validator | flag=nullable_join_key | {}.{} null_frac={:.0%} | thread={}",
+                            fqn, col, null_frac, state["thread_id"],
+                        )
+
+        if new_flags != list(state.get("reliability_flags") or []):
+            result["reliability_flags"] = new_flags
+
         return result
 
     combined_error = "; ".join(errors)

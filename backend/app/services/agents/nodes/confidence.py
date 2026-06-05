@@ -3,12 +3,16 @@
 Called in stream_pipeline (pipeline.py) after the astream_events loop completes,
 using the locally-captured state dict. Not a LangGraph node.
 
-Makes a single Haiku LLM call with all relevant context (question, data, pipeline
-signals, answer) and lets the model return the final score and explanation.
+Architecture: two responsibilities are now separated.
+  1. Score  — computed deterministically in Python from state signals (no LLM variance).
+  2. Explanation — single Haiku call that receives the pre-computed score and clean
+                   business context and writes one user-facing sentence.
 
 Returns a dict: {score: int 0-100, label: str, explanation: str}
 Returns None for general_chat (no data grounding applicable).
 """
+
+import re
 
 import json_repair
 
@@ -29,34 +33,105 @@ def _label(score: int) -> str:
     return "Very Low"
 
 
+def _compute_score(state: dict) -> int:
+    """Deterministic confidence score from state signals — no LLM involved.
+
+    Rules (applied in order):
+      Base:        75, or CONFIDENCE_NOTE value from intent directive if present
+      Schema gaps: -8 per gap   (max -30)
+      Low-conf filters: -8 each (max -24)
+      Unresolved joins: -15 each (max -30)
+      SQL repairs: -10 each     (max -20)
+      No data:     -15
+      Floor / Ceiling: 5 / 95
+    """
+    # Base: use CONFIDENCE_NOTE from intent directive if the directive writer emitted one
+    intent_context = (state.get("intent_directive_context") or "").strip()
+    m = re.search(r"CONFIDENCE_NOTE:\s*([\d.]+)", intent_context, re.IGNORECASE)
+    if m:
+        try:
+            score = int(round(float(m.group(1)) * 100))
+        except (ValueError, TypeError):
+            score = 75
+    else:
+        score = 75
+
+    # Schema gaps from semantic IR (already parsed in ir_builder)
+    ir = (state.get("semantic_ir_list") or [{}])[0]
+    schema_gaps = ir.get("schema_gaps") or []
+    score -= min(len(schema_gaps) * 8, 30)
+
+    # Low-confidence filter resolutions
+    low_conf = state.get("low_confidence_filters") or []
+    score -= min(len(low_conf) * 8, 24)
+
+    # Unresolved join pairs
+    unresolved = ir.get("unresolved_join_pairs") or []
+    score -= min(len(unresolved) * 15, 30)
+
+    # SQL repairs
+    repair_count = int(state.get("repair_count") or 0)
+    score -= min(repair_count * 10, 20)
+
+    # No data returned
+    if state.get("no_data"):
+        score -= 15
+
+    return max(5, min(95, score))
+
+
+def _build_business_signals(state: dict) -> str:
+    """Build a clean, business-language summary of what affected data quality.
+
+    Passed to the explanation LLM so it can reference real issues without
+    ever seeing internal terms like SCHEMA_GAP, SQL repair, or filter_directive.
+    """
+    lines = []
+    ir = (state.get("semantic_ir_list") or [{}])[0]
+
+    schema_gaps = ir.get("schema_gaps") or []
+    if schema_gaps:
+        lines.append(f"- {len(schema_gaps)} requested concept(s) could not be fully matched to available data fields")
+
+    low_conf = state.get("low_confidence_filters") or []
+    if low_conf:
+        lines.append(f"- {len(low_conf)} filter value(s) were matched approximately rather than exactly")
+
+    unresolved = ir.get("unresolved_join_pairs") or []
+    if unresolved:
+        lines.append(f"- {len(unresolved)} data relationship(s) between tables could not be fully confirmed")
+
+    if int(state.get("repair_count") or 0) > 0:
+        lines.append("- Result is directional — cross-validate key figures before escalating")
+
+    if state.get("no_data"):
+        lines.append("- No matching records were found for the requested criteria")
+
+    reliability_flags = state.get("reliability_flags") or []
+    _flag_map = {
+        "time_filter_relaxed": "Time filter was broadened — results may span a wider period than requested",
+        "filters_relaxed": "Filters were removed to find any data — results may be broader than intended",
+        "high_null_ratio": "A significant portion of returned values are empty",
+        "limit_without_order": "Result rows are unordered — specific items shown may vary on re-run",
+        "unexpected_row_count": "Row count is higher than expected for this metric type",
+    }
+    for flag in reliability_flags:
+        msg = _flag_map.get(flag)
+        if msg:
+            lines.append(f"- {msg}")
+
+    return "\n".join(lines) if lines else "- No data quality issues detected"
+
+
 async def compute_confidence(state: dict) -> dict | None:
     if state.get("question_type") == "general_chat":
         return None
 
-    # ── Directive signals (new — richer grounding than old semantic_context) ──
-    intent_context   = (state.get("intent_directive_context") or "").strip()
-    filter_directive = (state.get("filter_directive") or "").strip()
-    schema_directive = (state.get("schema_directive") or "").strip()
+    # ── Step 1: deterministic score (no LLM) ─────────────────────────────────
+    score = _compute_score(state)
+    label = _label(score)
 
-    # Summarize filter directive: keep only quality-signal lines (low confidence, warnings, list complete)
-    _filter_kw = ("[low confidence", "[fuzzy match", "[warning:", "low_confidence_filters", "filter_list_complete")
-    filter_lines = [ln for ln in filter_directive.splitlines()
-                    if any(kw in ln.lower() for kw in _filter_kw)]
-    filter_directive_summary = (
-        "\n".join(filter_lines) if filter_lines
-        else "(all filters resolved at high confidence)"
-    )
-
-    # Summarize schema directive: anchor tables, join chain, unresolved pairs, measures/dimensions
-    _schema_kw = ("ANCHOR_TABLES", "JOIN_CHAIN", "UNRESOLVED_PAIRS", "↔", "MEASURES", "DIMENSIONS")
-    schema_lines = [ln for ln in schema_directive.splitlines()
-                    if any(kw in ln.upper() for kw in _schema_kw)]
-    schema_directive_summary = (
-        "\n".join(schema_lines[:15]) if schema_lines
-        else "(schema structure not available)"
-    )
-
-    # ── Result data — same shared builder used by synthesis and chart_agent ──
+    # ── Step 2: business-language explanation (Haiku) ─────────────────────────
     all_rows: list = state.get("_rows") or []
     all_cols: list = state.get("_cols") or []
     data_profile = _build_data_profile(
@@ -64,39 +139,31 @@ async def compute_confidence(state: dict) -> dict | None:
         rows=all_rows,
         query_summary=state.get("query_summary"),
     )
-
-    # ── Pipeline signals ────────────────────────────────────────────────────
-    reliability_flags = state.get("reliability_flags") or []
+    business_signals = _build_business_signals(state)
 
     prompt = CONFIDENCE_JUDGE_PROMPT.format(
-        intent_context=intent_context[:1200] or "(not available)",
-        filter_directive_summary=filter_directive_summary,
-        schema_directive_summary=schema_directive_summary,
-        no_data=state.get("no_data", False),
-        repair_count=state.get("repair_count", 0) or 0,
-        recompile_count=state.get("recompile_count", 0) or 0,
-        reliability_flags=", ".join(reliability_flags) if reliability_flags else "None",
-        error=state.get("error") or state.get("execution_error") or "None",
+        score=score,
+        label=label,
         question=state.get("question", ""),
         data_profile=data_profile,
-        answer=(state.get("answer", "") or "")[:500],
+        business_signals=business_signals,
+        answer=(state.get("answer", "") or "")[:400],
     )
 
     try:
-        response = await get_llm("fast").ainvoke([HumanMessage(content=prompt)])
+        from app.core.retry import retry_async
+        _llm = get_llm("fast")
+        response = await retry_async(
+            lambda: _llm.ainvoke([HumanMessage(content=prompt)]),
+            service="bedrock-confidence",
+            max_attempts=2,
+            backoff_base=5.0,
+        )
         raw = (response.content or "").strip()
         parsed = json_repair.loads(raw)
         if not isinstance(parsed, dict):
-            return None
-        raw_score = parsed.get("score")
-        if raw_score is None:
-            return None
-        score = max(0, min(100, int(round(float(raw_score)))))
+            return {"score": score, "label": label, "explanation": ""}
         explanation = parsed.get("explanation") or ""
-        return {
-            "score": score,
-            "label": _label(score),
-            "explanation": explanation,
-        }
+        return {"score": score, "label": label, "explanation": explanation}
     except Exception:
-        return None
+        return {"score": score, "label": label, "explanation": ""}

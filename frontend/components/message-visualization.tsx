@@ -162,7 +162,9 @@ function normalizeSpec(
   if (raw.type === 'table')    return 'table';
   if (raw.values && Array.isArray(raw.values)) return 'kpi_card';
   if (raw.$schema) {
-    if (!raw.mark) return null;  // spec missing mark — vega-embed would throw 'marktype' error
+    // Layered specs (dual_axis) have no top-level mark — they use raw.layer instead.
+    // Plain specs without either mark or layer are broken and would throw a 'marktype' error.
+    if (!raw.mark && !Array.isArray(raw.layer)) return null;
     return raw;
   }
 

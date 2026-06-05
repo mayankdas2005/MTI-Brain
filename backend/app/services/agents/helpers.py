@@ -6,6 +6,85 @@ import re
 from collections import Counter
 
 
+# ─── FilterSpec.value rendering helpers ──────────────────────────────────────
+# FilterSpec.value is typed str | list[str].
+#   str   → single-bound operators: =, >=, <=, >, <, LIKE, ILIKE
+#   list  → two-element BETWEEN / BETWEEN_SQL: ["start_expr", "end_expr"]
+#           OR multi-element IN:               ["val1", "val2", ...]
+# Every consumer must go through these helpers — never call .replace() or
+# f-string-interpolate a value directly without checking its type first.
+
+def render_filter_value(operator: str, value) -> str:
+    """Render a FilterSpec (operator, value) pair as a SQL-ready clause fragment.
+
+    Examples
+    --------
+    render_filter_value(">=", "DATEADD(day,-60,CURRENT_DATE)")
+        → ">= DATEADD(day,-60,CURRENT_DATE)"
+
+    render_filter_value("BETWEEN_SQL", ["CURRENT_DATE", "DATEADD(day,90,CURRENT_DATE)"])
+        → "BETWEEN CURRENT_DATE AND DATEADD(day,90,CURRENT_DATE)"
+
+    render_filter_value("IN", ["USD", "EUR"])
+        → "IN ('USD', 'EUR')"
+    """
+    op = (operator or "=").upper()
+    if op in ("BETWEEN", "BETWEEN_SQL"):
+        if isinstance(value, list) and len(value) == 2:
+            return f"BETWEEN {value[0]} AND {value[1]}"
+        v = value[0] if isinstance(value, list) else value
+        return f"BETWEEN {v} AND {v}"
+    if op == "IN" or isinstance(value, list):
+        vals = value if isinstance(value, list) else [value]
+        quoted = ", ".join(f"'{v}'" for v in vals)
+        return f"IN ({quoted})"
+    v = value if isinstance(value, str) else str(value)
+    return f"{operator} {v}"
+
+
+def apply_stale_fallback(operator: str, value, col_name: str, table_fqn: str):
+    """Return a MAX-anchored copy of value for the stale-data OR branch.
+
+    Replaces every occurrence of CURRENT_DATE in value with
+    (SELECT MAX(col_name) FROM table_fqn).  Works for both str and list values.
+
+    Returns None when no CURRENT_DATE is present (fallback would be identical
+    to the primary filter and adds no value) or when operator is BETWEEN_SQL
+    pointing to a future window (stale fallback is meaningless for forecasts).
+    """
+    max_expr = f"(SELECT MAX({col_name}) FROM {table_fqn})"
+
+    if isinstance(value, list):
+        # BETWEEN_SQL with two bounds — replace in both
+        replaced = [v.replace("CURRENT_DATE", max_expr) if isinstance(v, str) else str(v)
+                    for v in value]
+        if replaced == list(value):
+            return None  # nothing changed — no CURRENT_DATE to replace
+        return replaced
+
+    if not isinstance(value, str):
+        return None
+    if "CURRENT_DATE" not in value:
+        return None
+    return value.replace("CURRENT_DATE", max_expr)
+
+
+def format_sql(sql: str) -> str:
+    """Pretty-print SQL using sqlglot (Redshift dialect). Falls back to stripped string on parse error."""
+    if not sql.strip():
+        return sql
+    try:
+        import sqlglot
+        parsed = sqlglot.parse_one(
+            sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE
+        )
+        if parsed:
+            return parsed.sql(dialect="redshift", pretty=True)
+    except Exception:
+        pass
+    return sql.strip()
+
+
 # Maximum rows passed to the narrative LLM in synthesis nodes.
 _NARRATIVE_SAMPLE_CAP = 30
 
@@ -233,19 +312,6 @@ def parse_tag(text: str, tag: str) -> str:
     return ""
 
 
-def parse_json_from_response(text: str) -> dict:
-    """Extract and parse a JSON object from LLM output."""
-    from json_repair import loads as json_loads
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        return {}
-    try:
-        result = json_loads(m.group())
-        return result if isinstance(result, dict) else {}
-    except Exception:
-        return {}
-
-
 # ─── Directive section builder ────────────────────────────────────────────────
 
 def build_directive_section(state: dict) -> str:
@@ -295,15 +361,11 @@ def build_directive_section(state: dict) -> str:
 
     if any([instructions, context, schema, filters]):
         parts.append(
-            "CONFLICT RESOLUTION:\n"
-            "  EXECUTE INSTRUCTIONS: implement verbatim — these are SQL requirements\n"
-            "  STRUCTURE: SCHEMA DIRECTIVE tables/joins are authoritative\n"
-            "    (CONTEXT JOIN_PATH already incorporated at build time via Tier 0)\n"
-            "  VALUES: FILTER DIRECTIVE values override CONTEXT value suggestions\n"
-            "    (DB codes, normalized numerics, temporal SQL beats human labels)\n"
-            "  CONTEXT: shapes intent, output format, schema gaps — not SQL predicates\n"
-            "  CONFIDENCE_NOTE < 0.70: prefer simpler SQL; flag partial schema coverage\n"
-            "  NON-ANCHOR: [WARNING: non-anchor table] in FILTER DIRECTIVE → omit"
+            "CONFLICT RESOLUTION (priority highest to lowest):\n"
+            "  1. FILTER DIRECTIVE — resolved DB codes are authoritative; never substitute\n"
+            "  2. SCHEMA DIRECTIVE — code-verified join clauses; copy ON clauses verbatim\n"
+            "  3. EXECUTE INSTRUCTIONS — computation/CTE logic; preserve formulas\n"
+            "  4. CONTEXT — informational only; shapes intent but never overrides above"
         )
     return "\n\n".join(parts) if parts else ""
 

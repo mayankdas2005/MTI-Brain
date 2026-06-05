@@ -81,9 +81,9 @@ def search_query_patterns(embedding: list[float]) -> list[dict]:
     """Vector search for QueryPatterns — ground truth from successful prior queries."""
     query = """CYPHER 25
     MATCH (qp:QueryPattern)
-    SEARCH qp IN (VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding LIMIT 2)
+    SEARCH qp IN (VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding LIMIT 5)
     SCORE AS score
-    WHERE score > 0.75
+    WHERE score > 0.65
     RETURN qp.id AS id, qp.question_text AS question_text,
            qp.sql_cte_outline AS sql_cte_outline,
            qp.join_outline AS join_outline,
@@ -144,9 +144,9 @@ def get_query_patterns_by_ids(ids: list[str]) -> list[dict]:
 def search_anti_patterns(embedding: list[float]) -> list[dict]:
     query = """CYPHER 25
     MATCH (ap:AntiPattern)
-    SEARCH ap IN (VECTOR INDEX `antipattern_cohere_embedding` FOR $embedding LIMIT 2)
+    SEARCH ap IN (VECTOR INDEX `antipattern_cohere_embedding` FOR $embedding LIMIT 5)
     SCORE AS score
-    WHERE score > 0.75
+    WHERE score > 0.65
     RETURN ap.id AS id, ap.error_type AS error_type, ap.error_summary AS error_summary,
            ap.failing_element AS failing_element, ap.complexity AS complexity, score
     """

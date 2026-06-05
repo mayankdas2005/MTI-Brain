@@ -62,7 +62,7 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
 def search_tables_via_intents(embedding: list[float]) -> list[dict]:
     query = f"""CYPHER 25
     MATCH (i:Intent)
-    SEARCH i IN (VECTOR INDEX `intent_cohere` FOR $embedding LIMIT 3)
+    SEARCH i IN (VECTOR INDEX `intent_cohere` FOR $embedding LIMIT 5)
     SCORE AS intent_score
     WITH i, intent_score
     MATCH (t:Table)-[:RELEVANT_TO]->(i)
@@ -78,7 +78,7 @@ def search_tables_via_intents(embedding: list[float]) -> list[dict]:
 def search_tables_via_community(embedding: list[float]) -> list[dict]:
     query = f"""CYPHER 25
     MATCH (c:Community)
-    SEARCH c IN (VECTOR INDEX `community_cohere` FOR $embedding LIMIT 2)
+    SEARCH c IN (VECTOR INDEX `community_cohere` FOR $embedding LIMIT 3)
     SCORE AS community_score
     WITH c, community_score
     MATCH (c)-[:CONTAINS_TABLE]->(t:Table)
@@ -95,7 +95,7 @@ def search_tables_via_community(embedding: list[float]) -> list[dict]:
 def search_tables_via_domain(embedding: list[float]) -> list[dict]:
     query = f"""CYPHER 25
     MATCH (d:Domain)
-    SEARCH d IN (VECTOR INDEX `domain_cohere` FOR $embedding LIMIT 2)
+    SEARCH d IN (VECTOR INDEX `domain_cohere` FOR $embedding LIMIT 3)
     SCORE AS domain_score
     WITH d, domain_score
     MATCH (t:Table)-[:BELONGS_TO]->(d)
@@ -221,11 +221,11 @@ def search_tables_via_business_terms(embedding: list[float], query_text: str) ->
     # Vector pass
     vector_query = f"""CYPHER 25
     MATCH (bt:BusinessTerm)
-    SEARCH bt IN (VECTOR INDEX `businessterm_cohere` FOR $embedding LIMIT 5)
+    SEARCH bt IN (VECTOR INDEX `businessterm_cohere` FOR $embedding LIMIT 8)
     SCORE AS score
-    WHERE score > 0.65
+    WHERE score > 0.60
     MATCH (bt)-[:REFERENCES_TABLE]->(t:Table)
-    RETURN {_TABLE_RETURN}, score, 'businessterm_v' AS matched_via LIMIT 10
+    RETURN {_TABLE_RETURN}, score, 'businessterm_v' AS matched_via LIMIT 12
     """
     try:
         t0 = time.monotonic()
@@ -429,9 +429,9 @@ def search_tables_via_query_templates(embedding: list[float]) -> list[dict]:
     """
     query = f"""CYPHER 25
     MATCH (qt:QueryTemplate)
-    SEARCH qt IN (VECTOR INDEX `querytemplate_cohere` FOR $embedding LIMIT 3)
+    SEARCH qt IN (VECTOR INDEX `querytemplate_cohere` FOR $embedding LIMIT 5)
     SCORE AS score
-    WHERE score > 0.75
+    WHERE score > 0.70
     MATCH (qt)-[:REQUIRES_TABLE]->(t:Table)
     RETURN {_TABLE_RETURN}, score, qt.id AS matched_via
     ORDER BY score DESC LIMIT 15

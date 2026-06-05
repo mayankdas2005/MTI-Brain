@@ -19,7 +19,7 @@ def _is_uuid_col(col_name: str) -> bool:
     return n == "uuid" or any(n.endswith(s) for s in _UUID_SUFFIXES)
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.agents.helpers import format_sql, parse_tag
 from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns
 from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, REASONING_DIRECTIVE_NORMAL, CTE_COLUMN_PLANNER_PROMPT
 from app.services.agents.semantic_ir import SemanticIR
@@ -163,6 +163,10 @@ async def generate_sql_llm(
     # Cross-domain section — injected before QUERY SPECIFICATION when applicable
     cross_domain_section = _build_cross_domain_section(semantic_context)
 
+    # Entity hints — pre-resolved DB codes from entity_value path; prevents LLM from
+    # guessing filter values that were already matched against schema vocabulary.
+    entity_hints_section = _build_entity_hints_section(schema_ctx)
+
     # Combined intent + filter directive — authoritative context from intent_resolver + filter_resolver
     from app.services.agents.helpers import build_directive_section
     directive_section = build_directive_section(state)
@@ -173,6 +177,7 @@ async def generate_sql_llm(
     from app.services.agents.prompts import SQL_GENERATE_PROMPT
     prompt = SQL_GENERATE_PROMPT.format_messages(
         cross_domain_section=cross_domain_section,
+        entity_hints_section=entity_hints_section,
         directive_section=directive_section,
         query_blueprint=query_blueprint,
         schema_reference=schema_reference,
@@ -188,12 +193,18 @@ async def generate_sql_llm(
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
+    from app.core.retry import retry_async
 
     llm = get_llm("deep")
 
     @llm_breaker
     async def _call():
-        return await llm.ainvoke(prompt, config=config)
+        return await retry_async(
+            lambda: llm.ainvoke(prompt, config=config),
+            service="bedrock-sql-generator",
+            max_attempts=2,
+            backoff_base=5.0,
+        )
 
     response = await _call()
     sql = _format_sql(parse_tag(response.content or "", "sql") or "")
@@ -221,6 +232,7 @@ async def _plan_cte_columns(
         return ""
 
     from app.services.agents.bedrock import get_llm
+    from app.core.retry import retry_async
     try:
         llm = get_llm("fast")
         # On recompile, pass the previous error so the planner generates a DIFFERENT plan.
@@ -243,7 +255,12 @@ async def _plan_cte_columns(
             schema_reference=schema_reference,
             reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         )
-        response = await llm.ainvoke(prompt, config=config)
+        response = await retry_async(
+            lambda: llm.ainvoke(prompt, config=config),
+            service="bedrock-cte-planner",
+            max_attempts=2,
+            backoff_base=3.0,
+        )
         plan = parse_tag(response.content or "", "plan").strip()
         logger.info(
             "sql_generator | CTE planner done | thread={} | plan_len={}",
@@ -279,6 +296,34 @@ def _is_exact_value(value) -> bool:
     if re.match(r"^\d{4}-\d{2}-\d{2}|^\d{2}/\d{2}/\d{4}|^\d{4}/\d{2}/\d{2}", s):
         return True
     return False
+
+
+def _build_entity_hints_section(schema_ctx: dict) -> str:
+    """Inject pre-resolved entity → DB code mappings from the entity_value discovery path.
+
+    These values were already matched against schema vocabulary (value_aliases /
+    distinct_values). Using them directly prevents the LLM from guessing filter values.
+    The DB code is always the left side of any 'CODE -> Human Name' alias entry.
+    """
+    hints = schema_ctx.get("entity_hints") or []
+    if not hints:
+        return ""
+
+    lines = [
+        "ENTITY VALUE MATCHES (pre-resolved DB codes — use EXACTLY as shown in WHERE clauses):",
+        "RULE: Use these values verbatim. Do NOT expand to human-readable names.",
+    ]
+    for eh in hints[:8]:
+        token = eh.get("token", "")
+        table_fqn = eh.get("table_fqn", "")
+        column = eh.get("column", "")
+        matched = eh.get("matched_value", "")
+        # Extract DB code: left side of "CODE -> Human Name", or the value itself
+        db_code = matched.split(" -> ")[0].strip() if " -> " in matched else matched
+        if token and table_fqn and column and db_code:
+            lines.append(f"  '{token}' → {table_fqn}.{column} = '{db_code}'  — use: WHERE {column} = '{db_code}'")
+
+    return "\n".join(lines) + "\n" if len(lines) > 2 else ""
 
 
 def _build_cross_domain_section(semantic_context: dict) -> str:
@@ -323,9 +368,17 @@ def _build_cte_plan_section(plan: str) -> str:
         return ""
     return (
         "---\n\n"
-        "CTE COLUMN PLAN (pre-solved — each CTE's SELECT MUST include at minimum these columns):\n\n"
+        "CTE CONTRACT (pre-solved — binding on the SQL you write):\n\n"
+        "THREE HARD CONSTRAINTS from this contract (Rule 15):\n"
+        "  A. NAME LOCK — use the EXACT CTE names below. Do not rename, merge, or add CTEs.\n"
+        "  B. EXPORT CONTRACT — each CTE may only SELECT columns listed in its exports block.\n"
+        "     Downstream CTEs and FINAL SELECT may ONLY reference those export aliases.\n"
+        "     If you need a column downstream, it MUST appear in the upstream exports — if it\n"
+        "     is missing, the contract is wrong; note it in reasoning and add a minimal fix.\n"
+        "  C. SOURCE CONSTRAINT — a CTE reading from an upstream CTE cannot use schema.table.col\n"
+        "     notation. It references the upstream CTE's export aliases only.\n\n"
         + plan
-        + "\n\nThis plan is authoritative. Rule 15 applies: do not deviate."
+        + "\n\nDeviating from CTE names or referencing unexported columns is a validation failure."
     )
 
 
@@ -471,26 +524,38 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
     time_filter = spec.get("time_filter")
     anchor_tables_set = set(spec.get("anchor_tables") or [])
     if time_filter:
+        from app.services.agents.helpers import render_filter_value, apply_stale_fallback
         primary_fqn = time_filter.get("table_fqn", "")
-        tf_col = f"{primary_fqn}.{time_filter.get('column', '')}"
-        tf_op  = time_filter.get("operator", ">=")
-        tf_val = time_filter.get("value", "")
+        tf_col   = f"{primary_fqn}.{time_filter.get('column', '')}"
+        tf_op    = time_filter.get("operator", ">=")
+        tf_val   = time_filter.get("value", "")
         col_name = time_filter.get("column", "")
         grain_unit = spec.get("temporal_grain") or "month"
-        lines.append(f"TIME FILTER:\n  {tf_col} {tf_op} {tf_val}   [primary]")
-        # Stale data fallback — always add OR MAX subquery so query returns most recent
-        # available data when the requested period has no rows (database may not be current).
-        # Use SAME table_fqn and column as the time_filter. Do NOT invent new tables.
-        lines.append(
-            f"  OR {tf_col} >= DATE_TRUNC('{grain_unit}', (SELECT MAX({col_name}) FROM {primary_fqn}))"
-            f"   [stale-data-fallback — returns most recent available data if period is empty]"
-        )
+
+        # Render correctly for both single-bound (str) and BETWEEN_SQL (list) values
+        tf_clause = render_filter_value(tf_op, tf_val)
+        lines.append(f"TIME FILTER:\n  {tf_col} {tf_clause}   [primary]")
+
+        # Stale-data fallback: apply same transformation to MAX(col) instead of CURRENT_DATE.
+        # apply_stale_fallback returns None when no substitution is possible or meaningful.
+        stale_val = apply_stale_fallback(tf_op, tf_val, col_name, primary_fqn)
+        if stale_val is not None:
+            stale_clause = render_filter_value(tf_op, stale_val)
+            lines.append(
+                f"  OR {tf_col} {stale_clause}"
+                f"   [stale-data-fallback — same window anchored to MAX date instead of CURRENT_DATE]"
+            )
+
         extra = []
         for t in schema_ctx.get("tables", []):
             fqn  = t.get("fqn", "")
             tcol = t.get("time_dimension_col", "")
             if fqn and tcol and t.get("is_time_series") and fqn != primary_fqn and fqn in anchor_tables_set:
-                extra.append(f"  {fqn}.{tcol} {tf_op} {tf_val}")
+                extra.append(f"  {fqn}.{tcol} {tf_clause}")
+                stale_extra = apply_stale_fallback(tf_op, tf_val, tcol, fqn)
+                if stale_extra is not None:
+                    stale_extra_clause = render_filter_value(tf_op, stale_extra)
+                    extra.append(f"  OR {fqn}.{tcol} {stale_extra_clause}   [stale-data-fallback]")
         if extra:
             lines.append("  Apply same boundary to ALL other time-series tables in this query:")
             lines.extend(extra)
@@ -505,13 +570,14 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
         ]
         if snapshot_tables:
             lines.append("TIME FILTER: none specified")
-            lines.append("  WARNING — these tables are daily snapshots; without a date filter they scan ALL history:")
+            lines.append("  MANDATORY — these tables are daily snapshots.")
+            lines.append("  For current/recent data, filter on BOTH conditions (no truncation, no transformation):")
             for fqn, tcol in snapshot_tables:
-                lines.append(f"    {fqn} → {tcol}")
-            lines.append("  If the question asks for current/recent data, add one of:")
-            lines.append("    Latest snapshot: WHERE <col> = (SELECT MAX(<col>) FROM <table>)")
-            lines.append("    Recent window:   WHERE <col> >= DATEADD(DAY, -30, CURRENT_DATE)")
-            lines.append("  If intentionally querying full history (trend analysis), ignore this warning.")
+                lines.append(f"    WHERE {fqn}.{tcol} = CURRENT_DATE")
+                lines.append(f"       OR {fqn}.{tcol} = (SELECT MAX({tcol}) FROM {fqn})")
+            lines.append("  CURRENT_DATE covers live data. MAX subquery covers stale snapshots.")
+            lines.append("  Never apply DATE_TRUNC or DATEADD to either side.")
+            lines.append("  Exception: omit the date filter ONLY for full-history queries (trends, all-time totals).")
             lines.append("")
 
     measures = spec.get("measures") or []
@@ -695,7 +761,32 @@ Write this query as a senior Redshift DBA. Non-negotiable:
      them. Dimension tables (instruments, companies, counterparties) can have millions of rows.
      Fact CTEs are already date-filtered and grouped — they are tiny. Use the fact CTE as the
      driver. Use INNER JOIN (not LEFT JOIN): dimension rows with no matching fact rows are
-     semantically out of scope for the requested period.""")
+     semantically out of scope for the requested period.
+  h. MAX-date snapshot pattern — NEVER use a scalar correlated subquery directly in WHERE for
+     snapshot filtering. Use a pre-computed 1-row CTE instead. Correlated subqueries in WHERE
+     repeat the full scan once per CTE branch, causing timeout on large tables.
+       ✗ WRONG (correlated, slow):
+           WHERE cb.balance_date = (SELECT MAX(balance_date) FROM lpp.cash_balance)
+       ✓ CORRECT (pre-computed, fast):
+           WITH cb_max AS (SELECT MAX(balance_date) AS max_d FROM lpp.cash_balance)
+           ... JOIN cb_max ON cb.balance_date = cb_max.max_d
+     For queries with 3+ snapshot CTEs: pre-compute ALL MAX dates in a single CTE using
+     UNION ALL to avoid repeated full scans:
+           WITH snapshot_max AS (
+             SELECT 'cash'          AS tbl, MAX(balance_date) AS max_d FROM lpp.cash_balance
+             UNION ALL
+             SELECT 'exposure',          MAX(as_of_date)    FROM lpp.counterparty_exposure
+           )
+     Then JOIN each data CTE to the relevant row from snapshot_max.
+
+  i. COLUMN ALIAS NAMES — MANDATORY business names:
+     NEVER use generic placeholders: dimension_1, dimension_2, measure_1, measure_2, etc.
+     Every alias must be a meaningful business name derived from the actual column or the question.
+       ✗ WRONG:  total_cash_liquidity AS measure_1, NULL AS measure_2
+       ✓ CORRECT: total_cash_liquidity AS total_cash_liquidity, gross_exposure AS gross_exposure
+     For UNION ALL across domains: keep domain-specific aliases in each branch. Do NOT
+     normalize columns to generic placeholders to make them UNION-compatible.
+     If domains have different columns, use NULL AS <meaningful_name> — not NULL AS measure_N.""")
 
     return "\n".join(lines)
 
@@ -1025,18 +1116,7 @@ def _build_prior_sql_section(state: AnalyticsState) -> str:
 
 
 def _format_sql(sql: str) -> str:
-    if not sql.strip():
-        return sql
-    try:
-        import sqlglot
-        parsed = sqlglot.parse_one(
-            sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE
-        )
-        if parsed:
-            return parsed.sql(dialect="redshift", pretty=True)
-    except Exception:
-        pass
-    return sql.strip()
+    return format_sql(sql)
 
 
 def parse_decomposition(raw: str, thread_id: str) -> dict | None:

@@ -11,15 +11,20 @@ from langgraph.types import RetryPolicy
 from app.core.logger import logger
 from app.services.agents.nodes.compress import SUMMARIZE_THRESHOLD
 from app.services.agents.node_names import (
+    ANCHOR_RESOLVER as N_ANCHOR_RESOLVER,
     CHART_AGENT as N_CHART_AGENT,
     COMPRESS as N_COMPRESS,
     CONTEXT_FETCHER as N_CONTEXT_FETCHER,
+    DATA_QUALITY_CHECKER as N_DATA_QUALITY_CHECKER,
+    DIRECTIVE_WRITER as N_DIRECTIVE_WRITER,
     ERROR_RESPONSE as N_ERROR_RESPONSE,
     EXECUTOR as N_EXECUTOR,
     FILTER_RESOLVER as N_FILTER_RESOLVER,
     GENERAL_CHAT as N_GENERAL_CHAT,
+    INTENT_ASSEMBLER as N_INTENT_ASSEMBLER,
     INTENT_RESOLVER as N_INTENT_RESOLVER,
     QUERY_COMPILER as N_QUERY_COMPILER,
+    SCHEMA_ENRICHER as N_SCHEMA_ENRICHER,
     SQL_GENERATOR as N_SQL_GENERATOR,
     SQL_VALIDATOR as N_SQL_VALIDATOR,
     SYNTHESIS as N_SYNTHESIS,
@@ -44,12 +49,35 @@ def route_after_context_fetcher(state: AnalyticsState) -> str:
     if state.get("error") == "semantic_layer_unavailable":
         logger.info("route: context_fetcher → error_response | thread={}", state["thread_id"])
         return N_ERROR_RESPONSE
-    logger.info("route: context_fetcher → intent_resolver | thread={}", state["thread_id"])
-    return N_INTENT_RESOLVER
+    logger.info("route: context_fetcher → anchor_resolver | thread={}", state["thread_id"])
+    return N_ANCHOR_RESOLVER
+
+
+def route_after_anchor_resolver(state: AnalyticsState) -> str:
+    """Route after anchor_resolver — to schema_enricher (success) or legacy intent_resolver (fallback)."""
+    anchor_tables = state.get("anchor_tables_resolved") or []
+    if not anchor_tables:
+        logger.warning("route: anchor_resolver → intent_resolver (fallback — no tables resolved) | thread={}", state["thread_id"])
+        return N_INTENT_RESOLVER
+    logger.info("route: anchor_resolver → schema_enricher | tables={} | thread={}", anchor_tables, state["thread_id"])
+    return N_SCHEMA_ENRICHER
+
+
+def route_after_intent_assembler(state: AnalyticsState) -> str:
+    """Route after intent_assembler — to directive_writer (success) or legacy intent_resolver (fallback)."""
+    if state.get("_intent_assembler_fallback"):
+        logger.warning("route: intent_assembler → intent_resolver (fallback) | thread={}", state["thread_id"])
+        return N_INTENT_RESOLVER
+    resolved = state.get("resolved_intent") or {}
+    if not resolved.get("anchor_tables") and not resolved.get("measures"):
+        logger.warning("route: intent_assembler → intent_resolver (empty resolved_intent) | thread={}", state["thread_id"])
+        return N_INTENT_RESOLVER
+    logger.info("route: intent_assembler → directive_writer | thread={}", state["thread_id"])
+    return N_DIRECTIVE_WRITER
 
 
 def route_intent(state: AnalyticsState) -> str:
-    logger.info("route: intent_resolver → query_compiler | thread={}", state["thread_id"])
+    logger.info("route: intent_resolver/directive_writer → query_compiler | thread={}", state["thread_id"])
     return N_QUERY_COMPILER
 
 
@@ -95,19 +123,19 @@ def route_executor(state: AnalyticsState) -> str:
     repair_count = state.get("repair_count", 0)
 
     if state.get("stopped"):
-        logger.info("route: executor → synthesis (stopped) | thread={}", state["thread_id"])
-        return N_SYNTHESIS
+        logger.info("route: executor → data_quality_checker (stopped) | thread={}", state["thread_id"])
+        return N_DATA_QUALITY_CHECKER
 
     if state.get("error") and repair_count >= MAX_REPAIR:
-        logger.info("route: executor → synthesis (repairs exhausted) | thread={}", state["thread_id"])
-        return N_SYNTHESIS
+        logger.info("route: executor → data_quality_checker (repairs exhausted) | thread={}", state["thread_id"])
+        return N_DATA_QUALITY_CHECKER
 
     if repair_count > state.get("_prev_repair_count", -1):
         logger.info("route: executor → sql_validator (after repair) | thread={}", state["thread_id"])
         return N_SQL_VALIDATOR
 
-    logger.info("route: executor → synthesis | thread={}", state["thread_id"])
-    return N_SYNTHESIS
+    logger.info("route: executor → data_quality_checker | thread={}", state["thread_id"])
+    return N_DATA_QUALITY_CHECKER
 
 
 def route_synthesis(state: AnalyticsState) -> str:

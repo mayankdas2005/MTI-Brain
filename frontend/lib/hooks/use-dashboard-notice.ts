@@ -33,7 +33,7 @@ export function useDashboardNotice() {
               const visible = typeof document !== 'undefined' && document.visibilityState === 'visible';
 
               if (visible) {
-                toast.info('Report ready', {
+                toast.info('Your report is ready', {
                   id: `dash-ready-${convId}`,
                   description: 'Your executive report is ready to view.',
                   duration: 12_000,
@@ -49,15 +49,15 @@ export function useDashboardNotice() {
               } else {
                 // Tab hidden — fire OS notification
                 if (getPermission() === 'granted') {
-                  notify('Report ready', {
+                  notify('Your report is ready', {
                     body: 'Your executive report is ready to view.',
                     silent: true,
                   });
                 } else {
                   // Fallback: toast so it's waiting when user returns
-                  toast.info('Dashboard ready', {
+                  toast.info('Your report is ready', {
                     id: `dash-ready-${convId}`,
-                    description: 'Your executive dashboard has been generated.',
+                    description: 'Your executive report is ready to view.',
                     duration: 0,
                     action: {
                       label: 'Open',
@@ -74,9 +74,9 @@ export function useDashboardNotice() {
               if (notifySound) playPing();
             } else if (res.status === 'failed') {
               set(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-              toast.warning('Failed to build report', {
+              toast.warning('Couldn\'t build the report', {
                 id: `dash-fail-${convId}`,
-                description: 'Please try again.',
+                description: 'Something went wrong. Please try again.',
               });
             }
           } catch {

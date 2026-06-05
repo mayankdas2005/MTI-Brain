@@ -31,7 +31,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
 
     try:
         # ── Short-term memory + follow-up detection ────────────────────────────
-        session_summary = short_term.get_session_summary(state["thread_id"])
+        session_summary = short_term.get_session_summary(state["thread_id"]) or state.get("summary") or ""
         raw_question    = state["question"]
         is_followup     = helpers.is_followup_question(raw_question, bool(session_summary))
 
@@ -165,16 +165,25 @@ async def _fetch_group_b(
     embedding: list[float],
     search_query: str,
 ) -> tuple:
-    """Group B: schema enrichment that depends on table discovery results.
+    """Group B: table enrichment that depends on table discovery results.
 
-    Internally sequential (cross-domain → join-critical → columns) but each
-    sync Neo4j call is wrapped in asyncio.to_thread() so it never blocks the
-    event loop, allowing Group A to run concurrently.
+    Column loading has been removed from this phase — it is deferred to schema_enricher
+    which runs AFTER anchor_resolver identifies the specific anchor tables. This eliminates
+    the GLOBAL_CAP truncation problem where anchor table columns (e.g. lpp.borrowing.repayment_date)
+    were cut by ranking against 14 unrelated tables.
+
+    This group now handles:
+    - Cross-domain detection (which hub table bridges domains)
+    - Join-critical column identification (fast, needed for display ordering)
+    - Entity hint extraction (direct value matches from entity_value discovery path)
+
+    Column loading (display_columns + _column_lookup) runs in schema_enricher after
+    anchor_resolver identifies the 2-4 relevant anchor tables.
     """
     # Cross-domain detection (sync, 1-3 Neo4j queries depending on outcome)
     tables, hub_info, is_cross_domain = await asyncio.to_thread(cross_domain.detect, tables)
 
-    # Prioritize hub at front of list — ensures it's within intent_resolver's [:10] window
+    # Prioritize hub at front of list — ensures it's within anchor_resolver's table window
     if hub_info and hub_info.get("hub_table_fqn"):
         hub_fqn = hub_info["hub_table_fqn"]
         hub_entry = next((t for t in tables if t.get("fqn") == hub_fqn), None)
@@ -182,32 +191,10 @@ async def _fetch_group_b(
             tables = [hub_entry] + [t for t in tables if t.get("fqn") != hub_fqn]
             logger.info("context_fetcher | hub_prioritized | fqn={}", hub_fqn)
 
-    # Join-critical columns — Sources A+B+C+D (sync, 1 combined Cypher query)
+    # Join-critical columns — needed for anchor_resolver context and later schema_enricher ordering
     join_crit_cols = await asyncio.to_thread(column_loader.get_join_critical_cols, tables)
 
-    # Column loading + semantic scoring (sync, 3 sequential Neo4j queries internally)
-    display_columns, col_lookup = await asyncio.to_thread(
-        column_loader.load_and_prioritize, tables, embedding, search_query, join_crit_cols
-    )
-
-    # Load columns for bridge/intermediate tables added during join expansion
-    # These weren't in initial discovery so their columns aren't in col_lookup yet
-    initial_fqns = set(col_lookup.keys())
-    bridge_fqns = [
-        t["fqn"] for t in tables
-        if t.get("fqn") and (t.get("fqn"), "id") not in initial_fqns
-        and "bridge_table" in (t.get("retrieval_paths") or [])
-    ]
-    if bridge_fqns:
-        bridge_display, bridge_lookup = await asyncio.to_thread(
-            column_loader.load_for_bridge_tables,
-            bridge_fqns, embedding, search_query, join_crit_cols
-        )
-        col_lookup.update(bridge_lookup)
-        display_columns.extend(bridge_display)
-        logger.info("context_fetcher | bridge_cols_merged | fqns={}", bridge_fqns)
-
-    # Collect entity hints from entity_value-discovered tables for intent_resolver.
+    # Collect entity hints from entity_value-discovered tables.
     # UUID columns are excluded — they are internal row identifiers, never filter targets.
     entity_hints = [
         {
@@ -220,5 +207,15 @@ async def _fetch_group_b(
         if t.get("entity_matched_column") and t.get("fqn")
         and not column_loader._is_uuid_col(t["entity_matched_column"])
     ]
+
+    # Load a minimal fallback column set for the legacy intent_resolver path.
+    # When anchor_resolver SUCCEEDS → schema_enricher loads complete columns for anchor tables.
+    # When anchor_resolver FAILS → intent_resolver uses this fallback context.
+    # We load only T1 (join-critical) + top semantic matches to keep it fast and non-redundant.
+    # This is intentionally lighter than the old full column load — just enough for intent_resolver
+    # to identify measures, filters, and join keys without hallucinating.
+    display_columns, col_lookup = await asyncio.to_thread(
+        column_loader.load_and_prioritize, tables, embedding, search_query, join_crit_cols
+    )
 
     return tables, hub_info, is_cross_domain, join_crit_cols, display_columns, col_lookup, entity_hints

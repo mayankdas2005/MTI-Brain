@@ -49,6 +49,12 @@ def _build_col_type_map(columns: list[str], rows: list[list]) -> dict[str, str]:
         if series.empty:
             result[col] = "string"
             continue
+        # Boolean columns (True/False) must be "string" — they are categorical flags,
+        # not measures. Without this, is_closed/has_recent_activity (False=0) get
+        # picked as the first numeric column by _num() and render as a flat "0" bar.
+        if pd.api.types.is_bool_dtype(series):
+            result[col] = "string"
+            continue
         if pd.api.types.is_numeric_dtype(series):
             result[col] = "numeric"
             continue
@@ -336,17 +342,40 @@ def _fix_large_number_axes(
     spec = copy.deepcopy(spec)
     encoding = spec["encoding"]
 
+    non_dollar = bool(currency_sym and currency_sym != "$")
+
+    # Compute the global max across all known columns once.
+    # Used as a fallback when a quantitative axis field is derived (_wf_sum, _value,
+    # _series etc.) and therefore not in the `columns` list.
+    # If any source column's values are ≥ 1M, all quantitative axes should use K/M/B/T.
+    global_numeric_max: float = 0.0
+    for i in range(len(columns)):
+        v = _col_max_abs(rows, i)
+        if v is not None and v > global_numeric_max:
+            global_numeric_max = v
+
     for channel in ("y", "x"):
         ch = encoding.get(channel)
         if not isinstance(ch, dict) or ch.get("type") != "quantitative":
             continue
+
         field = ch.get("field")
-        if not isinstance(field, str) or field not in columns:
-            continue
-        col_idx = columns.index(field)
-        max_val = _col_max_abs(rows, col_idx)
-        if max_val is None or max_val < 1_000_000:
-            continue
+        if isinstance(field, str) and field in columns:
+            col_idx = columns.index(field)
+            max_val = _col_max_abs(rows, col_idx)
+        else:
+            # Derived field (e.g. _wf_sum from waterfall, _value from fold).
+            # Use the global max of source columns as proxy.
+            max_val = global_numeric_max or None
+
+        # Non-$ currency symbols (€ £ ¥ etc.) are not valid D3 format tokens.
+        # Always replace axis.format with labelExpr for those, regardless of magnitude.
+        # For plain $ or no currency, replace only when values are large (≥ 1 M).
+        if non_dollar:
+            pass  # always apply
+        else:
+            if max_val is None or max_val < 1_000_000:
+                continue
 
         axis = ch.get("axis")
         if not isinstance(axis, dict):
@@ -453,10 +482,22 @@ def _build_alternative_specs(
 ) -> list[dict]:
     """Build Vega-Lite specs for each LLM-suggested alternative type.
 
+    Each alternative uses its own chart_title / x_axis_label / y_axis_label from
+    labels["alternative_labels"][alt_type] when the LLM provided them, so axes
+    always reflect what THAT chart type puts on each axis rather than copying the
+    primary chart's labels (e.g. "Forecast Period (Week Ending)" is wrong as an
+    x-axis label for a bar chart whose x is a category column).
+
     Returns a list of {"chart_type": str, "spec": dict} entries.
     Skips any type that duplicates the primary, fails guardrails, or raises during build.
     """
-    seen = {primary_type, "table"}  # never include "table" as alternative — frontend shows SQL result table
+    # Pairs that are visually equivalent — never show both.
+    _REDUNDANT_PAIRS: set[frozenset] = {frozenset({"bar", "bar_horizontal"})}
+
+    # Per-alternative label overrides supplied by the LLM
+    alt_label_map: dict = labels.get("alternative_labels") or {}
+
+    seen = {primary_type, "table"}
     result = []
     for alt_type in raw_alternatives[:3]:
         if not isinstance(alt_type, str):
@@ -464,11 +505,18 @@ def _build_alternative_specs(
         guarded = _apply_guardrails(alt_type, columns, col_type_map or {}, len(rows))
         if guarded in seen or guarded not in _VALID_CHART_TYPES:
             continue
+        if any(frozenset({primary_type, guarded}) == pair for pair in _REDUNDANT_PAIRS):
+            continue
         seen.add(guarded)
         try:
+            # Merge primary labels with per-alternative overrides.
+            # The LLM provides chart_title / x_axis_label / y_axis_label keyed by
+            # the alternative chart type (before guardrail remapping); try both keys.
+            alt_override = alt_label_map.get(guarded) or alt_label_map.get(alt_type) or {}
+            alt_labels = {**labels, **alt_override}
             spec = _postprocess_spec(
-                _build_vega_lite_spec(guarded, columns, rows, labels, col_type_map),
-                columns, rows, labels,
+                _build_vega_lite_spec(guarded, columns, rows, alt_labels, col_type_map),
+                columns, rows, alt_labels,
             )
             result.append({"chart_type": guarded, "spec": spec})
         except Exception as e:
@@ -492,9 +540,42 @@ def _sanitize_chart_type(
             if col_type_map.get(c) == "numeric":
                 try:
                     if any(i < len(r) and r[i] is not None and float(r[i]) < 0 for r in rows[:50]):
-                        return "bar"   # arc theta must be positive
+                        return "bar"
                 except (TypeError, ValueError):
                     pass
+
+    # Return "table" only when EVERY meaningful metric column is flat (all values identical).
+    # Skip boolean-like columns (only values 0 and 1) — those are flags, not measures.
+    # A chart is still worth showing if any real metric has variation.
+    #
+    # Example: account_balance=all $0, is_closed=0/1 mix → is_closed is a flag, skip it.
+    # account_balance is the real metric and it's flat → return "table".
+    numeric_cols_present = [c for c in columns if col_type_map.get(c) == "numeric" and c in columns]
+    if numeric_cols_present:
+        all_flat = True
+        for col in numeric_cols_present:
+            idx = columns.index(col)
+            vals = []
+            for r in rows[:200]:
+                v = r[idx] if idx < len(r) else None
+                if v is not None:
+                    try:
+                        vals.append(float(v))
+                    except (TypeError, ValueError):
+                        pass
+            if not vals:
+                continue
+            unique_vals = set(vals)
+            # Skip columns whose only values are 0 and/or 1 — these are boolean flags,
+            # not financial metrics. They should not prevent the all-flat table routing.
+            if unique_vals.issubset({0.0, 1.0}):
+                continue
+            if len(unique_vals) > 1:
+                all_flat = False
+                break
+        if all_flat:
+            return "table"
+
     return chart_type
 
 
@@ -529,13 +610,18 @@ def _validate_spec(spec: dict, chart_type: str) -> bool:
     return True
 
 
+_WATERFALL_MAX_ROWS = 20   # waterfall is meaningless beyond this — window accumulates all rows
+
 def _apply_guardrails(chart_type: str, columns: list[str], col_type_map: dict, n_rows: int = 0) -> str:
     """Minimal structural guardrails — only overrides structurally impossible chart types."""
     if chart_type not in _VALID_CHART_TYPES:
         return "bar"
     n_date = sum(1 for c in columns if col_type_map.get(c) == "date")
     if chart_type in ("line", "area", "multi_line", "stacked_area") and n_date == 0:
-        # Time series charts require at least one date column — structurally impossible without one
+        return "bar"
+    # Waterfall uses a Vega-Lite window (cumulative sum) over ALL rows in row order.
+    # With many rows the cumulative total becomes meaningless — degrade to bar.
+    if chart_type == "waterfall" and n_rows > _WATERFALL_MAX_ROWS:
         return "bar"
     return chart_type
 
@@ -578,7 +664,8 @@ async def _select_chart_and_labels(
 
     @llm_breaker
     async def _call():
-        return await llm.ainvoke(prompt, config=config)
+        from app.core.retry import retry_async
+        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-chart-agent", max_attempts=2, backoff_base=5.0)
 
     fallback_type = _fallback_chart_type(columns, rows, intent, persona)
     fallback_labels = {
@@ -717,13 +804,22 @@ def _build_vega_lite_spec(
 
     # ── Vertical bar ───────────────────────────────────────────────────────────
     if chart_type == "bar":
+        _MAX_BAR_CATS = 25
+        bar_rows = rows[:_MAX_BAR_CATS] if len(rows) > _MAX_BAR_CATS else rows
+        bar_title = labels.get("chart_title", "")
+        if len(rows) > _MAX_BAR_CATS:
+            bar_title = f"{bar_title} (top {_MAX_BAR_CATS})" if bar_title else f"Top {_MAX_BAR_CATS}"
+        bar_base = {**base,
+            "title": bar_title,
+            "data": {"values": [dict(zip(columns, row)) for row in bar_rows]},
+        }
         y_col = _num()
         # When no string col exists (e.g. snapshot date + N numerics), fold numeric
         # columns into metric/value pairs so each metric becomes a bar.
         if not string_cols and numeric_cols:
             fold_cols = numeric_cols
-            safe_fmt = _safe_value_format(val_fmt, rows, columns.index(fold_cols[0]) if fold_cols[0] in columns else 0)
-            spec = {**base,
+            safe_fmt = _safe_value_format(val_fmt, bar_rows, columns.index(fold_cols[0]) if fold_cols[0] in columns else 0)
+            spec = {**bar_base,
                 "transform": [{"fold": fold_cols, "as": ["_metric", "_value"]}],
                 "mark": "bar",
                 "encoding": {
@@ -731,16 +827,15 @@ def _build_vega_lite_spec(
                           "axis": {"title": x_title or "Metric", "labelAngle": -30}},
                     "y": {"field": "_value", "type": "quantitative",
                           "axis": {"title": y_title or "Value", "format": safe_fmt}},
-                    "color": {"field": "_metric", "type": "nominal", "legend": None},
+                    "color": {"field": "_metric", "type": "nominal"},
                 },
             }
         else:
             x_col = _str(exclude=y_col)
-            safe_fmt = _safe_value_format(val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
-            # Color bars by sign — positive steel-blue, negative coral-red (Power BI best practice)
+            safe_fmt = _safe_value_format(val_fmt, bar_rows, columns.index(y_col) if y_col in columns else -1)
             has_neg = any(
                 i < len(r) and r[i] is not None and float(r[i]) < 0
-                for r in rows[:50]
+                for r in bar_rows[:50]
                 for i in [columns.index(y_col)] if y_col in columns
             )
             color_enc: dict = (
@@ -749,24 +844,41 @@ def _build_vega_lite_spec(
             )
             enc: dict = {
                 "x": {"field": x_col, "type": "nominal", "sort": "-y",
-                      "axis": {"title": x_title or x_col, "labelAngle": -30, "labelLimit": 120}},
+                      "axis": {"title": x_title or x_col, "labelAngle": -45, "labelLimit": 100}},
                 "y": {"field": y_col, "type": "quantitative",
                       "axis": {"title": y_title or y_col, "format": safe_fmt}},
             }
             if color_enc:
                 enc["color"] = color_enc
-            spec = {**base, "mark": "bar", "encoding": enc}
+            else:
+                # Use second string col as color dimension when available and has ≤ 20 distinct values.
+                # This adds a legend (e.g. Entity) without making the chart unreadable.
+                color_col = next((c for c in string_cols if c != x_col), None)
+                if color_col and color_col in columns:
+                    n_unique = len({str(r[columns.index(color_col)]) for r in bar_rows if columns.index(color_col) < len(r)})
+                    if 1 < n_unique <= 20:
+                        enc["color"] = {"field": color_col, "type": "nominal"}
+            spec = {**bar_base, "mark": "bar", "encoding": enc}
         spec["config"] = _BASE_CONFIG
         return spec
 
     # ── Horizontal bar ─────────────────────────────────────────────────────────
     if chart_type == "bar_horizontal":
+        _MAX_HORIZ_CATS = 30
+        horiz_rows = rows[:_MAX_HORIZ_CATS] if len(rows) > _MAX_HORIZ_CATS else rows
+        horiz_title = labels.get("chart_title", "")
+        if len(rows) > _MAX_HORIZ_CATS:
+            horiz_title = f"{horiz_title} (top {_MAX_HORIZ_CATS})" if horiz_title else f"Top {_MAX_HORIZ_CATS}"
+        horiz_base = {**base,
+            "title": horiz_title,
+            "data": {"values": [dict(zip(columns, row)) for row in horiz_rows]},
+        }
         x_col = _num()
         y_col = _str(exclude=x_col)
-        safe_fmt = _safe_value_format(val_fmt, rows, columns.index(x_col) if x_col in columns else -1)
+        safe_fmt = _safe_value_format(val_fmt, horiz_rows, columns.index(x_col) if x_col in columns else -1)
         has_neg = any(
             i < len(r) and r[i] is not None and float(r[i]) < 0
-            for r in rows[:50]
+            for r in horiz_rows[:50]
             for i in [columns.index(x_col)] if x_col in columns
         )
         color_enc = (
@@ -781,7 +893,13 @@ def _build_vega_lite_spec(
         }
         if color_enc:
             enc["color"] = color_enc
-        spec = {**base, "mark": "bar", "encoding": enc, "config": _BASE_CONFIG}
+        else:
+            color_col = next((c for c in string_cols if c != y_col), None)
+            if color_col and color_col in columns:
+                n_unique = len({str(r[columns.index(color_col)]) for r in horiz_rows if columns.index(color_col) < len(r)})
+                if 1 < n_unique <= 20:
+                    enc["color"] = {"field": color_col, "type": "nominal"}
+        spec = {**horiz_base, "mark": "bar", "encoding": enc, "config": _BASE_CONFIG}
         return spec
 
     # ── Line / Area ────────────────────────────────────────────────────────────
@@ -951,12 +1069,46 @@ def _build_vega_lite_spec(
         return spec
 
     # ── Waterfall (cash flow bridge / P&L attribution) ─────────────────────────
+    # Waterfall uses a Vega-Lite window (cumulative sum) over all data rows.
+    # Each row = one discrete contribution; the window stacks them left→right.
+    # For this to be legible: cap at _WATERFALL_MAX_ROWS and deduplicate by x_col
+    # (if multiple rows share the same label, pre-aggregate them here in Python
+    # so the window doesn't double-count).
     if chart_type == "waterfall":
         x_col = _str()
         y_col = _num()
-        safe_fmt = _safe_value_format(val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
+
+        # Pre-aggregate: collapse rows sharing the same x_col value.
+        # Without this, a label like "CASH_LIQUIDITY" appearing 30 times produces
+        # a 30-step cumulative window — visually it looks like a single enormous bar.
+        if x_col in columns and y_col in columns:
+            xi = columns.index(x_col)
+            yi = columns.index(y_col)
+            agg: dict = {}
+            for r in rows:
+                xv = str(r[xi]) if xi < len(r) else ""
+                try:
+                    yv = float(r[yi]) if yi < len(r) and r[yi] is not None else 0.0
+                except (TypeError, ValueError):
+                    yv = 0.0
+                agg[xv] = agg.get(xv, 0.0) + yv
+            # Sort descending by absolute value so largest steps come first
+            wf_rows = sorted(
+                [[k, v] for k, v in agg.items()],
+                key=lambda r: abs(r[1]),
+                reverse=True,
+            )[:_WATERFALL_MAX_ROWS]
+            wf_columns = [x_col, y_col]
+        else:
+            wf_rows = rows[:_WATERFALL_MAX_ROWS]
+            wf_columns = columns
+
+        safe_fmt = _safe_value_format(val_fmt, wf_rows, 1)
+        wf_base = {**base,
+            "data": {"values": [dict(zip(wf_columns, r)) for r in wf_rows]},
+        }
         spec = {
-            **base,
+            **wf_base,
             "mark": {"type": "bar", "cornerRadiusTopLeft": 2, "cornerRadiusTopRight": 2},
             "transform": [
                 {"window": [{"op": "sum", "field": y_col, "as": "_wf_sum"}], "frame": [None, 0]},

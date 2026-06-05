@@ -44,8 +44,15 @@ def _has_uuid_in_join_clause(clause: str) -> bool:
     return False
 
 
-# Secondary (non-anchor) table columns: minimal fields only
-_COL_FIELDS_SECONDARY = {"name", "table_fqn", "data_type", "semantic_type"}
+# Secondary (non-anchor) table columns: name/type plus three fields needed for
+# the SQL generator to understand bridging tables — description (what it does),
+# referenced_table_fqn (FK target — identifies join keys), filter_values (enum vocab).
+_COL_FIELDS_SECONDARY = {
+    "name", "table_fqn", "data_type", "semantic_type",
+    "description",
+    "referenced_table_fqn",
+    "filter_values",
+}
 
 
 def _discover_candidate_join_columns(from_fqn: str, to_fqn: str, semantic_context: dict) -> list[str]:
@@ -87,15 +94,36 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
         for t in semantic_context.get("tables", [])
     ]
 
+    # For primary (anchor + path) tables, also pull from _column_lookup to recover columns
+    # that were cut by GLOBAL_CAP in the display set. Without this, the SQL generator sees
+    # a sparse schema for anchor tables and hallucinates the missing columns.
+    col_lookup: dict[tuple, dict] = semantic_context.get("_column_lookup") or {}
+    display_covered: set[tuple] = set()
+
     columns = []
     for c in semantic_context.get("columns", []):
         if not c.get("table_fqn") or not c.get("name"):
             continue
+        key = (c["table_fqn"], c["name"])
+        display_covered.add(key)
         if c["table_fqn"] in primary_fqns:
             row = {k: v for k, v in c.items() if k in _COL_FIELDS_SQL}
         else:
             row = {k: v for k, v in c.items() if k in _COL_FIELDS_SECONDARY}
         columns.append(row)
+
+    # Supplement primary table columns from _column_lookup (not already in display set)
+    for (tfqn, cname), col_meta in col_lookup.items():
+        if tfqn not in primary_fqns:
+            continue
+        if (tfqn, cname) in display_covered:
+            continue
+        if _is_uuid_col_name(cname):
+            continue
+        row = {k: v for k, v in col_meta.items() if k in _COL_FIELDS_SQL}
+        if row.get("table_fqn") and row.get("name"):
+            columns.append(row)
+            display_covered.add((tfqn, cname))
 
     available_joins: list[dict] = []
     candidate_fqns = list(primary_fqns | all_ctx_fqns)
@@ -216,6 +244,7 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
         "columns": columns,
         "available_joins": available_joins,
         "business_terms": semantic_context.get("business_terms", [])[:5],
+        "entity_hints": semantic_context.get("entity_hints", []),
         "_unresolved_pairs": unresolved_pairs,
     }
 

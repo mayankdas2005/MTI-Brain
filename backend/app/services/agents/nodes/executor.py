@@ -97,6 +97,7 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
                 "no_data": True,
                 "repair_count": repair_count,
                 "_prev_repair_count": repair_count,
+                "zero_row_probe_result": f"Query failed after {repair_count} repair attempt(s). Last error: {combined_error[:300]}",
             }
 
     total_rows = len(all_rows)

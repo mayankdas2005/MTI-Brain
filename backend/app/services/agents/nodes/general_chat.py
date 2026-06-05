@@ -45,7 +45,8 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     @llm_breaker
     async def _call():
-        return await llm.ainvoke(prompt, config=config)
+        from app.core.retry import retry_async
+        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-general-chat", max_attempts=2, backoff_base=5.0)
 
     response = await _call()
 

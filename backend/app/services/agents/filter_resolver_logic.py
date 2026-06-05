@@ -121,18 +121,16 @@ def resolve_tier2_fuzzy(
 
 
 def resolve_tier3_temporal(user_value: str) -> dict | None:
-    """Sync pre-check for unambiguously literal temporal expressions.
+    """Sync pre-check for standard temporal expressions — deterministic, no LLM.
 
-    Handles ONLY: 'today', 'yesterday', exact ISO date 'YYYY-MM-DD', and
-    exact ISO range 'YYYY-MM-DD to YYYY-MM-DD'. All other expressions —
-    including any natural language phrase like 'last 2 months', 'this month
-    vs last month', 'Q3 2024', etc. — must go through _tier35_temporal_llm
-    (Haiku) which handles arbitrary temporal language reliably.
+    Handles: 'today', 'yesterday', exact ISO date/range, and the complete set
+    of standard past/forward timeframe slugs emitted by the filter_specialist.
+    Any non-matching expression falls through to _tier35_temporal_llm (Haiku).
 
     Returns {operator, value, is_raw_sql} or None.
     """
     import re
-    v = user_value.strip().lower()
+    v = user_value.strip().lower().replace(" ", "_")
 
     if v == "today":
         return {"operator": "=", "value": "CURRENT_DATE", "is_raw_sql": True}
@@ -143,9 +141,56 @@ def resolve_tier3_temporal(user_value: str) -> dict | None:
     if re.match(r"\d{4}-\d{2}-\d{2}$", v):
         return {"operator": "=", "value": v}
 
-    if re.match(r"\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}$", v):
-        parts = v.split(" to ")
-        return {"operator": "BETWEEN", "value": parts}
+    if re.match(r"\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}$", v) or re.match(r"\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}$", user_value.strip()):
+        parts = user_value.strip().replace(" to ", " TO ").split(" TO ")
+        if len(parts) == 2:
+            return {"operator": "BETWEEN", "value": [p.strip() for p in parts]}
+
+    # Standard past-window slugs
+    _PAST = {
+        "last_7_days":    ["DATEADD(day,-7,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_14_days":   ["DATEADD(day,-14,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_30_days":   ["DATEADD(day,-30,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_60_days":   ["DATEADD(day,-60,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_90_days":   ["DATEADD(day,-90,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_7_days":    ["DATEADD(day,-7,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_week":      ["DATEADD(week,-1,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_2_weeks":   ["DATEADD(week,-2,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_month":     ["DATE_TRUNC('month',DATEADD(month,-1,CURRENT_DATE))",
+                           "DATEADD(day,-1,DATE_TRUNC('month',CURRENT_DATE))"],
+        "last_3_months":  ["DATEADD(month,-3,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_6_months":  ["DATEADD(month,-6,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_12_months": ["DATEADD(month,-12,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_year":      ["DATEADD(year,-1,CURRENT_DATE)", "CURRENT_DATE"],
+        "last_quarter":   ["DATE_TRUNC('quarter',DATEADD(quarter,-1,CURRENT_DATE))",
+                           "DATEADD(day,-1,DATE_TRUNC('quarter',CURRENT_DATE))"],
+        "this_month":     ["DATE_TRUNC('month',CURRENT_DATE)", "CURRENT_DATE"],
+        "this_quarter":   ["DATE_TRUNC('quarter',CURRENT_DATE)", "CURRENT_DATE"],
+        "this_year":      ["DATE_TRUNC('year',CURRENT_DATE)", "CURRENT_DATE"],
+        "ytd":            ["DATE_TRUNC('year',CURRENT_DATE)", "CURRENT_DATE"],
+        "mtd":            ["DATE_TRUNC('month',CURRENT_DATE)", "CURRENT_DATE"],
+        "qtd":            ["DATE_TRUNC('quarter',CURRENT_DATE)", "CURRENT_DATE"],
+    }
+
+    # Standard forward-window slugs
+    _FORWARD = {
+        "next_7_days":    ["CURRENT_DATE", "DATEADD(day,7,CURRENT_DATE)"],
+        "next_14_days":   ["CURRENT_DATE", "DATEADD(day,14,CURRENT_DATE)"],
+        "next_30_days":   ["CURRENT_DATE", "DATEADD(day,30,CURRENT_DATE)"],
+        "next_4_weeks":   ["CURRENT_DATE", "DATEADD(week,4,CURRENT_DATE)"],
+        "next_60_days":   ["CURRENT_DATE", "DATEADD(day,60,CURRENT_DATE)"],
+        "next_90_days":   ["CURRENT_DATE", "DATEADD(day,90,CURRENT_DATE)"],
+        "next_3_months":  ["CURRENT_DATE", "DATEADD(month,3,CURRENT_DATE)"],
+        "next_6_months":  ["CURRENT_DATE", "DATEADD(month,6,CURRENT_DATE)"],
+        "next_12_months": ["CURRENT_DATE", "DATEADD(month,12,CURRENT_DATE)"],
+        "next_quarter":   ["CURRENT_DATE", "DATEADD(quarter,1,CURRENT_DATE)"],
+        "next_year":      ["CURRENT_DATE", "DATEADD(year,1,CURRENT_DATE)"],
+    }
+
+    all_presets = {**_PAST, **_FORWARD}
+    if v in all_presets:
+        start, end = all_presets[v]
+        return {"operator": "BETWEEN_SQL", "value": [start, end], "is_raw_sql": True}
 
     return None
 

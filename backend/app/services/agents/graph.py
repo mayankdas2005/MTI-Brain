@@ -1,7 +1,19 @@
 """LangGraph graph wiring for the Neo4j analytics pipeline.
 
-13-node graph: intake → context_fetcher → intent_resolver → query_compiler
-               → filter_resolver → sql_generator → sql_validator → executor → synthesis → chart_agent
+New single-responsibility architecture:
+  intake → context_fetcher (Phase 1: tables only)
+         → anchor_resolver (Haiku: pick tables)
+         → schema_enricher (deterministic: load complete columns for anchor tables)
+         → intent_dispatcher (fan-out via Send API)
+              ├── measure_specialist (parallel Haiku)
+              ├── filter_specialist  (parallel Haiku)
+              └── dimension_specialist (parallel Haiku)
+         → intent_assembler (defer=True: waits for all 3 specialists)
+         → directive_writer (Sonnet: write COMPUTATION/SCHEMA_GAP directives)
+         → query_compiler → filter_resolver → sql_generator → sql_validator
+         → executor → data_quality_checker → synthesis → chart_agent
+
+Fallback: intent_assembler can route back to intent_resolver for error recovery.
 
 Lifecycle (init/shutdown) and graph compilation live here.
 Routing decisions live in routing.py.
@@ -27,6 +39,14 @@ from app.core.logger import logger
 from app.services.agents import neo4j_client, redis_client
 from app.services.agents.memory import long_term as lt_memory
 from app.services.agents.node_names import (
+    ANCHOR_RESOLVER as N_ANCHOR_RESOLVER,
+    SCHEMA_ENRICHER as N_SCHEMA_ENRICHER,
+    MEASURE_SPECIALIST as N_MEASURE_SPECIALIST,
+    FILTER_SPECIALIST as N_FILTER_SPECIALIST,
+    DIMENSION_SPECIALIST as N_DIMENSION_SPECIALIST,
+    INTENT_ASSEMBLER as N_INTENT_ASSEMBLER,
+    DIRECTIVE_WRITER as N_DIRECTIVE_WRITER,
+    DATA_QUALITY_CHECKER as N_DATA_QUALITY_CHECKER,
     CHART_AGENT as N_CHART_AGENT,
     COMPRESS as N_COMPRESS,
     CONTEXT_FETCHER as N_CONTEXT_FETCHER,
@@ -41,22 +61,32 @@ from app.services.agents.node_names import (
     SQL_VALIDATOR as N_SQL_VALIDATOR,
     SYNTHESIS as N_SYNTHESIS,
 )
+from app.services.agents.nodes.anchor_resolver import anchor_resolver
 from app.services.agents.nodes.chart_agent import chart_agent
 from app.services.agents.nodes.compress import compress
 from app.services.agents.nodes.context_fetcher import context_fetcher
+from app.services.agents.nodes.data_quality_checker import data_quality_checker
+from app.services.agents.nodes.dimension_specialist import dimension_specialist
+from app.services.agents.nodes.directive_writer import directive_writer
 from app.services.agents.nodes.error_response import error_response
 from app.services.agents.nodes.executor import executor
 from app.services.agents.nodes.filter_resolver import filter_resolver
+from app.services.agents.nodes.filter_specialist import filter_specialist
 from app.services.agents.nodes.general_chat import general_chat
 from app.services.agents.nodes.intake_classifier import intake_classifier
+from app.services.agents.nodes.intent_assembler import intent_assembler
 from app.services.agents.nodes.intent_resolver import intent_resolver
+from app.services.agents.nodes.measure_specialist import measure_specialist
 from app.services.agents.nodes.query_compiler import query_compiler
+from app.services.agents.nodes.schema_enricher import schema_enricher
 from app.services.agents.nodes.sql_generator_node import sql_generator
 from app.services.agents.nodes.sql_validator import sql_validator
 from app.services.agents.nodes.synthesis import synthesis
 from app.services.agents.routing import (
     LLM_RETRY,
+    route_after_anchor_resolver,
     route_after_context_fetcher,
+    route_after_intent_assembler,
     route_compiler,
     route_executor,
     route_filter_resolver,
@@ -82,78 +112,118 @@ def get_memory_store():
 # ─── Graph builder ────────────────────────────────────────────────────────────
 
 def compile_graph():
-    """Build and compile the analytics LangGraph."""
+    """Build and compile the analytics LangGraph (single-responsibility architecture)."""
     b = StateGraph(AnalyticsState)
 
-    b.add_node(N_INTAKE,          intake_classifier, retry_policy=LLM_RETRY)
-    b.add_node(N_GENERAL_CHAT,    general_chat,      retry_policy=LLM_RETRY)
-    b.add_node(N_CONTEXT_FETCHER, context_fetcher)
-    b.add_node(N_INTENT_RESOLVER, intent_resolver,   retry_policy=LLM_RETRY)
-    b.add_node(N_QUERY_COMPILER,  query_compiler)
-    b.add_node(N_FILTER_RESOLVER, filter_resolver,   retry_policy=LLM_RETRY)
-    b.add_node(N_SQL_GENERATOR,   sql_generator,     retry_policy=LLM_RETRY)
-    b.add_node(N_SQL_VALIDATOR,   sql_validator)
-    b.add_node(N_EXECUTOR,        executor,          retry_policy=LLM_RETRY)
-    b.add_node(N_SYNTHESIS,       synthesis,         retry_policy=LLM_RETRY)
-    b.add_node(N_CHART_AGENT,     chart_agent,       retry_policy=LLM_RETRY)
-    b.add_node(N_ERROR_RESPONSE,  error_response)
-    b.add_node(N_COMPRESS,        compress,          retry_policy=LLM_RETRY)
+    # ── Core infrastructure nodes ─────────────────────────────────────────────
+    b.add_node(N_INTAKE,              intake_classifier,    retry_policy=LLM_RETRY)
+    b.add_node(N_GENERAL_CHAT,        general_chat,         retry_policy=LLM_RETRY)
+    b.add_node(N_CONTEXT_FETCHER,     context_fetcher)
 
+    # ── Single-responsibility intent pipeline ─────────────────────────────────
+    # Note: intent_dispatcher is removed — for fixed 3-way parallel branches,
+    # direct multi-edges from schema_enricher work correctly and show in the graph.
+    # Send API is for variable-length fan-out (map-reduce over a list), not fixed branches.
+    b.add_node(N_ANCHOR_RESOLVER,     anchor_resolver,      retry_policy=LLM_RETRY)
+    b.add_node(N_SCHEMA_ENRICHER,     schema_enricher)
+    b.add_node(N_MEASURE_SPECIALIST,  measure_specialist,   retry_policy=LLM_RETRY)
+    b.add_node(N_FILTER_SPECIALIST,   filter_specialist,    retry_policy=LLM_RETRY)
+    b.add_node(N_DIMENSION_SPECIALIST,dimension_specialist, retry_policy=LLM_RETRY)
+    b.add_node(N_INTENT_ASSEMBLER,    intent_assembler,     defer=True)  # waits for all 3 specialists
+    b.add_node(N_DIRECTIVE_WRITER,    directive_writer,     retry_policy=LLM_RETRY)
+
+    # ── Fallback: legacy intent_resolver (used when assembler fails) ──────────
+    b.add_node(N_INTENT_RESOLVER,     intent_resolver,      retry_policy=LLM_RETRY)
+
+    # ── Compilation + execution pipeline (unchanged) ─────────────────────────
+    b.add_node(N_QUERY_COMPILER,      query_compiler)
+    b.add_node(N_FILTER_RESOLVER,     filter_resolver,      retry_policy=LLM_RETRY)
+    b.add_node(N_SQL_GENERATOR,       sql_generator,        retry_policy=LLM_RETRY)
+    b.add_node(N_SQL_VALIDATOR,       sql_validator)
+    b.add_node(N_EXECUTOR,            executor,             retry_policy=LLM_RETRY)
+
+    # ── Post-execution: data quality check then synthesis ────────────────────
+    b.add_node(N_DATA_QUALITY_CHECKER,data_quality_checker, retry_policy=LLM_RETRY)
+    b.add_node(N_SYNTHESIS,           synthesis,            retry_policy=LLM_RETRY)
+    b.add_node(N_CHART_AGENT,         chart_agent,          retry_policy=LLM_RETRY)
+    b.add_node(N_ERROR_RESPONSE,      error_response)
+    b.add_node(N_COMPRESS,            compress,             retry_policy=LLM_RETRY)
+
+    # ── Edges ─────────────────────────────────────────────────────────────────
     b.add_edge(START, N_INTAKE)
 
     b.add_conditional_edges(
-        N_INTAKE,
-        route_intake,
+        N_INTAKE, route_intake,
         {N_GENERAL_CHAT: N_GENERAL_CHAT, N_CONTEXT_FETCHER: N_CONTEXT_FETCHER},
     )
-
     b.add_conditional_edges(N_GENERAL_CHAT, route_should_compress, {N_COMPRESS: N_COMPRESS, END: END})
 
+    # context_fetcher → anchor_resolver or error
     b.add_conditional_edges(
-        N_CONTEXT_FETCHER,
-        route_after_context_fetcher,
-        {N_ERROR_RESPONSE: N_ERROR_RESPONSE, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
+        N_CONTEXT_FETCHER, route_after_context_fetcher,
+        {N_ERROR_RESPONSE: N_ERROR_RESPONSE, N_ANCHOR_RESOLVER: N_ANCHOR_RESOLVER},
     )
 
+    # anchor_resolver → schema_enricher (success) or legacy intent_resolver (fallback)
     b.add_conditional_edges(
-        N_INTENT_RESOLVER,
-        route_intent,
-        {N_QUERY_COMPILER: N_QUERY_COMPILER},
+        N_ANCHOR_RESOLVER, route_after_anchor_resolver,
+        {N_SCHEMA_ENRICHER: N_SCHEMA_ENRICHER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
     )
 
+    # schema_enricher fans out to 3 parallel specialists via direct multi-edges.
+    # LangGraph executes all three in parallel (superstep), then intent_assembler
+    # (defer=True) waits until all three complete before executing.
+    b.add_edge(N_SCHEMA_ENRICHER, N_MEASURE_SPECIALIST)
+    b.add_edge(N_SCHEMA_ENRICHER, N_FILTER_SPECIALIST)
+    b.add_edge(N_SCHEMA_ENRICHER, N_DIMENSION_SPECIALIST)
+
+    # All three specialists → intent_assembler (defer=True waits for all 3)
+    b.add_edge(N_MEASURE_SPECIALIST,   N_INTENT_ASSEMBLER)
+    b.add_edge(N_FILTER_SPECIALIST,    N_INTENT_ASSEMBLER)
+    b.add_edge(N_DIMENSION_SPECIALIST, N_INTENT_ASSEMBLER)
+
+    # intent_assembler → directive_writer (success) or legacy intent_resolver (fallback)
     b.add_conditional_edges(
-        N_QUERY_COMPILER,
-        route_compiler,
+        N_INTENT_ASSEMBLER, route_after_intent_assembler,
+        {N_DIRECTIVE_WRITER: N_DIRECTIVE_WRITER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
+    )
+
+    # directive_writer → query_compiler
+    b.add_edge(N_DIRECTIVE_WRITER, N_QUERY_COMPILER)
+
+    # Legacy intent_resolver → query_compiler (fallback path and recompile path)
+    b.add_edge(N_INTENT_RESOLVER, N_QUERY_COMPILER)
+
+    b.add_conditional_edges(
+        N_QUERY_COMPILER, route_compiler,
         {N_FILTER_RESOLVER: N_FILTER_RESOLVER, N_SQL_GENERATOR: N_SQL_GENERATOR, N_ERROR_RESPONSE: N_ERROR_RESPONSE},
     )
-
     b.add_conditional_edges(
-        N_FILTER_RESOLVER,
-        route_filter_resolver,
+        N_FILTER_RESOLVER, route_filter_resolver,
         {N_SQL_GENERATOR: N_SQL_GENERATOR},
     )
 
     b.add_edge(N_SQL_GENERATOR, N_SQL_VALIDATOR)
 
     b.add_conditional_edges(
-        N_SQL_VALIDATOR,
-        route_validator,
+        N_SQL_VALIDATOR, route_validator,
         {N_SQL_GENERATOR: N_SQL_GENERATOR, N_EXECUTOR: N_EXECUTOR, N_ERROR_RESPONSE: N_ERROR_RESPONSE},
     )
 
     b.add_conditional_edges(
-        N_EXECUTOR,
-        route_executor,
+        N_EXECUTOR, route_executor,
         {
-            N_SQL_VALIDATOR: N_SQL_VALIDATOR,
-            N_SYNTHESIS: N_SYNTHESIS,
-            N_INTENT_RESOLVER: N_INTENT_RESOLVER,
+            N_SQL_VALIDATOR:        N_SQL_VALIDATOR,
+            N_DATA_QUALITY_CHECKER: N_DATA_QUALITY_CHECKER,  # executor success → quality check first
+            N_INTENT_RESOLVER:      N_INTENT_RESOLVER,       # recompile still uses legacy path
         },
     )
 
+    # data_quality_checker always proceeds to synthesis
+    b.add_edge(N_DATA_QUALITY_CHECKER, N_SYNTHESIS)
+
     b.add_conditional_edges(
-        N_SYNTHESIS,
-        route_synthesis,
+        N_SYNTHESIS, route_synthesis,
         {N_CHART_AGENT: N_CHART_AGENT, END: END},
     )
 

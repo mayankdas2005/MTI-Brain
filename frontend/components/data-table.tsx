@@ -174,7 +174,7 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
                 return (
                   <TableHead
                     key={col}
-                    className={`whitespace-nowrap py-[var(--density-pad-y)] cursor-pointer select-none hover:bg-accent/50 transition-colors bg-background ${isNumeric ? 'text-right' : ''} ${isFirst ? 'sticky left-0 z-20 md:static' : ''}`}
+                    className={`whitespace-nowrap py-[var(--density-pad-y)] cursor-pointer select-none hover:bg-accent transition-colors bg-background ${isNumeric ? 'text-right' : ''} ${isFirst ? 'sticky left-0 z-20 md:static' : ''}`}
                     onClick={() => handleSort(ci)}
                   >
                     <div className={`flex items-center gap-1 ${isNumeric ? 'justify-end' : ''}`}>

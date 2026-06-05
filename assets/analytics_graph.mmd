@@ -3,43 +3,63 @@ graph TD;
 	intake_classifier(intake_classifier)
 	general_chat(general_chat)
 	context_fetcher(context_fetcher)
+	anchor_resolver(anchor_resolver)
+	schema_enricher(schema_enricher)
+	measure_specialist(measure_specialist)
+	filter_specialist(filter_specialist)
+	dimension_specialist(dimension_specialist)
+	intent_assembler(intent_assembler<hr/><small><em>defer = True</em></small>)
+	directive_writer(directive_writer)
 	intent_resolver(intent_resolver)
 	query_compiler(query_compiler)
 	filter_resolver(filter_resolver)
 	sql_generator(sql_generator)
 	sql_validator(sql_validator)
 	executor(executor)
+	data_quality_checker(data_quality_checker)
 	synthesis(synthesis)
 	chart_agent(chart_agent)
 	error_response(error_response)
 	compress(compress)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> intake_classifier;
+	anchor_resolver -.-> intent_resolver;
+	anchor_resolver -.-> schema_enricher;
 	chart_agent -.-> __end__;
 	chart_agent -.-> compress;
+	compress -.-> intent_assembler;
+	context_fetcher -.-> anchor_resolver;
 	context_fetcher -.-> error_response;
-	context_fetcher -.-> intent_resolver;
+	data_quality_checker --> synthesis;
+	dimension_specialist --> intent_assembler;
+	directive_writer --> query_compiler;
 	error_response -.-> __end__;
 	error_response -.-> compress;
+	executor -.-> data_quality_checker;
 	executor -.-> intent_resolver;
 	executor -.-> sql_validator;
-	executor -.-> synthesis;
 	filter_resolver -.-> sql_generator;
+	filter_specialist --> intent_assembler;
 	general_chat -.-> __end__;
 	general_chat -.-> compress;
 	intake_classifier -.-> context_fetcher;
 	intake_classifier -.-> general_chat;
-	intent_resolver -.-> query_compiler;
+	intent_assembler -.-> directive_writer;
+	intent_assembler -.-> intent_resolver;
+	intent_resolver --> query_compiler;
+	measure_specialist --> intent_assembler;
 	query_compiler -.-> error_response;
 	query_compiler -.-> filter_resolver;
 	query_compiler -.-> sql_generator;
+	schema_enricher --> dimension_specialist;
+	schema_enricher --> filter_specialist;
+	schema_enricher --> measure_specialist;
 	sql_generator --> sql_validator;
 	sql_validator -.-> error_response;
 	sql_validator -.-> executor;
 	sql_validator -.-> sql_generator;
 	synthesis -.-> __end__;
 	synthesis -.-> chart_agent;
-	compress --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

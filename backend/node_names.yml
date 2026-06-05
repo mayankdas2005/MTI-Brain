@@ -31,10 +31,50 @@ nodes:
     tier: none
     stream: null
 
-  - id: intent_resolver
+  - id: anchor_resolver
+    label: "Identifying tables"
+    tier: fast
+    stream: [reasoning, reasoning.delta]
+
+  - id: schema_enricher
+    label: null
+    tier: none
+    stream: null
+
+  - id: measure_specialist
+    label: "Extracting metrics"
+    tier: fast
+    stream: [reasoning, reasoning.delta]
+
+  - id: filter_specialist
+    label: "Resolving filters"
+    tier: fast
+    stream: [reasoning, reasoning.delta]
+
+  - id: dimension_specialist
+    label: "Identifying dimensions"
+    tier: fast
+    stream: [reasoning, reasoning.delta]
+
+  - id: intent_assembler
+    label: null
+    tier: none
+    stream: null
+
+  - id: directive_writer
     label: "Interpreting your question"
     tier: balanced
     stream: [reasoning, reasoning.delta]
+
+  - id: intent_resolver
+    label: null
+    tier: balanced
+    stream: [reasoning, reasoning.delta]
+
+  - id: data_quality_checker
+    label: null
+    tier: fast
+    stream: null
 
   - id: clarification
     label: "Requesting clarification"
@@ -49,7 +89,7 @@ nodes:
   - id: filter_resolver
     label: "Resolving filters"
     tier: fast
-    stream: null
+    stream: [reasoning, reasoning.delta]
 
   - id: sql_generator
     label: "Building query"

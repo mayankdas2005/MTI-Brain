@@ -26,7 +26,7 @@ _LIST_SEP_RE = _re.compile(r"[,;|]")
 _NUMERIC_START_RE = _re.compile(r"^[\$\-\+]?\d")
 
 
-def _build_schema_directive(ir: SemanticIR) -> str:
+def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None) -> str:
     """Compact code-verified structural summary from SemanticIR for downstream agents.
 
     Gives the sql_generator, CTE planner, and repair agent an authoritative spec of:
@@ -34,6 +34,7 @@ def _build_schema_directive(ir: SemanticIR) -> str:
     - The exact confirmed join ON clauses from Neo4j
     - Any unresolved pairs and their candidate columns
     - Compact list of measures and dimensions
+    - Available columns on hub/bridge tables (prevents hallucinated column names)
     """
     lines = ["SCHEMA DIRECTIVE — code-verified structure from ir_builder:"]
     lines.append(f"ANCHOR_TABLES: {', '.join(ir.anchor_tables)}")
@@ -67,6 +68,41 @@ def _build_schema_directive(ir: SemanticIR) -> str:
             for d in ir.dimensions
         ]
         lines.append(f"DIMENSIONS: {', '.join(d_strs)}")
+
+    # Non-anchor tables in the path (hub, bridge) only carry their join-key columns.
+    # Listing them here prevents the SQL generator from inventing columns that don't exist
+    # (e.g. ba.company_ref on lpp.bank_account which only exposes 'code' as a join key).
+    #
+    # Safety rules:
+    #   - Anchor tables are EXCLUDED — they are fully loaded and the SQL generator
+    #     may use all their columns (no restriction needed).
+    #   - The hub table is always injected into ir.anchor_tables by ir_builder, so
+    #     it never appears here even when it's also in ir.path_tables.
+    #   - Deduplicate to avoid emitting the same table twice (path_tables may repeat).
+    if semantic_context:
+        col_lookup: dict = semantic_context.get("_column_lookup") or {}
+        anchor_set = set(ir.anchor_tables)
+        seen_path: set[str] = set()
+        for tbl in (ir.path_tables or []):
+            if tbl in anchor_set or tbl in seen_path:
+                continue
+            seen_path.add(tbl)
+            tbl_cols = sorted({col for fqn, col in col_lookup if fqn == tbl})
+            if tbl_cols:
+                lines.append(
+                    f"HUB/BRIDGE TABLE {tbl} — available columns (join keys only): "
+                    + ", ".join(tbl_cols)
+                    + " — do NOT use any other column from this table"
+                )
+
+    # Explicitly invalid columns — hallucinated by intent specialists + proactively blocked.
+    invalid = list(ir.hallucinated_columns or [])
+    if invalid:
+        lines.append(
+            "INVALID COLUMNS — these do NOT exist on the tables above; "
+            "do NOT use them under any name or on any other table:\n"
+            + "\n".join(f"  ✗ {c}" for c in invalid)
+        )
 
     return "\n".join(lines)
 
@@ -179,7 +215,7 @@ async def _handle_single(
     else:
         logger.warning("query_compiler | FILTER DIRECTIVE empty (no resolved filters yet) | thread={}", thread_id)
 
-    schema_directive = _build_schema_directive(ir)
+    schema_directive = _build_schema_directive(ir, semantic_context=semantic_context)
     logger.info("query_compiler | SCHEMA DIRECTIVE | thread={}\n{}", thread_id, schema_directive)
 
     if has_unresolved:

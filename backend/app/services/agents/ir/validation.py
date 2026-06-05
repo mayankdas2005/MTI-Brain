@@ -68,11 +68,13 @@ async def strip_hallucinated_columns(
         cols_by_table.setdefault(tfqn, set()).add(cname)
 
     original_measures = list(ir.measures)
+    dropped_cols: list[str] = []  # track dropped columns to inject as INVALID COLUMNS in SQL gen
 
     def _validate_col_ref(table_fqn: str, col_name: str) -> str | None:
         """Return corrected col_name or None to drop."""
         if not table_fqn or table_fqn not in valid_tables:
             logger.warning("ir_validation | hallucinated_table | {} | thread={}", table_fqn, thread_id)
+            dropped_cols.append(f"{table_fqn}.{col_name}")
             return None
         valid_cols = cols_by_table.get(table_fqn, set())
         if col_name in valid_cols:
@@ -90,6 +92,7 @@ async def strip_hallucinated_columns(
             except ImportError:
                 pass
         logger.warning("ir_validation | hallucinated_col | {}.{} | thread={}", table_fqn, col_name, thread_id)
+        dropped_cols.append(f"{table_fqn}.{col_name}")
         return None
 
     # Validate measures
@@ -121,6 +124,7 @@ async def strip_hallucinated_columns(
         "measures": valid_measures,
         "dimensions": valid_dims,
         "filters": valid_filters,
+        "hallucinated_columns": dropped_cols,
     })
 
 

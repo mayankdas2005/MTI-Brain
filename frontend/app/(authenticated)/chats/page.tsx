@@ -211,6 +211,12 @@ export default function ChatsPage() {
     setFocusedSearchIndex(-1);
   }, [searchResults]);
 
+  // Clear selection when switching between search and browse mode.
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setSelectMode(false);
+  }, [isSearching]);
+
   // Infinite scroll — listen on the actual scroll container, not the viewport.
   // IntersectionObserver with root:null breaks when the scroll container is
   // nested inside overflow-hidden (the authenticated layout's main element):
@@ -284,11 +290,12 @@ export default function ChatsPage() {
   };
 
   const selectAll = () => {
-    if (selectedIds.size === threads.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(threads.map((t) => t.id)));
+    if (isSearching) {
+      const allIds = searchResults.map((r) => r.thread_id);
+      setSelectedIds(selectedIds.size === allIds.length ? new Set() : new Set(allIds));
+      return;
     }
+    setSelectedIds(selectedIds.size === threads.length ? new Set() : new Set(threads.map((t) => t.id)));
   };
 
   const handleBulkDelete = async () => {
@@ -296,6 +303,7 @@ export default function ChatsPage() {
     try {
       await api.bulkDeleteThreads(ids);
       setThreads((prev) => prev.filter((t) => !selectedIds.has(t.id)));
+      setSearchResults((prev) => prev.filter((r) => !selectedIds.has(r.thread_id)));
       setSelectedIds(new Set());
       useThreadStore.setState((state) => ({
         threads: state.threads.filter((t) => !ids.includes(t.id)),
@@ -397,17 +405,18 @@ export default function ChatsPage() {
           </div>
         )}
 
-        {/* Selection bar - hidden when there are no threads, since the bar
-            has no useful state to show (and the Select/Cancel button in
-            this row only renders when threads exist, which would otherwise
-            strand the user in select mode after deleting the last thread). */}
-        {!isSearching && threads.length > 0 && (
+        {/* Selection bar */}
+        {((isSearching && !searchLoading && searchResults.length > 0) || (!isSearching && threads.length > 0)) && (
           <div className="flex items-center justify-between mb-3 min-h-8">
             <div className="flex items-center gap-3">
               {selectMode ? (
                 <>
                   <Checkbox
-                    checked={selectedIds.size === threads.length && threads.length > 0}
+                    checked={
+                      isSearching
+                        ? selectedIds.size === searchResults.length && searchResults.length > 0
+                        : selectedIds.size === threads.length && threads.length > 0
+                    }
                     onCheckedChange={selectAll}
                     className="h-5 w-5"
                   />
@@ -452,18 +461,16 @@ export default function ChatsPage() {
               )}
             </div>
 
-            {threads.length > 0 && (
-              <button
-                onClick={() => selectMode ? exitSelectMode() : setSelectMode(true)}
-                className={`flex items-center gap-1 text-sm transition-colors ${
-                  selectMode
-                    ? 'text-muted-foreground hover:text-foreground'
-                    : 'text-primary hover:underline'
-                }`}
-              >
-                {selectMode ? <><X className="w-4 h-4" /> Cancel</> : 'Select'}
-              </button>
-            )}
+            <button
+              onClick={() => selectMode ? exitSelectMode() : setSelectMode(true)}
+              className={`flex items-center gap-1 text-sm transition-colors ${
+                selectMode
+                  ? 'text-muted-foreground hover:text-foreground'
+                  : 'text-primary hover:underline'
+              }`}
+            >
+              {selectMode ? <><X className="w-4 h-4" /> Cancel</> : 'Select'}
+            </button>
           </div>
         )}
 
@@ -494,56 +501,88 @@ export default function ChatsPage() {
 
               {/* Results */}
               {!searchLoading && searchResults.map((result, index) => (
-                <button
-                  key={result.thread_id}
-                  onClick={() => router.push(`/chat/${result.thread_id}`)}
-                  onMouseEnter={() => {
-                    router.prefetch(`/chat/${result.thread_id}`);
-                    setFocusedSearchIndex(index);
-                  }}
-                  className={`w-full text-left rounded-lg px-4 py-[var(--density-pad-y-loose)] transition-all duration-100 group animate-in fade-in slide-in-from-bottom-1 fill-mode-both ${
-                    focusedSearchIndex === index
-                      ? 'bg-muted/70 ring-1 ring-border'
-                      : 'hover:bg-muted/50'
-                  }`}
-                  style={{ animationDelay: `${Math.min(index, 6) * 35}ms` }}
-                >
-                  <p className="text-sm font-medium text-foreground line-clamp-2 leading-snug">
-                    {highlightQueryInText(result.title || 'Untitled', search, {
-                      matchedTerms: result.matched_terms,
-                    })}
-                  </p>
-                  {result.headline && (
-                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-4 leading-relaxed">
-                      {renderSearchSnippet(result.headline, search, {
-                        matchedTerms: result.matched_terms,
-                      })}
-                    </p>
+                <div key={result.thread_id}>
+                  {index > 0 && !selectedIds.has(result.thread_id) && !selectedIds.has(searchResults[index - 1]?.thread_id) && (
+                    <div className="border-t border-border mx-4" />
                   )}
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    {result.match_type === 'message' && (
-                      <FileText className="w-3 h-3 text-muted-foreground/70 shrink-0" />
-                    )}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="text-xs text-muted-foreground/80 cursor-default">
-                          {formatTime(result.updated_at)}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent side="right">
-                        {new Date(result.updated_at).toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
-                      </TooltipContent>
-                    </Tooltip>
-                    {result.project_id && projectNameMap.get(result.project_id) && (
-                      <>
-                        <span className="text-muted-foreground/60 text-xs">in</span>
-                        <span className="text-xs text-muted-foreground/80">
-                          {projectNameMap.get(result.project_id)}
-                        </span>
-                      </>
-                    )}
+                  <div
+                    onClick={() => {
+                      if (selectMode || selectedIds.has(result.thread_id)) {
+                        toggleSelect(result.thread_id);
+                      } else {
+                        router.push(`/chat/${result.thread_id}`);
+                      }
+                    }}
+                    onMouseEnter={() => {
+                      router.prefetch(`/chat/${result.thread_id}`);
+                      setFocusedSearchIndex(index);
+                    }}
+                    className={`group flex items-center px-4 py-[var(--density-pad-y-loose)] cursor-pointer transition-all duration-100 rounded-lg animate-in fade-in slide-in-from-bottom-1 fill-mode-both ${
+                      selectedIds.has(result.thread_id)
+                        ? 'bg-primary/15 ring-1 ring-primary/40'
+                        : focusedSearchIndex === index
+                        ? 'bg-muted/70 ring-1 ring-border'
+                        : 'hover:bg-muted/50'
+                    }`}
+                    style={{ animationDelay: `${Math.min(index, 6) * 35}ms` }}
+                  >
+                    <div
+                      className={`mr-3 shrink-0 transition-opacity duration-100 ${
+                        selectMode || selectedIds.has(result.thread_id)
+                          ? 'opacity-100'
+                          : 'opacity-0 group-hover:opacity-100'
+                      }`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Checkbox
+                        checked={selectedIds.has(result.thread_id)}
+                        onCheckedChange={() => {
+                          if (!selectMode) setSelectMode(true);
+                          toggleSelect(result.thread_id);
+                        }}
+                        className="h-5 w-5"
+                        aria-label={`Select chat: ${result.title || 'Untitled'}`}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground line-clamp-2 leading-snug">
+                        {highlightQueryInText(result.title || 'Untitled', search, {
+                          matchedTerms: result.matched_terms,
+                        })}
+                      </p>
+                      {result.headline && (
+                        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-4 leading-relaxed">
+                          {renderSearchSnippet(result.headline, search, {
+                            matchedTerms: result.matched_terms,
+                          })}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        {result.match_type === 'message' && (
+                          <FileText className="w-3 h-3 text-muted-foreground/70 shrink-0" />
+                        )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="text-xs text-muted-foreground/80 cursor-default">
+                              {formatTime(result.updated_at)}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="right">
+                            {new Date(result.updated_at).toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
+                          </TooltipContent>
+                        </Tooltip>
+                        {result.project_id && projectNameMap.get(result.project_id) && (
+                          <>
+                            <span className="text-muted-foreground/60 text-xs">in</span>
+                            <span className="text-xs text-muted-foreground/80">
+                              {projectNameMap.get(result.project_id)}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           ) : threads.length === 0 && loading ? (

@@ -815,7 +815,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
           const starredProjectsVisible = starredProjects.slice(0, STARRED_LIMIT);
           const starredThreadsVisible = starredThreads.slice(
             0,
-            Math.max(0, STARRED_LIMIT - starredProjects.length),
+            Math.max(0, STARRED_LIMIT - starredProjectsVisible.length),
           );
           const starredOverflow = totalStarred > STARRED_LIMIT;
           return (

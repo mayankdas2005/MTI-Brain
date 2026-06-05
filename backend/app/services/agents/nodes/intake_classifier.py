@@ -224,7 +224,8 @@ async def _call_llm(prompt, config: RunnableConfig) -> str:
 
     @llm_breaker
     async def _call():
-        return await llm.ainvoke(prompt, config=merged_config)
+        from app.core.retry import retry_async
+        return await retry_async(lambda: llm.ainvoke(prompt, config=merged_config), service="bedrock-intake-classifier", max_attempts=2, backoff_base=5.0)
 
     response = await _call()
     return response.content or ""

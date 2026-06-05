@@ -36,12 +36,11 @@ async def compress(state: AnalyticsState, config: RunnableConfig) -> dict:
     existing = state.get("summary") or ""
     existing_section = f"Previous summary:\n{existing}" if existing else "None."
 
+    from app.core.retry import retry_async
     chain = COMPRESS_PROMPT | get_llm("fast")
     try:
-        raw = await chain.ainvoke({
-            "existing_summary_section": existing_section,
-            "recent_exchanges": "\n\n".join(exchanges),
-        })
+        _payload = {"existing_summary_section": existing_section, "recent_exchanges": "\n\n".join(exchanges)}
+        raw = await retry_async(lambda: chain.ainvoke(_payload), service="bedrock-compress", max_attempts=2, backoff_base=5.0)
         text = raw.content if hasattr(raw, "content") else str(raw)
         summary = parse_tag(text, "summary") or text.strip()
     except Exception as e:

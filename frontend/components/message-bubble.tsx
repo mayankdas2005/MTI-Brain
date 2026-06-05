@@ -685,22 +685,22 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                                 }).catch(() => {});
                               } else {
                                 removeGC(convId);
-                                toast.info('Query context no longer available. Click to rebuild.');
+                                toast.info('These sources have expired — click to reload.');
                               }
                             }).catch(() => {
                               removeGC(convId);
-                              toast.info('Query context no longer available. Click to rebuild.');
+                              toast.info('These sources have expired — click to reload.');
                             });
                             return;
                           }
                           setGC(convId, { status: 'pending', url: null, queuedAt: Date.now() });
-                          toast.info('Fetching query context…', {
+                          toast.info('Fetching query sources…', {
                             id: `gc-${convId}`,
-                            description: 'Retrieving the knowledge graph context used to answer this question.',
+                            description: 'Looking up the data behind your answer.',
                           });
                           void generateGraphContext(convId).catch((err: unknown) => {
                             setGC(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-                            toast.warning(err instanceof Error ? err.message : 'Failed to fetch query context.', { id: `gc-${convId}` });
+                            toast.warning(err instanceof Error ? err.message : 'Couldn\'t fetch the query sources.', { id: `gc-${convId}` });
                           });
                         }}
                         className="gap-2"
@@ -753,23 +753,23 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                               } else {
                                 // DB record gone — clear stale state, let user regenerate
                                 removeDash(convId);
-                                toast.info('Report no longer available. Click to rebuild.');
+                                toast.info('This report has expired — click to rebuild.');
                               }
                             }).catch(() => {
                               // 404 — DB record deleted, reset to idle
                               removeDash(convId);
-                              toast.info('Report no longer available. Click to rebuild.');
+                              toast.info('This report has expired — click to rebuild.');
                             });
                             return;
                           }
                           setDash(convId, { status: 'pending', url: null, queuedAt: Date.now() });
-                          toast.info('Building report…', {
+                          toast.info('Building your report…', {
                             id: `dash-${convId}`,
-                            description: 'Compiling the answer and data into an executive report.',
+                            description: 'We\'re putting this together as an executive report.',
                           });
                           void generateDashboard(convId).catch((err: unknown) => {
                             setDash(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-                            toast.warning(err instanceof Error ? err.message : 'Failed to build report.', { id: `dash-${convId}` });
+                            toast.warning(err instanceof Error ? err.message : 'Couldn\'t build the report.', { id: `dash-${convId}` });
                           });
                         }}
                         className="gap-2"

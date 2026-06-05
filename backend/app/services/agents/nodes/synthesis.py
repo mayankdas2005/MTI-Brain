@@ -1,18 +1,25 @@
-"""Node 4: synthesis — generates narrative answer from query results.
+"""Node 4: synthesis — two-phase answer generation.
 
-Uses Sonnet. Respects persona tone. Cites actual data numbers only.
-Includes reliability flag instructions in the prompt context.
+Phase 1 (Haiku):  INSIGHT_EXTRACTOR_PROMPT — reads raw data, extracts structured insights JSON.
+Phase 2 (Sonnet): SYNTHESIS_PROMPT         — writes persona-formatted answer from insights only.
+
+Sonnet never sees the raw data, eliminating a whole class of hallucination where the model
+invents observations that aren't in the result set.
 """
 
 from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
+import datetime
 import json
 import re
 
 from app.core.logger import logger
 from app.services.agents.helpers import _build_data_profile, parse_tag
-from app.services.agents.prompts import REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP, SYNTHESIS_PROMPT
+from app.services.agents.prompts import (
+    REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP,
+    SYNTHESIS_PROMPT, INSIGHT_EXTRACTOR_PROMPT,
+)
 from app.services.agents.state import AnalyticsState
 
 _FLAG_INSTRUCTIONS = {
@@ -27,6 +34,26 @@ _FLAG_INSTRUCTIONS = {
     "low_confidence_filter": (
         "Note: One or more filter values were matched approximately (not exact match). "
         "Results may include slightly different data than intended. Mention the matched values."
+    ),
+    "time_filter_relaxed": (
+        "Note: The time filter was relaxed because the original date range returned no data. "
+        "Results span a broader period than requested — state this explicitly."
+    ),
+    "filters_relaxed": (
+        "Note: All WHERE filters were removed because the original query returned 0 rows. "
+        "Results are unfiltered and may be broader than the user intended — state this clearly."
+    ),
+    "high_null_ratio": (
+        "Note: A significant portion of result values are NULL. "
+        "The data may be incomplete for this dimension — caveat your answer accordingly."
+    ),
+    "repair_required": (
+        "Note: Treat all figures as directional — cross-validate key balances against source records "
+        "before escalating or acting on this data."
+    ),
+    "limit_without_order": (
+        "Note: The result set was limited but rows were not explicitly ordered. "
+        "The specific rows shown may vary on each execution."
     ),
 }
 
@@ -68,6 +95,33 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         _FLAG_INSTRUCTIONS.get(flag, "") for flag in reliability_flags if flag in _FLAG_INSTRUCTIONS
     )
 
+    # Surface SQL quality signals — synthesis should know if the answer required
+    # multiple attempts so it can calibrate its confidence caveats accordingly.
+    repair_count = state.get("repair_count", 0)
+    recompile_count = state.get("recompile_count", 0)
+    quality_context_lines = []
+    if repair_count:
+        # Do NOT expose "SQL repair" to users — it's an internal pipeline detail.
+        # The "repair_required" flag in reliability_flags already triggers the correct caveat
+        # via _FLAG_INSTRUCTIONS. Only flag it — do not add a separate quality_context line.
+        if "repair_required" not in reliability_flags:
+            reliability_flags = list(reliability_flags) + ["repair_required"]
+    if recompile_count:
+        # Recompile is also internal. No user-facing line needed.
+        pass
+    # Inject pre-computed data quality check from data_quality_checker node.
+    # When data_quality_flag=True, synthesis opens with ### Data Quality Concern
+    # (enforced by the prompt DATA_INTEGRITY_GATE section + quality_context).
+    data_quality_flag = state.get("data_quality_flag", False)
+    data_quality_reason = state.get("data_quality_reason")
+    if data_quality_flag and data_quality_reason:
+        quality_context_lines.insert(0, f"DATA QUALITY CONCERN DETECTED: {data_quality_reason}")
+        quality_context_lines.insert(1, "Your answer MUST open with ### Data Quality Concern before any other section.")
+        if "repair_required" not in reliability_flags:
+            reliability_flags = list(reliability_flags) + ["data_quality_concern"]
+
+    quality_context = "\n".join(quality_context_lines)
+
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
 
     semantic_context = state.get("semantic_context") or {}
@@ -94,44 +148,97 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     # Build structured data profile (shared builder with chart_agent)
     data_profile = _build_data_profile(all_columns, all_rows, query_summary)
 
-    # Build low-confidence filters text (keys from filter_resolver: column, raw_value, resolved_value)
-    if low_confidence_filters:
-        lc_text = "\n".join(
-            f"  {f.get('column')}: matched '{f.get('resolved_value')}' for user input '{f.get('raw_value')}'"
-            for f in low_confidence_filters
-        )
-    else:
-        lc_text = "none"
+    current_date_context = _build_current_date_context(
+        state.get("current_date") or datetime.date.today().isoformat(),
+        all_columns,
+        all_rows,
+    )
 
-    prompt = SYNTHESIS_PROMPT.format_messages(
-        persona=state.get("persona", "executive"),
+    from app.services.agents.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
+    from app.core.retry import retry_async
+
+    # ── Phase 1: Insight Extraction (Haiku — fast, data-facing) ──────────────
+    # Haiku reads the raw data and produces a structured insights JSON.
+    # This is the only phase that sees the raw data profile.
+
+    extractor_prompt = INSIGHT_EXTRACTOR_PROMPT.format_messages(
         question=state["question"],
-        anchor_tables=", ".join(anchor_tables),
-        reliability_flags=", ".join(reliability_flags) if reliability_flags else "none",
-        reliability_flag_instructions=flag_instructions or "No special reliability concerns.",
+        current_date_context=current_date_context,
+        flag_instructions_text=flag_instructions or "",
+        quality_context=quality_context,
         no_data="YES" if no_data else "NO",
         zero_row_probe_result=zero_row_probe_result,
-        low_confidence_filters_text=lc_text,
         data_profile=data_profile,
+    )
+
+    haiku = get_llm("fast")
+    insights_json: str = "{}"
+
+    try:
+        @llm_breaker
+        async def _extract():
+            return await retry_async(
+                lambda: haiku.ainvoke(extractor_prompt),
+                service="bedrock-insight-extractor",
+                max_attempts=2,
+                backoff_base=3.0,
+            )
+        ext_response = await _extract()
+        raw_insights = ext_response.content or ""
+        parsed_tag = parse_tag(raw_insights, "insights") or ""
+        # Validate it's parseable JSON; fall back to raw if not
+        import json_repair
+        parsed = json_repair.loads(parsed_tag or raw_insights)
+        if isinstance(parsed, dict):
+            insights_json = json.dumps(parsed, indent=2)
+            logger.info(
+                "synthesis | insight extraction OK | thread={} | depth={} | findings={}",
+                state["thread_id"],
+                parsed.get("depth", "?"),
+                len(parsed.get("findings") or []),
+            )
+        else:
+            logger.warning("synthesis | insight extraction returned non-dict | thread={}", state["thread_id"])
+    except Exception as e:
+        logger.warning("synthesis | insight extraction failed, using empty insights | thread={} | error={}", state["thread_id"], e)
+
+    # ── Phase 2: Answer Writing (Sonnet — quality, insight-facing) ───────────
+    # Sonnet writes the answer from the structured insights only.
+    # It never sees the raw data — hallucination from raw data is structurally impossible.
+
+    no_data_context = ""
+    if no_data and zero_row_probe_result:
+        no_data_context = f"No data returned. Reason: {zero_row_probe_result}"
+    elif no_data:
+        no_data_context = "No data returned."
+
+    writer_prompt = SYNTHESIS_PROMPT.format_messages(
+        persona=state.get("persona", "executive"),
+        question=state["question"],
+        no_data_context=no_data_context,
+        insights_json=insights_json,
         reasoning_directive=reasoning_directive,
         conversation_section=conversation_section,
         memory_section=memory_section,
         feedback_section=feedback_section,
     )
 
-    from app.services.agents.bedrock import get_llm
-    from app.core.circuit_breaker import llm_breaker
-
-    llm = get_llm("balanced")
+    sonnet = get_llm("balanced")
 
     @llm_breaker
-    async def _call():
-        return await llm.ainvoke(prompt, config=config)
+    async def _write():
+        return await retry_async(
+            lambda: sonnet.ainvoke(writer_prompt, config=config),
+            service="bedrock-synthesis-writer",
+            max_attempts=2,
+            backoff_base=5.0,
+        )
 
     try:
-        response = await _call()
+        response = await _write()
     except Exception as e:
-        logger.error("synthesis LLM failed | thread={} | error={}", state["thread_id"], e)
+        logger.error("synthesis writer failed | thread={} | error={}", state["thread_id"], e)
         return {"answer": "I encountered an error preparing your answer. Please try again.", "follow_ups": []}
 
     raw = response.content if isinstance(response.content, str) else ""
@@ -140,6 +247,54 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     logger.info("synthesis DONE | thread={} | answer_len={} | follow_ups={}", state["thread_id"], len(answer), len(follow_ups))
     return {"answer": answer, "follow_ups": follow_ups}
+
+
+def _build_current_date_context(current_date: str, all_columns: list[str], all_rows: list[list]) -> str:
+    """Build temporal context block for synthesis.
+
+    Tells the LLM what today's date is and whether the data snapshot is current.
+    This ensures "X days until maturity" calculations use today, not position_date.
+    """
+    lines = [
+        "TEMPORAL CONTEXT:",
+        f"  Today's date: {current_date}",
+        "  → Use today's date as the baseline for all 'days until' / 'days ago' calculations.",
+        "  → Snapshot/position date columns in results are the data-as-of date, NOT today.",
+    ]
+
+    # Try to detect snapshot date columns and check staleness
+    snapshot_col_keywords = ("as_of_date", "position_date", "snapshot_date", "report_date", "effective_date")
+    try:
+        today = datetime.date.fromisoformat(current_date)
+        for i, col in enumerate(all_columns):
+            col_lower = col.lower()
+            if any(k in col_lower for k in snapshot_col_keywords) and all_rows:
+                # Find a non-null value in this column
+                val = None
+                for row in all_rows[:10]:
+                    if i < len(row) and row[i] is not None:
+                        val = str(row[i])[:10]  # take YYYY-MM-DD part
+                        break
+                if val:
+                    try:
+                        snap_date = datetime.date.fromisoformat(val)
+                        days_old = (today - snap_date).days
+                        if days_old == 0:
+                            lines.append(f"  Data snapshot ({col}): {val} — current (matches today).")
+                        elif days_old > 0:
+                            lines.append(
+                                f"  ⚠ Data snapshot ({col}): {val} — {days_old} day(s) old. "
+                                f"Results reflect data as of {val}, not today."
+                            )
+                        elif days_old < 0:
+                            lines.append(f"  Data snapshot ({col}): {val} — future date, verify grain.")
+                    except ValueError:
+                        pass
+                break
+    except (ValueError, TypeError):
+        pass
+
+    return "\n".join(lines)
 
 
 def _parse_follow_ups(raw: str) -> list[str]:

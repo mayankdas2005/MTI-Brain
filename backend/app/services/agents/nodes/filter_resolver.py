@@ -242,9 +242,10 @@ async def _tier35_temporal_llm(raw_value: str, state: AnalyticsState) -> dict | 
     """
     try:
         from app.services.agents.bedrock import get_llm
+        from app.core.retry import retry_async
         llm = get_llm("fast")
         messages = TEMPORAL_RESOLVE_PROMPT.format_messages(expression=raw_value)
-        response = await llm.ainvoke(messages)
+        response = await retry_async(lambda: llm.ainvoke(messages), service="bedrock-filter-resolver-temporal", max_attempts=2, backoff_base=5.0)
         text = (response.content or "").strip()
         # Extract JSON from response — may be wrapped in markdown code fence
         if "```" in text:
@@ -322,7 +323,8 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
 
     @llm_breaker
     async def _call():
-        return await llm.ainvoke(prompt, config=config)
+        from app.core.retry import retry_async
+        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-filter-resolver", max_attempts=2, backoff_base=5.0)
 
     try:
         response = await _call()
@@ -428,18 +430,15 @@ def _build_filter_directive(
             else:
                 tag = "[exact DB code — high confidence]"
 
-            if f.operator in ("BETWEEN", "BETWEEN_SQL") and not is_non_anchor:
-                v = f.value
-                v0, v1 = (v[0], v[1]) if isinstance(v, list) else (v, v)
-                lines.append(f"  {col} BETWEEN {v0} AND {v1}  {tag}")
-            elif f.is_raw_sql and not is_non_anchor:
-                lines.append(f"  {col} {f.operator} {f.value}  {tag}")
-            else:
-                if isinstance(f.value, list):
-                    val_str = "IN (" + ", ".join(f"'{x}'" for x in f.value) + ")"
-                    lines.append(f"  {col} {val_str}  {tag}")
-                else:
-                    lines.append(f"  {col} {f.operator} '{f.value}'  {tag}")
+            from app.services.agents.helpers import render_filter_value
+            if f.is_raw_sql and not is_non_anchor:
+                # Raw SQL value is already a complete expression — render as-is.
+                # Still use render_filter_value so list values (BETWEEN_SQL) render correctly.
+                clause = render_filter_value(f.operator, f.value)
+                lines.append(f"  {col} {clause}  {tag}")
+            elif not is_non_anchor:
+                clause = render_filter_value(f.operator, f.value)
+                lines.append(f"  {col} {clause}  {tag}")
 
     lines.append("FILTER_LIST_COMPLETE: do not add WHERE/EXISTS beyond the above")
     low_cols = [f["column"] for f in (low_confidence_filters or [])]

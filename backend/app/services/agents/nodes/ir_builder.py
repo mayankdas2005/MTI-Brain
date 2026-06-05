@@ -252,6 +252,24 @@ async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict 
         single = resolved.get("temporal_grain") or _infer_temporal_grain(resolved.get("timeframe"))
         temporal_grains = [single] if single else []
 
+    from app.services.agents.semantic_ir import DerivedMeasure, ThresholdSpec, CTEStepSpec
+
+    # Populate richer IR fields from resolved intent when present.
+    # These are used by complex queries (forecasts, threshold checks, multi-step CTEs).
+    # ir_builder was silently dropping them — SQL generator had to reconstruct from directive text.
+    derived_measures = [
+        DerivedMeasure(**dm) for dm in (resolved.get("derived_measures") or [])
+        if isinstance(dm, dict) and "alias" in dm and "expression" in dm
+    ]
+    threshold_specs = [
+        ThresholdSpec(**ts) for ts in (resolved.get("threshold_specs") or [])
+        if isinstance(ts, dict) and "expression" in ts and "operator" in ts and "value" in ts
+    ]
+    cte_chain = [
+        CTEStepSpec(**cs) for cs in (resolved.get("cte_chain") or [])
+        if isinstance(cs, dict) and "name" in cs
+    ]
+
     ir = SemanticIR(
         template_id=template_id,
         intent=resolved.get("intent", ""),
@@ -268,6 +286,9 @@ async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict 
         time_filter=time_filter,
         temporal_grains=temporal_grains,
         cte_steps=cte_steps,
+        derived_measures=derived_measures,
+        threshold_specs=threshold_specs,
+        cte_chain=cte_chain,
         order_by=_coerce_list(resolved.get("order_by")),
         limit=resolved.get("limit"),
         sub_query_index=None,
@@ -524,7 +545,19 @@ def _load_join_paths(anchor_tables: list[str], intent_directive: str = "") -> tu
                     "ir_builder | unresolved_pair | from={} to={} | no path, overlap, or bridge found",
                     from_table, to_table,
                 )
-                unresolved_pairs.append({"from": from_table, "to": to_table, "reason": "no_path"})
+                # Populate candidate_join_columns from value_overlap results even when they
+                # weren't strong enough to resolve the join — gives sql_generator concrete
+                # column candidates instead of a blank "no_path" signal.
+                candidate_cols = [
+                    f"{from_table}.{r['from_col']} = {to_table}.{r['to_col']}"
+                    for r in (overlap_cols or [])[:3]
+                ]
+                unresolved_pairs.append({
+                    "from": from_table,
+                    "to": to_table,
+                    "reason": "no_path",
+                    "candidate_join_columns": candidate_cols,
+                })
                 i += 1
                 continue
 
@@ -742,22 +775,47 @@ def _build_filter_specs(
 
 
 async def _build_time_filter(
-    timeframe: str | None,
+    timeframe,
     anchor_tables: list[str],
     semantic_context: dict,
     state: dict | None = None,
 ) -> FilterSpec | None:
-    """Resolve a timeframe string to a FilterSpec.
+    """Resolve a timeframe expression to a FilterSpec.
 
-    Resolution order:
-    1. Sync pre-check: today / yesterday / exact ISO date / ISO range — deterministic, no LLM.
-    2. Everything else → _tier35_temporal_llm (Haiku). Handles any natural language temporal
-       expression: 'last 2 months', 'this month vs last month', 'Q3 2024', 'past 90 days', etc.
+    `timeframe` may arrive as:
+      - str  "next_90_days"  — standard case, resolved via tier3 + LLM fallback
+      - dict {"operator": "BETWEEN_SQL", "value": [...], ...}  — pre-resolved by intent node
+      - None — no time filter
+
+    Resolution order for str:
+    1. Sync pre-check (deterministic): today / yesterday / ISO date / ISO range.
+    2. _tier35_temporal_llm (Haiku) for any natural-language expression.
     """
     if not timeframe:
         return None
+
     intent_directive = (state or {}).get("intent_directive") or ""
     table_fqn, date_col = _find_date_column(anchor_tables, semantic_context, intent_directive)
+
+    # Already-resolved dict: an upstream node pre-resolved the timeframe.
+    # Use it directly without another resolution pass.
+    if isinstance(timeframe, dict):
+        op = timeframe.get("operator")
+        val = timeframe.get("value") or timeframe.get("start")  # handle {start, end} format too
+        if op and val is not None:
+            if timeframe.get("end") and isinstance(val, str):
+                val = [val, timeframe["end"]]
+            return FilterSpec(
+                table_fqn=table_fqn,
+                column_name=date_col,
+                operator=op,
+                value=val,
+                raw_user_value=str(timeframe),
+                resolved=True,
+                is_raw_sql=timeframe.get("is_raw_sql", False),
+            )
+        # dict but missing required fields — fall through to string path with str(dict)
+        timeframe = str(timeframe)
 
     from app.services.agents.filter_resolver_logic import resolve_tier3_temporal
     result = resolve_tier3_temporal(timeframe)

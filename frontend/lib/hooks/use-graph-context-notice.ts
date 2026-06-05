@@ -32,61 +32,49 @@ export function useGraphContextNotice() {
 
               const visible = typeof document !== 'undefined' && document.visibilityState === 'visible';
 
+              const openAndDownload = (fresh: Awaited<ReturnType<typeof getGraphContext>>) => {
+                if (fresh.url) {
+                  window.open(fresh.url, '_blank', 'noopener');
+                  void downloadGraphContext(convId).then(({ blob, filename }) => {
+                    const blobUrl = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = blobUrl;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(blobUrl);
+                  }).catch(() => {});
+                }
+              };
+
               if (visible) {
-                toast.info('Query context ready', {
+                toast.info('Query sources are ready', {
                   id: `gc-ready-${convId}`,
-                  description: 'The knowledge graph context for this answer is ready to view.',
+                  description: 'Here\'s the data behind your answer.',
                   duration: 12_000,
                   action: {
                     label: 'Open',
                     onClick: () => {
-                      void getGraphContext(convId).then((fresh) => {
-                        if (fresh.url) {
-                          window.open(fresh.url, '_blank', 'noopener');
-                          void downloadGraphContext(convId).then(({ blob, filename }) => {
-                            const blobUrl = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = blobUrl;
-                            a.download = filename;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(blobUrl);
-                          }).catch(() => {});
-                        }
-                      });
+                      void getGraphContext(convId).then(openAndDownload);
                     },
                   },
                 });
               } else {
                 if (getPermission() === 'granted') {
-                  notify('Query context ready', {
-                    body: 'The knowledge graph context for this answer is ready to view.',
+                  notify('Query sources are ready', {
+                    body: 'Here\'s the data behind your answer.',
                     silent: true,
                   });
                 } else {
-                  toast.info('Graph context ready', {
+                  toast.info('Query sources are ready', {
                     id: `gc-ready-${convId}`,
-                    description: 'The knowledge graph for your query is ready to view.',
+                    description: 'Here\'s the data behind your answer.',
                     duration: 0,
                     action: {
                       label: 'Open',
                       onClick: () => {
-                        void getGraphContext(convId).then((fresh) => {
-                          if (fresh.url) {
-                            window.open(fresh.url, '_blank', 'noopener');
-                            void downloadGraphContext(convId).then(({ blob, filename }) => {
-                              const blobUrl = URL.createObjectURL(blob);
-                              const a = document.createElement('a');
-                              a.href = blobUrl;
-                              a.download = filename;
-                              document.body.appendChild(a);
-                              a.click();
-                              document.body.removeChild(a);
-                              URL.revokeObjectURL(blobUrl);
-                            }).catch(() => {});
-                          }
-                        });
+                        void getGraphContext(convId).then(openAndDownload);
                       },
                     },
                   });
@@ -96,9 +84,9 @@ export function useGraphContextNotice() {
               if (notifySound) playPing();
             } else if (res.status === 'failed') {
               set(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-              toast.warning('Failed to fetch query context', {
+              toast.warning('Couldn\'t fetch the query sources', {
                 id: `gc-fail-${convId}`,
-                description: 'Please try again.',
+                description: 'Something went wrong. Please try again.',
               });
             }
           } catch {

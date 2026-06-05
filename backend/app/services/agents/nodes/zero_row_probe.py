@@ -20,6 +20,7 @@ from __future__ import annotations
 import json_repair
 
 from app.core.logger import logger
+from app.services.agents.helpers import format_sql
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
@@ -78,9 +79,10 @@ async def _llm_generate_probe_sqls(sql: str, state: AnalyticsState) -> dict | No
         from app.services.agents.bedrock import get_llm
         from app.services.agents.prompts import ZERO_ROW_PROBE_PROMPT
 
+        from app.core.retry import retry_async
         llm = get_llm("complex")   # Opus
         messages = ZERO_ROW_PROBE_PROMPT.format_messages(original_sql=sql)
-        response = await llm.ainvoke(messages)
+        response = await retry_async(lambda: llm.ainvoke(messages), service="bedrock-zero-row-probe", max_attempts=2, backoff_base=5.0)
         text = (response.content or "").strip()
 
         # Strip markdown code fences if present
@@ -95,6 +97,10 @@ async def _llm_generate_probe_sqls(sql: str, state: AnalyticsState) -> dict | No
         if not all(parsed.get(k) for k in required):
             logger.warning("zero_row_probe | LLM response missing SQL keys | thread={}", state.get("thread_id"))
             return None
+        # Format probe SQLs for consistent pretty-printing in logs
+        for key in required:
+            if parsed.get(key):
+                parsed[key] = format_sql(parsed[key])
         return parsed
     except Exception as e:
         logger.warning("zero_row_probe | LLM probe generation failed | error={}", e)
@@ -186,7 +192,11 @@ async def zero_row_probe(ir: SemanticIR | None, state: AnalyticsState) -> dict:
     s1 = await _run_count(probe_sqls["no_time_filter_sql"], state)
     logger.info("zero_row_probe | stage1 (no time filter) | count={} | thread={}", s1, state["thread_id"])
     if s1 > 0:
-        time_str = f" for {time_filter.value}" if time_filter else ""
+        if time_filter:
+            from app.services.agents.helpers import render_filter_value
+            time_str = " for " + render_filter_value(time_filter.operator, time_filter.value)
+        else:
+            time_str = ""
         return {
             "probe_type": "time_filter",
             "needs_clarification": True,
