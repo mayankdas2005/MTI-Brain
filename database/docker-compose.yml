@@ -269,6 +269,54 @@ services:
       networks:
         - db_net
 
+  pgbouncer_redshift:
+    build:
+      context: ./pgbouncer_rr
+      dockerfile: Dockerfile
+    image: pgbouncer-rr-redshift:local
+    container_name: pgbouncer_redshift
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDSHIFT_HOST: ${REDSHIFT_HOST:?REDSHIFT_HOST is required}
+      REDSHIFT_PORT: ${REDSHIFT_PORT:-5439}
+      REDSHIFT_DB: ${REDSHIFT_DB:?REDSHIFT_DB is required}
+      REDSHIFT_USER: ${REDSHIFT_USER:?REDSHIFT_USER is required}
+      REDSHIFT_PASSWORD: ${REDSHIFT_PASSWORD:?REDSHIFT_PASSWORD is required}
+      REDSHIFT_NUM_BACKENDS: ${REDSHIFT_NUM_BACKENDS:-1}
+      PGBOUNCER_RR_POOL_MODE: ${PGBOUNCER_RR_POOL_MODE:-session}
+      PGBOUNCER_RR_DEFAULT_POOL_SIZE: ${PGBOUNCER_RR_DEFAULT_POOL_SIZE:-10}
+      PGBOUNCER_RR_MAX_CLIENT_CONN: ${PGBOUNCER_RR_MAX_CLIENT_CONN:-100}
+      PGBOUNCER_RR_MIN_POOL_SIZE: ${PGBOUNCER_RR_MIN_POOL_SIZE:-2}
+      PGBOUNCER_RR_RESERVE_POOL_SIZE: ${PGBOUNCER_RR_RESERVE_POOL_SIZE:-5}
+      PGBOUNCER_RR_RESERVE_POOL_TIMEOUT: ${PGBOUNCER_RR_RESERVE_POOL_TIMEOUT:-3}
+      PGBOUNCER_RR_SERVER_IDLE_TIMEOUT: ${PGBOUNCER_RR_SERVER_IDLE_TIMEOUT:-600}
+      PGBOUNCER_RR_CLIENT_IDLE_TIMEOUT: ${PGBOUNCER_RR_CLIENT_IDLE_TIMEOUT:-1800}
+      PGBOUNCER_RR_LOG_CONNECTIONS: ${PGBOUNCER_RR_LOG_CONNECTIONS:-1}
+      PGBOUNCER_RR_LOG_DISCONNECTIONS: ${PGBOUNCER_RR_LOG_DISCONNECTIONS:-1}
+      PGBOUNCER_RR_LOG_STATS: ${PGBOUNCER_RR_LOG_STATS:-1}
+      PGBOUNCER_RR_STATS_PERIOD: ${PGBOUNCER_RR_STATS_PERIOD:-60}
+    volumes:
+      - ./docker_volume/pgbouncer_redshift/routing_rules.py:/home/pgbouncer/routing_rules.py:ro
+    ports:
+      - "5433:5432"
+    networks:
+      - db_net
+    deploy:
+      resources:
+        limits:
+          memory: ${PGBOUNCER_RR_MEMORY_LIMIT:-128M}
+          cpus: "${PGBOUNCER_RR_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: ${PGBOUNCER_RR_MEMORY_RESERVATION:-32M}
+          cpus: "${PGBOUNCER_RR_CPU_RESERVATION:-0.1}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U ${REDSHIFT_USER}"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 networks:
   db_net:
     external: true
