@@ -1340,12 +1340,12 @@ The <follow_ups> block: use the follow_up_paths from PRE-EXTRACTED INSIGHTS verb
 Output only the JSON array inside the tags."""
 )
 
-# ─── Node 5: Chart Spec Generator (type + labels) ────────────────────────────
+# ─── Node 5a: Chart Planner (type + column bindings + per-axis format) ────────
 
-CHART_LABEL_PROMPT = ChatPromptTemplate.from_template(
-    """You are a senior BI developer with deep Power BI and financial dashboard expertise.
-Your job: choose the single chart type that creates the MAXIMUM INSIGHT for this specific question and data.
-Not "what renders" — what a finance director would immediately understand at a glance.
+CHART_PLAN_PROMPT = ChatPromptTemplate.from_template(
+    """You are a senior data analyst with deep BI expertise.
+Your job: choose the best chart type for this question and data, then assign each result column to its axis.
+Output ONLY the structural plan — no axis labels, no chart titles.
 
 QUESTION: {question}
 Intent:   {intent}
@@ -1365,103 +1365,108 @@ Intent:   {intent}
 ---
 
 STEP 1 — CLASSIFY YOUR COLUMNS (from COLUMN PROFILES above):
-  date_cols   = columns whose Range shows YYYY-MM-DD dates (check Distinct count — tells you how many periods)
-  string_cols = varchar/string columns (check Distinct count — tells you cardinality)
+  date_cols   = columns whose Range shows YYYY-MM-DD dates (check Distinct count)
+  string_cols = varchar/string columns (check Distinct count — cardinality matters)
   number_cols = columns with Min / Max
 
 ---
 
-STEP 2 — THINK LIKE A SENIOR BI DEVELOPER
-
-First ask: "What question type is this?"
+STEP 2 — PICK THE CHART TYPE
 
   QUESTION TYPE                              HIGHEST-IMPACT CHART
   ─────────────────────────────────────────  ──────────────────────────────────────────
-  "What is the total / current value?"       → kpi_card  (single number at a glance)
-  "How is X trending over time?"             → line  (precision matters, not area fill)
-  "How is cumulative X building up?"         → area  (fill emphasises accumulation)
-  "How do A, B, C compare?"                 → bar sorted descending (ranking is instant)
-  "What changed and why? (variance/bridge)" → waterfall  (signed increments → total)
+  "What is the total / current value?"       → kpi_card
+  "How is X trending over time?"             → line
+  "How is cumulative X building up?"         → area
+  "How do A, B, C compare?"                 → bar sorted descending
+  "What changed and why? (variance/bridge)" → waterfall
   "What's the composition over time?"        → stacked_area (only if series sum to total)
-  "How do multiple entities move together?"  → multi_line  (each entity = one line)
-  "What share does each part hold?"          → donut (≤5 slices only; finance standard)
+  "How do multiple entities move together?"  → multi_line
+  "What share does each part hold?"          → donut (≤5 slices only)
   "Side-by-side comparison across groups"    → grouped_bar
   "Breakdown of total by two dimensions"     → stacked_bar
   "Correlation between two metrics?"         → scatter
   "Two metrics at different scales?"         → dual_axis
 
 ━━━ CHART TYPE GUIDE ━━━
-  kpi_card       — single scalar or a small set of headline KPIs; no axis; maximum executive impact
+  kpi_card       — single scalar or a small set of headline KPIs; no axis
   bar            — ranked comparison, sorted descending; DEFAULT for categorical; ≤ 30 categories
-  bar_horizontal — bar rotated; use when category labels are > 15 chars (counterparty names, descriptions)
-  line           — ONE metric trend over time; add point markers; use for rates, flows, returns
-  area           — cumulative/stock metric over time; positive values only; fills emphasise magnitude
-  multi_line     — MULTIPLE INDEPENDENT series over time; one line per entity/metric; independent y values
-  stacked_area   — time series where series genuinely sum to total (e.g. spend by dept = total spend)
-  donut          — part-of-whole; ≤ 5 slices in finance context; centre hole shows total
-  pie            — same as donut without hole; use donut by default in finance
+  bar_horizontal — bar rotated; use when category labels are > 15 chars
+  line           — ONE metric trend over time; use for rates, flows, returns
+  area           — cumulative/stock metric over time; positive values only
+  multi_line     — MULTIPLE INDEPENDENT series over time; one line per entity/metric
+  stacked_area   — time series where series genuinely sum to total
+  donut          — part-of-whole; ≤ 5 slices in finance context
+  pie            — same as donut without hole; use donut by default
   grouped_bar    — side-by-side bars for 2-3 groups; direct visual comparison
-  stacked_bar    — composition of totals; each bar = 100%; use for budget vs actual split
-  scatter        — two continuous numeric axes; use for correlation / risk analysis
-  waterfall      — variance / P&L bridge / cash flow; positive increments stack up, negative stack down
-  heatmap        — two categorical axes, one numeric intensity; use for calendar/matrix patterns
-  bubble         — scatter + third numeric as bubble size; use for 3-dimension analysis
-  dual_axis      — two metrics at incompatible scales on one time axis (e.g. volume + yield)
+  stacked_bar    — composition of totals; each bar = breakdown of total
+  scatter        — two continuous numeric axes; correlation / risk analysis
+  waterfall      — variance / P&L bridge / cash flow
+  heatmap        — two categorical axes, one numeric intensity
+  bubble         — scatter + third numeric as bubble size
+  dual_axis      — two metrics at incompatible scales on one time axis
 
 ━━━ DATA PATTERN → CHART MAPPING ━━━
-  rows=1, any cols                                                     → kpi_card
-  date Distinct ≤ 2, string=0, number ≥1                              → kpi_card (categorical snapshot, not a time series)
-  date Distinct ≤ 2, string ≥1, number=1                              → bar (categories for a single snapshot)
-  date Distinct ≥ 3 AND dates are sequential, string=0, number=1, Min≥0 → area or line
-  date ≥1, string=0, number=1, Min<0                                  → line (negatives; area fill misleads)
-  date ≥1, string=0, number ≥2                                        → multi_line (fold: each numeric = a series)
-  date ≥1, string=1, number=1, series ADD UP to total                 → stacked_area
-  date ≥1, string=1, number=1, series are INDEPENDENT                 → multi_line
-  date=0, string=1, number=1, Distinct(string) ≤ 5, "share/%" asked  → donut
-  date=0, string=1, number=1                                          → bar sorted desc
-  date=0, string=1, number=1, labels > 15 chars                       → bar_horizontal
-  date=0, string=2, number=1, comparison intent                       → grouped_bar
-  date=0, string=2, number=1, composition/breakdown intent            → stacked_bar
-  date=0, string=0, number=2, correlation                             → scatter
-  ordered items with ± increments building toward total               → waterfall
-  2 numeric dimensions + category intensity (e.g. entity × period × amount) → heatmap
+  rows=1, any cols                                                                 → kpi_card
+  date Distinct ≤ 2, string=0, number ≥1                                          → kpi_card
+  date Distinct ≤ 2, string ≥1, number=1                                          → bar
+  date Distinct ≥ 3 AND dates sequential, string=0, number=1, Min≥0              → area or line
+  date ≥1, string=0, number=1, Min<0                                              → line
+  date ≥1, string=0, number ≥2                                                    → multi_line
+  date ≥1 (Distinct ≥ 3), string=1, number=1, series ADD UP to total             → stacked_area
+  date ≥1 (Distinct ≥ 3), string=1, number=1, series INDEPENDENT                → multi_line
+  date ≥1 (Distinct ≥ 3), string=1, Distinct(string) > 10                       → stacked_area (if sum to total) or top-10 multi_line
+  date ≥1 (Distinct ≥ 3), string ≥2, number=1                                   → multi_line (use lowest-cardinality string as color)
+  date=0, string=1, number=1, Distinct(string) ≤ 5, "share/%" asked             → donut
+  date=0, string=1, number=1                                                      → bar sorted desc
+  date=0, string=1, number=1, labels > 15 chars                                  → bar_horizontal
+  date=0, string=2, number=1, comparison intent, Distinct(string2) ≤ 3          → grouped_bar
+  date=0, string=2, number=1, comparison intent, Distinct(string2) > 3          → stacked_bar
+  date=0, string=2, number=1, composition/breakdown intent                       → stacked_bar
+  date=0, string=0, number=2, correlation                                         → scatter
+  ordered items with ± increments building toward total                           → waterfall
+  2 numeric dimensions + category intensity                                        → heatmap
 
 ━━━ POWER BI BEST PRACTICES ━━━
-  • Bar charts: ALWAYS sort descending by value. Top performer on left. Maximum contrast.
-  • Waterfall: the go-to for ANY "what changed" or "bridge" analysis. Never use bar for this.
-  • Donut: in finance, donut beats pie — the hole can show the total value as a label.
-  • Avoid stacked_area unless the stack literally equals a known total. Otherwise multi_line.
-  • Line with point markers beats plain line — individual data points are identifiable.
-  • KPI card with negative values still renders correctly — show it, don't hide it.
-  • Grouped bar limit: ≤ 3 groups. More than 3 becomes unreadable; use small multiples or table.
-  • Dual axis: use ONLY when scales truly differ by 10× or more (e.g. $B vs %).
+  • Bar charts: ALWAYS sort descending by value.
+  • Waterfall: go-to for ANY "what changed" or "bridge" analysis.
+  • Donut: in finance, donut beats pie.
+  • Avoid stacked_area unless the stack literally equals a known total.
+  • Grouped bar limit: ≤ 3 groups.
+  • Dual axis: ONLY when scales differ by 10× or more.
 
 ━━━ CRITICAL PITFALLS ━━━
-  ✗ stacked_area when entities cover different or sparse date windows → spiky disconnected arcs; use multi_line
-  TIEBREAKER — stacked_area vs multi_line: when series add up to total BUT date windows are sparse
-  (any series has NULL/missing values for >20% of date periods) → use multi_line.
-  Completeness of data overrides the composition rule.
-  ✗ area when any value is negative → fill below zero is visually wrong; use line
-  ✗ pie/donut with > 5 categories in finance context → wedges too small; use bar
-  ✗ pie/donut when any value is negative → arc theta breaks; use bar
-  ✗ line/area/multi_line/stacked_area when date Distinct ≤ 2 → not a time series; use bar or kpi_card
-  THRESHOLD: date Distinct ≤ 2 → treat as categorical snapshot → bar/kpi_card.
-             date Distinct ≥ 3 AND dates are sequential → treat as time series → line or area.
-  ✗ kpi_card just because rows ≤ 5 — if the data IS a time series, use line or bar
-  ✗ stacked_area for independent entity balances → sum is meaningless; use multi_line
-  ✗ line with only 2–3 data points → a slope conveys no trend; use bar instead
-  ✗ grouped_bar with > 3 groups → too crowded; collapse to stacked_bar or table
-  ✗ multi_line with > 10 series → legend overload; reduce to top-N or use heatmap/table
-  ✗ bar when a date column has Distinct ≥ 3 with sequential dates → it IS a time series; use line/area
-  ✗ ignoring a single-value string column (Distinct=1) as a dimension → it adds nothing; treat as if it doesn't exist
+  ✗ stacked_area when series cover sparse date windows → use multi_line
+  TIEBREAKER: stacked_area vs multi_line — when series add up to total BUT date windows are sparse
+  (any series has NULL for >20% of periods) → use multi_line.
+  ✗ area when any value is negative → use line
+  ✗ pie/donut with > 5 categories → use bar
+  ✗ pie/donut when any value is negative → use bar
+  ✗ line/area/multi_line when date Distinct ≤ 2 → use bar or kpi_card
+  THRESHOLD: date Distinct ≤ 2 → categorical snapshot → bar/kpi_card.
+             date Distinct ≥ 3 AND sequential → time series → line/area/multi_line.
+  ✗ kpi_card just because rows ≤ 5 when data IS a time series → use line or bar
+  ✗ stacked_area for independent entity balances → use multi_line
+  ✗ line with only 2–3 data points → use bar
+  ✗ grouped_bar with > 3 color groups → use stacked_bar (grouped_bar is unreadable beyond 3 colors)
+  ✗ grouped_bar / bar when a date column has Distinct ≥ 3 with sequential values →
+    ALWAYS use multi_line (if string col present), line (no string col), or stacked_area.
+    A date column with 3+ sequential points IS a time series — bar/grouped_bar are WRONG here.
+  ✗ multi_line with > 10 series → reduce to top-N or use heatmap/table
+  ✗ bar when date column has Distinct ≥ 3 with sequential dates → use line/area
+  ✗ ignoring a single-value string column (Distinct=1) → treat as non-existent
+
+  ⚡ TREND OVERRIDE (HIGHEST PRIORITY — overrides all rules above):
+  If the question contains ANY of: "trend", "over [N] days/weeks/months/years",
+  "trailing [N]", "over time", "history", "daily/weekly/monthly [metric]" →
+  chart MUST be one of: line / multi_line / area / stacked_area / dual_axis.
+  NO EXCEPTIONS. grouped_bar, stacked_bar, bar, kpi_card are FORBIDDEN when TREND OVERRIDE fires.
 
   USER CHART PREFERENCES (if section appears above): override all patterns above.
 
 ---
 
-STEP 3 — PICK UP TO 2 ALTERNATIVES (structurally valid for the SAME columns):
-  Do NOT suggest a type that needs different columns. If no valid alternative exists, use [].
-
+STEP 3 — PICK UP TO 2 ALTERNATIVES (structurally valid for the SAME columns, with their column bindings):
   primary = line / area            → alternatives: [multi_line (only if string_col exists), bar]
   primary = multi_line             → alternatives: [stacked_area (only if series sum to total), line]
   primary = stacked_area           → alternatives: [multi_line, bar]
@@ -1478,55 +1483,75 @@ STEP 3 — PICK UP TO 2 ALTERNATIVES (structurally valid for the SAME columns):
 
 ---
 
-STEP 3b — LABELS FOR EACH ALTERNATIVE:
-  For EACH alternative type you listed, write its own chart_title, x_axis_label, and y_axis_label.
-  These MUST reflect what that chart actually puts on each axis — not a copy of the primary chart's labels.
+STEP 4 — COLUMN BINDINGS
+  Use EXACT column names from COLUMN PROFILES. Each name MUST appear in the result set.
 
-  Rules:
-  - bar / stacked_bar / grouped_bar / bar_horizontal / waterfall: x = the CATEGORY column name (humanized),
-    y = the MEASURE column name (humanized, with unit if clear from context).
-  - line / area / multi_line / stacked_area: x = time dimension label, y = measure label.
-  - scatter / bubble: x = first numeric column, y = second numeric column.
-  - donut / pie: leave both blank ("").
-  - chart_title: describe WHAT this alternative shows differently from the primary. One short phrase.
+  x_column:     column on the x-axis / category axis (tick labels).
+  y_column:     column on the y-axis (the primary measure — numeric).
+  color_column: column driving the color/legend dimension; null if no color grouping.
+  size_column:  bubble only — column for bubble size; null for all other types.
 
-  Example — primary=multi_line (x="Week Ending", y="Cash Position"):
-    alternative grouped_bar → x_axis_label="Flow Category", y_axis_label="Total Cash Flow ($M)",
-                               chart_title="Total Cash by Flow Category"
-    alternative waterfall   → x_axis_label="Flow Category", y_axis_label="Running Cash Position ($M)",
-                               chart_title="Cumulative Cash Impact by Category"
-
----
-
-STEP 4 — VALUE FORMAT
-  Use COLUMN METADATA (desc= field) first, then confirm scale with Min/Max.
-
-  USD / dollar / usd_amount / payment amount → "$,.2f"
-  INR / rupee / indian rupee                 → "₹,.0f"
-  GBP / pound                                → "£,.2f"
-  EUR / euro                                 → "€,.2f"
-  JPY / yen                                  → "¥,.0f"
-  count / volume / number of transactions    → ",.0f"
-  ratio or rate between 0 and 1 (e.g. 0.045)→ ".1%"   (Vega multiplies by 100)
-  already-converted percent (e.g. 4.5 = 4.5%)→ ",.1f"
-  no description or ambiguous               → Max > 1,000 → ",.0f"  |  Max ≤ 1,000 → ",.2f"
-
-  NEVER use ".2s". System handles K/M/B/T conversion automatically.
-  "$,.2f" on a 500B value renders as "$500B".
+  CRITICAL RULES:
+  • x_column ≠ y_column. color_column ≠ x_column and ≠ y_column.
+  • kpi_card: set ALL column fields to null.
+  • bar / waterfall: x_column = category or time (string/date); y_column = measure (numeric).
+  • bar_horizontal: x_column = measure (numeric, bar length); y_column = category (string, bar labels).
+  • line / area / multi_line / stacked_area / dual_axis: x_column = date/time column; y_column = numeric measure.
+    color_column = string series column (for multi_line / stacked_area).
+  • grouped_bar / stacked_bar: x_column = grouping dimension (string/date); y_column = numeric measure;
+    color_column = the second string column that drives the grouped/stacked color bands.
+  • scatter / bubble: x_column = FIRST numeric column; y_column = SECOND numeric column (must differ).
+  • donut / pie: x_column = category (string); y_column = value (numeric); color_column = null.
+  • heatmap: x_column = first string/date column; y_column = second string column (nominal).
 
 ---
 
-STEP 5 — LEGEND LABELS
-  Humanize raw identifiers in the color/series dimension.
-  IHB_USD_INVESTMENT → "IHB Investment"  |  lpp.bank_account → "Bank Account"
-  Leave legend_labels as {{}} if values are already human-readable.
+STEP 5 — PER-AXIS FORMAT
+  Assign one format string per QUANTITATIVE axis. NEVER a single global format for scatter/bubble
+  (x and y often have different units — e.g. position_value in € vs ytm_spread as ratio).
+
+  y_value_format: format for the y-axis measure column.
+  x_value_format: format for the x-axis ONLY when x is also quantitative (scatter/bubble only). null for all other types.
+
+  USD / dollar amount              → "$,.2f"
+  INR / rupee                      → "₹,.0f"
+  GBP / pound                      → "£,.2f"
+  EUR / euro amount                → "€,.2f"
+  JPY / yen                        → "¥,.0f"
+  count / volume / number of items → ",.0f"
+  ratio or rate between 0 and 1    → ".1%"   (Vega multiplies raw value by 100 — use ONLY for 0–1 ratios)
+  already-converted percent (4.5=4.5%) → ",.1f"
+  no description or ambiguous      → Max > 1,000 → ",.0f"  |  Max ≤ 1,000 → ",.2f"
+
+  NEVER use ".2s". NEVER apply a currency prefix to a non-currency column.
 
 ---
 
-AXIS LABELS:
-  x_axis_label = BOTTOM axis label.  y_axis_label = LEFT axis label.
-  bar: x=category, y=measure.  line/area/multi_line: x="Date", y=measure.
-  kpi_card / donut / pie: leave both blank.
+STEP 6 — COLOR SCHEME
+  Single series / sequential → "blues"
+  Multiple distinct categories (3–8) → "tableau10"
+  Diverging / positive+negative → "redblue"
+  Executive / financial → "dark2"
+
+---
+
+STEP 7 — CHART CONFIDENCE (0–100)
+  Rate how visually useful this chart will actually be.
+
+  Start at 100 and deduct:
+  -20  date column has fewer than 4 distinct dates for a time-series chart (trend with 2 points = not a trend)
+  -20  more than 10 color series → chart becomes an unreadable rainbow (multi_line/grouped_bar)
+  -15  primary measure column has only 1 distinct value → flat / meaningless chart
+  -15  no clear dimensional grouping for the chart type chosen
+  -10  question asks for "trend" but fewer than 7 data points available
+  -10  y-axis measure is wrong semantic type for the chart (e.g. a ratio shown as a bar)
+
+  Floor at 0.
+  80–100 = HIGH: render chart.
+  60–79  = MEDIUM: render chart (note limitation in label if needed).
+  0–59   = LOW: do NOT render chart — table is more useful.
+
+  Per-alternative confidence: apply same deduction logic for each alternative type.
 
 ---
 
@@ -1535,29 +1560,127 @@ AXIS LABELS:
 Begin IMMEDIATELY with <reasoning>. No text before it. Then output <chart>. No text after </chart>.
 
 <reasoning>
-1. Question type: which row in "QUESTION TYPE → HIGHEST-IMPACT CHART" matches? State it.
-2. Column classification: date_cols (with Distinct count), string_cols (with Distinct count), number_cols.
-3. Data pattern match: which DATA PATTERN row fits? State it explicitly.
-4. Composition check (if time series + string category): do the series values literally add up to a meaningful total? State yes/no.
-5. Pitfall check: does my chosen type hit any CRITICAL PITFALL? State explicitly.
-6. Value format: what is the column type (currency/count/ratio/pct)? State format string chosen.
-7. Alternatives: are they structurally valid for the same columns?
-8. Alternative labels: for each alternative, state the correct x_axis_label and y_axis_label
-   based on what THAT chart type puts on each axis (category vs time vs measure).
+1. Column classification: date_cols (with Distinct count), string_cols (with Distinct count), number_cols.
+2. Question type match and chart type chosen.
+3. Data pattern match: which DATA PATTERN row fits?
+4. Pitfall check:
+   4a. Does the question contain "trend"/"over time"/"trailing"/"history"/"daily"/"weekly"/"monthly"? → TREND OVERRIDE → must be time-series type.
+   4b. Is there a date column with Distinct ≥ 3? If yes, am I using a time-series chart type? If not → SWITCH to multi_line/line.
+   4c. Does chosen type hit any other CRITICAL PITFALL?
+5. Column bindings: x_column=?, y_column=?, color_column=?, size_column=?
+   Verify each name appears in COLUMN PROFILES. For each alternative: x_column=?, y_column=?, color_column=?
+6. Per-axis format: y_value_format=? (based on y_column metadata). x_value_format=? (null unless scatter/bubble).
+7. Confidence: start at 100, list deductions, final score.
 </reasoning>
 <chart>
 {{
   "chart_type": "bar",
+  "x_column": "...",
+  "y_column": "...",
+  "color_column": null,
+  "size_column": null,
+  "x_value_format": null,
+  "y_value_format": ",.0f",
+  "color_scheme": "blues",
+  "chart_confidence": 85,
+  "alternative_types": [
+    {{"type": "grouped_bar", "x_column": "...", "y_column": "...", "color_column": "...", "confidence": 70}},
+    {{"type": "waterfall",   "x_column": "...", "y_column": "...", "color_column": null,  "confidence": 55}}
+  ]
+}}
+</chart>"""
+)
+
+# ─── Node 5b: Chart Labeler (axis labels + title + legend — label-only) ───────
+
+CHART_LABEL_PROMPT = ChatPromptTemplate.from_template(
+    """You are a senior BI developer specializing in financial dashboard design.
+The chart type and column assignments are ALREADY DECIDED — do NOT change them.
+Your only job: write professional axis labels, a chart title, and humanize legend values.
+
+QUESTION: {question}
+Intent:   {intent}
+
+Chart type:        {chart_type}
+
+X-axis column:     {x_column}
+  Metadata: {x_column_meta}
+
+Y-axis column:     {y_column}
+  Metadata: {y_column_meta}
+
+Color/series col:  {color_column}
+  Top values:      {color_top_values}
+
+Y-axis format:     {y_value_format}
+
+Alternatives:
+{alternatives}
+
+---
+
+X AXIS LABEL — derives from {x_column}, not from the question topic:
+  • Humanize: remove underscores, capitalize words ("period_month" → "Period Month").
+  • date / month columns (period_month, as_of_date, maturity_date …) → "Period Month" / "Month" / "Maturity Date"
+  • entity name/code (bank_name, instrument_code, counterparty_code …) → "Bank" / "Instrument" / "Counterparty"
+  • type / tier / category (instrument_type, risk_tier …) → "Instrument Type" / "Risk Tier"
+  • grouped_bar / stacked_bar: x is the GROUPING column (tick labels), NOT the color/series column.
+  • scatter / bubble: x is the column actually on the X-axis (from the plan above — humanize its name).
+  • bar_horizontal: x is the numeric MEASURE column (the bar length axis).
+  • kpi_card / donut / pie: x_axis_label = ""
+
+Y AXIS LABEL — derives from {y_column}:
+  • Humanize the measure column name ("total_interest_income" → "Total Interest Income").
+  • UNIT CONSISTENCY with {y_value_format}:
+      → y_value_format = ".1%" or ".2%"               → append "(%)" to label
+      → y_value_format = ",.1f" AND values 0–100       → append "(%)" to label
+      → y_value_format = any currency ("$,.2f" / "€,.2f" / "£,.2f" / "₹,.0f" / "¥,.0f")
+        OR y_value_format = ",.0f" or ",.2f"           → do NOT append "(%)"
+          The axis ticks will show "9.00B", "$1.2M" — a "%" suffix contradicts that.
+          Use the measure name only: "Total Interest Income", "Exposure Amount", "Position Value".
+  • bar_horizontal: y_axis_label = the CATEGORY column name humanized (e.g. "Bank", "Counterparty").
+  • kpi_card / donut / pie: y_axis_label = ""
+
+CHART TITLE — professional financial dashboard style:
+  • Concise noun phrase. Pattern: "[Measure] by [Primary Dimension]" or "[Subject]: [Insight/Scope]"
+  • Do NOT start with "Show me", "This chart shows", or "A chart of".
+  • Include scope qualifier if useful (top N, time period, filter applied).
+  • Keep under 10 words where possible.
+
+LEGEND TITLE: humanize {color_column} as a short dimension name ("Instrument Type", "Bank", "Entity").
+  Leave "" if color_column is null.
+
+LEGEND LABELS — humanize raw codes using {color_top_values}:
+  IHB_USD_INVESTMENT → "IHB Investment"  |  lpp.bank_account → "Bank Account"
+  Leave {{}} if values are already human-readable or color_column is null.
+
+ALTERNATIVE LABELS:
+  For EACH alternative in the Alternatives list above, write chart_title, x_axis_label, y_axis_label.
+  Use the x_column / y_column from THAT alternative's bindings, NOT the primary chart's columns.
+  Apply the same unit-consistency rule to y_axis_label (no "(%)" for currency/large-number formats).
+
+---
+
+{reasoning_directive}
+
+Begin IMMEDIATELY with <reasoning>. No text before it. Then output <chart>. No text after </chart>.
+
+<reasoning>
+1. x_axis_label: {x_column} is a [date/entity/category/numeric] column → x_axis_label = "..."
+2. y_axis_label: {y_column} is the measure. y_value_format={y_value_format}.
+   Is format currency or ",.0f"/",.2f"? → no "(%)" allowed. y_axis_label = "..."
+3. chart_title: "[measure] by [dimension]" = "..."
+4. Alternatives: for each, state which x_column and y_column it uses, then write x_axis_label, y_axis_label, chart_title.
+</reasoning>
+<chart>
+{{
   "chart_title": "...",
   "x_axis_label": "...",
   "y_axis_label": "...",
+  "legend_title": "...",
   "legend_labels": {{}},
-  "value_format": ",.0f",
-  "color_scheme": "blues",
-  "alternative_types": ["grouped_bar", "waterfall"],
   "alternative_labels": {{
-    "grouped_bar": {{"chart_title": "...", "x_axis_label": "...", "y_axis_label": "..."}},
-    "waterfall":   {{"chart_title": "...", "x_axis_label": "...", "y_axis_label": "..."}}
+    "type_name": {{"chart_title": "...", "x_axis_label": "...", "y_axis_label": "..."}}
   }}
 }}
 </chart>"""
@@ -1742,7 +1865,7 @@ These are the MEASURABLE columns available (is_measurable=True):
 
 User question: {question}
 Intent summary: {intent_summary}
-
+{refinement_section}
 Rules:
 - Select only columns that can be meaningfully aggregated (SUM, AVG, COUNT) to answer the question
 - Aggregation choices: SUM (totals/amounts), AVG (rates/ratios), COUNT (counts)
@@ -1778,7 +1901,7 @@ These are the FILTERABLE columns available:
 
 User question: {question}
 Intent summary: {intent_summary}
-
+{refinement_section}
 CRITICAL RULES:
 - raw_user_value must ALWAYS be the user's exact words — NEVER a DB code from the values list
   Example: user says "JPMorgan" → raw_user_value = "JPMorgan" (NOT "BANK_JPM")
@@ -1827,7 +1950,7 @@ These are the GROUPABLE columns available (is_groupable=True):
 User question: {question}
 Intent summary: {intent_summary}
 Measures already selected: {measures_summary}
-
+{refinement_section}
 Rules:
 - Select columns that users expect to see in the output (company name, currency, date, category)
 - Do NOT include columns already selected as measures
@@ -1871,7 +1994,7 @@ Complete schema for anchor tables (all columns):
 {anchor_schema_section}
 
 User question: {question}
-
+{refinement_section}
 ----
 
 {reasoning_directive}

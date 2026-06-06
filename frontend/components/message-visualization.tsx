@@ -433,8 +433,23 @@ function VegaVisualization({ rawSpec, conversationId, onActionsReady }: {
     let mounted  = true;
     let localView: VegaView | null = null;
 
-    import('vega-embed').then(({ default: vegaEmbed }) => {
+    Promise.all([import('vega-embed'), import('vega')]).then(([{ default: vegaEmbed }, vega]) => {
       if (!mounted || !containerRef.current) return;
+      // Register smartNum once — idempotent, same function every call.
+      // Used by tooltip formatType:"smartNum" to render €/£/¥/$ large numbers
+      // as "€50.7T", "£5B", "$1.2M" etc. (D3 format strings only support "$").
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (vega as any).expressionFunction('smartNum', (value: unknown, fmt: unknown) => {
+        if (typeof value !== 'number' || !isFinite(value)) return String(value ?? '');
+        const sym = typeof fmt === 'string' ? fmt : '';
+        const abs = Math.abs(value);
+        const fmt2 = (n: number) => n.toFixed(2).replace(/\.?0+$/, '');
+        if (abs >= 1e12) return sym + fmt2(value / 1e12) + 'T';
+        if (abs >= 1e9)  return sym + fmt2(value / 1e9)  + 'B';
+        if (abs >= 1e6)  return sym + fmt2(value / 1e6)  + 'M';
+        if (abs >= 1e3)  return sym + fmt2(value / 1e3)  + 'K';
+        return sym + value.toLocaleString('en-US', { maximumFractionDigits: abs < 1 ? 4 : 2 });
+      });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vegaEmbed(containerRef.current, embedSpec as any, { renderer: 'canvas', actions: false })
         .then((result) => {

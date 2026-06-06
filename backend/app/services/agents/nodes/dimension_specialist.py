@@ -11,6 +11,7 @@ import re
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
+from app.services.agents.helpers import build_refinement_section
 from app.services.agents.prompts import DIMENSION_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -56,6 +57,7 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         question=state["question"],
         intent_summary=intent_summary,
         groupable_columns_section=_build_groupable_columns_section(enriched_schema),
+        refinement_section=build_refinement_section(state, role="dimensions"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         measures_summary=measures_summary,
     )

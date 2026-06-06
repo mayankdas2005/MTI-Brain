@@ -40,6 +40,9 @@ _TRANSIENT_PHRASES = (
     "ssl",
     "10054",
     "10061",
+    "server closed the connection",
+    "server terminated",
+    "connection closed",
 )
 
 

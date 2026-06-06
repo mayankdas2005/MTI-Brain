@@ -12,6 +12,7 @@ import re
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
+from app.services.agents.helpers import build_refinement_section
 from app.services.agents.prompts import MEASURE_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -49,6 +50,7 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
         question=state["question"],
         intent_summary=intent_summary,
         measurable_columns_section=_build_measurable_columns_section(enriched_schema),
+        refinement_section=build_refinement_section(state, role="measures"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
     )
 

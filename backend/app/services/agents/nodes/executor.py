@@ -31,7 +31,7 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
         logger.warning("executor | no SQL to execute | thread={}", state["thread_id"])
         return {"error": "No SQL available to execute.", "no_data": True}
 
-    query_timeout = 90
+    query_timeout = 180
     result_list = []
     all_columns = []
     all_rows = []

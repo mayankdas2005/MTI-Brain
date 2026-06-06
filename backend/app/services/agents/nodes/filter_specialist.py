@@ -15,6 +15,7 @@ import re
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
+from app.services.agents.helpers import build_refinement_section
 from app.services.agents.prompts import FILTER_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -73,6 +74,7 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
         question=state["question"],
         intent_summary=intent_summary,
         filterable_columns_section=_build_filterable_columns_section(enriched_schema),
+        refinement_section=build_refinement_section(state, role="filters"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
     )
 

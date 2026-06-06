@@ -286,6 +286,16 @@ def _build_prompt(state: AnalyticsState) -> list:
                 f"different columns, joins, or tables to avoid the same failure:\n"
                 f"<execution_error>{execution_error}</execution_error>\n"
             )
+    elif state.get("is_refinement") and prior_sql and not (state.get("recompile_count") or 0):
+        execution_error_section = (
+            "\nREFINEMENT CONTEXT — user is modifying an existing query:\n"
+            f"<prior_sql>\n{prior_sql}\n</prior_sql>\n"
+            "The user's current question is a modification of the SQL above. "
+            "Apply whatever the user is asking — filter, table swap, grouping, measure, or structural rewrite. "
+            "IMPORTANT: The output MUST remain a SELECT statement. "
+            "When the user says 'add' or 'include', this means adding a WHERE filter or JOIN — "
+            "NOT an INSERT, UPDATE, or DELETE statement.\n"
+        )
     else:
         execution_error_section = ""
 

@@ -41,6 +41,10 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
                 raw_question, session_summary or "", previous_follow_ups
             )
             logger.info("context_fetcher | follow-up reconstructed | search={}", search_query[:80])
+        elif state.get("is_refinement") and state.get("prior_question"):
+            prior_q = (state["prior_question"] or "")[:200]
+            search_query = f"{prior_q} {raw_question}"
+            logger.info("context_fetcher | refinement search | combined_query={}", search_query[:120])
         else:
             search_query = raw_question
 

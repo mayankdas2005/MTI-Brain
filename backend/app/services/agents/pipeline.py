@@ -187,6 +187,21 @@ async def stream_pipeline(
 
     deep_analysis: bool = bool(kwargs.get("deep_analysis", False))
 
+    _prior_sql = kwargs.get("prior_sql") or ""
+    _prior_sql_tables: list[str] = []
+    if _prior_sql:
+        try:
+            import sqlglot
+            stmt = sqlglot.parse_one(_prior_sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE)
+            if stmt:
+                _prior_sql_tables = list({
+                    f"{t.db}.{t.name}"
+                    for t in stmt.find_all(sqlglot.exp.Table)
+                    if t.db and t.name
+                })
+        except Exception:
+            pass
+
     initial: AnalyticsState = {
         "messages": [],
         "user_id": user_id or "",
@@ -239,6 +254,9 @@ async def stream_pipeline(
         "pattern_name": None,
         "is_retry": bool(kwargs.get("is_retry", False)),
         "prior_sql": kwargs.get("prior_sql") or None,
+        "prior_question": kwargs.get("prior_question") or None,
+        "prior_sql_tables": _prior_sql_tables,
+        "is_refinement": bool(_prior_sql) and not bool(kwargs.get("is_retry")),
     }
 
     from app.services.agents.helpers import MultiSectionStreamer, SectionStreamer

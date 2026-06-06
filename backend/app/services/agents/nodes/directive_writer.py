@@ -17,7 +17,7 @@ import re
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.agents.helpers import build_refinement_section, parse_tag
 from app.services.agents.prompts import DIRECTIVE_WRITER_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -106,6 +106,7 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         result_shape=result_shape,
         timeframe=timeframe or "not specified",
         anchor_schema_section=_build_anchor_schema_section(enriched_schema),
+        refinement_section=build_refinement_section(state, role="directive"),
         reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
     )
 

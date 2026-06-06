@@ -108,6 +108,7 @@ def _build_sse_generator(
     deep_analysis: bool = False,
     cancel_event: asyncio.Event | None = None,
     prior_sql: str = "",
+    prior_question: str = "",
     user_display_name: str = "",
     user_email: str | None = None,
     is_retry: bool = False,
@@ -234,6 +235,7 @@ def _build_sse_generator(
                 cancel_event=_cancel,
                 feedback_context=feedback_context,
                 prior_sql=prior_sql,
+                prior_question=prior_question,
                 user_email=user_email,
                 user_display_name=user_display_name,
                 is_retry=is_retry,
@@ -516,6 +518,7 @@ async def ask_question(
 
     conversation_id = body.conversation_id or uuid.uuid4()
 
+    prior_question = ""
     user_meta = None
     if body.source_conversation_id:
         user_meta = {"source_conversation_id": str(body.source_conversation_id)}
@@ -533,6 +536,35 @@ async def ask_question(
     _t1 = time.perf_counter()
     is_first_message = False
     async with async_session_factory() as db:
+        # ── Resolve prior_question for refinements (before save) ────────────
+        # Lookup happens first so prior_question can be stored in user_meta and
+        # persisted in the message JSONB metadata — this is how N-level chained
+        # refinements always trace back to the original question:
+        #   q2r1 meta: {prior_question: q2.content}
+        #   q2r2 meta: {prior_question: q2.content}  ← reads from q2r1 meta
+        #   q2rN meta: {prior_question: q2.content}  ← always the original
+        if body.source_conversation_id and body.prior_sql:
+            try:
+                from sqlalchemy import select as _select
+                from app.models.conversation import MTIBrainMessage
+                _row = await db.execute(
+                    _select(MTIBrainMessage.content, MTIBrainMessage.metadata_)
+                    .where(MTIBrainMessage.conversation_id == body.source_conversation_id)
+                    .where(MTIBrainMessage.role == "user")
+                    .limit(1)
+                )
+                _msg = _row.one_or_none()
+                if _msg:
+                    _msg_content, _msg_meta = _msg
+                    # Chained: _msg_meta["prior_question"] already = original question
+                    # First-level: _msg_meta absent → fall back to _msg_content (= original question)
+                    prior_question = (_msg_meta or {}).get("prior_question") or _msg_content or ""
+                if prior_question:
+                    user_meta["prior_question"] = prior_question  # stored for future chain links
+                    logger.info("[ask] refinement | prior_question resolved | len={}", len(prior_question))
+            except Exception:
+                logger.warning("[ask] refinement | prior_question lookup failed | conversation_id={}", body.source_conversation_id)
+
         save_result = await conv_service.save_message_and_touch(
             db,
             thread_id=thread_id,
@@ -548,6 +580,7 @@ async def ask_question(
             raise HTTPException(status_code=404, detail="Thread not found")
         _, is_first_message = save_result
         await db.commit()
+
     # Connection returned to pool here — before SSE starts
     _t_save = (time.perf_counter() - _t1) * 1000
 
@@ -575,6 +608,7 @@ async def ask_question(
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
         prior_sql=body.prior_sql or "",
+        prior_question=prior_question,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
     )
@@ -602,19 +636,55 @@ async def retry_response(
     question: str = ""
     root: uuid.UUID | None = None
 
+    prior_sql = ""
+    prior_question = ""
+
     async with async_session_factory() as db:
-        _question, existing_parent = await conv_service.get_question_and_parent(
-            db, body.conversation_id
+        from sqlalchemy import select as _select
+        from app.models.conversation import MTIBrainMessage
+        _row = await db.execute(
+            _select(
+                MTIBrainMessage.content,
+                MTIBrainMessage.parent_conversation_id,
+                MTIBrainMessage.metadata_,
+            )
+            .where(MTIBrainMessage.conversation_id == body.conversation_id)
+            .where(MTIBrainMessage.role == "user")
+            .limit(1)
         )
-        if not _question:
+        _msg = _row.one_or_none()
+        if not _msg:
             _active_streams.pop(str(thread_id), None)
             raise HTTPException(status_code=404, detail="Original conversation not found")
-        question = _question
+        question, existing_parent, orig_meta = _msg
+        orig_meta = orig_meta or {}
         root = existing_parent or body.conversation_id
 
-        user_meta = None
-        if body.source_conversation_id:
-            user_meta = {"source_conversation_id": str(body.source_conversation_id)}
+        is_refinement_retry = bool(orig_meta.get("is_refinement"))
+        user_meta: dict | None = None
+
+        if is_refinement_retry:
+            prior_question = orig_meta.get("prior_question") or ""
+            source_cid_str = orig_meta.get("source_conversation_id") or ""
+            if source_cid_str:
+                try:
+                    _asst = await db.execute(
+                        _select(MTIBrainMessage.metadata_)
+                        .where(MTIBrainMessage.conversation_id == uuid.UUID(source_cid_str))
+                        .where(MTIBrainMessage.role == "assistant")
+                        .limit(1)
+                    )
+                    _asst_meta = _asst.scalar_one_or_none() or {}
+                    prior_sql = _asst_meta.get("sql") or ""
+                except Exception:
+                    logger.warning("[retry] refinement | prior_sql lookup failed | source_cid={}", source_cid_str)
+            user_meta = {
+                "source_conversation_id": source_cid_str,
+                "is_refinement": True,
+                "prior_question": prior_question,
+            }
+        elif orig_meta.get("source_conversation_id"):
+            user_meta = {"source_conversation_id": str(orig_meta["source_conversation_id"])}
 
         save_result = await conv_service.save_message_and_touch(
             db,
@@ -643,9 +713,11 @@ async def retry_response(
         max_rows=body.max_rows,
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
+        prior_sql=prior_sql,
+        prior_question=prior_question,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
-        is_retry=True,
+        is_retry=not is_refinement_retry,
     )
     return EventSourceResponse(generator(), ping=15)
 

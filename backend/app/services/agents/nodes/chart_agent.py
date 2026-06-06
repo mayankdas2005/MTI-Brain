@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import _build_data_profile, parse_tag
-from app.services.agents.prompts import CHART_LABEL_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import CHART_LABEL_PROMPT, CHART_PLAN_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 _VALID_CHART_TYPES = {
@@ -248,25 +248,47 @@ def _snake_to_title(s: str) -> str:
 
 
 def _humanize_spec_labels(spec: dict) -> dict:
-    """Walk Vega-Lite spec and humanize axis/legend titles that are raw identifiers."""
+    """Walk Vega-Lite spec and humanize axis/legend/tooltip titles that are raw identifiers."""
     spec = copy.deepcopy(spec)
 
     if isinstance(spec.get("title"), str):
         spec["title"] = _snake_to_title(spec["title"])
 
-    encoding = spec.get("encoding")
-    if not isinstance(encoding, dict):
-        return spec
+    def _humanize_tooltip_list(tooltip_list: list) -> None:
+        for item in tooltip_list:
+            if not isinstance(item, dict):
+                continue
+            existing = item.get("title")
+            if existing is None:
+                field = item.get("field", "")
+                if field:
+                    item["title"] = _snake_to_title(field)
+            elif isinstance(existing, str) and ("_" in existing or existing.isupper()):
+                item["title"] = _snake_to_title(existing)
 
-    for ch in encoding.values():
-        if not isinstance(ch, dict):
-            continue
-        axis = ch.get("axis")
-        if isinstance(axis, dict) and isinstance(axis.get("title"), str):
-            axis["title"] = _snake_to_title(axis["title"])
-        legend = ch.get("legend")
-        if isinstance(legend, dict) and isinstance(legend.get("title"), str):
-            legend["title"] = _snake_to_title(legend["title"])
+    def _humanize_encoding(encoding: dict) -> None:
+        for ch in encoding.values():
+            if not isinstance(ch, dict):
+                continue
+            axis = ch.get("axis")
+            if isinstance(axis, dict) and isinstance(axis.get("title"), str):
+                axis["title"] = _snake_to_title(axis["title"])
+            legend = ch.get("legend")
+            if isinstance(legend, dict) and isinstance(legend.get("title"), str):
+                legend["title"] = _snake_to_title(legend["title"])
+            tooltip = ch.get("tooltip")
+            if isinstance(tooltip, list):
+                _humanize_tooltip_list(tooltip)
+
+    encoding = spec.get("encoding")
+    if isinstance(encoding, dict):
+        _humanize_encoding(encoding)
+
+    for layer in spec.get("layer", []):
+        if isinstance(layer, dict):
+            layer_enc = layer.get("encoding")
+            if isinstance(layer_enc, dict):
+                _humanize_encoding(layer_enc)
 
     return spec
 
@@ -290,6 +312,24 @@ def _col_max_abs(rows: list[list], col_idx: int) -> float | None:
         except (TypeError, ValueError):
             pass
     return max(vals) if vals else None
+
+
+def _col_p99(rows: list[list], col_idx: int) -> float | None:
+    """99th percentile of absolute values in a column."""
+    vals: list[float] = []
+    for row in rows:
+        v = row[col_idx] if col_idx < len(row) else None
+        if v is None:
+            continue
+        try:
+            vals.append(abs(float(v)))
+        except (TypeError, ValueError):
+            pass
+    if not vals:
+        return None
+    vals.sort()
+    idx = max(0, int(len(vals) * 0.99) - 1)
+    return vals[idx]
 
 
 def _build_label_expr(currency_sym: str = "") -> str:
@@ -338,11 +378,8 @@ def _fix_large_number_axes(
     if not isinstance(encoding, dict) or not rows:
         return spec
 
-    currency_sym = _extract_currency_symbol(labels.get("value_format") or "")
     spec = copy.deepcopy(spec)
     encoding = spec["encoding"]
-
-    non_dollar = bool(currency_sym and currency_sym != "$")
 
     # Compute the global max across all known columns once.
     # Used as a fallback when a quantitative axis field is derived (_wf_sum, _value,
@@ -358,6 +395,12 @@ def _fix_large_number_axes(
         ch = encoding.get(channel)
         if not isinstance(ch, dict) or ch.get("type") != "quantitative":
             continue
+
+        # Per-channel format: y_value_format for y-axis, x_value_format for x-axis.
+        # Falls back to global value_format for backward compat (no per-axis keys set).
+        fmt = (labels.get(f"{channel}_value_format") or labels.get("value_format") or "")
+        currency_sym = _extract_currency_symbol(fmt)
+        non_dollar = bool(currency_sym and currency_sym != "$")
 
         field = ch.get("field")
         if isinstance(field, str) and field in columns:
@@ -383,6 +426,103 @@ def _fix_large_number_axes(
             ch["axis"] = axis
         axis.pop("format", None)
         axis["labelExpr"] = _build_label_expr(currency_sym)
+        # K/M/B scale and a "(%) " unit marker are contradictory — strip the % unit
+        # so the title reflects what the ticks actually show (e.g. "9.00B", not "9.00B %")
+        _title = axis.get("title")
+        if isinstance(_title, str) and "%" in _title:
+            _cleaned = re.sub(r"\s*\(\s*%\s*\)", "", _title).strip()
+            _cleaned = re.sub(r"\s+%$", "", _cleaned).strip()
+            if _cleaned != _title:
+                axis["title"] = _cleaned
+
+        # Outlier clamping: when one entity's value is 100× the 99th-percentile
+        # (e.g. GR_TREASURY at 50T vs other entities at 50B), the auto-scale
+        # compresses all other series into invisible slivers. Clamp domainMax to
+        # p99 × 1.1 so the chart remains readable; clamp=True prevents marks from
+        # being hidden (they render at the edge instead).
+        if isinstance(field, str) and field in columns:
+            p99 = _col_p99(rows, columns.index(field))
+            if p99 and max_val and max_val > 100 * p99:
+                ch.setdefault("scale", {})["domainMax"] = p99 * 1.1
+                ch["scale"]["clamp"] = True
+
+    return spec
+
+
+def _fix_large_number_tooltips(
+    spec: dict,
+    columns: list[str],
+    rows: list[list],
+    labels: dict,
+) -> dict:
+    """Patch tooltip format for large-number / non-ASCII-currency fields.
+
+    D3 format strings only support '$' as a currency symbol — '€', '£', '¥'
+    etc. are not valid D3 format tokens and would either error or be ignored.
+    axis.labelExpr (Vega expression) sidesteps this, but that mechanism is
+    not available for tooltips.
+
+    Solution: use a custom Vega formatType "smartNum" registered in the
+    frontend (message-visualization.tsx).  The function signature is
+    smartNum(value, currencyPrefix) and returns strings like "€50.7T",
+    "£5B", "$1.2M", "50.7T".
+
+    We set:
+      "formatType": "smartNum"
+      "format": currency_sym   (e.g. "€", "£", "$", "")
+
+    Triggered when: values ≥ 1M OR a non-$ currency is present (same
+    threshold as _fix_large_number_axes so axis and tooltip stay in sync).
+    """
+    spec = copy.deepcopy(spec)
+
+    global_numeric_max: float = 0.0
+    for i in range(len(columns)):
+        v = _col_max_abs(rows, i)
+        if v is not None and v > global_numeric_max:
+            global_numeric_max = v
+
+    encoding = spec.get("encoding") or {}
+    field_to_channel: dict[str, str] = {}
+    for ch_name in ("x", "y", "size"):
+        ch = encoding.get(ch_name)
+        if isinstance(ch, dict):
+            f = ch.get("field")
+            if f:
+                field_to_channel[f] = ch_name
+
+    def _patch_tooltip_list(tooltip_list: list) -> None:
+        for item in tooltip_list:
+            if not isinstance(item, dict) or item.get("type") != "quantitative":
+                continue
+            field = item.get("field")
+            if isinstance(field, str) and field in columns:
+                max_val = _col_max_abs(rows, columns.index(field))
+            else:
+                max_val = global_numeric_max or None
+
+            channel = field_to_channel.get(field or "", "y")
+            fmt_str = labels.get(f"{channel}_value_format") or labels.get("value_format") or ""
+            currency_sym = _extract_currency_symbol(fmt_str)
+            non_dollar = bool(currency_sym and currency_sym != "$")
+
+            if not non_dollar and (max_val is None or max_val < 1_000_000):
+                continue
+
+            item.pop("format", None)
+            item["formatType"] = "smartNum"
+            item["format"] = currency_sym or ""
+
+    tt = encoding.get("tooltip")
+    if isinstance(tt, list):
+        _patch_tooltip_list(tt)
+
+    for layer in spec.get("layer", []):
+        if not isinstance(layer, dict):
+            continue
+        layer_tt = (layer.get("encoding") or {}).get("tooltip")
+        if isinstance(layer_tt, list):
+            _patch_tooltip_list(layer_tt)
 
     return spec
 
@@ -396,6 +536,7 @@ def _postprocess_spec(
     """Apply all post-processing passes to a Vega-Lite spec before sending to frontend."""
     spec = _humanize_spec_labels(spec)
     spec = _fix_large_number_axes(spec, columns, rows, labels)
+    spec = _fix_large_number_tooltips(spec, columns, rows, labels)
     return spec
 
 
@@ -497,10 +638,28 @@ def _build_alternative_specs(
     # Per-alternative label overrides supplied by the LLM
     alt_label_map: dict = labels.get("alternative_labels") or {}
 
+    _ALT_CONFIDENCE_THRESHOLD = 60
+
     seen = {primary_type, "table"}
     result = []
-    for alt_type in raw_alternatives[:3]:
-        if not isinstance(alt_type, str):
+    for alt_item in raw_alternatives[:3]:
+        # Support both plain strings (legacy) and objects {"type": "...", "x_column": ...}
+        if isinstance(alt_item, dict):
+            alt_type = alt_item.get("type", "")
+            alt_col_hints = {
+                k: alt_item.get(k)
+                for k in ("x_column", "y_column", "color_column", "size_column")
+            }
+            alt_confidence = int(alt_item.get("confidence", 100))
+        elif isinstance(alt_item, str):
+            alt_type = alt_item
+            alt_col_hints = {}
+            alt_confidence = 100
+        else:
+            continue
+        if not alt_type:
+            continue
+        if alt_confidence < _ALT_CONFIDENCE_THRESHOLD:
             continue
         guarded = _apply_guardrails(alt_type, columns, col_type_map or {}, len(rows))
         if guarded in seen or guarded not in _VALID_CHART_TYPES:
@@ -509,11 +668,10 @@ def _build_alternative_specs(
             continue
         seen.add(guarded)
         try:
-            # Merge primary labels with per-alternative overrides.
-            # The LLM provides chart_title / x_axis_label / y_axis_label keyed by
-            # the alternative chart type (before guardrail remapping); try both keys.
+            # Merge: primary labels ← per-alt column hints ← per-alt label overrides.
+            # Column hints from plan come before label overrides so labels win on text fields.
             alt_override = alt_label_map.get(guarded) or alt_label_map.get(alt_type) or {}
-            alt_labels = {**labels, **alt_override}
+            alt_labels = {**labels, **alt_col_hints, **alt_override}
             spec = _postprocess_spec(
                 _build_vega_lite_spec(guarded, columns, rows, alt_labels, col_type_map),
                 columns, rows, alt_labels,
@@ -626,7 +784,7 @@ def _apply_guardrails(chart_type: str, columns: list[str], col_type_map: dict, n
     return chart_type
 
 
-async def _select_chart_and_labels(
+async def _plan_chart(
     columns: list[str],
     rows: list[list],
     query_summary: dict,
@@ -634,11 +792,9 @@ async def _select_chart_and_labels(
     config: RunnableConfig,
     intent: str,
     persona: str,
-) -> tuple[str, dict]:
-    # Build shared data profile (same builder as synthesis)
+) -> tuple[dict, str]:
+    """Call 1 of 2: analytical pass — picks chart type, column bindings, per-axis formats."""
     data_profile = _build_data_profile(columns, rows, query_summary)
-
-    # Column descriptions from Neo4j catalog — lets LLM pick format semantically
     column_metadata = _build_column_metadata(columns, state)
 
     fb = state.get("feedback_context") or ""
@@ -647,10 +803,9 @@ async def _select_chart_and_labels(
         if fb else ""
     )
 
-    prompt = CHART_LABEL_PROMPT.format_messages(
+    prompt = CHART_PLAN_PROMPT.format_messages(
         question=state["question"],
         intent=intent,
-        persona=persona,
         data_profile=data_profile,
         column_metadata=column_metadata,
         feedback_section=feedback_section,
@@ -665,17 +820,14 @@ async def _select_chart_and_labels(
     @llm_breaker
     async def _call():
         from app.core.retry import retry_async
-        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-chart-agent", max_attempts=2, backoff_base=5.0)
+        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-chart-planner", max_attempts=2, backoff_base=5.0)
 
     fallback_type = _fallback_chart_type(columns, rows, intent, persona)
-    fallback_labels = {
+    fallback_plan: dict = {
         "chart_type": fallback_type,
-        "chart_title": _snake_to_title(state["question"][:60]),
-        "x_axis_label": _snake_to_title(columns[0]) if columns else "x",
-        "y_axis_label": _snake_to_title(columns[1]) if len(columns) > 1 else "Value",
-        "legend_labels": {},
-        "value_format": ",.0f",
-        "color_scheme": "blues",
+        "x_column": None, "y_column": None, "color_column": None, "size_column": None,
+        "x_value_format": None, "y_value_format": ",.0f",
+        "color_scheme": "blues", "chart_confidence": 100, "alternative_types": [],
     }
 
     try:
@@ -686,15 +838,181 @@ async def _select_chart_and_labels(
             from json_repair import loads as json_loads
             parsed = json_loads(output)
             if isinstance(parsed, dict):
-                chart_type = parsed.get("chart_type", fallback_type)
-                # Strip d3 trim-zeros prefix (~) — not supported in all Vega-Lite builds
-                if "value_format" in parsed and isinstance(parsed["value_format"], str):
-                    parsed["value_format"] = parsed["value_format"].replace("~", "")
-                return chart_type, parsed
+                for key in ("x_value_format", "y_value_format"):
+                    if isinstance(parsed.get(key), str):
+                        parsed[key] = parsed[key].replace("~", "")
+                return parsed, column_metadata
     except Exception as e:
-        logger.warning("chart_agent | LLM selection failed | error={}", e)
+        logger.warning("chart_agent | plan LLM failed | error={}", e)
 
-    return fallback_type, fallback_labels
+    return fallback_plan, column_metadata
+
+
+async def _label_chart(
+    plan: dict,
+    col_meta_str: str,
+    columns: list[str],
+    rows: list[list],
+    state: AnalyticsState,
+    config: RunnableConfig,
+    intent: str,
+    persona: str,
+) -> dict:
+    """Call 2 of 2: presentational pass — writes axis labels, title, legend from the plan."""
+    chart_type  = plan.get("chart_type", "bar")
+    x_column    = plan.get("x_column") or ""
+    y_column    = plan.get("y_column") or ""
+    color_column = plan.get("color_column") or ""
+    y_value_format = plan.get("y_value_format") or ",.0f"
+    alternatives = plan.get("alternative_types") or []
+
+    def _meta_snippet(col_name: str) -> str:
+        if not col_name:
+            return "(none)"
+        for line in col_meta_str.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(col_name + " ") or stripped.startswith(col_name + "\t"):
+                return stripped
+        return f"{col_name}  (no catalog entry)"
+
+    def _color_top_values() -> str:
+        if not color_column or color_column not in columns:
+            return "(none)"
+        idx = columns.index(color_column)
+        from collections import Counter
+        vals = [str(r[idx]) for r in rows if idx < len(r) and r[idx] is not None]
+        top = Counter(vals).most_common(5)
+        return ", ".join(f'"{v}"' for v, _ in top) if top else "(none)"
+
+    def _fmt_alternatives() -> str:
+        if not alternatives:
+            return "  (none)"
+        parts = []
+        for alt in alternatives:
+            if isinstance(alt, dict):
+                t = alt.get("type", "?")
+                xc = alt.get("x_column", "?")
+                yc = alt.get("y_column", "?")
+                cc = alt.get("color_column")
+                line = f'  - {t}: x_column="{xc}", y_column="{yc}"'
+                if cc:
+                    line += f', color_column="{cc}"'
+                parts.append(line)
+            else:
+                parts.append(f"  - {alt}")
+        return "\n".join(parts)
+
+    prompt = CHART_LABEL_PROMPT.format_messages(
+        question=state["question"],
+        intent=intent,
+        chart_type=chart_type,
+        x_column=x_column or "(none)",
+        x_column_meta=_meta_snippet(x_column),
+        y_column=y_column or "(none)",
+        y_column_meta=_meta_snippet(y_column),
+        color_column=color_column or "(none)",
+        color_top_values=_color_top_values(),
+        y_value_format=y_value_format,
+        alternatives=_fmt_alternatives(),
+        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+    )
+
+    from app.services.agents.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
+
+    llm = get_llm("fast")
+
+    @llm_breaker
+    async def _call():
+        from app.core.retry import retry_async
+        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-chart-labeler", max_attempts=2, backoff_base=5.0)
+
+    fallback_labels = {
+        "chart_title": _snake_to_title(state["question"][:60]),
+        "x_axis_label": _snake_to_title(x_column),
+        "y_axis_label": _snake_to_title(y_column),
+        "legend_title": _snake_to_title(color_column) if color_column else "",
+        "legend_labels": {},
+        "alternative_labels": {},
+    }
+
+    try:
+        response = await _call()
+        raw = response.content or ""
+        output = parse_tag(raw, "chart")
+        if output:
+            from json_repair import loads as json_loads
+            parsed = json_loads(output)
+            if isinstance(parsed, dict):
+                return parsed
+    except Exception as e:
+        logger.warning("chart_agent | label LLM failed | error={}", e)
+
+    return fallback_labels
+
+
+async def _select_chart_and_labels(
+    columns: list[str],
+    rows: list[list],
+    query_summary: dict,
+    state: AnalyticsState,
+    config: RunnableConfig,
+    intent: str,
+    persona: str,
+) -> tuple[str, dict]:
+    plan, col_meta_str = await _plan_chart(columns, rows, query_summary, state, config, intent, persona)
+
+    # Resolve column hints before calling the labeler so it always gets concrete names.
+    # 3-tier: exact → case-insensitive → fuzzy (difflib ≥0.85) → positional fallback.
+    import difflib
+    ctm_r = _build_col_type_map(columns, rows)
+    numeric_r = [c for c in columns if ctm_r.get(c) == "numeric"]
+    string_r  = [c for c in columns if ctm_r.get(c) == "string"]
+    date_r    = [c for c in columns if ctm_r.get(c) == "date"]
+    lower_map = {c.lower(): c for c in columns}
+
+    def _resolve_loose(hint: str | None, fallback) -> str | None:
+        if not hint:
+            return fallback
+        if hint in columns:
+            return hint
+        if hint.lower() in lower_map:
+            return lower_map[hint.lower()]
+        m = difflib.get_close_matches(hint.lower(), list(lower_map.keys()), n=1, cutoff=0.85)
+        return lower_map[m[0]] if m else fallback
+
+    chart_type = plan.get("chart_type") or _fallback_chart_type(columns, rows, intent, persona)
+
+    if chart_type == "bar_horizontal":
+        x_fb = (numeric_r or columns or [None])[0]
+        y_fb = (string_r or date_r or columns or [None])[0]
+    elif chart_type in ("scatter", "bubble"):
+        x_fb = (numeric_r or columns or [None])[0]
+        y_fb = numeric_r[1] if len(numeric_r) > 1 else (numeric_r or columns or [None])[-1]
+    elif chart_type in ("heatmap",):
+        x_fb = (string_r or date_r or columns or [None])[0]
+        y_fb = string_r[1] if len(string_r) > 1 else (string_r or columns or [None])[0]
+    else:
+        x_fb = (date_r or string_r or columns or [None])[0]
+        y_fb = (numeric_r or columns or [None])[-1]
+
+    plan["x_column"]     = _resolve_loose(plan.get("x_column"), x_fb)
+    plan["y_column"]     = _resolve_loose(plan.get("y_column"), y_fb)
+    plan["color_column"] = _resolve_loose(plan.get("color_column"), None)
+
+    label_output = await _label_chart(plan, col_meta_str, columns, rows, state, config, intent, persona)
+    labels = {**plan, **label_output}
+
+    _CONFIDENCE_THRESHOLD = 60
+    confidence = int(plan.get("chart_confidence", 100))
+    if confidence < _CONFIDENCE_THRESHOLD:
+        logger.info(
+            "chart_agent | low confidence ({}) → falling back to table | thread={}",
+            confidence, state.get("thread_id"),
+        )
+        return "table", labels
+
+    return chart_type, labels
 
 
 def _fallback_chart_type(columns: list[str], rows: list[list], intent: str, persona: str) -> str:
@@ -787,6 +1105,32 @@ def _build_vega_lite_spec(
     y_title = labels.get("y_axis_label", "")
     x_title = labels.get("x_axis_label", "")
 
+    # ── Hint resolution: 3-tier (exact → case-insensitive → fuzzy ≥0.85) ──────
+    import difflib as _difflib
+    _lower_col_map = {c.lower(): c for c in columns}
+
+    def _resolve_hint(hint: str | None) -> str | None:
+        """Return validated column name or None (caller uses positional fallback)."""
+        if not hint:
+            return None
+        if hint in columns:
+            return hint
+        if hint.lower() in _lower_col_map:
+            return _lower_col_map[hint.lower()]
+        m = _difflib.get_close_matches(hint.lower(), list(_lower_col_map.keys()), n=1, cutoff=0.85)
+        return _lower_col_map[m[0]] if m else None
+
+    # Raw resolved names (type constraints applied per-chart-type below)
+    _xh = _resolve_hint(labels.get("x_column"))
+    _yh = _resolve_hint(labels.get("y_column"))
+    _ch = _resolve_hint(labels.get("color_column"))
+    _sh = _resolve_hint(labels.get("size_column"))
+
+    # Per-axis formats: use dedicated per-axis field, fall back to legacy global value_format
+    y_val_fmt = labels.get("y_value_format") or labels.get("value_format", ",.0f")
+    x_val_fmt = labels.get("x_value_format") or labels.get("value_format", ",.0f")
+    val_fmt = y_val_fmt  # alias — most chart types only have one quantitative axis
+
     base = {
         "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
         "width": "container",
@@ -813,7 +1157,7 @@ def _build_vega_lite_spec(
             "title": bar_title,
             "data": {"values": [dict(zip(columns, row)) for row in bar_rows]},
         }
-        y_col = _num()
+        y_col = (_yh if _yh and ctm.get(_yh) == "numeric" else None) or _num()
         # When no string col exists (e.g. snapshot date + N numerics), fold numeric
         # columns into metric/value pairs so each metric becomes a bar.
         if not string_cols and numeric_cols:
@@ -828,10 +1172,15 @@ def _build_vega_lite_spec(
                     "y": {"field": "_value", "type": "quantitative",
                           "axis": {"title": y_title or "Value", "format": safe_fmt}},
                     "color": {"field": "_metric", "type": "nominal"},
+                    "tooltip": [
+                        {"field": "_metric", "type": "nominal", "title": "Metric"},
+                        {"field": "_value", "type": "quantitative", "format": safe_fmt, "title": "Value"},
+                    ],
                 },
             }
         else:
-            x_col = _str(exclude=y_col)
+            x_col = (_xh if _xh and _xh != y_col and ctm.get(_xh) in ("string", "date")
+                     else None) or _str(exclude=y_col)
             safe_fmt = _safe_value_format(val_fmt, bar_rows, columns.index(y_col) if y_col in columns else -1)
             has_neg = any(
                 i < len(r) and r[i] is not None and float(r[i]) < 0
@@ -851,13 +1200,17 @@ def _build_vega_lite_spec(
             if color_enc:
                 enc["color"] = color_enc
             else:
-                # Use second string col as color dimension when available and has ≤ 20 distinct values.
-                # This adds a legend (e.g. Entity) without making the chart unreadable.
-                color_col = next((c for c in string_cols if c != x_col), None)
+                # Use hint or second string col as color dimension (≤ 20 distinct values).
+                color_col = (_ch if _ch and _ch != x_col and _ch != y_col and ctm.get(_ch) == "string"
+                             else None) or next((c for c in string_cols if c != x_col), None)
                 if color_col and color_col in columns:
                     n_unique = len({str(r[columns.index(color_col)]) for r in bar_rows if columns.index(color_col) < len(r)})
                     if 1 < n_unique <= 20:
                         enc["color"] = {"field": color_col, "type": "nominal"}
+            enc["tooltip"] = [
+                {"field": x_col, "type": "nominal"},
+                {"field": y_col, "type": "quantitative", "format": safe_fmt},
+            ]
             spec = {**bar_base, "mark": "bar", "encoding": enc}
         spec["config"] = _BASE_CONFIG
         return spec
@@ -873,9 +1226,10 @@ def _build_vega_lite_spec(
             "title": horiz_title,
             "data": {"values": [dict(zip(columns, row)) for row in horiz_rows]},
         }
-        x_col = _num()
-        y_col = _str(exclude=x_col)
-        safe_fmt = _safe_value_format(val_fmt, horiz_rows, columns.index(x_col) if x_col in columns else -1)
+        x_col = (_xh if _xh and ctm.get(_xh) == "numeric" else None) or _num()
+        y_col = (_yh if _yh and _yh != x_col and ctm.get(_yh) in ("string", "date")
+                 else None) or _str(exclude=x_col)
+        safe_fmt = _safe_value_format(x_val_fmt, horiz_rows, columns.index(x_col) if x_col in columns else -1)
         has_neg = any(
             i < len(r) and r[i] is not None and float(r[i]) < 0
             for r in horiz_rows[:50]
@@ -899,15 +1253,20 @@ def _build_vega_lite_spec(
                 n_unique = len({str(r[columns.index(color_col)]) for r in horiz_rows if columns.index(color_col) < len(r)})
                 if 1 < n_unique <= 20:
                     enc["color"] = {"field": color_col, "type": "nominal"}
+        enc["tooltip"] = [
+            {"field": y_col, "type": "nominal"},
+            {"field": x_col, "type": "quantitative", "format": safe_fmt},
+        ]
         spec = {**horiz_base, "mark": "bar", "encoding": enc, "config": _BASE_CONFIG}
         return spec
 
     # ── Line / Area ────────────────────────────────────────────────────────────
     if chart_type in ("line", "area"):
-        x_col = _date()
-        y_col = _num(exclude=x_col)
+        x_col = (_xh if _xh and ctm.get(_xh) == "date" else None) or _date()
+        y_col = (_yh if _yh and ctm.get(_yh) == "numeric" and _yh != x_col else None) or _num(exclude=x_col)
         # Add color dimension if a string column exists (single-series line per entity)
-        cat_col = string_cols[0] if string_cols else None
+        cat_col = (_ch if _ch and _ch != x_col and _ch != y_col and ctm.get(_ch) == "string"
+                   else None) or (string_cols[0] if string_cols else None)
         enc = {
             "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
                   "axis": {"title": x_title or "Date", "format": "%b %d, %Y"}},
@@ -916,19 +1275,27 @@ def _build_vega_lite_spec(
         }
         if cat_col:
             enc["color"] = {"field": cat_col, "type": "nominal"}
+        enc["tooltip"] = [
+            {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate", "format": "%b %d, %Y", "title": "Date"},
+            {"field": y_col, "type": "quantitative", "format": val_fmt},
+        ]
+        if cat_col:
+            enc["tooltip"].append({"field": cat_col, "type": "nominal"})
         mark: dict | str = {"type": chart_type, "point": True} if chart_type == "line" else chart_type
         spec = {**base, "mark": mark, "encoding": enc, "config": _BASE_CONFIG}
         return spec
 
     # ── Multi-line / Stacked area ──────────────────────────────────────────────
     if chart_type in ("multi_line", "stacked_area"):
-        x_col = _date()
+        x_col = (_xh if _xh and ctm.get(_xh) == "date" else None) or _date()
         mark_type = "line" if chart_type == "multi_line" else "area"
 
         if string_cols:
             # Category column drives color — one line/area per category value
-            cat_col = _str(exclude=x_col)
-            y_col   = _num(exclude=x_col)
+            cat_col = (_ch if _ch and _ch != x_col and ctm.get(_ch) == "string"
+                       else None) or _str(exclude=x_col)
+            y_col   = (_yh if _yh and ctm.get(_yh) == "numeric" and _yh != x_col
+                       else None) or _num(exclude=x_col)
             enc = {
                 "x": {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate",
                       "axis": {"title": x_title or "Date", "format": "%b %d, %Y"}},
@@ -938,6 +1305,11 @@ def _build_vega_lite_spec(
             }
             if chart_type == "stacked_area":
                 enc["y"]["stack"] = "zero"
+            enc["tooltip"] = [
+                {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate", "format": "%b %d, %Y", "title": "Date"},
+                {"field": y_col, "type": "quantitative", "format": val_fmt},
+                {"field": cat_col, "type": "nominal"},
+            ]
             mark_spec: dict | str = {"type": "line", "point": True} if chart_type == "multi_line" else "area"
             spec = {**base, "mark": mark_spec, "encoding": enc, "config": _BASE_CONFIG}
         else:
@@ -952,6 +1324,11 @@ def _build_vega_lite_spec(
                 "y": {"field": "_value", "type": "quantitative",
                       "axis": {"title": y_title or "Value", "format": val_fmt}},
                 "color": {"field": "_series", "type": "nominal"},
+                "tooltip": [
+                    {"field": x_col, "type": "temporal", "timeUnit": "yearmonthdate", "format": "%b %d, %Y", "title": "Date"},
+                    {"field": "_value", "type": "quantitative", "format": val_fmt, "title": "Value"},
+                    {"field": "_series", "type": "nominal", "title": "Series"},
+                ],
             }
             if chart_type == "stacked_area":
                 enc["y"]["stack"] = "zero"
@@ -967,8 +1344,8 @@ def _build_vega_lite_spec(
 
     # ── Pie / Donut ────────────────────────────────────────────────────────────
     if chart_type in ("pie", "donut"):
-        name_col  = _str()
-        value_col = _num()
+        name_col  = (_xh if _xh and ctm.get(_xh) == "string" else None) or _str()
+        value_col = (_yh if _yh and ctm.get(_yh) == "numeric" else None) or _num()
         inner = 65 if chart_type == "donut" else 0
         spec = {
             **base,
@@ -987,9 +1364,14 @@ def _build_vega_lite_spec(
 
     # ── Grouped bar / Stacked bar ──────────────────────────────────────────────
     if chart_type in ("grouped_bar", "stacked_bar"):
-        x_col   = string_cols[0] if string_cols else (date_cols[0] if date_cols else columns[0])
-        cat_col = string_cols[1] if len(string_cols) > 1 else (string_cols[0] if string_cols else columns[0])
-        y_col   = _num()
+        y_col   = (_yh if _yh and ctm.get(_yh) == "numeric" else None) or _num()
+        x_col   = (_xh if _xh and ctm.get(_xh) in ("string", "date") and _xh != y_col
+                   else None) or (string_cols[0] if string_cols else (date_cols[0] if date_cols else columns[0]))
+        cat_col = (_ch if _ch and _ch != x_col and _ch != y_col and ctm.get(_ch) == "string"
+                   else None) or (
+                      next((c for c in string_cols if c != x_col), None)
+                      or (string_cols[0] if string_cols else columns[0])
+                  )
         x_type  = "temporal" if x_col in date_cols else "nominal"
         safe_fmt = _safe_value_format(val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
         enc = {
@@ -1003,22 +1385,30 @@ def _build_vega_lite_spec(
             enc["y"]["stack"] = "zero"
         else:
             enc["xOffset"] = {"field": cat_col}
+        enc["tooltip"] = [
+            {"field": x_col, "type": x_type},
+            {"field": y_col, "type": "quantitative", "format": safe_fmt},
+            {"field": cat_col, "type": "nominal"},
+        ]
         spec = {**base, "mark": "bar", "encoding": enc, "config": _BASE_CONFIG}
         return spec
 
     # ── Scatter ────────────────────────────────────────────────────────────────
     if chart_type == "scatter":
-        x_col   = _num()
-        y_col   = _num(exclude=x_col)
-        cat_col = string_cols[0] if string_cols else None
+        x_col   = (_xh if _xh and ctm.get(_xh) == "numeric" else None) or _num()
+        y_col   = (_yh if _yh and ctm.get(_yh) == "numeric" and _yh != x_col else None) or _num(exclude=x_col)
+        cat_col = (_ch if _ch and _ch != x_col and _ch != y_col and ctm.get(_ch) == "string"
+                   else None) or (string_cols[0] if string_cols else None)
+        safe_x_fmt = _safe_value_format(x_val_fmt, rows, columns.index(x_col) if x_col in columns else -1)
+        safe_y_fmt = _safe_value_format(y_val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
         enc = {
             "x": {"field": x_col, "type": "quantitative",
-                  "axis": {"title": x_title or x_col}},
+                  "axis": {"title": x_title or x_col, "format": safe_x_fmt}},
             "y": {"field": y_col, "type": "quantitative",
-                  "axis": {"title": y_title or y_col}},
+                  "axis": {"title": y_title or y_col, "format": safe_y_fmt}},
             "tooltip": [
-                {"field": x_col, "type": "quantitative"},
-                {"field": y_col, "type": "quantitative"},
+                {"field": x_col, "type": "quantitative", "format": safe_x_fmt},
+                {"field": y_col, "type": "quantitative", "format": safe_y_fmt},
             ],
         }
         if cat_col:
@@ -1029,25 +1419,35 @@ def _build_vega_lite_spec(
 
     # ── Bubble ─────────────────────────────────────────────────────────────────
     if chart_type == "bubble":
-        x_col    = numeric_cols[0] if len(numeric_cols) >= 1 else columns[0]
-        y_col    = numeric_cols[1] if len(numeric_cols) >= 2 else x_col
-        size_col = numeric_cols[2] if len(numeric_cols) >= 3 else y_col
-        cat_col  = string_cols[0] if string_cols else None
+        x_col    = (_xh if _xh and ctm.get(_xh) == "numeric" else None) or (numeric_cols[0] if numeric_cols else columns[0])
+        y_col    = (_yh if _yh and ctm.get(_yh) == "numeric" and _yh != x_col else None) or (numeric_cols[1] if len(numeric_cols) >= 2 else x_col)
+        size_col = (_sh if _sh and ctm.get(_sh) == "numeric" and _sh not in (x_col, y_col) else None) or (numeric_cols[2] if len(numeric_cols) >= 3 else y_col)
+        cat_col  = (_ch if _ch and _ch not in (x_col, y_col, size_col) and ctm.get(_ch) == "string"
+                    else None) or (string_cols[0] if string_cols else None)
+        safe_x_fmt = _safe_value_format(x_val_fmt, rows, columns.index(x_col) if x_col in columns else -1)
+        safe_y_fmt = _safe_value_format(y_val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
         enc = {
-            "x":    {"field": x_col,    "type": "quantitative", "axis": {"title": x_title or x_col}},
-            "y":    {"field": y_col,    "type": "quantitative", "axis": {"title": y_title or y_col}},
+            "x":    {"field": x_col,    "type": "quantitative", "axis": {"title": x_title or x_col, "format": safe_x_fmt}},
+            "y":    {"field": y_col,    "type": "quantitative", "axis": {"title": y_title or y_col, "format": safe_y_fmt}},
             "size": {"field": size_col, "type": "quantitative"},
         }
         if cat_col:
             enc["color"] = {"field": cat_col, "type": "nominal"}
+        enc["tooltip"] = [
+            {"field": x_col, "type": "quantitative", "format": safe_x_fmt},
+            {"field": y_col, "type": "quantitative", "format": safe_y_fmt},
+            {"field": size_col, "type": "quantitative"},
+        ]
+        if cat_col:
+            enc["tooltip"].append({"field": cat_col, "type": "nominal"})
         spec = {**base, "mark": {"type": "point", "filled": True, "opacity": 0.7},
                 "encoding": enc, "config": _BASE_CONFIG}
         return spec
 
     # ── Heatmap ────────────────────────────────────────────────────────────────
     if chart_type == "heatmap":
-        x_col   = string_cols[0] if string_cols else (date_cols[0] if date_cols else columns[0])
-        y_col   = string_cols[1] if len(string_cols) > 1 else (string_cols[0] if string_cols else columns[0])
+        x_col   = (_xh if _xh and ctm.get(_xh) in ("string", "date") else None) or (string_cols[0] if string_cols else (date_cols[0] if date_cols else columns[0]))
+        y_col   = (_yh if _yh and ctm.get(_yh) == "string" and _yh != x_col else None) or (string_cols[1] if len(string_cols) > 1 else (string_cols[0] if string_cols else columns[0]))
         val_col = _num()
         x_type  = "temporal" if x_col in date_cols else "nominal"
         spec = {
@@ -1075,8 +1475,8 @@ def _build_vega_lite_spec(
     # (if multiple rows share the same label, pre-aggregate them here in Python
     # so the window doesn't double-count).
     if chart_type == "waterfall":
-        x_col = _str()
-        y_col = _num()
+        x_col = (_xh if _xh and ctm.get(_xh) in ("string", "date") else None) or _str()
+        y_col = (_yh if _yh and ctm.get(_yh) == "numeric" and _yh != x_col else None) or _num()
 
         # Pre-aggregate: collapse rows sharing the same x_col value.
         # Without this, a label like "CASH_LIQUIDITY" appearing 30 times produces
@@ -1136,11 +1536,11 @@ def _build_vega_lite_spec(
 
     # ── Dual axis (layered: primary line + secondary line on right y-axis) ─────
     if chart_type == "dual_axis":
-        x_col  = date_cols[0] if date_cols else (string_cols[0] if string_cols else columns[0])
+        x_col  = (_xh if _xh and ctm.get(_xh) in ("date", "string") else None) or (date_cols[0] if date_cols else (string_cols[0] if string_cols else columns[0]))
         x_type = "temporal" if x_col in date_cols else "nominal"
         x_axis_cfg = ({"timeUnit": "yearmonthdate", "axis": {"title": x_title or "Date", "format": "%b %d, %Y"}}
                       if x_type == "temporal" else {"axis": {"title": x_title or x_col}})
-        y1_col = numeric_cols[0] if numeric_cols else columns[-1]
+        y1_col = (_yh if _yh and ctm.get(_yh) == "numeric" else None) or (numeric_cols[0] if numeric_cols else columns[-1])
         y2_col = numeric_cols[1] if len(numeric_cols) > 1 else y1_col
         y1_fmt = _safe_value_format(val_fmt, rows, columns.index(y1_col) if y1_col in columns else -1)
         spec = {
@@ -1153,6 +1553,10 @@ def _build_vega_lite_spec(
                         "x": {"field": x_col, "type": x_type, **x_axis_cfg},
                         "y": {"field": y1_col, "type": "quantitative",
                               "axis": {"title": y1_col, "format": y1_fmt, "titleColor": "#4c78a8"}},
+                        "tooltip": [
+                            {"field": x_col, "type": x_type, **({"timeUnit": "yearmonthdate", "format": "%b %d, %Y"} if x_type == "temporal" else {})},
+                            {"field": y1_col, "type": "quantitative", "format": y1_fmt},
+                        ],
                     },
                 },
                 {
@@ -1163,6 +1567,10 @@ def _build_vega_lite_spec(
                         "x": {"field": x_col, "type": x_type},
                         "y": {"field": y2_col, "type": "quantitative",
                               "axis": {"title": y2_col, "orient": "right", "titleColor": "#f58518"}},
+                        "tooltip": [
+                            {"field": x_col, "type": x_type, **({"timeUnit": "yearmonthdate", "format": "%b %d, %Y"} if x_type == "temporal" else {})},
+                            {"field": y2_col, "type": "quantitative"},
+                        ],
                     },
                 },
             ],

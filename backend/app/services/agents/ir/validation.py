@@ -185,11 +185,23 @@ async def validate_and_fix_join_clauses(
                     pass
         return fixed_clause
 
-    # Fix primary join clauses
+    # Fix primary join clauses; track table pairs whose clauses were invalidated
     fixed_join_clauses = []
+    newly_unresolved: list[dict] = []
     for clause in (ir.join_clauses or []):
         result = _fix_clause(clause)
-        fixed_join_clauses.append(result if result else "")  # empty = unresolved, handled by SQL LLM
+        if result:
+            fixed_join_clauses.append(result)
+        else:
+            fixed_join_clauses.append("")  # empty = unresolved, handled by SQL LLM
+            # Extract table FQNs from the failing clause so downstream agents know
+            # this pair has no confirmed join path (prevents LLM from inventing columns)
+            matches = list(_FQN_COL_RE.finditer(clause))
+            if len(matches) >= 2:
+                t1 = f"{matches[0].group(1)}.{matches[0].group(2)}"
+                t2 = f"{matches[-1].group(1)}.{matches[-1].group(2)}"
+                if t1 != t2:
+                    newly_unresolved.append({"from": t1, "to": t2, "candidate_join_columns": []})
 
     # Fix candidate join paths
     fixed_candidates = []
@@ -202,9 +214,15 @@ async def validate_and_fix_join_clauses(
         if fixed_clauses:
             fixed_candidates.append({**path, "join_clauses": fixed_clauses})
 
+    existing_unresolved = list(ir.unresolved_join_pairs or [])
+    merged_unresolved = existing_unresolved + [
+        p for p in newly_unresolved
+        if not any(e.get("from") == p["from"] and e.get("to") == p["to"] for e in existing_unresolved)
+    ]
     return ir.model_copy(update={
         "join_clauses": fixed_join_clauses,
         "candidate_join_paths": fixed_candidates or ir.candidate_join_paths,
+        "unresolved_join_pairs": merged_unresolved,
     })
 
 

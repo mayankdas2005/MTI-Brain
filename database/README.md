@@ -8,10 +8,11 @@ Docker Compose stack providing the data layer for MTI Brain.
 |---|---|---|---|
 | **PostgreSQL** | `pgvector/pgvector:0.8.1-pg18` | None (internal only) | Primary relational store with pgvector extension for vector similarity search |
 | **PgBouncer** | `edoburu/pgbouncer:v1.25.1-p0` | `5432` | Connection pooler in front of PostgreSQL (transaction pooling mode). Depends on PostgreSQL being healthy. |
-| **Redis** | `redis:8.4-alpine` | `6379` | In-memory store for caching, rate limiting, session data, and Celery/task queues |
+| **Redis** | `redis/redis-stack:7.4.0-v8` | `6379`, `8001` (RedisInsight) | In-memory store for caching, rate limiting, session data, and Celery/task queues |
 | **Neo4j** | `neo4j:2026.04-enterprise` | `7474` (HTTP), `7687` (Bolt) | Graph database with APOC and Graph Data Science plugins for semantic graph workloads |
+| **pgbouncer_redshift** | Built from `pgbouncer_rr/` | `5433` | PgBouncer-RR round-robin proxy in front of AWS Redshift (transaction pooling mode) |
 
-All services communicate via the `db_net` bridge network. PostgreSQL is internal-only; PgBouncer, Redis, and Neo4j are accessible from outside on their respective ports.
+All services communicate via the `db_net` bridge network. PostgreSQL is internal-only; PgBouncer (5432), Redis (6379/8001), Neo4j (7474/7687), and pgbouncer_redshift (5433) are accessible from outside on their respective ports.
 
 ## Prerequisites
 
@@ -35,19 +36,26 @@ All services communicate via the `db_net` bridge network. PostgreSQL is internal
    - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
    - `NEO4J_USER` (must be `neo4j`), `NEO4J_PASSWORD`
    - `REDIS_PASSWORD`
+   - `REDSHIFT_HOST`, `REDSHIFT_USER`, `REDSHIFT_PASSWORD`, `REDSHIFT_DB` (if using Redshift)
 
 3. **Populate PgBouncer config files** (required before first start):
 
    - `./docker_volume/pgbouncer/pgbouncer.ini`
    - `./docker_volume/pgbouncer/userlist.txt`
 
-4. **Start the stack:**
+4. **(If using Redshift)** Place your routing rules file before starting `pgbouncer_redshift`:
+
+   - `./docker_volume/pgbouncer_redshift/routing_rules.py`
+
+   A default implementation is baked into the image; copy from `pgbouncer_rr/routing_rules.py` if you need to customise it.
+
+5. **Start the stack:**
 
    ```bash
    docker compose up -d
    ```
 
-5. **Verify health:**
+6. **Verify health:**
 
    ```bash
    docker compose ps
@@ -63,6 +71,8 @@ All services communicate via the `db_net` bridge network. PostgreSQL is internal
 | Neo4j (Bolt) | `bolt://localhost:7687` — auth `neo4j` / `<NEO4J_PASSWORD>` |
 | Neo4j (Browser) | `http://localhost:7474` |
 | Redis | `redis://:${REDIS_PASSWORD}@localhost:6379/0` |
+| RedisInsight (Browser) | `http://localhost:8001` |
+| Redshift (via PgBouncer-RR) | `postgresql://<REDSHIFT_USER>:<REDSHIFT_PASSWORD>@localhost:5433/<REDSHIFT_DB>` |
 
 ## Configuration
 
@@ -150,14 +160,14 @@ Password-authenticated via `--requirepass`. No anonymous connections.
 
 **Persistence:** both RDB snapshots (900s/1 key, 300s/10 keys, 60s/10 000 keys) and AOF (`appendfsync everysec`) are enabled. Data survives container restarts via `./docker_volume/redis/data`.
 
-**Eviction:** controlled by `REDIS_MAXMEMORY_POLICY`. Set to `noeviction` by default — Redis returns an error rather than silently dropping data when `maxmemory` is reached. Use `allkeys-lru` if Redis is used purely as a cache where eviction is acceptable.
+**Eviction:** controlled by `REDIS_MAXMEMORY_POLICY`. Set to `allkeys-lru` by default — evicts the least-recently-used keys across all keyspaces when `maxmemory` is reached. Switch to `noeviction` if you need Redis to return an error rather than silently dropping data.
 
 | Variable | Default | Description |
 |---|---|---|
 | `REDIS_PASSWORD` | — | Required. Authentication password |
 | `REDIS_PORT` | `6379` | Host port mapped to container port 6379 |
 | `REDIS_MAXMEMORY` | `256mb` | Hard memory cap for Redis data |
-| `REDIS_MAXMEMORY_POLICY` | `noeviction` | Eviction policy when `maxmemory` is reached |
+| `REDIS_MAXMEMORY_POLICY` | `allkeys-lru` | Eviction policy when `maxmemory` is reached |
 
 ### Neo4j
 
@@ -198,19 +208,56 @@ G1GC configured for a 3 GB heap:
 | `db.memory.transaction.max` | `768m` | Per-transaction memory ceiling |
 | `db.transaction.timeout` | `30m` | GDS algorithm timeout |
 | `db.lock.acquisition.timeout` | `30s` | Prevents deadlock starvation |
-| `server.bolt.thread_pool_min_size` | `10` | Bolt min threads |
-| `server.bolt.thread_pool_max_size` | `40` | Bolt max threads — tune to concurrent client count |
-| `server.config.strict_validation.enabled` | `false` | Allows unknown settings to warn rather than hard-fail |
+| `server.bolt.thread_pool_min_size` | `10` | Min Bolt worker threads |
+| `server.bolt.thread_pool_max_size` | `40` | Max Bolt worker threads |
+| `server.bolt.thread_pool_keep_alive` | `5m` | Idle Bolt thread keep-alive |
+| `server.config.strict_validation.enabled` | `false` | Warn (not fail) on unrecognised config keys |
+| `dbms.cypher.min_replan_interval` | `10s` | Minimum interval between query replanning |
+
+#### Variables
 
 | Variable | Description |
 |---|---|
-| `NEO4J_USER` | Must be `neo4j` |
+| `NEO4J_USER` | Must be `neo4j` (built-in admin; cannot be changed via env) |
 | `NEO4J_PASSWORD` | Admin password |
-| `NEO4J_URI` | Bolt URI for app connections (e.g. `bolt://neo4j:7687`) |
+| `NEO4J_URI` | Bolt URI used by the backend (`bolt://neo4j:7687` in Docker, `bolt://localhost:7687` locally) |
+
+### PgBouncer-RR (Redshift)
+
+Custom PgBouncer-RR image built from `pgbouncer_rr/` that proxies connections to AWS Redshift. Listens on host port **5433**, forwarding to Redshift on port 5439. Supports single-cluster and multi-cluster (round-robin) configurations.
+
+#### Single vs. multi-cluster
+
+| Mode | Configuration |
+|---|---|
+| Single cluster | Set `REDSHIFT_HOST` + `REDSHIFT_NUM_BACKENDS=1` |
+| Multi-cluster | Set `REDSHIFT_NUM_BACKENDS=N` and `REDSHIFT_HOST_0` … `REDSHIFT_HOST_{N-1}` |
+
+| Variable | Default | Description |
+|---|---|---|
+| `REDSHIFT_HOST` | — | Required (single-cluster). Primary Redshift endpoint |
+| `REDSHIFT_PORT` | `5439` | Redshift port |
+| `REDSHIFT_DB` | — | Required. Target database name |
+| `REDSHIFT_USER` | — | Required. Redshift user |
+| `REDSHIFT_PASSWORD` | — | Required. Redshift password |
+| `REDSHIFT_SCHEMA` | — | Default search path schema |
+| `REDSHIFT_NUM_BACKENDS` | `1` | Number of backend clusters for round-robin |
+| `PGBOUNCER_RR_POOL_MODE` | `transaction` | Pooling mode |
+| `PGBOUNCER_RR_MAX_CLIENT_CONN` | `100` | Maximum client connections |
+| `PGBOUNCER_RR_DEFAULT_POOL_SIZE` | `10` | Server connections per user/db pair |
+| `PGBOUNCER_RR_MIN_POOL_SIZE` | `2` | Connections kept warm |
+| `PGBOUNCER_RR_RESERVE_POOL_SIZE` | `5` | Extra connections during bursts |
+| `PGBOUNCER_RR_RESERVE_POOL_TIMEOUT` | `3` | Seconds before using reserve pool |
+| `PGBOUNCER_RR_SERVER_IDLE_TIMEOUT` | `600` | Close idle server connections after (seconds) |
+| `PGBOUNCER_RR_CLIENT_IDLE_TIMEOUT` | `1800` | Close idle client connections after (seconds) |
+| `PGBOUNCER_RR_LOG_CONNECTIONS` | `1` | Log new connections |
+| `PGBOUNCER_RR_LOG_DISCONNECTIONS` | `1` | Log disconnections |
+| `PGBOUNCER_RR_LOG_STATS` | `1` | Log periodic stats |
+| `PGBOUNCER_RR_STATS_PERIOD` | `60` | Stats logging interval (seconds) |
 
 ## Environment Variables
 
-All variables are defined in `.env` (copy from `.env.example`):
+All variables are defined in `.env` (copy from `.env.example`). Full reference below — see each service's Configuration section above for descriptions.
 
 ```
 # ─── PostgreSQL ───
@@ -221,28 +268,77 @@ POSTGRES_PASSWORD=your_postgres_password
 # ─── PgBouncer ───
 PGBOUNCER_AUTH_TYPE=scram-sha-256
 PGBOUNCER_POOL_MODE=transaction
-PGBOUNCER_MAX_CLIENT_CONN=200
-PGBOUNCER_DEFAULT_POOL_SIZE=20
-PGBOUNCER_MIN_POOL_SIZE=5
-PGBOUNCER_RESERVE_POOL_SIZE=5
-PGBOUNCER_RESERVE_POOL_TIMEOUT=3
+PGBOUNCER_MAX_CLIENT_CONN=500
+PGBOUNCER_DEFAULT_POOL_SIZE=40
+PGBOUNCER_MIN_POOL_SIZE=10
+PGBOUNCER_RESERVE_POOL_SIZE=10
+PGBOUNCER_RESERVE_POOL_TIMEOUT=2
 PGBOUNCER_SERVER_IDLE_TIMEOUT=600
 PGBOUNCER_CLIENT_IDLE_TIMEOUT=1800
-PGBOUNCER_LOG_CONNECTIONS=1
-PGBOUNCER_LOG_DISCONNECTIONS=1
+PGBOUNCER_LOG_CONNECTIONS=0
+PGBOUNCER_LOG_DISCONNECTIONS=0
 PGBOUNCER_LOG_STATS=1
 PGBOUNCER_STATS_PERIOD=60
 
 # ─── Redis ───
-REDIS_PASSWORD=your_redis_password
+REDIS_PASSWORD=change_me
 REDIS_PORT=6379
 REDIS_MAXMEMORY=256mb
-REDIS_MAXMEMORY_POLICY=noeviction
+REDIS_MAXMEMORY_POLICY=allkeys-lru
+
+REDIS_MEMORY_LIMIT=384M
+REDIS_CPU_LIMIT=0.5
+REDIS_MEMORY_RESERVATION=64M
+REDIS_CPU_RESERVATION=0.1
 
 # ─── Neo4j ───
 NEO4J_URI=bolt://neo4j:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_neo4j_password
+
+# ─── Resource Tuning ───
+POSTGRES_MEMORY_LIMIT=1536M
+POSTGRES_CPU_LIMIT=2.0
+POSTGRES_MEMORY_RESERVATION=512M
+POSTGRES_CPU_RESERVATION=0.5
+
+PGBOUNCER_MEMORY_LIMIT=128M
+PGBOUNCER_CPU_LIMIT=0.5
+PGBOUNCER_MEMORY_RESERVATION=32M
+PGBOUNCER_CPU_RESERVATION=0.1
+
+# ─── AWS Redshift ───
+REDSHIFT_USER=
+REDSHIFT_PASSWORD=
+REDSHIFT_HOST=
+REDSHIFT_PORT=5439
+REDSHIFT_DB=
+REDSHIFT_SCHEMA=
+
+# ─── PgBouncer-RR (Redshift round-robin proxy) ───
+# Single-cluster: set REDSHIFT_HOST above + REDSHIFT_NUM_BACKENDS=1
+# Multi-cluster: set REDSHIFT_NUM_BACKENDS=N and REDSHIFT_HOST_0 … REDSHIFT_HOST_{N-1}
+REDSHIFT_NUM_BACKENDS=1
+# REDSHIFT_HOST_0=cluster-writer.abc.us-east-1.redshift.amazonaws.com
+# REDSHIFT_HOST_1=cluster-reader.abc.us-east-1.redshift.amazonaws.com
+
+PGBOUNCER_RR_POOL_MODE=transaction
+PGBOUNCER_RR_DEFAULT_POOL_SIZE=10
+PGBOUNCER_RR_MAX_CLIENT_CONN=100
+PGBOUNCER_RR_MIN_POOL_SIZE=2
+PGBOUNCER_RR_RESERVE_POOL_SIZE=5
+PGBOUNCER_RR_RESERVE_POOL_TIMEOUT=3
+PGBOUNCER_RR_SERVER_IDLE_TIMEOUT=600
+PGBOUNCER_RR_CLIENT_IDLE_TIMEOUT=1800
+PGBOUNCER_RR_LOG_CONNECTIONS=1
+PGBOUNCER_RR_LOG_DISCONNECTIONS=1
+PGBOUNCER_RR_LOG_STATS=1
+PGBOUNCER_RR_STATS_PERIOD=60
+
+PGBOUNCER_RR_MEMORY_LIMIT=128M
+PGBOUNCER_RR_CPU_LIMIT=0.5
+PGBOUNCER_RR_MEMORY_RESERVATION=32M
+PGBOUNCER_RR_CPU_RESERVATION=0.1
 ```
 
 ## Data Volumes
@@ -260,6 +356,7 @@ docker_volume/
   neo4j/logs/             # Neo4j logs and GC log (gc.log)
   neo4j/import/           # CSV/files for LOAD CSV imports
   neo4j/plugins/          # Installed plugin jars (apoc, graph-data-science)
+  pgbouncer_redshift/routing_rules.py  # PgBouncer-RR routing config (overrides image default)
 ```
 
 This directory is git-ignored.
@@ -272,6 +369,7 @@ This directory is git-ignored.
 | PgBouncer | 128 MB | 32 MB | 0.5 | 0.1 |
 | Redis | 384 MB | 64 MB | 0.5 | 0.1 |
 | Neo4j | 6 GB | 2 GB | 4.0 | 1.0 |
+| pgbouncer_redshift | 128 MB | 32 MB | 0.5 | 0.1 |
 
 ## Health Checks
 
@@ -281,6 +379,7 @@ This directory is git-ignored.
 | PgBouncer | `pg_isready` | 10s | 5s | 5 | 10s |
 | Redis | `redis-cli ping` | 10s | 5s | 5 | 10s |
 | Neo4j | HTTP `/db/neo4j/cluster/available` | 30s | 10s | 5 | 120s |
+| pgbouncer_redshift | `pg_isready` | 15s | 5s | 5 | 10s |
 
 ## Stopping
 

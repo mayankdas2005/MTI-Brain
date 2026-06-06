@@ -1,6 +1,6 @@
 """Async Redshift client for the analytics pipeline.
 
-Uses redshift_connector with a queue.Queue-based connection pool (size 6)
+Uses psycopg2 with a queue.Queue-based connection pool (size 10)
 so concurrent probe queries (context_fetcher) and actual query execution
 don't compete for connections.
 All queries use parameterized execution — never string interpolation.
@@ -21,13 +21,19 @@ _connection_pool: queue.Queue | None = None
 
 
 def _make_connection():
-    import redshift_connector
-    return redshift_connector.connect(
+    import psycopg2
+    return psycopg2.connect(
         host=settings.REDSHIFT_HOST,
-        database=settings.REDSHIFT_DB,
+        dbname=settings.REDSHIFT_DB,
         user=settings.REDSHIFT_USER,
         password=settings.REDSHIFT_PASSWORD,
         port=getattr(settings, "REDSHIFT_PORT", 5439),
+        sslmode="disable",
+        keepalives=1,
+        keepalives_idle=60,
+        keepalives_interval=10,
+        keepalives_count=5,
+        connect_timeout=10,
     )
 
 
@@ -44,6 +50,20 @@ async def init_redshift() -> None:
     except Exception as e:
         logger.error("Redshift initialization failed: {}", e)
         raise
+
+
+async def redshift_keepalive(interval_s: int = 60) -> None:
+    """Ping Redshift every interval_s seconds to prevent Serverless auto-suspend
+    and proactively validate pool connections."""
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await asyncio.to_thread(_execute_sync, "SELECT 1", None, 15, quiet=True)
+            logger.debug("redshift | keepalive OK")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("redshift | keepalive failed | error={}", exc)
 
 
 async def close_redshift() -> None:
@@ -82,11 +102,14 @@ def _run_cursor(conn, sql: str, params: list | None) -> tuple[list[str], list[li
         cursor.close()
 
 
-def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60) -> tuple[list[str], list[list]]:
+def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60, quiet: bool = False) -> tuple[list[str], list[list]]:
     """Borrow a connection from the pool, execute, return it. Runs in a thread.
 
     On timeout / stale connection / broken pipe: reconnects and retries up to
     3 attempts total (1 original + 2 retries) before raising.
+    The finally block guarantees the connection is always returned or replaced —
+    no pool slots are permanently leaked on any error path.
+    quiet=True suppresses SQL preview and query OK logs (used by keepalive pings).
     """
     pool = _get_pool()
     try:
@@ -94,49 +117,69 @@ def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60) -> 
     except queue.Empty:
         raise TimeoutError("All Redshift connections busy — pool exhausted.")
 
-    logger.info("redshift | SQL preview | {}", sql)
+    if not quiet:
+        logger.info("redshift | SQL preview | {}", sql)
 
     last_err: Exception | None = None
-    for attempt in range(3):
-        try:
-            columns, rows = _run_cursor(conn, sql, params)
-            logger.info("redshift | query OK | attempt={} | rows={} | columns={}", attempt + 1, len(rows), columns)
-            break
-        except Exception as exc:
-            last_err = exc
-            if not is_transient(exc):
-                logger.error("redshift | non-transient error | error={}", exc)
-                raise
-            if attempt < 2:
-                delay = 0.5 * (attempt + 1)
-                logger.warning("redshift | transient error attempt {}/3 — reconnecting in {:.1f}s | error={}", attempt + 1, delay, exc)
-                time.sleep(delay)
+    succeeded = False
+    columns: list[str] = []
+    rows: list[list] = []
+
+    try:
+        for attempt in range(3):
+            try:
+                columns, rows = _run_cursor(conn, sql, params)
+                if not quiet:
+                    logger.info("redshift | query OK | attempt={} | rows={} | columns={}", attempt + 1, len(rows), columns)
+                succeeded = True
+                break
+            except Exception as exc:
+                last_err = exc
+                if not is_transient(exc):
+                    logger.error("redshift | non-transient error | error={}", exc)
+                    raise
+                if attempt < 2:
+                    delay = 0.5 * (attempt + 1)
+                    logger.warning("redshift | transient error attempt {}/3 — reconnecting in {:.1f}s | error={}", attempt + 1, delay, exc)
+                    time.sleep(delay)
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    try:
+                        conn = _make_connection()
+                    except Exception as conn_err:
+                        logger.error("redshift | reconnect failed | error={}", conn_err)
+                        raise conn_err
+                else:
+                    logger.error("redshift | all 3 attempts failed | error={}", exc)
+                    raise
+        else:
+            raise last_err  # type: ignore[misc]
+    finally:
+        if succeeded:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                pool.put_nowait(conn)
+            except queue.Full:
                 try:
                     conn.close()
                 except Exception:
                     pass
-                try:
-                    conn = _make_connection()
-                except Exception as conn_err:
-                    logger.error("redshift | reconnect failed | error={}", conn_err)
-                    raise conn_err
-            else:
-                logger.error("redshift | all 3 attempts failed | error={}", exc)
-                raise
-    else:
-        raise last_err  # type: ignore[misc]
-
-    try:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        pool.put_nowait(conn)
-    except queue.Full:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        else:
+            # Dead or exhausted connection — close and put a fresh one back so
+            # pool size stays at _POOL_SIZE instead of shrinking over time.
+            try:
+                conn.close()
+            except Exception:
+                pass
+            try:
+                pool.put_nowait(_make_connection())
+            except Exception:
+                pass  # Pool one short; next successful query restores it
 
     return columns, rows
 

@@ -321,7 +321,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
             : origin.content;
           return (
             <div className="flex items-center gap-1 mb-1 mr-1 max-w-[80%] text-right">
-              <span className="text-[10px] text-muted-foreground/50 truncate">
+              <span className="text-[11px] text-muted-foreground/50 truncate">
                 ↳ Refining: <span className="italic">{preview}</span>
               </span>
             </div>

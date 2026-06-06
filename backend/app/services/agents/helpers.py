@@ -370,6 +370,45 @@ def build_directive_section(state: dict) -> str:
     return "\n\n".join(parts) if parts else ""
 
 
+def build_refinement_section(state: dict, role: str = "generic") -> str:
+    """Returns REFINEMENT CONTEXT block for specialist/directive prompts.
+
+    Returns empty string when is_refinement is not set, prior_sql is absent,
+    or when recompile_count > 0 (recompile is handled by _build_prior_sql_section).
+    """
+    if not state.get("is_refinement"):
+        return ""
+    if (state.get("recompile_count") or 0) > 0:
+        return ""
+    prior_sql = state.get("prior_sql") or ""
+    if not prior_sql:
+        return ""
+    role_instructions = {
+        "measures": (
+            "The user instruction does NOT mention changing measures. "
+            "Preserve the existing measures from the prior SQL unless explicitly asked to change them."
+        ),
+        "filters": (
+            "The user is adding or modifying filters on an existing SELECT query. "
+            "Extract the new filter. Do NOT interpret 'add' as INSERT/UPDATE/DELETE."
+        ),
+        "dimensions": (
+            "The user instruction does NOT mention changing groupings. "
+            "Preserve the existing dimensions from the prior SQL unless explicitly asked to change them."
+        ),
+        "directive": (
+            "Write a directive to MODIFY the prior SELECT query — not to create a new one. "
+            "The output MUST remain a SELECT statement."
+        ),
+    }
+    instruction = role_instructions.get(role, "")
+    return (
+        f"\nREFINEMENT CONTEXT — user is modifying an existing query:\n"
+        f"<prior_sql>\n{prior_sql}\n</prior_sql>\n"
+        f"{instruction}\n"
+    )
+
+
 # ─── Section streamers (mirror quest exactly) ─────────────────────────────────
 
 class MultiSectionStreamer:

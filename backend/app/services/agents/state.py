@@ -85,3 +85,6 @@ class AnalyticsState(TypedDict):
     pattern_name: str | None             # intent of the top matched pattern
     is_retry: bool                       # True when triggered from /retry or /edit endpoint
     prior_sql: str | None               # SQL from the immediately prior pipeline run; set by sql_generator; used by intent_resolver and sql_generator on retry/error
+    prior_question: str | None          # original question text looked up from DB; used by context_fetcher to find the right tables for refinements
+    prior_sql_tables: list[str]         # schema.table FQNs parsed from prior_sql (e.g. ["lpp.counterparty_exposure"])
+    is_refinement: bool                 # True for user-initiated refinements (prior_sql from frontend, not is_retry)

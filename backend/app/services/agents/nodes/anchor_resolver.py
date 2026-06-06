@@ -69,8 +69,18 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     semantic_context = state.get("semantic_context") or {}
     valid_tables = {t["fqn"] for t in (semantic_context.get("tables") or []) if t.get("fqn")}
 
+    question = state["question"]
+    if state.get("is_refinement") and state.get("prior_sql_tables"):
+        tables_in_context = [t for t in state["prior_sql_tables"] if t in valid_tables]
+        if tables_in_context:
+            question = (
+                f"{question}\n\n"
+                f"[Refinement context: the prior query used these tables: {', '.join(tables_in_context)}. "
+                f"Include them as anchor tables unless the user instruction explicitly asks to change them.]"
+            )
+
     prompt = ANCHOR_RESOLVER_PROMPT.format_messages(
-        question=state["question"],
+        question=question,
         tables_section=_build_tables_section(semantic_context),
         business_terms_section=_build_terms_section(semantic_context),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,

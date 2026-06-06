@@ -95,6 +95,30 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
                     + " — do NOT use any other column from this table"
                 )
 
+    # Anchor tables whose join clause failed validation — restrict their columns so the LLM
+    # doesn't invent names that don't exist (e.g. ba.company_ref on bank_account which only
+    # has 'code'). These tables are hub-injected anchors with no confirmed join path.
+    if semantic_context and ir.unresolved_join_pairs:
+        col_lookup_2: dict = semantic_context.get("_column_lookup") or {}
+        anchor_set_2 = set(ir.anchor_tables)
+        failed_anchors: set[str] = set()
+        for p in ir.unresolved_join_pairs:
+            for key in ("from", "to"):
+                t = p.get(key, "")
+                if t in anchor_set_2:
+                    failed_anchors.add(t)
+        for tbl in sorted(failed_anchors):
+            tbl_cols = sorted({col for fqn, col in col_lookup_2 if fqn == tbl})
+            if tbl_cols:
+                lines.append(
+                    f"FAILED-JOIN ANCHOR TABLE {tbl} — join validation failed; "
+                    f"available columns: {', '.join(tbl_cols)} — do NOT use any other column from this table"
+                )
+            else:
+                lines.append(
+                    f"FAILED-JOIN ANCHOR TABLE {tbl} — join validation failed; no confirmed columns available"
+                )
+
     # Explicitly invalid columns — hallucinated by intent specialists + proactively blocked.
     invalid = list(ir.hallucinated_columns or [])
     if invalid:

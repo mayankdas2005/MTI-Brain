@@ -20,6 +20,7 @@ from app.core.middleware import (
 from app.core.rate_limit import limiter
 from app.db import dispose_engine, warm_pool
 from app.services.agents.graph import init_analytics_pipeline, shutdown_analytics_pipeline
+from app.services.agents.redshift_client import redshift_keepalive
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -33,14 +34,23 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} [env={settings.ENVIRONMENT}]")
     init_langfuse()
     await warm_pool()
+    _keepalive_task = None
     try:
         await init_analytics_pipeline()
+        _keepalive_task = asyncio.create_task(redshift_keepalive(), name="redshift-keepalive")
+        logger.info("Redshift keepalive started | interval=30s")
     except Exception as e:
         logger.error(f"Analytics pipeline init failed (continuing without it): {e}")
     try:
         yield
     finally:
         logger.info("Shutting down")
+        if _keepalive_task:
+            _keepalive_task.cancel()
+            try:
+                await _keepalive_task
+            except asyncio.CancelledError:
+                pass
         try:
             await asyncio.wait_for(shutdown_analytics_pipeline(), timeout=4.0)
         except Exception:

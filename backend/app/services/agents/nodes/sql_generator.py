@@ -202,7 +202,7 @@ async def generate_sql_llm(
         return await retry_async(
             lambda: llm.ainvoke(prompt, config=config),
             service="bedrock-sql-generator",
-            max_attempts=2,
+            max_attempts=3,
             backoff_base=5.0,
         )
 
@@ -229,6 +229,9 @@ async def _plan_cte_columns(
     """
     has_measures = bool(spec.get("measures"))
     if not has_measures:
+        return ""
+
+    if state.get("is_refinement") and not (state.get("recompile_count") or 0):
         return ""
 
     from app.services.agents.bedrock import get_llm
@@ -1103,16 +1106,38 @@ def _build_query_patterns_section(query_patterns: list) -> str:
 def _build_prior_sql_section(state: AnalyticsState) -> str:
     prior_sql = state.get("prior_sql") or ""
     recompile_count = state.get("recompile_count", 0)
-    if not (recompile_count > 0 and prior_sql):
+
+    if not prior_sql:
         return ""
-    error = state.get("error") or ""
-    error_line = f"Validation error that must be fixed:\n  {error}\n\n" if error else ""
-    return (
-        "PREVIOUS SQL ATTEMPT (recompile — prior SQL failed validation):\n\n"
-        f"{error_line}"
-        f"<prior_sql>{prior_sql}</prior_sql>\n\n"
-        "Fix the specific validation error above. Do not repeat the structural mistake that caused it."
-    )
+
+    if recompile_count > 0:
+        error = state.get("error") or ""
+        error_line = f"Validation error that must be fixed:\n  {error}\n\n" if error else ""
+        return (
+            "PREVIOUS SQL ATTEMPT (recompile — prior SQL failed validation):\n\n"
+            f"{error_line}"
+            f"<prior_sql>{prior_sql}</prior_sql>\n\n"
+            "Fix the specific validation error above. Do not repeat the structural mistake that caused it."
+        )
+
+    if state.get("execution_error"):
+        return ""  # intent_resolver already provides execution error context
+
+    if state.get("is_refinement"):
+        return (
+            "REFINEMENT CONTEXT — do NOT build a new query from scratch:\n\n"
+            f"<prior_sql>\n{prior_sql}\n</prior_sql>\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Start from the prior SQL above — copy its SELECT columns, CTEs, FROM/JOINs, and WHERE conditions.\n"
+            "2. Apply ONLY the specific change the user requests.\n"
+            "3. The output MUST be a SELECT statement. "
+            "'add' or 'include' means adding a WHERE filter or JOIN — NEVER an INSERT, UPDATE, or DELETE.\n"
+            "4. Keep existing SELECT columns, CTEs, and JOINs unless explicitly asked to change them.\n"
+            "5. If the QUERY SPECIFICATION below has no measures or dimensions, "
+            "copy them from the prior SQL — no changes requested.\n"
+        )
+
+    return ""
 
 
 def _format_sql(sql: str) -> str:
