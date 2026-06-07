@@ -363,7 +363,10 @@ After embedding, runs KNN on column embeddings (cutoff=0.88, k=10) to create `SE
 | `graph/enrich/embeddings.py` | Cohere Embed v4 (batch size 96) |
 | `graph/enrich/intents.py` | Intent node and RELEVANT_TO edge construction |
 | `graph/enrich/rollup.py` | ROLLUP_OF edge detection and LLM validation |
-| `generate_new_semantic_model.py` | Standalone RDF/R2RML extractor — generates `semantic_model.yml` from TTL ontology files |
+| `graph/load/neo4j_writer.py` | Low-level Neo4j write helpers used by `neo4j_loader.py` |
+| `graph/schema_contract.py` | Shared property lists for node retrieval; imported by loader and client |
+| `graph/utils.py` | Shared pipeline utilities (e.g. UUID column detection) |
+| `generate_semantic_model.py` | Standalone RDF/R2RML extractor — generates `semantic_model.yml` from TTL ontology files |
 
 ---
 

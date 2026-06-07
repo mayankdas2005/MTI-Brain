@@ -8,10 +8,10 @@ FastAPI backend for **MTI Brain** — an AI-powered conversational data analytic
 
 | Layer | Technology |
 |-------|-----------|
-| Framework | FastAPI + Uvicorn / Gunicorn |
+| Framework | FastAPI 0.135.1+ + Uvicorn 0.41.0+ / Gunicorn 25.1.0 |
 | Language | Python 3.12 |
-| Analytics Pipeline | LangGraph (13 nodes) |
-| LLM Provider | AWS Bedrock — Claude Sonnet, Haiku, Opus |
+| Analytics Pipeline | LangGraph 0.4.0+ (single-responsibility architecture) |
+| LLM Provider | AWS Bedrock — Claude Sonnet, Haiku |
 | Embeddings | Cohere Embed v4 via AWS Bedrock (1536-dim) |
 | Knowledge Graph | Neo4j (schema graph — table/column/join discovery) |
 | Analytics DB | Amazon Redshift |
@@ -21,7 +21,7 @@ FastAPI backend for **MTI Brain** — an AI-powered conversational data analytic
 | Caching | Redis |
 | Streaming | SSE via sse-starlette |
 | Auth | Username/password → JWT (PyJWT, HS256, 8-hour expiry) |
-| Resilience | Circuit breakers (pybreaker) + retries (tenacity) |
+| Resilience | Circuit breakers (pybreaker 1.4.1) + retries (tenacity) |
 | Logging | Loguru (structured, request-ID, timing) |
 | Observability | Langfuse (self-hosted) — LLM tracing, token usage, latency per node |
 | Containerization | Docker (multi-stage, non-root, Python 3.12-slim) |
@@ -80,28 +80,45 @@ backend/
 │       │   ├── pipeline.py              # SSE streaming + active stream registry
 │       │   ├── prompts.py               # All LLM prompt templates
 │       │   ├── routing.py               # Conditional edge routing logic
+│       │   ├── helpers.py               # Shared helpers (_build_data_profile, parse_tag, etc.)
+│       │   ├── node_names.py            # Node name constants (sourced from node_names.yml)
+│       │   ├── ir_utils.py              # Intermediate representation utilities
+│       │   ├── token_tracker.py         # Per-node token usage tracking
+│       │   ├── sql_validator_logic.py   # SQL AST validation gates
+│       │   ├── filter_resolver_logic.py # Filter resolution tiers 1-5
 │       │   ├── redis_client.py          # Redis cache client
 │       │   ├── neo4j_client.py          # Neo4j driver + connection pooling
 │       │   ├── redshift_client.py       # Redshift connection + query execution
-│       │   ├── nodes/                   # 13 pipeline node implementations + post-processing helpers
-│       │   │   ├── intake_classifier.py
-│       │   │   ├── general_chat.py
-│       │   │   ├── context_fetcher.py
-│       │   │   ├── intent_resolver.py
-│       │   │   ├── ir_builder.py
-│       │   │   ├── query_compiler.py
-│       │   │   ├── filter_resolver.py
-│       │   │   ├── sql_generator.py
-│       │   │   ├── sql_validator.py
-│       │   │   ├── executor.py
-│       │   │   ├── synthesis.py
-│       │   │   ├── chart_agent.py
-│       │   │   ├── error_response.py
-│       │   │   ├── compress.py
-│       │   │   ├── zero_row_probe.py
-│       │   │   ├── repair.py
-│       │   │   ├── audit.py
-│       │   │   └── confidence.py        # Post-processing confidence scorer
+│       │   ├── nodes/                   # Pipeline node implementations
+│       │   │   ├── intake_classifier.py  # Node 0: route general vs analytics
+│       │   │   ├── general_chat.py       # Node G: non-analytics conversational response
+│       │   │   ├── context_fetcher.py    # Node 1a: Neo4j table/column discovery (delegates to context/)
+│       │   │   ├── anchor_resolver.py    # Node 1b: Haiku — select 2-4 anchor tables
+│       │   │   ├── schema_enricher.py    # Node 1c: deterministic — load full columns for anchor tables
+│       │   │   ├── measure_specialist.py # Node 1e-A: Haiku — extract measures (parallel)
+│       │   │   ├── filter_specialist.py  # Node 1e-B: Haiku — extract filters (parallel)
+│       │   │   ├── dimension_specialist.py # Node 1e-C: Haiku — extract dimensions (parallel)
+│       │   │   ├── intent_assembler.py   # Node 1f: deterministic merge, defer=True
+│       │   │   ├── directive_writer.py   # Node 1g: Sonnet — write intent directive
+│       │   │   ├── intent_resolver.py    # Node 1b (legacy fallback): Sonnet full-intent extraction
+│       │   │   ├── query_compiler.py     # Node 2: build SemanticIR from resolved intent
+│       │   │   ├── filter_resolver.py    # Node F: 6-tier filter value resolution
+│       │   │   ├── sql_generator_node.py # Node 3: LLM SQL generation from SemanticIR
+│       │   │   ├── sql_validator.py      # Node V: deterministic AST validation (4 gates)
+│       │   │   ├── executor.py           # Node 4: run SQL on Redshift
+│       │   │   ├── data_quality_checker.py # Node pre-S: Haiku DATA_INTEGRITY_GATE scan
+│       │   │   ├── synthesis.py          # Node 5: two-phase answer generation (Haiku+Sonnet)
+│       │   │   ├── chart_agent.py        # Node 6: Vega-Lite chart spec generation
+│       │   │   ├── compress.py           # Conversation history summarizer (Sonnet)
+│       │   │   ├── error_response.py     # Produce user-facing error message
+│       │   │   ├── audit.py              # Write execution telemetry to execution_log
+│       │   │   ├── confidence.py         # Post-processing confidence scorer (Haiku, not a graph node)
+│       │   │   ├── repair.py             # LLM-based SQL repair helper
+│       │   │   ├── zero_row_probe.py     # 3-stage zero-row diagnosis
+│       │   │   ├── clarification.py      # Clarification request helper
+│       │   │   ├── ir_builder.py         # IR construction helper
+│       │   │   ├── schema_context.py     # Schema context helper
+│       │   │   └── intent_dispatcher.py  # Legacy intent dispatcher (superseded by direct multi-edges)
 │       │   ├── neo4j/                   # Neo4j schema exploration helpers
 │       │   │   ├── client.py
 │       │   │   ├── table_search.py
@@ -110,12 +127,12 @@ backend/
 │       │   │   ├── hub_detection.py
 │       │   │   ├── template_search.py
 │       │   │   └── write.py
-│       │   ├── context/                 # Context enrichment
-│       │   │   ├── fetcher.py
-│       │   │   ├── table_discovery.py
-│       │   │   ├── column_loader.py
-│       │   │   ├── cross_domain.py
-│       │   │   └── helpers.py
+│       │   ├── context/                 # Context enrichment (used by context_fetcher)
+│       │   │   ├── fetcher.py           # Main entry point
+│       │   │   ├── table_discovery.py   # 8-path table search
+│       │   │   ├── column_loader.py     # Join-critical detection + column prioritization
+│       │   │   ├── cross_domain.py      # 4-method hub cascade
+│       │   │   └── helpers.py           # Embedding, tokenization, trim
 │       │   ├── memory/                  # Conversation memory
 │       │   │   ├── short_term.py
 │       │   │   └── long_term.py
@@ -261,8 +278,8 @@ docker run --env-file .env -p 8000:8000 mti-brain-backend
 | `DB_POOL_TIMEOUT` | `30` | Wait timeout for free connection (seconds) |
 | `CHECKPOINT_POOL_MIN` | `1` | LangGraph checkpoint psycopg3 pool minimum |
 | `CHECKPOINT_POOL_MAX` | `5` | LangGraph checkpoint psycopg3 pool maximum |
-| `CB_FAIL_MAX` | `5` | Circuit breaker failure threshold |
-| `CB_RESET_TIMEOUT` | `30` | Circuit breaker reset timeout (seconds) |
+| `CB_FAIL_MAX` | `5` | Circuit breaker failure threshold (Postgres only; other breakers have fixed values) |
+| `CB_RESET_TIMEOUT` | `30` | Circuit breaker reset timeout (Postgres only, seconds) |
 | `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
 | `JWT_EXPIRY_HOURS` | `8` | JWT token lifetime (hours) |
 | `RATE_LIMIT_LOGIN_PER_MINUTE` | `5` | Login rate limit per IP |
@@ -275,7 +292,7 @@ docker run --env-file .env -p 8000:8000 mti-brain-backend
 | `NEO4J_ACQUISITION_TIMEOUT` | `10.0` | Neo4j pool acquisition timeout (seconds) |
 | `REDIS_MAX_CONNECTIONS` | `20` | Redis connection pool size |
 | `REDIS_HEALTH_CHECK_INTERVAL` | `30` | Redis health check interval (seconds) |
-| `LANGFUSE_ENABLED` | `false` | Enable Langfuse LLM tracing |
+| `LANGFUSE_ENABLED` | `true` | Enable Langfuse LLM tracing |
 
 ---
 
@@ -287,19 +304,25 @@ All endpoints under `/api/v1/*` require `Authorization: Bearer <token>` except `
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `GET` | `/health` | No | Readiness probe — returns status of Postgres, Neo4j, Redis, and circuit breakers |
+| `GET` | `/health` | No | Readiness probe — returns status of Postgres, Neo4j, Redis, LLM, and embeddings |
 | `POST` | `/admin/cache/flush` | Yes | Flush all Redis keys |
 
 **Health response:**
 ```json
 {
-  "status": "ok",
-  "postgres": "ok",
-  "neo4j": "ok",
-  "redis": "ok",
-  "circuit_breakers": { "postgres": "closed", "llm": "closed", ... }
+  "status": "healthy",
+  "services": {
+    "postgres": { "status": "ok" },
+    "neo4j": { "status": "ok" },
+    "redis": { "status": "ok" },
+    "llm": { "status": "ok", "state": "closed" },
+    "embeddings": { "status": "ok", "state": "closed" }
+  },
+  "timestamp": "2026-01-01T00:00:00+00:00"
 }
 ```
+
+`status` is `"healthy"`, `"degraded"`, or `"unhealthy"`. HTTP 503 is returned when any service is `"down"`.
 
 ---
 
@@ -379,7 +402,7 @@ All endpoints under `/api/v1/*` require `Authorization: Bearer <token>` except `
 | `status` | `{ "message": "..." }` | Pipeline progress updates |
 | `token` | `{ "text": "..." }` | Streamed answer tokens |
 | `chart` | `{ "spec": {...} }` | Vega-Lite chart specification |
-| `confidence` | `{ "score": <0-100>, "label": "<High\|Medium\|Low\|Very Low>", "explanation": "<string>" }` | Answer confidence score — fires after `done` (see [Confidence Scoring](#confidence-scoring)) |
+| `confidence` | `{ "score": <0-100>, "label": "<High\|Medium\|Low\|Very Low>", "explanation": "<string>" }` | Answer confidence score — fires after synthesis (see [Confidence Scoring](#confidence-scoring)) |
 | `done` | `{ "answer": "...", "sql": "...", "rows": [...], "confidence": {...}, "langfuse_trace_id": "..." }` | Final result |
 
 #### Feedback
@@ -484,62 +507,191 @@ Generation is idempotent: if a `ready` result already exists for the conversatio
 
 The pipeline is a LangGraph DAG compiled at startup (`app/services/agents/graph.py`) and run per question. State is checkpointed to PostgreSQL via `AsyncPostgresSaver`.
 
+### Architecture
+
+The pipeline uses a single-responsibility architecture. Context enrichment is split into a two-pass design: `context_fetcher` performs broad table discovery from Neo4j, then `anchor_resolver` (Haiku) selects 2–4 anchor tables, and `schema_enricher` loads complete columns only for those anchor tables. This eliminates token-cap truncation that occurred in the prior design when columns from all candidate tables competed for a global cap.
+
+The intent extraction stage fans out to three parallel specialists — `measure_specialist`, `filter_specialist`, and `dimension_specialist` — each a focused Haiku call that sees only the column subset relevant to its role. `intent_assembler` (defer=True) waits for all three to complete before merging their outputs. `directive_writer` (Sonnet) then writes a structured computation/schema directive that drives SQL generation.
+
+A legacy `intent_resolver` path (Sonnet, single combined call) remains as a fallback when `anchor_resolver` or `intent_assembler` fails.
+
+After execution, `data_quality_checker` (Haiku) scans result values for implausible figures before synthesis. This separates the data integrity gate from the narrative-writing concern so `synthesis` receives a pre-validated quality signal rather than trying to self-assess mid-generation.
+
 ### Node DAG
 
 ```
-START → intake_classifier
-          ├─[general]──→ general_chat ──→ END
-          └─[analytics]─→ context_fetcher
-                            └→ intent_resolver
-                               └→ query_compiler
-                                  └→ filter_resolver
-                                     └→ sql_generator
-                                        └→ sql_validator
-                                           └→ executor
-                                              ├─[zero rows]─→ zero_row_probe
-                                              ├─[error]─────→ repair (max 2×) ──→ executor
-                                              └─[ok]────────→ synthesis
-                                                               └→ chart_agent ──→ END
-          [any node error] ──→ error_response ──→ END
+START
+  └─→ intake_classifier
+         ├─[general]──────────────────────────────────────────────────────────────────────→ general_chat
+         │                                                                                        └─[compress?]─→ compress ─→ END
+         │                                                                                        └─[no compress]──────────→ END
+         └─[analytics]──→ context_fetcher
+                              ├─[error]──→ error_response ─→ [compress?] ─→ compress / END
+                              └─[ok]────→ anchor_resolver
+                                              ├─[fallback]──→ intent_resolver ──────────────────────────→ query_compiler
+                                              └─[ok]────────→ schema_enricher
+                                                                 ├─→ measure_specialist ──┐
+                                                                 ├─→ filter_specialist  ──┤→ intent_assembler (defer=True)
+                                                                 └─→ dimension_specialist─┘      ├─[fallback]──→ intent_resolver ─→ query_compiler
+                                                                                                 └─[ok]────────→ directive_writer ─→ query_compiler
+                                                                                                                                         │
+                                                                                          ┌──────────────────────────────────────────────┘
+                                                                                          ↓
+                                                                                    query_compiler
+                                                                                         ├─[needs filter]──→ filter_resolver ─→ sql_generator
+                                                                                         ├─[ok]────────────────────────────────→ sql_generator
+                                                                                         └─[error]──────────────────────────────→ error_response
+                                                                                                                    ↓
+                                                                                                            sql_generator
+                                                                                                                    └─→ sql_validator
+                                                                                                                             ├─[retry]──→ sql_generator
+                                                                                                                             ├─[ok]────→ executor
+                                                                                                                             └─[error]─→ error_response
+                                                                                                                                              ↓
+                                                                                                                                          executor
+                                                                                                                                             ├─[repair]─────→ sql_validator
+                                                                                                                                             ├─[recompile]──→ intent_resolver ─→ query_compiler
+                                                                                                                                             └─[ok]─────────→ data_quality_checker
+                                                                                                                                                                     └─→ synthesis
+                                                                                                                                                                              ├─[chart]──→ chart_agent ─→ [compress?] ─→ compress / END
+                                                                                                                                                                              └─[no chart]─────────────→ END
+[any node error] ──→ error_response ─→ [compress?] ─→ compress / END
 ```
-
-Additional cross-cutting nodes: `compress` (context truncation), `audit` (execution log write).
 
 ### Node Descriptions
 
 | Node | Model | Role |
 |------|-------|------|
-| `intake_classifier` | Haiku | Classify question: `general_chat` or `analytics` |
-| `general_chat` | Haiku | Answer non-analytics questions directly |
-| `context_fetcher` | — | Semantic table/column discovery from Neo4j |
-| `intent_resolver` | Sonnet | Extract structured intent + domain routing |
-| `query_compiler` | — | Pattern matching + intermediate representation (IR) compilation |
-| `filter_resolver` | Sonnet | Resolve dynamic filters (dates, entities, thresholds) |
-| `sql_generator` | Opus | Generate SQL from IR + Neo4j schema context |
-| `sql_validator` | — | Validate SQL syntax and schema against Neo4j graph |
-| `executor` | — | Execute SQL on Redshift, paginate results |
-| `zero_row_probe` | Sonnet | Diagnose and explain empty result sets |
-| `repair` | Sonnet | Rewrite failing SQL based on error (max 2 attempts) |
-| `synthesis` | Sonnet | Synthesize natural-language answer from query results |
-| `chart_agent` | Sonnet | Generate Vega-Lite chart spec + alternative specs |
-| `compress` | Sonnet | Truncate state context when approaching token limits |
-| `audit` | — | Write execution telemetry to `mti_brain_execution_log` |
-| `error_response` | — | Produce user-facing error message |
+| `intake_classifier` | Haiku (+ rule pre-filter) | Route question: `general_chat` or `analytics`; 3-layer classification (rule → Haiku → fallback) |
+| `general_chat` | Haiku | Answer non-analytics questions conversationally |
+| `context_fetcher` | Deterministic | 8-path Neo4j table search + column prioritization + cross-domain hub cascade |
+| `anchor_resolver` | Haiku | Select 2–4 anchor tables from Phase 1 candidates; determine result shape |
+| `schema_enricher` | Deterministic | Load complete columns for anchor tables from Neo4j; merge into semantic_context |
+| `measure_specialist` | Haiku | Extract measures from measurable columns only (parallel branch) |
+| `filter_specialist` | Haiku | Extract filter specs from filterable columns with sample values (parallel branch) |
+| `dimension_specialist` | Haiku | Extract dimensions from groupable columns (parallel branch) |
+| `intent_assembler` | Deterministic (defer=True) | Merge outputs from all 3 specialists; fall back to intent_resolver on failure |
+| `directive_writer` | Sonnet | Write computation/CTE/schema-gap directive for query_compiler and sql_generator |
+| `intent_resolver` | Sonnet | Legacy: single-call full-intent extraction (fallback path and recompile path) |
+| `query_compiler` | Deterministic | Build SemanticIR from resolved intent; validate columns against Neo4j; route to filter_resolver if needed |
+| `filter_resolver` | Haiku (Tier 5) + Deterministic (Tiers 1–4) | 6-tier filter value resolution (exact match → fuzzy → Redshift probe → Haiku → clarification) |
+| `sql_generator` | Sonnet | Generate SQL from SemanticIR + directive + schema context |
+| `sql_validator` | Deterministic | 4-gate AST validation; route to retry or error_response |
+| `executor` | Deterministic | Run SQL on Redshift; route to repair, recompile, or quality check |
+| `data_quality_checker` | Haiku | DATA_INTEGRITY_GATE: scan result values for implausible figures before synthesis |
+| `synthesis` | Haiku (Phase 1) + Sonnet (Phase 2) | Phase 1: extract structured insights from raw data; Phase 2: write persona-formatted narrative |
+| `chart_agent` | Sonnet | Select chart type, generate Vega-Lite spec + alternative specs |
+| `compress` | Sonnet | Summarize conversation history when message count exceeds threshold; update Redis cache |
+| `error_response` | Deterministic | Produce user-facing error message from pipeline error state |
 
 ### Pipeline State (`AnalyticsState`)
 
-Key fields in the `TypedDict`:
+All fields in the `AnalyticsState` TypedDict (`app/services/agents/state.py`):
 
-| Group | Fields |
-|-------|--------|
-| Conversation | `messages`, `user_id`, `thread_id`, `persona`, `question` |
-| Routing | `question_type`, `needs_clarification`, `clarification_count` |
-| Pipeline | `semantic_context`, `resolved_intent`, `semantic_ir_list`, `sql_list` |
-| Execution | `result_list`, `query_summary`, `no_data`, `reliability_flags`, `repair_count` |
-| Output | `answer`, `chart_spec`, `chart_type`, `alternative_chart_specs`, `follow_ups` |
-| Memory | `feedback_context`, `summary` |
-| Audit | `user_email`, `pipeline_start_ms`, `pattern_matched`, `pattern_name`, `is_retry` |
-| Control | `error`, `execution_error`, `stopped`, `deep_analysis`, `max_rows` |
+#### Core Conversation
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `messages` | `Annotated[list, add_messages]` | LangGraph message history |
+| `user_id` | `str` | Authenticated user ID |
+| `thread_id` | `str` | Conversation thread ID |
+| `persona` | `str` | Response tone: `executive`, `analyst`, `manager` — passed from HTTP, not re-detected |
+| `question` | `str` | Raw user question |
+| `effective_question` | `str` | Full reconstructed intent; equals `question` for normal queries, combines prior+current for refinements |
+
+#### Routing
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `question_type` | `str` | `general_chat` or `analytics` |
+| `needs_clarification` | `bool` | Whether pipeline requested clarification |
+| `clarification_count` | `int` | Max 2 per turn |
+| `clarification_reason` | `str \| None` | Reason for clarification request |
+
+#### Pipeline State
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `semantic_context` | `dict \| None` | Output of context_fetcher — Phase 1 tables + Group A, no full columns |
+| `enriched_schema` | `dict \| None` | Output of schema_enricher — complete columns for anchor tables only |
+| `anchor_tables_resolved` | `list[str]` | Output of anchor_resolver — 2–4 anchor tables |
+| `specialist_outputs` | `Annotated[list[dict], operator.add]` | Accumulates from 3 parallel specialists |
+| `resolved_intent` | `dict \| None` | Output of intent_assembler (same format as old intent_resolver) |
+| `intent_directive` | `str \| None` | Raw directive from directive_writer `<directive>` tag |
+| `intent_directive_instructions` | `str \| None` | `<instructions>` sub-section: SQL execution requirements |
+| `intent_directive_context` | `str \| None` | `<context>` sub-section: structural guidance, informational |
+| `filter_directive` | `str \| None` | Resolved filter list from filter_resolver (DB codes + confidence) |
+| `filter_directive_hint` | `str \| None` | Filter specialist reasoning (user term → DB value mappings) |
+| `schema_directive` | `str \| None` | Code-verified structure from ir_builder (tables, joins, measures) |
+| `semantic_ir_list` | `list[dict]` | List of SemanticIR (always 1 — decomposition removed) |
+| `sql_list` | `list[str]` | Compiled SQL (always 1 entry) |
+| `recompile_count` | `int` | Max 1 |
+| `repair_count` | `int` | Max 2 across all repair types |
+| `filter_resolution_needed` | `bool` | Flag set by query_compiler to trigger filter_resolver |
+| `repair_history` | `list[dict]` | `[{attempt, error, sql_fingerprint\|sql_fragment}]` — prevents circular repair |
+
+#### Execution
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `result_list` | `list[dict]` | Raw query results per sub-query |
+| `query_summary` | `dict \| None` | QuerySummary object |
+| `result_was_truncated` | `bool` | True if any sub-query result exceeded the row cap |
+| `no_data` | `bool` | True if query returned zero rows |
+| `reliability_flags` | `list[str]` | Pipeline-detected quality concerns |
+| `low_confidence_filters` | `list[dict]` | Filters resolved with low confidence |
+| `zero_row_probe_result` | `str \| None` | Human-readable explanation from zero-row probe |
+| `zero_row_rewrite_count` | `int` | Tracks zero-row repair attempts (max 1) |
+
+#### Data Quality
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `data_quality_flag` | `bool` | True if DATA_INTEGRITY_GATE triggered by data_quality_checker |
+| `data_quality_reason` | `str \| None` | One-sentence reason from data_quality_checker |
+
+#### Output
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `answer` | `str` | Final synthesized narrative answer |
+| `chart_spec` | `dict \| None` | Primary Vega-Lite chart specification |
+| `chart_type` | `str \| None` | Selected chart type |
+| `alternative_chart_specs` | `list[dict]` | Alternative Vega-Lite specs: `[{"chart_type": str, "spec": dict}]` |
+| `follow_ups` | `list[str]` | Suggested follow-up questions |
+
+#### Memory / Feedback
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `feedback_context` | `str` | Retrieved feedback context from long-term memory |
+| `summary` | `str` | Short-term session summary (from compress node) |
+
+#### Error / Control
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `error` | `str \| None` | Pipeline-level error message |
+| `execution_error` | `str \| None` | DB-level error from executor; fed to intent_resolver for semantic re-interpretation |
+| `_prev_repair_count` | `int` | Last repair_count at executor completion; detects new repairs in route_executor |
+| `stopped` | `bool` | True when stream was cancelled via `/stop` |
+| `deep_analysis` | `bool` | User-requested deep analysis mode |
+| `max_rows` | `int` | User-configured SQL row limit (default 100, applied as LIMIT in executor) |
+
+#### Audit / Lineage
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `user_email` | `str \| None` | Caller email — written to execution log |
+| `pipeline_start_ms` | `float` | `time.perf_counter()` at pipeline entry — used to compute `duration_ms` in audit log |
+| `current_date` | `str` | ISO date (YYYY-MM-DD) at pipeline start — synthesis uses for temporal calculations |
+| `pattern_matched` | `bool` | True when query_compiler matched a QueryPattern |
+| `pattern_name` | `str \| None` | Intent of the top matched pattern |
+| `is_retry` | `bool` | True when triggered from `/retry` or `/edit` endpoint |
+| `prior_sql` | `str \| None` | SQL from the immediately prior pipeline run |
+| `prior_question` | `str \| None` | Original question text from DB; used by context_fetcher for refinement table lookup |
+| `prior_sql_tables` | `list[str]` | Schema.table FQNs parsed from prior_sql (e.g. `["lpp.counterparty_exposure"]`) |
+| `is_refinement` | `bool` | True for user-initiated refinements (prior_sql from frontend, not is_retry) |
 
 ### Confidence Scoring
 
@@ -548,7 +700,7 @@ After the LangGraph pipeline completes, `pipeline.py` calls `compute_confidence(
 #### How it works
 
 ```
-astream_events loop runs  (all 13 nodes complete, answer already streamed token-by-token)
+astream_events loop runs  (all nodes complete, answer already streamed token-by-token)
           ↓
 _done_rows / _done_cols computed          ← row/col extraction, shared with done event
           ↓
@@ -567,17 +719,17 @@ The answer is fully visible to the user before confidence is computed (streamed 
 
 | Input | Source | Purpose |
 |-------|--------|---------|
-| `question` | User's original question (injected from `stream_pipeline` closure — not in node state) | Verify the answer addresses what was asked |
-| `semantic_context` | `state["semantic_context"]` — intents, business terms, query patterns detected by `context_fetcher` | What domain concepts were resolved |
-| `resolved_intent` | `state["resolved_intent"]` — intent label, anchor tables, template ID from `intent_resolver` | Which tables and intent drove the SQL |
+| `question` | User's original question (injected from `stream_pipeline` closure) | Verify the answer addresses what was asked |
+| `semantic_context` | `state["semantic_context"]` | What domain concepts were resolved |
+| `resolved_intent` | `state["resolved_intent"]` | Which tables and intent drove the SQL |
 | `no_data` | `state["no_data"]` | Whether the query returned zero rows |
 | `total_corrections` | `repair_count + recompile_count` | Number of times SQL had to be auto-corrected |
-| `reliability_flags` | `state["reliability_flags"]` | Pipeline-detected quality concerns (e.g. filter approximated) |
+| `reliability_flags` | `state["reliability_flags"]` | Pipeline-detected quality concerns |
 | `error` | `state["error"]` or `state["execution_error"]` | Any SQL or pipeline error message |
 | `data_profile` | `helpers._build_data_profile(cols, rows, query_summary)` | Column types + stats + NULL-free spread sample (up to 20 rows) |
 | `answer` | `state["answer"]` — full text, no truncation | The narrative to be scored |
 
-`data_profile` is produced by `helpers._build_data_profile()`: computes column dtypes, min/max/mean/median for numerics, distinct counts and top values for strings, date ranges for dates, and uses a spread sample of up to 20 non-null rows. NULL rows are filtered before sampling. Same profile used by the synthesis and chart nodes.
+`data_profile` is produced by `helpers._build_data_profile()`: computes column dtypes, min/max/mean/median for numerics, distinct counts and top values for strings, date ranges for dates, and uses a spread sample of up to 20 non-null rows.
 
 #### Score labels
 
@@ -590,7 +742,7 @@ The answer is fully visible to the user before confidence is computed (streamed 
 
 #### Database storage
 
-`confidence` is saved in the `metadata` JSONB column of `mti_brain_message` (field: `metadata.confidence`) when the assistant message is persisted in `chat.py`. Value is `null` when confidence was not computed.
+`confidence` is saved in the `metadata` JSONB column of `mti_brain_message` (field: `metadata.confidence`) when the assistant message is persisted. Value is `null` when confidence was not computed.
 
 #### Prompt location
 
@@ -601,6 +753,8 @@ The answer is fully visible to the user before confidence is computed (streamed 
 ### Checkpoint Storage
 
 LangGraph state is persisted using `AsyncPostgresSaver` with a dedicated psycopg3 connection pool (`CHECKPOINT_POOL_MIN`/`CHECKPOINT_POOL_MAX`). The pool reconnects after each node to stay compatible with PgBouncer transaction-mode pooling.
+
+A `PostgresStore` backed by the same connection string provides long-term semantic memory with Cohere Embed v4 (1536-dim) indexing. If the memory store fails to initialize, it degrades gracefully to `None`.
 
 ---
 
@@ -671,16 +825,16 @@ All custom middleware is implemented as pure ASGI callables (no `BaseHTTPMiddlew
 
 ### Circuit Breakers
 
-| Breaker | Fail threshold | Reset timeout |
-|---------|---------------|---------------|
-| `postgres_breaker` | 5 | 30s |
-| `llm_breaker` | 3 | 60s |
-| `embedding_breaker` | 3 | 60s |
-| `external_api_breaker` | 3 | 60s |
-| `neo4j_breaker` | 3 | 30s |
-| `redis_breaker` | 10 | 10s |
+| Breaker | Fail threshold | Reset timeout | Config source |
+|---------|---------------|---------------|---------------|
+| `postgres_breaker` | `CB_FAIL_MAX` (default 5) | `CB_RESET_TIMEOUT` (default 30s) | config.yml / env var |
+| `llm_breaker` | 3 | 60s | hard-coded |
+| `embedding_breaker` | 3 | 60s | hard-coded |
+| `external_api_breaker` | 3 | 60s | hard-coded |
+| `neo4j_breaker` | 3 | 30s | hard-coded |
+| `redis_breaker` | 10 | 10s | hard-coded |
 
-State changes are logged via `LoggingListener`. The `/health` endpoint exposes current breaker states.
+State changes are logged via `LoggingListener`. The `/health` endpoint exposes current breaker states for `llm` and `embeddings`.
 
 ### Rate Limiting
 
@@ -742,7 +896,7 @@ When using PgBouncer in **transaction-mode pooling**:
 
 ### Langfuse Tracing
 
-Enable by setting `LANGFUSE_ENABLED=true` in `config.yml`.
+Enabled by default (`LANGFUSE_ENABLED=true` in `config.yml`).
 
 Each pipeline invocation creates a single Langfuse trace:
 

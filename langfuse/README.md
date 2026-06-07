@@ -36,27 +36,38 @@ langfuse-worker   → Background job processing (port 3030, localhost only)
 
 ### Service Details
 
-| Service | Purpose | Port | Network | Resources |
-|---------|---------|------|---------|-----------|
-| `langfuse-web` | UI, API, auth | 3100 | `app_net`, `db_net`, `langfuse_internal` | 1536M RAM, 0.5 CPU |
-| `langfuse-worker` | Background tasks, ingestion | 3030 (localhost) | `db_net`, `langfuse_internal` | 1G RAM, 0.5 CPU |
-| `langfuse-clickhouse` | Time-series analytics DB | 8123, 9000 | `langfuse_internal` | — |
-| `langfuse-minio` | S3-compatible object storage | 9000, 9001 | `langfuse_internal` | — |
+| Service | Image | Purpose | Host Port(s) | Bind | Network(s) | Mem Limit | CPU Limit |
+|---------|-------|---------|--------------|------|------------|-----------|-----------|
+| `langfuse-web` | `langfuse/langfuse:3` | UI, API, auth | 3100 → 3000 | 0.0.0.0 | `app_net`, `db_net`, `langfuse_internal` | 1536M | 0.5 |
+| `langfuse-worker` | `langfuse/langfuse-worker:3` | Background tasks, ingestion | 3030 → 3030 | 127.0.0.1 | `db_net`, `langfuse_internal` | 1G | 0.5 |
+| `langfuse-clickhouse` | `clickhouse/clickhouse-server` | Time-series analytics DB | (none published) | — | `langfuse_internal` | 1536M | 1.0 |
+| `langfuse-minio` | `minio/minio` | S3-compatible object storage | 9090 → 9000, 9091 → 9001 | 127.0.0.1 | `langfuse_internal` | 256M | 0.25 |
+
+All images are pulled from `docker.io`.
+
+MinIO API is available at `http://127.0.0.1:9090` and the MinIO Console at `http://127.0.0.1:9091`. Both ports are bound to `127.0.0.1` only and are not reachable from the network.
 
 ### External Dependencies
 
-- **PostgreSQL**: Dedicated `langfuse` database in shared Postgres instance (`/database`)
-- **Redis**: Shared Redis instance for queues and caching (`/database`)
-  - **Note**: Set `REDIS_MAXMEMORY_POLICY=noeviction` in `database/.env` if data loss under memory pressure is a concern (BullMQ uses Redis for queues)
+- **PostgreSQL**: Dedicated `langfuse` database in shared Postgres instance. Connects directly (bypassing pgbouncer because Langfuse migrations rely on advisory locks, which are broken by transaction pooling).
+- **Redis**: Shared Redis instance for queues and caching.
+  - **Note**: Set `REDIS_MAXMEMORY_POLICY=noeviction` in `database/.env` if BullMQ queue data loss under memory pressure is a concern (the database stack defaults to `allkeys-lru` eviction).
 
 ## Setup
 
 ### 1. Prerequisites
 
+Ensure the external Docker networks exist before starting the stack:
+
+```bash
+docker network create db_net
+docker network create app_net
+```
+
 Ensure the main database and Redis services are running:
 
 ```bash
-cd database
+cd ../database
 docker-compose up -d
 ```
 
@@ -76,13 +87,13 @@ NEXTAUTH_SECRET=<generate-random-string>
 SALT=<generate-random-string>
 ENCRYPTION_KEY=<generate-random-string>
 
-# Database password (must match database/.env POSTGRES_PASSWORD for langfuse user)
+# Database password (must match the langfuse user password created by init/01-create-langfuse-db.sql)
 LANGFUSE_DB_PASSWORD=<your-password>
 
 # ClickHouse password
 CLICKHOUSE_PASSWORD=<your-password>
 
-# Redis password (must match database/.env REDIS_PASSWORD)
+# Redis password (must match REDIS_PASSWORD in database/.env)
 REDIS_PASSWORD=<your-password>
 
 # MinIO credentials
@@ -109,10 +120,10 @@ openssl rand -base64 32
 
 ### 3. Initialize Database
 
-The Langfuse database and user are created automatically by running:
+The Langfuse database and user are created automatically when Postgres starts:
 
 ```bash
-cd database
+cd ../database
 docker-compose up -d postgres
 ```
 
@@ -140,7 +151,6 @@ http://localhost:3100
 
 Log in with the credentials you set in the bootstrap configuration above.
 
-
 Get your API keys from the Langfuse UI:
 1. Log in to http://localhost:3100
 2. Navigate to **Settings → Projects**
@@ -154,23 +164,45 @@ Get your API keys from the Langfuse UI:
 | `SALT` | Yes | — | Encryption salt for sensitive data |
 | `ENCRYPTION_KEY` | Yes | — | Encryption key for stored credentials |
 | `LANGFUSE_DB_PASSWORD` | Yes | — | Postgres password for langfuse user |
-| `CLICKHOUSE_PASSWORD` | Yes | — | ClickHouse admin password |
+| `CLICKHOUSE_USER` | No | `langfuse` | ClickHouse username |
+| `CLICKHOUSE_PASSWORD` | Yes | — | ClickHouse password |
 | `REDIS_PASSWORD` | Yes | — | Redis password (must match database/.env) |
+| `MINIO_ROOT_USER` | No | `langfuse` | MinIO admin username |
 | `MINIO_ROOT_PASSWORD` | Yes | — | MinIO admin password |
 | `NEXTAUTH_URL` | No | `http://localhost:3100` | Public URL of the Langfuse UI |
 | `TELEMETRY_ENABLED` | No | `false` | Enable anonymous telemetry |
 | `LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES` | No | `false` | Enable beta features |
-| `LANGFUSE_INIT_*` | No | — | Bootstrap org/project/user on first start |
+| `LANGFUSE_INIT_ORG_ID` | No | — | Bootstrap org ID on first start |
+| `LANGFUSE_INIT_ORG_NAME` | No | — | Bootstrap org name on first start |
+| `LANGFUSE_INIT_PROJECT_ID` | No | — | Bootstrap project ID on first start |
+| `LANGFUSE_INIT_PROJECT_NAME` | No | — | Bootstrap project name on first start |
+| `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` | No | — | Bootstrap project public key on first start |
+| `LANGFUSE_INIT_PROJECT_SECRET_KEY` | No | — | Bootstrap project secret key on first start |
+| `LANGFUSE_INIT_USER_EMAIL` | No | — | Bootstrap admin user email on first start |
+| `LANGFUSE_INIT_USER_NAME` | No | — | Bootstrap admin user display name on first start |
+| `LANGFUSE_INIT_USER_PASSWORD` | No | — | Bootstrap admin user password on first start |
 
 ## Networking
 
 Langfuse uses three Docker networks:
 
-- **`langfuse_internal`**: Internal communication (ClickHouse, MinIO, worker, web)
-- **`db_net`**: Shared with database stack (Postgres, Redis access)
-- **`app_net`**: Shared with backend services (allows app_net containers to reach `langfuse-web:3000`)
+- **`langfuse_internal`** (bridge, created by this compose file): Internal communication between ClickHouse, MinIO, langfuse-worker, and langfuse-web. Not accessible outside the stack.
+- **`db_net`** (external, pre-created): Shared with the database stack. Gives langfuse-web and langfuse-worker access to the shared Postgres and Redis containers.
+- **`app_net`** (external, pre-created): Shared with backend services. Allows containers on this network to reach `langfuse-web:3000` directly without host-gateway hops.
 
-Non-UI ports (`langfuse-worker:3030`) are bound to `127.0.0.1` for security.
+Both external networks must be created before starting the stack:
+
+```bash
+docker network create db_net
+docker network create app_net
+```
+
+Non-UI ports are bound to `127.0.0.1` only:
+- `langfuse-worker`: `127.0.0.1:3030`
+- `langfuse-minio` API: `127.0.0.1:9090` (maps to container port 9000)
+- `langfuse-minio` Console: `127.0.0.1:9091` (maps to container port 9001)
+
+The web UI port (`3100 → 3000`) binds to all interfaces.
 
 ## Troubleshooting
 
@@ -188,9 +220,10 @@ docker-compose logs langfuse-minio
 ### Connection to Database Failed
 
 Ensure:
-- Postgres service in `/database` is running
+- Postgres service in the database stack is running
 - `LANGFUSE_DB_PASSWORD` matches the `langfuse` user password in `database/.env`
 - The `langfuse` database exists (created by `init/01-create-langfuse-db.sql`)
+- The `db_net` external network exists
 
 ```bash
 # Verify from database container
@@ -208,60 +241,63 @@ docker-compose logs langfuse-minio
 ### Can't Access UI
 
 - Check if port 3100 is already in use: `lsof -i :3100`
-- Verify firewall/security groups allow access
+- Verify firewall/security groups allow access on port 3100
 - Check `NEXTAUTH_URL` matches the URL you're accessing
 - Review logs: `docker-compose logs langfuse-web`
 
 ### Redis Connection Errors
 
-Verify Redis credentials:
+Verify Redis credentials match between this stack and the database stack:
 
 ```bash
-# Compare REDIS_PASSWORD in .env with database/.env
-cat .env | grep REDIS_PASSWORD
-cat ../database/.env | grep REDIS_PASSWORD
+grep REDIS_PASSWORD .env
+grep REDIS_PASSWORD ../database/.env
 ```
 
 ## Data Persistence
 
-- **ClickHouse data**: `docker_volume/clickhouse/`
-- **MinIO data**: `docker_volume/minio/`
-- **Postgres**: Stored in shared database stack (`../database/docker_volume/postgres/`)
-- **Redis**: Stored in shared database stack (`../database/docker_volume/redis/`)
+All data is stored on the host under `./docker_volume/`:
 
-To backup data:
+- **ClickHouse data**: `docker_volume/clickhouse/data/`
+- **ClickHouse logs**: `docker_volume/clickhouse/logs/`
+- **MinIO data**: `docker_volume/minio/data/`
+- **Postgres**: Stored in the shared database stack
+- **Redis**: Stored in the shared database stack
+
+To backup ClickHouse data:
 
 ```bash
-# ClickHouse
 docker-compose exec langfuse-clickhouse \
   clickhouse-client --query="BACKUP DATABASE langfuse TO File('/var/lib/clickhouse/backups/backup')"
+```
 
-# MinIO
+To backup MinIO data:
+
+```bash
 docker-compose exec langfuse-minio \
   mc mirror minio/langfuse ./backup/
 ```
 
 ## Performance Tuning
 
-Default resource limits (in docker-compose.yml):
+Resource limits from `docker-compose.yml`:
 
-```yaml
-langfuse-web:
-  memory: 1536M (limit), 512M (reserved)
-  cpu: 0.5 cores
-
-langfuse-worker:
-  memory: 1G (limit), 512M (reserved)
-  cpu: 0.5 cores
+```
+langfuse-web:      1536M limit / 512M reserved,  0.5 CPU
+langfuse-worker:   1G limit    / 512M reserved,  0.5 CPU
+langfuse-clickhouse: 1536M limit / 512M reserved, 1.0 CPU
+langfuse-minio:    256M limit  / 128M reserved,  0.25 CPU
 ```
 
-Adjust in `docker-compose.yml` if needed based on load.
+`langfuse-web` also sets `NODE_OPTIONS=--max-old-space-size=1024` to cap the Node.js heap at 1 GB within the 1536M container limit.
+
+Adjust limits in `docker-compose.yml` based on observed load.
 
 ## Security Considerations
 
 1. **Always change default secrets**: `NEXTAUTH_SECRET`, `SALT`, `ENCRYPTION_KEY`
-2. **Use strong passwords** for database, Redis, ClickHouse, MinIO
-3. **Restrict network access**: Non-UI ports are bound to `127.0.0.1` only
+2. **Use strong passwords** for Postgres, Redis, ClickHouse, and MinIO
+3. **Non-UI ports are localhost-only**: MinIO (9090/9091) and the worker (3030) bind to `127.0.0.1` and are not reachable from the network
 4. **Disable telemetry** by keeping `TELEMETRY_ENABLED=false`
 5. **Rotate API keys** regularly in the Langfuse UI
 6. **Use HTTPS** in production (configure via nginx reverse proxy)
@@ -286,11 +322,7 @@ docker-compose down
 
 # Bring down stack and remove all volumes
 docker-compose down -v
-
-# Scale worker for higher throughput
-docker-compose up -d --scale langfuse-worker=3
 ```
-
 
 ## Related Documentation
 

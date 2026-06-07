@@ -6,29 +6,30 @@ Production **AI-powered conversational data analytics** interface for MTI Brain.
 
 | Layer | Technology |
 |-------|-----------|
-| Framework | Next.js 16 (App Router, standalone output) |
-| Language | TypeScript (strict mode) |
-| UI | React 19 with React Compiler (auto-memoization), shadcn/ui (Radix UI), Lucide icons |
+| Framework | Next.js 16.2.3 (App Router, standalone output) |
+| Language | TypeScript 5.7.3 (strict mode) |
+| UI | React 19.2.4 with React Compiler (auto-memoization), shadcn/ui (Radix UI), Lucide icons |
 | Styling | Tailwind CSS 4 (PostCSS plugin - no `tailwind.config.*`; tokens live in `app/globals.css`) |
-| State | Zustand stores (see [State Management](#state-management)) |
+| State | Zustand 4.5.0 stores (see [State Management](#state-management)) |
 | Streaming | POST-based SSE via fetch + ReadableStream |
 | Auth | Username/password → JWT in localStorage. **Okta OIDC planned** |
-| Markdown | react-markdown + remark-gfm + rehype-highlight |
-| Code highlighting | react-syntax-highlighter + highlight.js |
-| Charts | recharts |
-| Mobile drawers | vaul (bottom-sheet animations) |
-| Notifications | Sonner |
-| Theme | next-themes |
-| Analytics | PostHog (gracefully no-ops when key is unset) + Vercel Analytics |
-| Local persistence | Dexie (IndexedDB) for composer drafts |
-| Animations | Framer Motion |
-| Virtualization | @tanstack/react-virtual |
-| Keyboard | react-hotkeys-hook (wrapped by `hooks/use-keyboard-shortcuts.ts`) |
-| Forms | react-hook-form + zod |
-| Command menu | cmdk |
-| Export | pptxgenjs (PowerPoint), xlsx (Excel) |
-| Date utilities | date-fns |
-| Carousel | embla-carousel-react |
+| Markdown | react-markdown 9 + remark-gfm 4 + rehype-highlight 7 |
+| Code highlighting | react-syntax-highlighter 16.1.1 + highlight.js 11 |
+| Charts | recharts 2.15.0 |
+| Vega charts | vega 6.2.0 + vega-lite 6.4.3 + vega-embed 7.1.0 |
+| Mobile drawers | vaul 1.1.2 (bottom-sheet animations) |
+| Notifications | Sonner 1.7.1 |
+| Theme | next-themes 0.4.6 |
+| Analytics | PostHog (gracefully no-ops when key is unset) + Vercel Analytics 1.6.1 |
+| Local persistence | Dexie 4.4.2 (IndexedDB) for composer drafts |
+| Animations | Framer Motion 12 |
+| Virtualization | @tanstack/react-virtual 3.13.24 |
+| Keyboard | react-hotkeys-hook 5.3.0 (wrapped by `hooks/use-keyboard-shortcuts.ts`) |
+| Forms | react-hook-form 7.54.1 + zod 3.24.1 |
+| Command menu | cmdk 1.1.1 |
+| Export | pptxgenjs 4.0.1 (PowerPoint), xlsx 0.18.5 (Excel) |
+| Date utilities | date-fns 4.1.0 |
+| Carousel | embla-carousel-react 8.6.0 |
 | PWA | Service worker (`public/sw.js`), install prompt, `display: standalone` manifest |
 | Containerization | Docker (multi-stage, non-root, standalone) |
 
@@ -121,7 +122,19 @@ frontend/
 │       ├── threads.ts                   # Thread/message CRUD, streaming, pendingDeepAnalysis
 │       ├── ui.ts                        # mobileSidebarOpen, tabletSidebarOverlayOpen, sidebarOpen
 │       ├── preferences.ts               # responseTone, showSQL, autoShowCharts, etc.
-│       └── …                            # search, activity, drafts, install, projects, auth
+│       ├── auth.ts                      # JWT token + user object, initialize/clearAuth
+│       ├── projects.ts                  # Project list + CRUD + search results
+│       ├── search.ts                    # Global search with debounce
+│       ├── activity.ts                  # Per-user activity tracking persisted to localStorage
+│       ├── agents.ts                    # Agent registry (model/systemPrompt), active agent selection
+│       ├── dashboard.ts                 # Dashboard generation status + presigned URLs per conversation
+│       ├── drafts.ts                    # Per-thread composer drafts via Dexie (IndexedDB) - async helpers
+│       ├── graph_context.ts             # Graph context generation status + presigned URLs per conversation
+│       ├── install.ts                   # PWA install prompt state
+│       ├── labels.ts                    # Thread label CRUD with in-flight dedup
+│       ├── pinned-metrics.ts            # Pinned metric cards (label, source query, position)
+│       ├── playbook.ts                  # Saved queries / playbook CRUD
+│       └── thinking.ts                  # Deep-thinking toggle + streaming reasoning content
 └── public/
     ├── manifest.json                    # PWA manifest - display: standalone (no orientation lock)
     ├── sw.js                            # Service worker
@@ -162,13 +175,21 @@ Zustand stores under `lib/store/`:
 | Store | Key State | Purpose |
 |-------|-----------|---------|
 | `useThreadStore` | `threads`, `currentMessages`, `isStreaming`, `pendingQuestion`, `pendingDeepAnalysis`, `selectedThreadIds` | Thread/message CRUD, SSE streaming, version branching, Deep Analysis flag, bulk operations |
-| `useProjectStore` | `projects`, `currentProject` | Project list + CRUD |
-| `useUIStore` | `sidebarOpen`, `mobileSidebarOpen`, `tabletSidebarOverlayOpen`, `shortcutsOpen`, `createProjectOpen` | Sidebar state for all three breakpoints, dialog visibility |
-| `usePreferencesStore` | `responseTone`, `showSQL`, `autoShowCharts`, `showFollowUps`, `showReasoning`, `maxResultRows`, `density` | Per-user preferences, persisted to localStorage under `mti-brain-prefs:{userId}` |
-| `useSearchStore` | `query`, `chatResults`, `projectResults` | Global search with 200 ms debounce |
-| `useActivityStore` | activity events | Per-user activity tracking (Activity framing - not gamification/streaks) |
-| `useDraftsStore` | composer drafts | Per-thread composer drafts persisted to IndexedDB via Dexie |
-| `useInstallStore` | install prompt visibility | PWA install prompt state with 3-day re-show window |
+| `useProjectStore` | `projects`, `searchResults`, `searchLoading`, `loading`, `fetched`, `currentProject`, `currentProjectLoading` | Project list + CRUD + separate search results (sidebar and search stay in sync independently) |
+| `useUIStore` | `sidebarOpen`, `mobileSidebarOpen`, `tabletSidebarOverlayOpen`, `shortcutsOpen`, `createProjectOpen`, `tourReplay` | Sidebar state for all three breakpoints, dialog visibility, onboarding tour replay flag |
+| `usePreferencesStore` | `responseTone`, `showSQL`, `autoShowCharts`, `showFollowUps`, `showReasoning`, `defaultDataView`, `maxResultRows`, `density`, `notifyOnComplete`, `notifySound`, `ttsRate` | Per-user preferences, persisted to localStorage under `mti-brain-prefs:{userId}` |
+| `useSearchStore` | `open`, `query`, `chatResults`, `projectResults`, `recentChats`, `loading` | Global search modal state with 200 ms debounce and abort-on-supersede |
+| `useActivityStore` | `activeDays`, `questionsByDay` | Per-user activity tracking persisted to localStorage (365-day rolling window, not gamification) |
+| `useAuthStore` | `user`, `token`, `isLoading` | JWT token + user object; initialize/loginWithToken/clearAuth/isAuthenticated helpers |
+| `useAgentStore` | `agents`, `currentAgentId` | Agent registry (id, name, model, systemPrompt) and currently active agent selection |
+| `useDashboardStore` | `entries` (keyed by conversationId: `status`, `url`, `queuedAt`) | Dashboard generation status and presigned download URLs per conversation; stale entries auto-expired after 5 min |
+| `useGraphContextStore` | `entries` (keyed by conversationId: `status`, `url`, `queuedAt`) | Graph context generation status and presigned URLs per conversation; mirrors dashboard store shape |
+| `useInstallStore` | `canInstall`, `installed` | PWA install prompt state; wraps the `BeforeInstallPromptEvent` lifecycle |
+| `useLabelsStore` | `byThread` (Record of `ThreadLabel[]`), `fetched` | Thread label CRUD with in-flight dedup to prevent duplicate network requests on concurrent mounts |
+| `usePinnedMetricsStore` | `metrics`, `loading`, `fetched`, `lastKnownCount` | Pinned metric cards (label, source query, position) with a localStorage count cache for badge display |
+| `usePlaybookStore` | `queries`, `loading`, `fetched` | Saved query / playbook CRUD (create, update, delete, fetch) with in-flight dedup |
+| `useThinkingStore` | `enableDeepThinking`, `isThinking`, `thinkingContent` | Deep-thinking toggle and streaming reasoning content for the thinking-words display |
+| `drafts` (module) | — | Per-thread composer drafts via Dexie (IndexedDB). Exported as async functions (`loadDraft`, `saveDraft`, `clearDraft`, `pruneOldDrafts`) — not a Zustand store |
 
 ## User Preferences
 
@@ -184,6 +205,9 @@ Configurable via `/settings`, persisted per-user in localStorage:
 | Default data view | `table` | `sql`, `table` |
 | Max result rows | `100` | `50`, `100`, `200`, `500` |
 | Density | `comfortable` | `comfortable`, `compact` |
+| Notify on complete | `when-hidden` | `when-hidden`, `off` |
+| Notify sound | `true` | Toggle |
+| TTS rate | `1` | `0.75`, `1`, `1.25`, `1.5` |
 
 **Response tone definitions:**
 
@@ -303,6 +327,7 @@ The container: runs as non-root user (`nextjs`), health-checks port 3000 every 3
 
 | Variable | Description |
 |----------|-------------|
+| `NEXT_PUBLIC_APP_URL` | Public URL of the frontend app. Used for absolute URL generation. |
 | `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project key. When unset, analytics no-ops entirely. |
 | `NEXT_PUBLIC_POSTHOG_HOST` | PostHog ingest host. Defaults to PostHog Cloud. |
 | `NEXT_DEV_ORIGINS` | Comma-separated extra origins for cross-machine HMR (SSH tunnels, Docker). |
@@ -326,4 +351,3 @@ The container: runs as non-root user (`nextjs`), health-checks port 3000 every 3
 | Backend (FastAPI) | [../backend/README.md](../backend/README.md) |
 | Database (PostgreSQL + PgBouncer) | [../database/README.md](../database/README.md) |
 | Deployment (AWS CodeDeploy) | [../deploy/README.md](../deploy/README.md) |
-

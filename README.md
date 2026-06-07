@@ -30,12 +30,17 @@ Built on a FastAPI backend, Next.js 16 frontend, and a PostgreSQL data layer wit
                               +---------+---------+
                                         |
                                         v
-                              +-------------------+
-                              | PostgreSQL 18     |
-                              | + pgvector        |
-                              | + pg_trgm         |
-                              | + fuzzystrmatch   |
-                              +-------------------+
+                              +----------------------------+
+                              | PostgreSQL 18              |
+                              | + pgvector / pg_trgm       |
+                              | + fuzzystrmatch            |
+                              +----------------------------+
+                              | redis/redis-stack:7.4.0-v8 |
+                              | (rate limiting, cache)     |
+                              +----------------------------+
+                              | Neo4j                      |
+                              | (semantic intent routing)  |
+                              +----------------------------+
                               database/
 ```
 
@@ -57,7 +62,8 @@ The frontend authenticates via username/password, receives a JWT from the backen
 - **Pinned Metrics** — per-user metric cards pinned to the home page, each backed by a saved query
 - **Thread Labels** — colored labels applied to threads for filtering and organization
 - **Export** — download results as Excel (`.xlsx`) or PowerPoint (`.pptx`) directly from any answer
-- **Knowledge Graph** — SPARQL queries against a Jena Fuseki endpoint; ontology-aware reasoning via rdflib
+- **Knowledge Graph** — semantic intent routing and ontology-aware query planning via Neo4j; schema-to-graph pipeline (Redshift schema → RDF → Neo4j) powers domain and table selection
+- **Graph Context** — per-conversation graph visualizations generated in the background and stored in S3; accessible via presigned URL
 - **User Preferences** — per-user response tone (`analyst`, `manager`, `director`, `executive`), SQL/chart/reasoning visibility, persisted to localStorage
 - **Fully Responsive** — mobile off-canvas sidebar, tablet icon-rail + overlay panel, desktop inline sidebar; safe-area-inset support for iOS
 - **Keyboard Shortcuts** — power-user shortcuts for navigation, starring, search, copy, and more
@@ -76,7 +82,7 @@ mti-brain/
 ├── backend/             # FastAPI backend (see backend/README.md)
 │   ├── app/
 │   │   ├── main.py       # FastAPI entry point, lifespan, middleware wiring
-│   │   ├── api/          # Route handlers: health, auth, chat, projects, playbook, labels, pinned-metrics, dashboard
+│   │   ├── api/          # Route handlers: health, auth, chat, projects, playbook, labels, pinned-metrics, dashboard, graph-context
 │   │   ├── core/         # Config, logging, middleware, circuit breakers, rate limiter
 │   │   ├── db/           # SQLAlchemy async session factory
 │   │   ├── models/       # ORM: User, Project, Thread, Message, Feedback, ExecutionLog, UserFeatures, Dashboard
@@ -95,8 +101,10 @@ mti-brain/
 │   ├── Dockerfile        # Multi-stage Node 20 build (standalone output)
 │   └── .env.example
 │
-└── database/            # Data layer Docker Compose (see database/README.md)
-    ├── docker-compose.yml  # PostgreSQL 18 + PgBouncer + Redis (publishes db_net)
+├── semantic_model_generator/  # Redshift schema → RDF → Neo4j knowledge graph pipeline
+├── langfuse/            # Self-hosted LLM observability (traces, token usage, latency)
+└── database/            # PostgreSQL 18 + PgBouncer + redis/redis-stack:7.4.0-v8 + Neo4j (see database/README.md)
+    ├── docker-compose.yml  # Full data layer stack (publishes db_net)
     ├── docker_volume/      # Persistent data (git-ignored)
     └── .env.example
 ```
@@ -105,17 +113,17 @@ mti-brain/
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Next.js 16, React 19 (with React Compiler), TypeScript, Tailwind CSS 4, shadcn/ui, Zustand |
+| Frontend | Next.js 16.2.3, React 19.2.4 (with React Compiler), TypeScript 5.7.3, Tailwind CSS 4, shadcn/ui, Zustand |
 | Frontend extras | PostHog analytics, Dexie (IndexedDB) for composer drafts, Framer Motion, @tanstack/react-virtual, vaul, react-hotkeys-hook, pptxgenjs (PPT export), xlsx (Excel export), react-syntax-highlighter, cmdk, react-hook-form + zod |
 | Backend | FastAPI + Gunicorn + Uvicorn (Python 3.12) |
 | AI Pipeline | LangGraph (multi-node agentic graph), AWS Bedrock (Sonnet / Haiku / Opus), model routing |
-| Knowledge Graph | Jena Fuseki (SPARQL), rdflib (ontology loading), sparql-based reasoning nodes |
+| Graph DB | Neo4j (semantic intent routing, knowledge graph) |
 | SQL Analysis | sqlglot (Snowflake dialect) for trust-strip source table extraction |
 | Auth | Username/password → JWT (PyJWT, HS256, 8-hour expiry). **Okta OIDC migration planned** |
 | App Database | PostgreSQL 18 + pgvector + SQLAlchemy (async) + Alembic |
 | Postgres extensions | `pgvector`, `pg_trgm`, `fuzzystrmatch` (installed by the baseline migration) |
 | Connection Pooling | PgBouncer (transaction mode) |
-| Caching / Queues | Redis 8.4 (rate limiting, response cache, optional task queues) |
+| Caching / Queues | redis/redis-stack:7.4.0-v8 — Redis engine 7.4 (rate limiting, response cache, optional task queues) |
 | Vector Search | pgvector (1536-dim) on feedback embeddings |
 | Full-Text Search | tsvector + GIN + pg_trgm trigram + fuzzystrmatch (Levenshtein) |
 | Streaming | SSE (sse-starlette) |
@@ -200,6 +208,15 @@ All endpoints except `/health` and `POST /api/v1/auth/login` require `Authorizat
 | DELETE | `/{conversation_id}` | Remove dashboard from S3 and DB |
 | GET | `/{conversation_id}/download` | Download the generated dashboard file directly |
 
+### Graph Context (`/api/v1/graph-context`)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| POST | `/generate/{conversation_id}` | Queue background graph context generation; returns 202 |
+| GET | `/{conversation_id}` | Get graph context status + S3 presigned URL when ready |
+| DELETE | `/{conversation_id}` | Remove graph context from S3 and DB |
+| GET | `/{conversation_id}/download` | Stream the graph context HTML from S3 as an attachment download |
+
 ## Prerequisites
 
 - Docker and Docker Compose
@@ -267,13 +284,15 @@ curl http://localhost:8000/health
 
 ## Services Overview
 
-| Service | Port | Stack | Description |
-|---------|------|-------|-------------|
-| **nginx** | 80 / 443 | `nginx/` | Reverse proxy + TLS termination (Path A only) |
-| **Frontend** | 3000 | `frontend/` | Next.js UI — login, chat, projects, settings, starred |
-| **Backend** | 8000 | `backend/` | FastAPI REST + SSE streaming |
-| **PgBouncer** | 5432 | `database/` | Connection pooler (transaction mode, SCRAM-SHA-256) |
-| **PostgreSQL** | internal | `database/` | App database (pgvector, conversations, users) |
+| Service | Port | Stack | Resource Limits | Description |
+|---------|------|-------|-----------------|-------------|
+| **nginx** | 80 / 443 | `nginx/` | 64M RAM, 0.25 CPU | Reverse proxy + TLS termination (Path A only) |
+| **Frontend** | 3000 | `frontend/` | 512M RAM, 1 CPU | Next.js UI — login, chat, projects, settings, starred |
+| **Backend** | 8000 | `backend/` | 1024M RAM, 2 CPU | FastAPI REST + SSE streaming |
+| **PgBouncer** | 5432 | `database/` | — | Connection pooler (transaction mode, SCRAM-SHA-256) |
+| **PostgreSQL** | internal | `database/` | — | App database (pgvector, conversations, users) |
+| **Redis** | internal | `database/` | — | Rate limiting and response cache (redis/redis-stack:7.4.0-v8) |
+| **Neo4j** | internal | `database/` | — | Knowledge graph for semantic intent routing |
 
 ## Environment Variables
 

@@ -24,14 +24,14 @@ docker compose build && docker compose up -d
 
 Hooks are wired in the repo-root `appspec.yml`. Each script runs as the `ubuntu` user, logs to `/var/log/mti-brain-deploy.log`, and fails the deployment on a non-zero exit.
 
-| Order | Hook | Script | Purpose |
-|-------|------|--------|---------|
-| 1 | `ApplicationStop` | `application_stop.sh` | `docker compose down --remove-orphans` to release ports/volumes before the new bundle lands |
-| 2 | `BeforeInstall` | `before_install.sh` | Backs up `.env` to `/tmp/mti-brain.env.backup`, wipes `/opt/mti-brain` so CodeDeploy can lay down clean files |
-| 3 | *CodeDeploy copies files* | — | Source from S3 artifact bucket → `/opt/mti-brain` |
-| 4 | `AfterInstall` | `after_install.sh` | Restores `.env` (or fetches it from SSM Parameter Store on first deploy), `chmod +x deploy/*.sh`, runs `docker compose build` |
-| 5 | `ApplicationStart` | `application_start.sh` | `docker compose up -d`, prunes dangling images to reclaim disk |
-| 6 | `ValidateService` | `validate_service.sh` | Polls `http://localhost:8000/health` and `http://localhost:3000` for up to ~2 minutes; dumps container logs and fails if either is unhealthy |
+| Order | Hook | Script | Timeout | Purpose |
+|-------|------|--------|---------|---------|
+| 1 | `ApplicationStop` | `application_stop.sh` | 300 s | `docker compose down --remove-orphans` to release ports/volumes before the new bundle lands |
+| 2 | `BeforeInstall` | `before_install.sh` | 300 s | Backs up `.env` to `/tmp/mti-brain.env.backup`, wipes `/opt/mti-brain` so CodeDeploy can lay down clean files |
+| 3 | *CodeDeploy copies files* | — | — | Source from S3 artifact bucket → `/opt/mti-brain` |
+| 4 | `AfterInstall` | `after_install.sh` | 600 s | Restores `.env` (or fetches it from SSM Parameter Store on first deploy), `chmod +x deploy/*.sh`, runs `docker compose build` |
+| 5 | `ApplicationStart` | `application_start.sh` | 900 s | `docker compose up -d`, prunes dangling images to reclaim disk |
+| 6 | `ValidateService` | `validate_service.sh` | 300 s | Polls `http://localhost:8000/health` and `http://localhost:3000` for up to ~2 minutes; dumps container logs and fails if either is unhealthy |
 
 ## EC2 Host Prerequisites
 

@@ -8,11 +8,11 @@ Docker Compose stack providing the data layer for MTI Brain.
 |---|---|---|---|
 | **PostgreSQL** | `pgvector/pgvector:0.8.1-pg18` | None (internal only) | Primary relational store with pgvector extension for vector similarity search |
 | **PgBouncer** | `edoburu/pgbouncer:v1.25.1-p0` | `5432` | Connection pooler in front of PostgreSQL (transaction pooling mode). Depends on PostgreSQL being healthy. |
-| **Redis** | `redis/redis-stack:7.4.0-v8` | `6379`, `8001` (RedisInsight) | In-memory store for caching, rate limiting, session data, and Celery/task queues |
+| **Redis** | `redis/redis-stack:7.4.0-v8` | `6379`, `8001` (RedisInsight) | In-memory store (Redis 7.4 engine) with RedisSearch, RedisJSON, and other Redis Stack modules, used for caching, rate limiting, session data, and Celery/task queues |
 | **Neo4j** | `neo4j:2026.04-enterprise` | `7474` (HTTP), `7687` (Bolt) | Graph database with APOC and Graph Data Science plugins for semantic graph workloads |
-| **pgbouncer_redshift** | Built from `pgbouncer_rr/` | `5433` | PgBouncer-RR round-robin proxy in front of AWS Redshift (transaction pooling mode) |
+| **pgbouncer_redshift** | Built from `pgbouncer_rr/` (`pgbouncer-rr-redshift:local`) | `5433` | PgBouncer-RR round-robin proxy in front of AWS Redshift (transaction pooling mode) |
 
-All services communicate via the `db_net` bridge network. PostgreSQL is internal-only; PgBouncer (5432), Redis (6379/8001), Neo4j (7474/7687), and pgbouncer_redshift (5433) are accessible from outside on their respective ports.
+All services communicate via the `db_net` bridge network (external, must be created before starting the stack). PostgreSQL is internal-only; PgBouncer (5432), Redis (6379/8001), Neo4j (7474/7687), and pgbouncer_redshift (5433) are accessible from the host on their respective ports.
 
 ## Prerequisites
 
@@ -156,6 +156,8 @@ See `backend/app/db/session.py → get_langgraph_dsn()` for the connection strin
 
 ### Redis
 
+Image: `redis/redis-stack:7.4.0-v8` (Redis 7.4 engine with RedisSearch, RedisJSON, RedisGraph, RedisTimeSeries, and RedisBloom modules included).
+
 Password-authenticated via `--requirepass`. No anonymous connections.
 
 **Persistence:** both RDB snapshots (900s/1 key, 300s/10 keys, 60s/10 000 keys) and AOF (`appendfsync everysec`) are enabled. Data survives container restarts via `./docker_volume/redis/data`.
@@ -171,7 +173,7 @@ Password-authenticated via `--requirepass`. No anonymous connections.
 
 ### Neo4j
 
-Enterprise edition with APOC and Graph Data Science (GDS) plugins. Plugins are installed automatically on first start from the bundled jars — no manual download needed.
+Enterprise edition (`neo4j:2026.04-enterprise`) with APOC and Graph Data Science (GDS) plugins. Plugins are installed automatically on first start — no manual download needed.
 
 **Important:** `NEO4J_USER` must be `neo4j`. Neo4j's `NEO4J_AUTH` env var only sets the password for the built-in `neo4j` admin; the username cannot be changed via environment variable.
 
@@ -213,6 +215,7 @@ G1GC configured for a 3 GB heap:
 | `server.bolt.thread_pool_keep_alive` | `5m` | Idle Bolt thread keep-alive |
 | `server.config.strict_validation.enabled` | `false` | Warn (not fail) on unrecognised config keys |
 | `dbms.cypher.min_replan_interval` | `10s` | Minimum interval between query replanning |
+| `gds.arrow.enabled` | `false` | GDS Arrow Flight disabled |
 
 #### Variables
 
@@ -224,7 +227,7 @@ G1GC configured for a 3 GB heap:
 
 ### PgBouncer-RR (Redshift)
 
-Custom PgBouncer-RR image built from `pgbouncer_rr/` that proxies connections to AWS Redshift. Listens on host port **5433**, forwarding to Redshift on port 5439. Supports single-cluster and multi-cluster (round-robin) configurations.
+Custom PgBouncer-RR image built locally from `pgbouncer_rr/Dockerfile` (tagged `pgbouncer-rr-redshift:local`) that proxies connections to AWS Redshift. Listens on host port **5433**, forwarding to Redshift on port **5439**. Supports single-cluster and multi-cluster (round-robin) configurations.
 
 #### Single vs. multi-cluster
 
@@ -343,43 +346,43 @@ PGBOUNCER_RR_CPU_RESERVATION=0.1
 
 ## Data Volumes
 
-Persistent data is stored in `./docker_volume/`:
+Persistent data is stored in `./docker_volume/` (bind-mounted, git-ignored):
 
 ```
 docker_volume/
   postgres/data/          # PostgreSQL data directory (PGDATA)
   postgres/logs/          # PostgreSQL logs
-  pgbouncer/pgbouncer.ini # PgBouncer config file (must exist before first start)
+  pgbouncer/pgbouncer.ini # PgBouncer config file (must exist before first start, mounted read-only)
   pgbouncer/userlist.txt  # PgBouncer auth file (must exist before first start)
   redis/data/             # Redis RDB + AOF persistence
   neo4j/data/             # Neo4j graph data
   neo4j/logs/             # Neo4j logs and GC log (gc.log)
   neo4j/import/           # CSV/files for LOAD CSV imports
   neo4j/plugins/          # Installed plugin jars (apoc, graph-data-science)
-  pgbouncer_redshift/routing_rules.py  # PgBouncer-RR routing config (overrides image default)
+  pgbouncer_redshift/routing_rules.py  # PgBouncer-RR routing config (mounted read-only, overrides image default)
 ```
-
-This directory is git-ignored.
 
 ## Resource Limits
 
 | Service | Memory Limit | Memory Reserved | CPU Limit | CPU Reserved |
 |---|---|---|---|---|
-| PostgreSQL | 1.5 GB | 512 MB | 2.0 | 0.5 |
+| PostgreSQL | 1536 MB | 512 MB | 2.0 | 0.5 |
 | PgBouncer | 128 MB | 32 MB | 0.5 | 0.1 |
 | Redis | 384 MB | 64 MB | 0.5 | 0.1 |
 | Neo4j | 6 GB | 2 GB | 4.0 | 1.0 |
 | pgbouncer_redshift | 128 MB | 32 MB | 0.5 | 0.1 |
 
+All limits and reservations are configurable via the corresponding `*_MEMORY_LIMIT`, `*_CPU_LIMIT`, `*_MEMORY_RESERVATION`, and `*_CPU_RESERVATION` variables in `.env`.
+
 ## Health Checks
 
 | Service | Method | Interval | Timeout | Retries | Start Period |
 |---|---|---|---|---|---|
-| PostgreSQL | `pg_isready` | 10s | 5s | 5 | 30s |
-| PgBouncer | `pg_isready` | 10s | 5s | 5 | 10s |
-| Redis | `redis-cli ping` | 10s | 5s | 5 | 10s |
-| Neo4j | HTTP `/db/neo4j/cluster/available` | 30s | 10s | 5 | 120s |
-| pgbouncer_redshift | `pg_isready` | 15s | 5s | 5 | 10s |
+| PostgreSQL | `pg_isready -U $POSTGRES_USER -d $POSTGRES_DB` | 10s | 5s | 5 | 30s |
+| PgBouncer | `pg_isready -h 127.0.0.1 -p 5432 -U $POSTGRES_USER` | 10s | 5s | 5 | 10s |
+| Redis | `redis-cli -a $REDIS_PASSWORD ping` | 10s | 5s | 5 | 10s |
+| Neo4j | HTTP `/db/neo4j/cluster/available` (fallback: HTTP 7474) | 30s | 10s | 5 | 120s |
+| pgbouncer_redshift | `pg_isready -h 127.0.0.1 -p 5432 -U $REDSHIFT_USER` | 15s | 5s | 5 | 10s |
 
 ## Stopping
 
