@@ -334,6 +334,8 @@ def build_input_markdown(
     intent: str | None,
     follow_ups: list[str] | None,
     col_stats: str | None = None,
+    was_truncated: bool = False,
+    true_total_rows: int | None = None,
 ) -> str:
     """Format conversation context into INPUT MARKDOWN for the LLM.
 
@@ -344,6 +346,18 @@ def build_input_markdown(
 
     # ── Question context (invisible to dashboard output) ──
     parts.append(f"## QUESTION CONTEXT (for reference only — do not display)\n{question.strip()}")
+
+    # ── Truncation warning (when result exceeded row cap) ──
+    if was_truncated:
+        count_note = f"{true_total_rows:,} total rows" if true_total_rows else "more rows than the display cap"
+        parts.append(
+            f"## ⚠ DATA TRUNCATION WARNING\n"
+            f"The query returned {count_note}. The DATA SAMPLE below shows a "
+            f"stratified selection of the capped rows. "
+            f"Column statistics (distinct counts, min, max, mean) in COLUMN STATISTICS are from "
+            f"the full Redshift result where available. "
+            f"Do NOT extrapolate totals from the sample rows."
+        )
 
     # ── Intent / domain ──
     if intent:

@@ -63,19 +63,33 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_entity_hints_section(entity_hints: list) -> str:
+    if not entity_hints:
+        return ""
+    lines = ["ENTITY HINTS — pre-matched values from semantic search. Use these exact codes in WHERE clauses:"]
+    for eh in entity_hints:
+        lines.append(
+            f'  "{eh.get("token")}" → {eh.get("table_fqn")}.{eh.get("column")} = \'{eh.get("matched_value")}\''
+        )
+    return "\n".join(lines)
+
+
 async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("filter_specialist START | thread={}", state.get("thread_id", ""))
 
     enriched_schema = state.get("enriched_schema") or {}
     resolved_intent = state.get("resolved_intent") or {}
-    intent_summary = resolved_intent.get("intent_summary", state.get("question", ""))
+    _sc = state.get("semantic_context") or {}
+    intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
+    entity_hints_section = _build_entity_hints_section(_sc.get("entity_hints") or [])
 
     prompt = FILTER_SPECIALIST_PROMPT.format_messages(
-        question=state["question"],
+        question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
         filterable_columns_section=_build_filterable_columns_section(enriched_schema),
         refinement_section=build_refinement_section(state, role="filters"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        entity_hints_section=entity_hints_section,
     )
 
     from app.services.agents.bedrock import get_llm

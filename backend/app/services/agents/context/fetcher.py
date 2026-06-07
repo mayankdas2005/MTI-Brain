@@ -40,13 +40,16 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             search_query = helpers.reconstruct_question(
                 raw_question, session_summary or "", previous_follow_ups
             )
+            effective_question = search_query
             logger.info("context_fetcher | follow-up reconstructed | search={}", search_query[:80])
         elif state.get("is_refinement") and state.get("prior_question"):
-            prior_q = (state["prior_question"] or "")[:200]
+            prior_q = (state["prior_question"] or "").strip()
             search_query = f"{prior_q} {raw_question}"
+            effective_question = f"{prior_q}\n\nUser refinement: {raw_question.strip()}"
             logger.info("context_fetcher | refinement search | combined_query={}", search_query[:120])
         else:
             search_query = raw_question
+            effective_question = raw_question
 
         # ── Embed question (Cohere, Redis-cached) ──────────────────────────────
         embedding = await retry_async(lambda: helpers.get_embedding(search_query), service="redis")
@@ -92,7 +95,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             "cross_domain_hub":   hub_info,
             "session_summary":    session_summary,
             "memory_context":     memory_context,
-            "effective_question": search_query if is_followup else None,
+            "effective_question": effective_question,
             "is_followup":        is_followup,
             "entity_hints":       entity_hints,
         }
@@ -109,7 +112,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             state["thread_id"], is_followup, tables_found, columns_found,
             is_cross_domain, hub_info.get("hub_table_fqn") if hub_info else "none",
         )
-        return {"semantic_context": semantic_context, "error": None}
+        return {"semantic_context": semantic_context, "effective_question": effective_question, "error": None}
 
     except Exception as e:
         logger.error("context_fetcher FAILED | thread={} | error={}", state["thread_id"], e)

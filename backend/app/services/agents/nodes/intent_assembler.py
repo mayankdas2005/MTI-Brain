@@ -37,7 +37,7 @@ async def intent_assembler(state: AnalyticsState) -> dict:
     measures = by_type.get("measures", {}).get("measures") or []
     filters_raw = by_type.get("filters", {}).get("filters") or []
     timeframe = by_type.get("filters", {}).get("timeframe")
-    time_filter_col = by_type.get("filters", {}).get("time_filter_col")
+    time_filter_col = by_type.get("filters", {}).get("time_filter_col") or ""
     # temporal_grains from filter specialist (plural list) takes precedence;
     # fall back to temporal_grain (singular) from older format.
     temporal_grains = by_type.get("filters", {}).get("temporal_grains") or []
@@ -45,6 +45,10 @@ async def intent_assembler(state: AnalyticsState) -> dict:
         tg = by_type.get("filters", {}).get("temporal_grain")
         temporal_grains = [tg] if tg else []
     dimensions_raw = by_type.get("dimensions", {}).get("dimensions") or []
+    # Structural intent fields — may be empty if specialists don't output them yet
+    derived_measures = by_type.get("measures", {}).get("derived_measures") or []
+    threshold_specs = by_type.get("filters", {}).get("threshold_specs") or []
+    filter_directive_hint = by_type.get("filters", {}).get("filter_directive_hint") or ""
 
     # Check if any specialist completely failed
     missing = [t for t in ("measures", "filters", "dimensions") if t not in by_type]
@@ -79,9 +83,12 @@ async def intent_assembler(state: AnalyticsState) -> dict:
         "dimensions": dimensions,
         "filters": filters,
         "timeframe": timeframe,
+        "time_filter_col": time_filter_col,
         "temporal_grains": temporal_grains,
         "intent": by_type.get("measures", {}).get("measure_directive", ""),
         "complexity": "complex" if len(measures) > 1 or len(dimensions) > 2 else "simple",
+        "derived_measures": derived_measures,
+        "threshold_specs": threshold_specs,
         "confidence": 0.75,  # will be refined by directive_writer's CONFIDENCE_NOTE
         "limit": state.get("max_rows", 100),
         "order_by": [],
@@ -100,5 +107,6 @@ async def intent_assembler(state: AnalyticsState) -> dict:
 
     return {
         "resolved_intent": resolved_intent,
+        "filter_directive_hint": filter_directive_hint,
         "specialist_outputs": [],  # clear accumulated outputs for next run
     }

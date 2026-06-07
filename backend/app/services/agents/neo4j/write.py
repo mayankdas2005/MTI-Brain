@@ -27,14 +27,85 @@ def write_join_path(path_data: dict) -> None:
     logger.debug("neo4j | fn=write_join_path | id={}", path_data.get("id"))
 
 
+_QP_CREATE_CYPHER = """
+MERGE (qp:QueryPattern {id: $id})
+ON CREATE SET
+  qp.question_text    = $question_text,
+  qp.sql_cte_outline  = $sql_cte_outline,
+  qp.join_outline     = $join_outline,
+  qp.filter_summary   = $filter_summary,
+  qp.tables_used      = $tables_used,
+  qp.intent           = $intent,
+  qp.complexity       = $complexity,
+  qp.user_id          = $user_id,
+  qp.cohere_embedding = $cohere_embedding,
+  qp.confidence_score = $confidence_score,
+  qp.row_count        = $row_count,
+  qp.recompile_count  = $recompile_count,
+  qp.repair_count     = $repair_count,
+  qp.promotion_status = 'active',
+  qp.liked_count      = 0,
+  qp.disliked_count   = 0,
+  qp.first_seen       = datetime(),
+  qp.occurrence_count = 1
+ON MATCH SET
+  qp.occurrence_count = coalesce(qp.occurrence_count, 0) + 1,
+  qp.last_seen        = datetime(),
+  qp.sql_cte_outline  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_cte_outline  ELSE qp.sql_cte_outline  END,
+  qp.join_outline     = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $join_outline     ELSE qp.join_outline     END,
+  qp.filter_summary   = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $filter_summary   ELSE qp.filter_summary   END,
+  qp.tables_used      = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $tables_used      ELSE qp.tables_used      END,
+  qp.confidence_score = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
+  qp.repair_count     = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
+  qp.recompile_count  = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
+"""
+
+_QP_UPDATE_CYPHER = """
+MATCH (qp:QueryPattern {id: $id})
+SET
+  qp.occurrence_count = coalesce(qp.occurrence_count, 0) + 1,
+  qp.last_seen        = datetime(),
+  qp.sql_cte_outline  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_cte_outline  ELSE qp.sql_cte_outline  END,
+  qp.join_outline     = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $join_outline     ELSE qp.join_outline     END,
+  qp.filter_summary   = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $filter_summary   ELSE qp.filter_summary   END,
+  qp.tables_used      = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $tables_used      ELSE qp.tables_used      END,
+  qp.confidence_score = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
+  qp.repair_count     = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
+  qp.recompile_count  = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
+"""
+
+_AP_CYPHER = """
+MERGE (ap:AntiPattern {merge_key: $merge_key})
+ON CREATE SET
+  ap.id               = $id,
+  ap.question_text    = $question_text,
+  ap.sql_fragment     = $sql_fragment,
+  ap.error_type       = $error_type,
+  ap.error_summary    = $error_summary,
+  ap.failing_element  = $failing_element,
+  ap.tables_involved  = $tables_involved,
+  ap.intent           = $intent,
+  ap.complexity       = $complexity,
+  ap.cohere_embedding = $cohere_embedding,
+  ap.first_seen       = datetime(),
+  ap.occurrence_count = 1
+ON MATCH SET
+  ap.occurrence_count = ap.occurrence_count + 1,
+  ap.last_seen        = datetime(),
+  ap.sql_fragment     = $sql_fragment,
+  ap.error_summary    = $error_summary,
+  ap.failing_element  = CASE WHEN $failing_element <> '' THEN $failing_element ELSE ap.failing_element END
+"""
+
+
 @neo4j_breaker
-def write_query_pattern(pattern_data: dict) -> None:
+def write_query_pattern(pattern_data: dict, is_update: bool = False) -> None:
     if _WRITER_AVAILABLE:
-        _wqp(run_fn=_neo4j_write, pattern_data=pattern_data)
+        _wqp(run_fn=_neo4j_write, pattern_data=pattern_data, is_update=is_update)
     else:
-        _neo4j_write("MERGE (qp:QueryPattern {id: $id}) SET qp += $props",
-                     id=pattern_data["id"], props=pattern_data)
-    logger.debug("neo4j | fn=write_query_pattern | id={}", pattern_data.get("id"))
+        cypher = _QP_UPDATE_CYPHER if is_update else _QP_CREATE_CYPHER
+        _neo4j_write(cypher, **pattern_data)
+    logger.debug("neo4j | fn=write_query_pattern | id={} | is_update={}", pattern_data.get("id"), is_update)
 
 
 @neo4j_breaker
@@ -42,9 +113,8 @@ def write_anti_pattern(pattern_data: dict) -> None:
     if _WRITER_AVAILABLE:
         _wap(run_fn=_neo4j_write, pattern_data=pattern_data)
     else:
-        _neo4j_write("MERGE (ap:AntiPattern {id: $id}) SET ap += $props",
-                     id=pattern_data["id"], props=pattern_data)
-    logger.debug("neo4j | fn=write_anti_pattern | id={}", pattern_data.get("id"))
+        _neo4j_write(_AP_CYPHER, **pattern_data)
+    logger.debug("neo4j | fn=write_anti_pattern | merge_key={}", (pattern_data.get("merge_key") or "")[:8])
 
 
 # ── Feedback loops ────────────────────────────────────────────────────────────

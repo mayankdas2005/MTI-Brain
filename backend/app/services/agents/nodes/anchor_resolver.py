@@ -69,7 +69,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     semantic_context = state.get("semantic_context") or {}
     valid_tables = {t["fqn"] for t in (semantic_context.get("tables") or []) if t.get("fqn")}
 
-    question = state["question"]
+    question = state.get("effective_question") or state["question"]
     if state.get("is_refinement") and state.get("prior_sql_tables"):
         tables_in_context = [t for t in state["prior_sql_tables"] if t in valid_tables]
         if tables_in_context:

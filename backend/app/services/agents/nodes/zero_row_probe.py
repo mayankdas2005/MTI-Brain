@@ -81,7 +81,11 @@ async def _llm_generate_probe_sqls(sql: str, state: AnalyticsState) -> dict | No
 
         from app.core.retry import retry_async
         llm = get_llm("complex")   # Opus
-        messages = ZERO_ROW_PROBE_PROMPT.format_messages(original_sql=sql)
+        messages = ZERO_ROW_PROBE_PROMPT.format_messages(
+            original_sql=sql,
+            question=state.get("effective_question") or state.get("question", ""),
+            anchor_tables=", ".join((state.get("resolved_intent") or {}).get("anchor_tables") or []),
+        )
         response = await retry_async(lambda: llm.ainvoke(messages), service="bedrock-zero-row-probe", max_attempts=2, backoff_base=5.0)
         text = (response.content or "").strip()
 

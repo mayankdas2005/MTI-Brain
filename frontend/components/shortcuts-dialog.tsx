@@ -29,6 +29,7 @@ const SHORTCUTS: Shortcut[] = [
   { variants: [`${mod} ⇧ O`], label: 'New chat', section: 'general' },
   { variants: [`${mod} ⇧ P`], label: 'Open projects', section: 'general' },
   { variants: [`${mod} ⇧ H`], label: 'Chat history', section: 'general' },
+  { variants: [`${mod} ,`], label: 'Settings', section: 'general' },
   { variants: [`${mod} .`], label: 'Toggle sidebar', section: 'general' },
   { variants: [`${mod} ⇧ L`], label: 'Toggle theme', section: 'general' },
   { variants: [`${mod} /`, '?'], label: 'Keyboard shortcuts', section: 'general' },

@@ -167,6 +167,7 @@ async def attempt_repair(
     directive_section = build_directive_section(state)
 
     prompt = REPAIR_PROMPT.format_messages(
+        question=state.get("effective_question") or state.get("question", ""),
         semantic_ir_text=semantic_ir_text,
         schema_reference=schema_reference,
         original_sql=first_sql,

@@ -442,6 +442,11 @@ vs dimensions, any filters (check `values:` for exact DB codes and `meanings:` f
 mapping), which temporal keyword fits. QUERY STRUCTURE HINTS show structural patterns only — do not
 let them override the TABLES section. For follow-ups, check CONVERSATION CONTEXT first to inherit
 anchor_tables and timeframe before adding new dimensions or filters.
+For derived_measures: emit when the user asks to COMPUTE a value not directly in a column
+(e.g. "net flow" → SUM(inflows)-SUM(outflows), "ratio" → divide two columns, "running total").
+For threshold_specs: emit when the user asks to FLAG or HIGHLIGHT rows that exceed/breach a threshold
+(e.g. "weeks below $200M" → expression=cumulative_balance, operator=<, value=200000000).
+Leave both arrays empty [] when not explicitly requested.
 </reasoning>
 <output>
 {{
@@ -453,6 +458,8 @@ anchor_tables and timeframe before adding new dimensions or filters.
   "filters": [{{"table_fqn": "...", "column_name": "...", "operator": "=", "raw_value": "..."}}],
   "timeframe": "last_30_days",
   "temporal_grains": [],
+  "derived_measures": [{{"alias": "net_cash_flow", "expression": "SUM(inflows) - SUM(outflows)", "aggregation": "NONE"}}],
+  "threshold_specs": [{{"expression": "cumulative_balance", "operator": "<", "value": 200000000, "label": "below_threshold_flag", "is_having": false}}],
   "intent": "...",
   "complexity": "simple | complex | advanced",
   "confidence": 0.0,
@@ -567,6 +574,8 @@ INTERVAL syntax with months/years is NOT supported — replace with DATEADD:
   ✗ date + INTERVAL '3 months'  →  DATEADD(month, 3, date)
   ✗ INTERVAL '4 weeks'  →  DATEADD(week, 4, date)
 
+USER QUESTION: {question}
+
 {prior_attempts_detail}
 
 {directive_section}
@@ -639,6 +648,35 @@ RULES:
    `balance_type = 'CLOSING'` means the column stores the string "CLOSING"; there is no row
    where balance_type = 'Closing Balance'. `currency_code = 'USD'` stores "USD", not "US Dollar".
    Never substitute, translate, humanize, or "correct" these values under any circumstances.
+3c. UNION / INTERSECT / EXCEPT ORDER BY: If the broken SQL uses a set operation (UNION ALL /
+   UNION / INTERSECT / EXCEPT), the ORDER BY can ONLY reference column aliases that appear in the
+   SELECT list of EVERY branch. Fix: add the required column as a consistently-named alias in
+   every branch, then ORDER BY that alias. Never ORDER BY an expression or a bare column not in
+   the SELECT list.
+   ✗ WRONG: ... UNION ALL ... ORDER BY CAST(col AS VARCHAR)
+   ✓ RIGHT: SELECT ..., CAST(col AS VARCHAR) AS sort_key FROM ... UNION ALL SELECT ..., CAST(col AS VARCHAR) AS sort_key FROM ... ORDER BY sort_key
+3d. STALE-DATA FALLBACK (NEVER DROP): If the original SQL contains a time filter with an OR branch
+   using MAX(col):
+     col >= DATEADD(day,-60,CURRENT_DATE) OR col >= DATEADD(day,-60,(SELECT MAX(col) FROM tbl))
+   You MUST preserve BOTH branches in the repaired SQL. Apply any transformation (DATE_TRUNC, CAST,
+   DATEADD adjustments) identically to BOTH the CURRENT_DATE side AND the MAX(col) side:
+   ✓ CORRECT after DATE_TRUNC fix:
+       col BETWEEN DATE_TRUNC('MONTH', CURRENT_DATE) AND ...
+       OR col BETWEEN DATE_TRUNC('MONTH', (SELECT MAX(col) FROM tbl)) AND ...
+   ✗ WRONG: dropping the OR MAX branch entirely.
+   The OR fallback is not optional — it ensures queries return data when the warehouse has not been
+   updated today (data lag is common in financial data warehouses).
+3e. TYPE CONVERSION ERRORS ("invalid value for", "cannot cast", "date/time field value out of range",
+   "invalid input syntax for type"):
+   - Locate every TO_DATE(), CAST(col AS DATE), col::DATE, col::TIMESTAMP call in the broken SQL.
+   - If the column name ends in _id, _ref, _key, _code, _no, or _num — it is an identifier, NOT a
+     date. Remove the conversion entirely.
+   - To filter on a specific snapshot, use direct string equality: WHERE snapshot_id = '<value>'
+   - Use only columns whose schema entry shows temporal_grain or whose name contains date/time/period
+     for date arithmetic.
+   - Never infer a date format from a column name. If sample values (shown as [enum: ...] in
+     SCHEMA REFERENCE) do not look like YYYY-MM-DD or a recognizable date pattern, the column is
+     not date-parseable.
 4. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
    the corrected SQL — formatting, ordering, alias style. These override your defaults.
 
@@ -664,6 +702,8 @@ fixed SQL here
 CTE_COLUMN_PLANNER_PROMPT = ChatPromptTemplate.from_template(
     """You are a CTE structural planner. Do NOT write SQL.
 Output a complete CTE contract that the SQL generator must follow exactly.
+
+USER QUESTION: {question}
 
 {directive_section}
 
@@ -696,8 +736,10 @@ CONTRACT FORMAT — output one block per CTE, then FINAL SELECT:
     where_slot: yes | no  (yes = WHERE/HAVING filters from QUERY SPECIFICATION go here)
 
   FINAL SELECT: <export_alias1, export_alias2, ...>
-  ORDER BY: <expression> ASC|DESC
+  ORDER BY: <alias_from_select_list> ASC|DESC   ← must be an alias present in FINAL SELECT
   LIMIT: <n>
+  NOTE: If FINAL SELECT uses UNION ALL / UNION, ORDER BY must reference only aliases present in
+  every branch's SELECT list. Expressions or bare column names not in the SELECT list are forbidden.
 
 COLUMN FORWARDING RULES:
   - A CTE reading from real tables may SELECT any column as schema.table.alias_expression.
@@ -708,6 +750,13 @@ COLUMN FORWARDING RULES:
     in the SAME CTE N SELECT. If column B depends on alias A, put them in separate CTEs.
   - DERIVED EXPRESSIONS (DATE_TRUNC, CAST, arithmetic): define in the earliest CTE that has the
     raw columns, then forward the alias through every downstream CTE's exports until FINAL SELECT.
+  - WINDOW + GROUP BY COMPATIBILITY: If a CTE has both GROUP BY and a window function
+    (SUM/AVG/COUNT OVER), the window function ORDER BY MUST use the EXACT same expression —
+    character-for-character — as the GROUP BY entry.
+    WRONG: GROUP BY CAST(DATE_TRUNC('WEEK', col) AS DATE)  +  ORDER BY DATE_TRUNC('WEEK', col)
+    RIGHT: GROUP BY CAST(DATE_TRUNC('WEEK', col) AS DATE)  +  ORDER BY CAST(DATE_TRUNC('WEEK', col) AS DATE)
+    PREFERRED: Compute the date expression in an upstream CTE as a named alias; reference that alias
+    in both GROUP BY and ORDER BY — eliminates all expression-mismatch risk.
 
 JOIN KEY VALIDATION:
   ON clauses in PRE-COMPUTED JOIN CHAIN carry evidence comments:
@@ -715,6 +764,23 @@ JOIN KEY VALIDATION:
     -- ⚠ NO VALUE OVERLAP  → join returns 0 rows; do NOT plan column forwarding through this join
     (no comment)            → unconfirmed; treat with caution
 
+DUAL-GRAIN PATTERN — apply ONLY when EXECUTE INSTRUCTIONS contains a DUAL_GRAIN line (e.g. DUAL_GRAIN: week+month):
+  Produce two parallel aggregation CTEs with IDENTICAL export schemas, one per grain:
+    CTE <base>_weekly:  GROUP BY DATE_TRUNC('week',  <date_col>)  — exports grain = 'weekly'
+    CTE <base>_monthly: GROUP BY DATE_TRUNC('month', <date_col>)  — exports grain = 'monthly'
+  Both CTEs must export the SAME column aliases so UNION ALL is valid.
+  Add a snapshot_dates CTE first that computes MAX(<date_col>) — call this anchor max_date.
+  The horizon label column (e.g. horizon) must use max_date as the boundary anchor:
+    horizon = CASE WHEN period <= DATEADD(day, 28, max_date) THEN 'week_view' ELSE 'month_view' END
+    NEVER use CURRENT_DATE for the horizon boundary — data may be historical and all rows would
+    get the same label. The max_date anchor makes the label meaningful regardless of data recency.
+  FINAL SELECT: UNION ALL of both grain CTEs. ORDER BY forecast_period, grain.
+  NEVER collapse both grains into a single CTE with a label column — that produces wrong cumulative
+  windows and makes the two horizons indistinguishable in the output.
+  Do NOT apply this pattern when DUAL_GRAIN is absent from the directive.
+
+{anti_pattern_section}
+{query_pattern_section}
 {reasoning_directive}
 
 <reasoning>
@@ -755,7 +821,10 @@ PostgreSQL constructs are INVALID and will cause runtime errors:
         SELECT ratio, CASE WHEN ratio > 0.01 THEN TRUE END AS flag FROM ratio_cte
 Correct Redshift date arithmetic:
   DATEADD(year,  -1, date)   DATEADD(month, -3, date)   DATEADD(week, 4, date)   DATEADD(day, -30, date)
-  DATE_TRUNC('month', date)  DATEDIFF(day, d1, d2)      GETDATE()  CURRENT_DATE
+  DATE_TRUNC('month', date)  DATEDIFF(day, d1, d2)      GETDATE()
+  CURRENT_DATE — ONLY inside the OR MAX stale-data pattern (Rule 2b); never standalone as a date boundary
+
+USER QUESTION: {question}
 
 {cross_domain_section}
 
@@ -821,25 +890,20 @@ RULES:
 2. Use PRE-COMPUTED JOIN CHAIN as shown. You may substitute a different ON clause ONLY when
    VOCABULARY OVERLAP HINTS in UNRESOLVED JOIN PAIRS provide a better-evidenced join column.
 2b. TIME FILTER in QUERY SPECIFICATION → add to WHERE clause verbatim. Never reinterpret or omit it.
-   STALE-DATA FALLBACK: The blueprint always provides an OR-branch with a MAX-anchored boundary.
-   Apply the SAME transformation to MAX(col) that was applied to CURRENT_DATE — do not alter it.
+   STALE-DATA FALLBACK — UNIVERSAL: this OR MAX rule applies to EVERY date range filter on any
+   time-series column, including filters from COMPUTED_FILTER directives or any other source.
+   Whenever you write `col >= DATEADD(...)` or `col >= CURRENT_DATE - ...` for a time-series
+   column, you MUST immediately add the corresponding OR MAX branch with the IDENTICAL transformation:
      CORRECT:  col >= DATEADD(day,-60,CURRENT_DATE) OR col >= DATEADD(day,-60,(SELECT MAX(col) FROM tbl))
      WRONG:    col >= DATEADD(day,-60,CURRENT_DATE) OR col >= (SELECT MAX(col) FROM tbl)
-   The raw-MAX form returns ALL data regardless of window, which is not a "last 60 days" fallback.
-   The transformed MAX form anchors the same window to the latest available data point.
-   SNAPSHOT TABLES (no time filter specified): use both CURRENT_DATE and MAX together:
+   The raw-MAX form returns ALL data regardless of window. The transformed MAX form anchors the
+   same window to the latest available data point. Apply the exact same DATEADD/transformation to
+   the MAX branch as to the CURRENT_DATE branch — do not alter it.
+   POINT-IN-TIME SNAPSHOTS (e.g. "current balance", "latest position" — no date range):
      WHERE col = CURRENT_DATE OR col = (SELECT MAX(col) FROM tbl)
    Never apply DATE_TRUNC to either side of a snapshot date filter.
-   UNIVERSAL — this OR MAX rule applies to EVERY date range filter you write on any time-series
-   column, including filters derived from COMPUTED_FILTER directives or any other source.
-   Whenever you write `col >= DATEADD(...)` or `col >= CURRENT_DATE - ...` for a time-series
-   column, you MUST immediately add the corresponding OR MAX branch with the identical transformation:
-     CORRECT (COMPUTED_FILTER activity check):
-       WHERE pt.transaction_date >= DATEADD(day,-60,CURRENT_DATE)
-          OR pt.transaction_date >= DATEADD(day,-60,(SELECT MAX(transaction_date) FROM lpp.payment_transaction))
-     WRONG (no OR MAX for COMPUTED_FILTER filter):
-       WHERE pt.transaction_date >= DATEADD(day,-60,CURRENT_DATE)
-   The COMPUTED_FILTER or directive source does NOT exempt a date filter from the OR MAX rule.
+   This rule applies to all date filters including those from COMPUTED_FILTER directives — the
+   source does NOT exempt a date filter from the OR MAX rule.
 3. FILTER TYPE ENFORCEMENT — check SCHEMA REFERENCE data_type BEFORE writing any predicate.
    This rule OVERRIDES the [exact] tag when the value conflicts with the column's data_type:
    • boolean / bool → value MUST be SQL literal TRUE or FALSE (unquoted, never quoted).
@@ -870,6 +934,12 @@ RULES:
    Columns marked [GRP] that appear in SELECT alongside an aggregate MUST be in GROUP BY.
    This rule applies per CTE, not just the final SELECT.
    Aggregation is specified in QUERY SPECIFICATION — use what is shown there.
+4b. WINDOW FUNCTION ORDER BY + GROUP BY MUST MATCH EXACTLY:
+   When a CTE uses GROUP BY alongside a window function (SUM/AVG/COUNT OVER):
+   - ✗ WRONG:  GROUP BY CAST(DATE_TRUNC('WEEK', t.col) AS DATE)  +  ORDER BY DATE_TRUNC('WEEK', t.col)
+   - ✓ RIGHT:  GROUP BY CAST(DATE_TRUNC('WEEK', t.col) AS DATE)  +  ORDER BY CAST(DATE_TRUNC('WEEK', t.col) AS DATE)
+   - ✓ BEST:   Pre-compute the date expression as an alias in a base CTE; reference the alias in
+     both GROUP BY and ORDER BY — this eliminates all expression-mismatch risk.
 5. If QUERY SPECIFICATION shows "flat lookup" → omit GROUP BY and HAVING entirely.
 6. DOWNSTREAM CTE COLUMN REFERENCES — CRITICAL:
    A downstream CTE can only reference columns by the ALIAS defined in the upstream CTE.
@@ -979,6 +1049,15 @@ RULES:
 
     Final SELECT returns ONE row with ONE numeric column.
     Do NOT GROUP BY both values separately — that produces two rows, not a ratio.
+18. UNION / INTERSECT / EXCEPT — ORDER BY RULE:
+    When combining result sets with UNION ALL / UNION / INTERSECT / EXCEPT, the ORDER BY clause
+    MUST reference only column aliases present in the SELECT list of EVERY branch of the set operation.
+    - ✗ WRONG:  SELECT a AS col_a, b FROM t1 UNION ALL SELECT c, d FROM t2 ORDER BY b
+      (b is not a named alias in the SELECT list)
+    - ✗ WRONG:  ORDER BY CAST(col AS VARCHAR)  ← expression not in SELECT list
+    - ✓ RIGHT:  SELECT a AS col_a, b AS col_b FROM t1 UNION ALL SELECT c AS col_a, d AS col_b FROM t2 ORDER BY col_a
+    Both branches must use the same output alias names, and ORDER BY references those aliases only.
+    If the required column is not already an alias, add it to every branch's SELECT list with a consistent alias.
 
 ---
 
@@ -1054,9 +1133,9 @@ Output a JSON object inside <insights> tags. Follow this schema exactly:
   ],
   "data_gaps": [],
   "follow_up_paths": [
-    "drill deeper: specific question referencing entity/number from data",
-    "risk check: specific question to verify or quantify the main risk",
-    "next exploration: adjacent question this finding naturally raises"
+    "Which [specific entity from data] needs action this week?",
+    "What's our exposure if [specific risk from findings] worsens?",
+    "How does [specific metric] compare to [prior period or benchmark]?"
   ]
 }}
 
@@ -1069,7 +1148,10 @@ RULES:
 - what_if: only populate when a specific data value supports a plausible "if X then Y" scenario. Leave null if speculative.
 - data_gaps: only populate if a column is all-NULL or a key field is missing that would change the analysis.
 - staleness_note: populate only if TEMPORAL CONTEXT shows data older than 30 days. Format: "Positions as of [date], [N] days old."
-- follow_up_paths: must reference specific entities, amounts, or dates from the data. Not generic ("show more details").
+- follow_up_paths: 3 short questions (≤12 words each) an executive would speak to their advisor.
+  Reference specific entities or amounts from findings. Start with "Which", "What", "How", "Is", "Should", or "When".
+  NEVER start with Validate, Retrieve, Confirm whether, Analyze, Quantify, or Identify.
+  These are spoken advisory questions, not data retrieval tasks. No multi-part questions.
 - humanize all names: snake_case → Title Case, drop prefixes (lpp_, IHB_USD_ → IHB Investment).
 
 <insights>
@@ -1094,6 +1176,38 @@ COLUMN NAME RULE — NON-NEGOTIABLE:
 All names are already humanized in the insights. Do not revert to snake_case or SCREAMING_CASE.
 If you must reference an account or entity, use its humanized name from the insights exactly.
 Examples of what NOT to write: IHB_USD_INVESTMENT, total_idle_cash_balance, lpp.bank_account.
+
+---
+
+CONSULTING STANDARD — MANDATORY. These answers are read by C-suite executives and must meet
+the standard of Bain, McKinsey, and BCG deliverables. Quality is enforced by three gates.
+Before writing each section, check these gates in <reasoning> and mark each ✓ or ✗. Rewrite
+any section that fails before finalizing.
+
+GATE 1 — PYRAMID PRINCIPLE: Every section must open with the business implication, not the data.
+  ✗ DESCRIPTIVE (FAIL): "GR_FR tax payments total $924,760 due 2026-06-29."
+  ✓ IMPLICATION-FIRST (PASS): "GR_FR faces its highest near-term liquidity pressure: a $924,760
+    tax obligation due 2026-06-29 cannot be deferred without penalty."
+  Test before writing: can the reader understand WHY this matters before they see the number?
+  If not, rewrite the opening sentence to lead with the consequence.
+
+GATE 2 — RECOMMENDATION SPECIFICITY: Every recommendation must contain all four elements or must
+not be written at all: (a) imperative action verb, (b) named functional owner, (c) hard deadline,
+(d) quantified expected outcome. Followed by: "If deferred: [specific cost, regulatory deadline,
+or risk event that worsens]."
+  ✗ VAGUE (FAIL): "Review the liquidity position across entities."
+  ✓ SPECIFIC (PASS): "Confirm whether the $200M threshold applies at consolidated group level or
+    per entity — Group Treasury Finance, by end of this week. If deferred: every subsequent
+    funding decision is made against an unvalidated baseline, risking either a false alarm or
+    a missed crisis."
+
+GATE 3 — SCENARIO GROUNDING: Every branch of Scenario Analysis must cite a specific number from
+PRE-EXTRACTED INSIGHTS. If the data does not support a quantified scenario, omit that branch —
+speculation without a number is not analysis.
+  ✗ SPECULATIVE (FAIL): "If liquidity improves, the business will be better positioned."
+  ✓ GROUNDED (PASS): "If consolidation scope is confirmed as incomplete: the $200M threshold
+    may already be met once group-level balances are included — the 2026-06-29 trough of
+    $180,964 becomes irrelevant and no liquidity action is required."
 
 ---
 
@@ -1177,9 +1291,10 @@ Sections: ### Key Findings | ### Signal in the Noise | ### Data Gaps | ### Next 
   Skip this section if data is complete.
 
   ### Next Analysis
-  3 specific follow-on queries — reference actual columns/entities from the result.
-  NOT generic. Example: "Break down the 5 closed accounts by entity to identify which legal
-  entity carries the highest dormancy exposure" — not "show me more details."
+  3 short questions (≤12 words each) the analyst would naturally ask next.
+  Each must reference a specific entity, number, or pattern from the result.
+  Phrasing: "How does [X] compare to [Y]?", "Which [entity] is driving [metric]?",
+  "What caused [specific anomaly]?" — spoken questions to a trusted data advisor, not task instructions.
 
 ━━━ MANAGER ━━━
 Sections: ### Situation | ### What Needs Attention | ### Actions | ### Watch List
@@ -1334,9 +1449,14 @@ Never open with "Let me analyze", "Based on the results", "The data shows", or a
 
 The <follow_ups> block: use the follow_up_paths from PRE-EXTRACTED INSIGHTS verbatim.
   They are already grounded in specific data values. Do not replace or generalise them.
-  If follow_up_paths is empty or missing, write 3 specific questions that reference actual
-  entities/numbers from the insights — never generic ("show me more", "break it down").
-  Do not use raw column names in follow-up questions.
+  If follow_up_paths is empty or missing, write 3 short questions (≤12 words each) the user
+  would naturally speak to their trusted advisor next. Match the persona:
+    executive  → big-picture, decision-forcing: "Should we top up GR_AE this week?", "What's our total headroom?"
+    director   → strategic risk: "What's the risk if this trend continues?", "Which entities are most exposed?"
+    manager    → operational urgency: "Which accounts need funding before Friday?", "Is the Q2 outflow normal?"
+    analyst    → data-driven curiosity: "How does GR_AE compare to last quarter?", "What's driving the variance?"
+  NEVER start with Validate, Retrieve, Confirm whether, Analyze, Quantify, or Identify.
+  No multi-part questions. No raw column names. These are questions, not instructions.
 Output only the JSON array inside the tags."""
 )
 
@@ -1779,6 +1899,7 @@ Examples:
   "CONFIRMED"         → {{"operator":null}}
   "last_30_days"      → {{"operator":">=","value":"DATEADD(day,-30,CURRENT_DATE)"}}
 
+User question: {question}
 Expression: {expression}"""
 )
 
@@ -1805,6 +1926,9 @@ Output format:
   "bare_join_sql":       "<COUNT(*) query — SELECT COUNT(*) from ONLY the two primary anchor tables with their JOIN ON clause; no CTEs, no WHERE, no other tables; example: SELECT COUNT(*) FROM lpp.bank_account ba JOIN lpp.cash_balance cb ON cb.account_ref = ba.code>",
   "diagnosis_hint":      "<one sentence: most likely reason for zero rows>"
 }}
+
+USER QUESTION: {question}
+ANCHOR TABLES: {anchor_tables}
 
 Original SQL:
 {original_sql}"""
@@ -1886,9 +2010,14 @@ State which columns match the requested metrics and what aggregation applies —
   "measures": [
     {{"table_fqn": "lpp.table", "column_name": "col", "aggregation": "SUM", "alias": "total_amount", "semantic_type": "amount"}}
   ],
+  "derived_measures": [
+    {{"alias": "net_cash_flow", "expression": "SUM(inflows) - SUM(outflows)", "aggregation": "NONE"}}
+  ],
   "measure_directive": "one line summarizing what is being measured"
 }}
-</output>"""
+</output>
+Use derived_measures when the user asks to compute an expression combining multiple columns
+(net flow, ratio, running total). Leave as [] if only direct column aggregations are needed."""
 )
 
 
@@ -1902,6 +2031,7 @@ These are the FILTERABLE columns available:
 User question: {question}
 Intent summary: {intent_summary}
 {refinement_section}
+{entity_hints_section}
 CRITICAL RULES:
 - raw_user_value must ALWAYS be the user's exact words — NEVER a DB code from the values list
   Example: user says "JPMorgan" → raw_user_value = "JPMorgan" (NOT "BANK_JPM")
@@ -1934,9 +2064,12 @@ State which filters were detected from the question and which columns they map t
   "timeframe": "next_90_days",
   "temporal_grains": ["month"],
   "time_filter_col": "lpp.table.col_name",
-  "filter_directive_hint": "one line: TIME_FILTER: lpp.table.col | or filter summary"
+  "filter_directive_hint": "one line: TIME_FILTER: lpp.table.col | or filter summary",
+  "threshold_specs": [{{"expression": "cumulative_balance", "operator": "<", "value": 200000000, "label": "below_threshold_flag", "is_having": false}}]
 }}
-</output>"""
+</output>
+Use threshold_specs when the user asks to FLAG, HIGHLIGHT, or IDENTIFY rows that breach a threshold
+(e.g. "below $200M minimum" → value=200000000, "exceeds limit" → operator=>). Leave as [] if none."""
 )
 
 
@@ -1989,10 +2122,13 @@ Assembled intent:
 - dimensions: {dimensions}
 - result_shape: {result_shape}
 - timeframe: {timeframe}
+- temporal_grains: {temporal_grains}
+- query_intent: {query_intent}
+- complexity: {query_complexity}
 
 Complete schema for anchor tables (all columns):
 {anchor_schema_section}
-
+{filter_hint_section}
 User question: {question}
 {refinement_section}
 ----
@@ -2007,6 +2143,9 @@ Think through:
 - Does the timeframe/filter require a derived expression? (→ COMPUTED_FILTER)
 - Are any requested measures or dimensions missing from the anchor schemas? (→ SCHEMA_GAP)
 - What confidence level is appropriate given schema coverage?
+- Does temporal_grains have 2+ entries? If yes, this is a dual-grain query → emit DUAL_GRAIN
+- If complexity=complex or query_intent mentions multiple horizons/thresholds/derived values,
+  plan multi-CTE breakdown with explicit COMPUTATION lines for each derived measure.
 </reasoning>
 
 Write the directive using these EXACT machine-readable prefixes (one per line):
@@ -2016,16 +2155,23 @@ Write the directive using these EXACT machine-readable prefixes (one per line):
   CONFIDENCE_NOTE: 0.XX  (<one sentence reason>)   (when schema coverage is incomplete)
   COMPUTATION: col_alias = expression              (when a derived column must be computed in a CTE)
   COMPUTED_FILTER: WHERE expression                (when a filter requires a CTE computation)
+  DUAL_GRAIN: <fine_grain>+<coarse_grain>          (ONLY when temporal_grains has 2+ entries — signals two-CTE + UNION structure)
 
 Rules:
 - SCHEMA_GAP: write one line per concept that is missing from the anchor table schemas shown above
 - CONFIDENCE_NOTE: 0.90+ if all columns found; 0.70-0.89 if some approximations; 0.50-0.69 if key columns missing
 - TIME_FILTER: always specify the exact column — pick the most semantically correct date column for the timeframe
+- DUAL_GRAIN: emit exactly one line when temporal_grains lists 2+ grains (e.g. ["week", "month"] → DUAL_GRAIN: week+month).
+  The fine grain (first entry) is the shorter window; the coarse grain (second entry) is the longer window.
+  The horizon boundary label MUST use the MAX-date anchor from a snapshot CTE, NOT CURRENT_DATE, so stale data
+  gets correctly labeled (e.g. CASE WHEN period <= DATEADD(day,28,max_date) THEN 'week_view' ELSE 'month_view' END).
+  Do NOT emit DUAL_GRAIN for single-grain queries even if multiple COMPUTATION lines exist.
 
 <directive>
 <instructions>
 COMPUTATION lines here (if any)
 COMPUTED_FILTER lines here (if any)
+DUAL_GRAIN line here (if temporal_grains has 2+ entries)
 </instructions>
 <context>
 JOIN_PATH lines (if any)

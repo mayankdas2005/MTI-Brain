@@ -91,6 +91,8 @@ async def generate_sql_llm(
         "temporal_grains": ir.temporal_grains,          # list, most granular first
         "temporal_grain": ir.temporal_grain,            # compat: first grain or None
         "unresolved_join_pairs": ir.unresolved_join_pairs or [],   # explicit failure signal
+        "derived_measures": [dm.model_dump() for dm in (ir.derived_measures or [])],
+        "threshold_specs":  [ts.model_dump() for ts in (ir.threshold_specs or [])],
     }
 
     logger.info(
@@ -144,19 +146,14 @@ async def generate_sql_llm(
     schema_reference = _build_schema_reference(schema_ctx)
     unresolved_joins_section = _build_unresolved_joins_section(unresolved_pairs, col_lookup)
     feedback_section = _build_feedback_section(state)
-    query_patterns_section = _build_query_patterns_section(query_patterns)
+    query_patterns_section = _build_query_patterns_section(query_patterns, pattern_matched, pattern_name)
     prior_sql_section = _build_prior_sql_section(state)
 
     recompile_count = state.get("recompile_count", 0)
-    # Show candidate join paths on first try when intent directive has JOIN_PATH lines —
-    # the intent resolver may have identified better join columns than the primary path.
-    import re as _re_sg
-    _has_intent_joins = bool(
-        _re_sg.search(r"^\s*JOIN_PATH:", state.get("intent_directive") or "", _re_sg.MULTILINE)
-    )
-    _show_candidates = recompile_count > 0 or (_has_intent_joins and ir.candidate_join_paths)
+    # Always show candidate join paths when Neo4j found alternatives — prevents the SQL generator
+    # from discovering join problems only after first-attempt failure.
     candidate_join_paths_section = (
-        _build_candidate_join_paths_section(ir, col_lookup) if _show_candidates else ""
+        _build_candidate_join_paths_section(ir, col_lookup) if ir.candidate_join_paths else ""
     )
     reasoning_directive = REASONING_DIRECTIVE_SQL
 
@@ -170,12 +167,16 @@ async def generate_sql_llm(
     # Combined intent + filter directive — authoritative context from intent_resolver + filter_resolver
     from app.services.agents.helpers import build_directive_section
     directive_section = build_directive_section(state)
+    directive_section += _build_low_confidence_section(state)
 
+    state["_planner_ir"] = ir
+    state["_planner_col_lookup"] = col_lookup
     cte_plan = await _plan_cte_columns(spec, query_blueprint, schema_reference, state, config, directive_section)
     cte_column_plan = _build_cte_plan_section(cte_plan)
 
     from app.services.agents.prompts import SQL_GENERATE_PROMPT
     prompt = SQL_GENERATE_PROMPT.format_messages(
+        question=state.get("effective_question") or state.get("question", ""),
         cross_domain_section=cross_domain_section,
         entity_hints_section=entity_hints_section,
         directive_section=directive_section,
@@ -251,11 +252,35 @@ async def _plan_cte_columns(
             )
         else:
             prior_error_section = ""
+        # F3: pass anti_patterns + query_patterns so planner avoids known-bad structures
+        # _anti_patterns is the pre-formatted string from fetch_anti_patterns (already has header)
+        _raw_anti = state.get("_anti_patterns") or ""
+        planner_anti_patterns = (
+            f"ANTI-PATTERNS (avoid these structural mistakes in your CTE plan):\n{_raw_anti}"
+            if isinstance(_raw_anti, str) and _raw_anti and _raw_anti.strip() not in ("(none)", "")
+            else ""
+        )
+        planner_query_patterns = _build_query_patterns_section(
+            state.get("_query_patterns") or [],
+            state.get("_pattern_matched", False),
+            state.get("_pattern_name"),
+        )
+        # F4: append candidate join paths to query_blueprint so planner sees alternatives
+        ir_for_planner = state.get("_planner_ir")
+        col_lookup_for_planner = state.get("_planner_col_lookup") or {}
+        planner_candidate_section = ""
+        if ir_for_planner is not None and ir_for_planner.candidate_join_paths:
+            planner_candidate_section = _build_candidate_join_paths_section(ir_for_planner, col_lookup_for_planner)
+        planner_blueprint = query_blueprint + ("\n" + planner_candidate_section if planner_candidate_section else "")
+
         prompt = CTE_COLUMN_PLANNER_PROMPT.format_messages(
+            question=state.get("effective_question") or state.get("question", ""),
             directive_section=directive_section,
             prior_error_section=prior_error_section,
-            query_blueprint=query_blueprint,
+            query_blueprint=planner_blueprint,
             schema_reference=schema_reference,
+            anti_pattern_section=planner_anti_patterns,
+            query_pattern_section=planner_query_patterns,
             reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         )
         response = await retry_async(
@@ -733,9 +758,48 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
         lines.append(f"  FROM {anchor_tables[0]}")
         lines.append("")
 
+    # E2: Render temporal grains before the sort/limit block
+    temporal_grains_list = spec.get("temporal_grains") or []
+    if len(temporal_grains_list) >= 2:
+        lines.append("TEMPORAL GRAINS (dual-horizon — produce one aggregation CTE per grain, UNION ALL):")
+        for g in temporal_grains_list:
+            lines.append(f"  {g}  → DATE_TRUNC('{g}', <time_col>)::DATE")
+        lines.append("  horizon label: CASE WHEN period <= DATEADD(day, <N>, max_date) THEN '<fine>_view' ELSE '<coarse>_view' END")
+        lines.append("  max_date = SELECT MAX(<date_col>) FROM <table>  ← use for the horizon boundary, NOT CURRENT_DATE")
+        lines.append("  (Date range WHERE filters still use CURRENT_DATE OR MAX(col) fallback per Rule 2b — max_date here is ONLY for the CASE WHEN label boundary)")
+        lines.append("")
+    elif temporal_grains_list:
+        lines.append(f"TEMPORAL GRAIN: {temporal_grains_list[0]}  (use DATE_TRUNC('{temporal_grains_list[0]}', <time_col>) for bucketing)")
+        lines.append("")
+
+    # A1: Render derived_measures and threshold_specs
+    derived_measures = spec.get("derived_measures") or []
+    if derived_measures:
+        lines.append("DERIVED MEASURES (compute in a CTE, reference by alias downstream):")
+        for dm in derived_measures:
+            alias = dm.get("alias", "")
+            expr = dm.get("expression", "")
+            agg = dm.get("aggregation", "NONE")
+            agg_note = f"  [{agg} aggregation]" if agg and agg.upper() not in ("NONE", "") else ""
+            lines.append(f"  {alias} = {expr}{agg_note}")
+        lines.append("")
+
+    threshold_specs = spec.get("threshold_specs") or []
+    if threshold_specs:
+        lines.append("THRESHOLD FLAGS (CASE WHEN in a post-aggregate CTE):")
+        for ts in threshold_specs:
+            expr = ts.get("expression", "")
+            op = ts.get("operator", "<")
+            val = ts.get("value", "")
+            label = ts.get("label", "threshold_flag")
+            having = "  [HAVING — applies after GROUP BY]" if ts.get("is_having") else ""
+            lines.append(f"  {label} = CASE WHEN {expr} {op} {val} THEN TRUE ELSE FALSE END{having}")
+        lines.append("")
+
+    # E1: Relabel cte_steps as hints so CTE planner names take precedence
     cte_steps = spec.get("cte_steps") or []
     if cte_steps:
-        lines.append("CTE NAMES (use in this order):")
+        lines.append("CTE STEP HINTS (informational only — CTE_CONTRACT names from the planner take precedence):")
         lines.append("  " + "  →  ".join(cte_steps))
         lines.append("")
 
@@ -856,38 +920,67 @@ def _build_schema_reference(schema_ctx: dict) -> str:
     secondary_cols = [c for c in columns if "is_groupable" not in c and "is_measurable" not in c]
 
     if primary_cols:
-        lines.append("PRIMARY COLUMNS (anchor and path tables — use these for SELECT, WHERE, GROUP BY, HAVING):")
+        lines.append("PRIMARY COLUMNS (grouped by table — ONLY use columns listed under each table; do not cross-reference):")
+        # Group by table_fqn to prevent cross-table column hallucination
+        by_table: dict[str, list[dict]] = {}
         for c in primary_cols:
             fqn = c.get("table_fqn", "")
-            name = c.get("name", "")
-            dtype = c.get("data_type", c.get("semantic_type", ""))
-            is_measurable = c.get("is_measurable", False)
-            is_groupable = c.get("is_groupable", False)
-            desc = c.get("description", "")
-            filter_values = c.get("filter_values") or c.get("sample_values") or []
+            by_table.setdefault(fqn, []).append(c)
 
-            marker = "[AGG]" if is_measurable else ("[GRP]" if is_groupable else "")
-            col_ref = f"{fqn}.{name}"
-            line = f"  {col_ref:<50} {dtype:<10} {marker:<6}"
-            if desc:
-                line += f'  "{desc}"'
-            if filter_values:
-                vals_str = ", ".join(str(v) for v in filter_values[:8])
-                line += f"   [enum: {vals_str}]"
-            elif is_measurable:
-                line += "   (numeric measure)"
-            else:
-                line += "   (no known values)"
-            lines.append(line)
+        _semantic_markers = {
+            "code":       "[code — use = or IN, never ILIKE]",
+            "identifier": "[identifier — join key only, not a filter]",
+            "flag":       "[flag — boolean TRUE/FALSE only]",
+        }
+
+        for fqn, cols in by_table.items():
+            lines.append(f"  ── {fqn} ──")
+            for c in cols:
+                name = c.get("name", "")
+                dtype = c.get("data_type", c.get("semantic_type", ""))
+                semantic_type = c.get("semantic_type", "")
+                is_measurable = c.get("is_measurable", False)
+                is_groupable = c.get("is_groupable", False)
+                desc = c.get("description", "")
+                filter_values = c.get("filter_values") or c.get("sample_values") or []
+
+                marker = "[AGG]" if is_measurable else ("[GRP]" if is_groupable else "")
+                sem_marker = _semantic_markers.get(semantic_type, "")
+                col_ref = f"  {fqn}.{name}"
+                line = f"{col_ref:<52} {dtype:<10} {marker:<6}"
+                if sem_marker:
+                    line += f"  {sem_marker}"
+                if desc:
+                    line += f'  "{desc}"'
+                if filter_values:
+                    vals_str = ", ".join(str(v) for v in filter_values[:8])
+                    line += f"   [enum: {vals_str}]"
+                elif is_measurable:
+                    line += "   (numeric measure)"
+                lines.append(line)
         lines.append("")
 
     if secondary_cols:
         lines.append("SECONDARY COLUMNS (other candidate tables — available only as JOIN partners for display columns):")
+        _sec_semantic_markers = {
+            "code":       "[code — use = or IN, never ILIKE]",
+            "identifier": "[identifier — join key only, not a filter]",
+            "flag":       "[flag — boolean TRUE/FALSE only]",
+        }
         for c in secondary_cols:
             fqn = c.get("table_fqn", "")
             name = c.get("name", "")
             dtype = c.get("data_type", c.get("semantic_type", ""))
-            lines.append(f"  {fqn}.{name:<50} {dtype}")
+            semantic_type = c.get("semantic_type", "")
+            filter_values = c.get("filter_values") or c.get("sample_values") or []
+            sem_marker = _sec_semantic_markers.get(semantic_type, "")
+            line = f"  {fqn}.{name:<50} {dtype}"
+            if sem_marker:
+                line += f"  {sem_marker}"
+            if filter_values:
+                vals_str = ", ".join(str(v) for v in filter_values[:8])
+                line += f"   [enum: {vals_str}]"
+            lines.append(line)
         lines.append("")
 
     if available_joins:
@@ -1053,6 +1146,19 @@ def _build_candidate_join_paths_section(ir: SemanticIR, col_lookup: dict | None 
     return "\n".join(lines)
 
 
+def _build_low_confidence_section(state: AnalyticsState) -> str:
+    lcf = state.get("low_confidence_filters") or []
+    if not lcf:
+        return ""
+    lines = ["\nSUSPECT FILTER VALUES (low-confidence resolutions — check these first on 0-row results):"]
+    for f in lcf:
+        lines.append(
+            f"  {f.get('column', '')} resolved '{f.get('raw_value', '')}' "
+            f"→ '{f.get('resolved_value', '')}' (fuzzy match)"
+        )
+    return "\n".join(lines)
+
+
 def _build_feedback_section(state: AnalyticsState) -> str:
     fb = state.get("feedback_context") or ""
     if not fb:
@@ -1063,7 +1169,11 @@ def _build_feedback_section(state: AnalyticsState) -> str:
     )
 
 
-def _build_query_patterns_section(query_patterns: list) -> str:
+def _build_query_patterns_section(
+    query_patterns: list,
+    pattern_matched: bool = False,
+    pattern_name: str | None = None,
+) -> str:
     if not query_patterns:
         return ""
     top = query_patterns[0]
@@ -1078,9 +1188,14 @@ def _build_query_patterns_section(query_patterns: list) -> str:
     repair = top.get("repair_count") or 0
     if not (outline or join_outline):
         return ""
-    lines = [
-        "SIMILAR QUERY PATTERNS (prior successful query for a similar question — use as structural guide):",
-    ]
+    if pattern_matched and pattern_name:
+        header = (
+            f"MATCHED PATTERN: \"{pattern_name}\" — adapt this pattern to the current question "
+            "rather than generating from scratch:"
+        )
+    else:
+        header = "SIMILAR QUERY PATTERNS (prior successful query for a similar question — use as structural guide):"
+    lines = [header]
     if question_text:
         lines.append(f"  Question:   \"{question_text}\"")
     lines += [
@@ -1113,8 +1228,9 @@ def _build_prior_sql_section(state: AnalyticsState) -> str:
     if recompile_count > 0:
         error = state.get("error") or ""
         error_line = f"Validation error that must be fixed:\n  {error}\n\n" if error else ""
+        attempt_num = recompile_count + 1
         return (
-            "PREVIOUS SQL ATTEMPT (recompile — prior SQL failed validation):\n\n"
+            f"PREVIOUS SQL (ATTEMPT {recompile_count} FAILED — this is attempt {attempt_num}):\n\n"
             f"{error_line}"
             f"<prior_sql>{prior_sql}</prior_sql>\n\n"
             "Fix the specific validation error above. Do not repeat the structural mistake that caused it."

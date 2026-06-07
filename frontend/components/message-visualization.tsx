@@ -186,8 +186,16 @@ function toTitleCase(s: string): string {
 }
 
 function humanizeEncoding(spec: Record<string, unknown>): Record<string, unknown> {
-  const enc = spec.encoding as Record<string, unknown> | undefined;
-  if (!enc) return spec;
+  // Recurse into layered specs (dual-axis, multi-line) — each layer has its own encoding
+  let result = spec;
+  if (Array.isArray(spec.layer)) {
+    const newLayers = (spec.layer as Record<string, unknown>[]).map(humanizeEncoding);
+    const layerChanged = newLayers.some((l, i) => l !== (spec.layer as Record<string, unknown>[])[i]);
+    if (layerChanged) result = { ...result, layer: newLayers };
+  }
+
+  const enc = result.encoding as Record<string, unknown> | undefined;
+  if (!enc) return result;
 
   const newEnc: Record<string, unknown> = {};
   let changed = false;
@@ -216,7 +224,54 @@ function humanizeEncoding(spec: Record<string, unknown>): Record<string, unknown
     }
   }
 
-  return changed ? { ...spec, encoding: newEnc } : spec;
+  // Humanize explicit tooltip array entries
+  const tooltipEnc = enc.tooltip;
+  if (Array.isArray(tooltipEnc)) {
+    newEnc.tooltip = tooltipEnc.map((item: unknown) => {
+      if (!item || typeof item !== 'object') return item;
+      const t = item as Record<string, unknown>;
+      if (typeof t.field !== 'string' || t.title != null) return t;
+      return { ...t, title: toTitleCase(t.field) };
+    });
+    changed = true;
+  } else if (tooltipEnc !== undefined) {
+    newEnc.tooltip = tooltipEnc;
+  }
+
+  return changed ? { ...result, encoding: newEnc } : result;
+}
+
+// Convert mark-level tooltip:true into an explicit encoding.tooltip array so Vega never falls
+// back to the raw "field (timeUnit)" key format. Recurses into layers.
+function normalizeTooltipEncoding(spec: Record<string, unknown>): Record<string, unknown> {
+  if (Array.isArray(spec.layer)) {
+    const newLayers = (spec.layer as Record<string, unknown>[]).map(normalizeTooltipEncoding);
+    const layerChanged = newLayers.some((l, i) => l !== (spec.layer as Record<string, unknown>[])[i]);
+    return layerChanged ? { ...spec, layer: newLayers } : spec;
+  }
+
+  const enc = spec.encoding as Record<string, unknown> | undefined;
+  if (!enc || Array.isArray(enc.tooltip)) return spec; // explicit array already handled
+
+  const items: Record<string, unknown>[] = [];
+  for (const ch of ['x', 'color', 'y', 'y2', 'size', 'shape', 'detail'] as const) {
+    const def = enc[ch];
+    if (!def || typeof def !== 'object') continue;
+    const d = def as Record<string, unknown>;
+    if (typeof d.field !== 'string') continue;
+    const item: Record<string, unknown> = {
+      field: d.field,
+      title: (d.title as string) || toTitleCase(d.field),
+    };
+    if (d.type)       item.type       = d.type;
+    if (d.timeUnit)   item.timeUnit   = d.timeUnit;
+    if (d.format)     item.format     = d.format;
+    if (d.formatType) item.formatType = d.formatType;
+    items.push(item);
+  }
+
+  if (!items.length) return spec;
+  return { ...spec, encoding: { ...enc, tooltip: items } };
 }
 
 const ARC_MARKS = new Set(['arc']);
@@ -385,7 +440,7 @@ function VegaVisualization({ rawSpec, conversationId, onActionsReady }: {
 
   const embedSpec = useMemo(() => {
     const theme = getVegaThemeConfig(isDark);
-    const spec  = addZoomParams(humanizeEncoding({ ...rawSpec, config: theme }));
+    const spec  = normalizeTooltipEncoding(addZoomParams(humanizeEncoding({ ...rawSpec, config: theme })));
     return dataSlice ? { ...spec, data: { values: dataSlice } } : spec;
   }, [rawSpec, isDark, dataSlice]);
 

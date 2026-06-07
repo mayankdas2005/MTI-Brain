@@ -1,5 +1,8 @@
 'use client';
 
+const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().includes('MAC');
+const modKey = isMac ? '⌘' : 'Ctrl';
+
 import { useState, useEffect, useRef, startTransition } from 'react';
 import { useNow } from '@/lib/hooks/use-now';
 import { formatRelativeTime, groupByRecencyBucket } from '@/lib/utils/relative-time';
@@ -1008,10 +1011,13 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => { closeOnNav(); startTransition(() => router.push('/settings')); }}
-              className="gap-2"
+              className="gap-2 justify-between"
             >
-              <Settings className="w-4 h-4" />
-              Settings
+              <span className="flex items-center gap-2">
+                <Settings className="w-4 h-4" />
+                Settings
+              </span>
+              <span className="text-[10px] text-muted-foreground/50 font-mono tracking-tight">{modKey} ,</span>
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => { setWhatsNewOpen(true); }} className="gap-2">
               <span className="relative flex items-center gap-2">

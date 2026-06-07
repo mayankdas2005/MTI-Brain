@@ -244,7 +244,10 @@ async def _tier35_temporal_llm(raw_value: str, state: AnalyticsState) -> dict | 
         from app.services.agents.bedrock import get_llm
         from app.core.retry import retry_async
         llm = get_llm("fast")
-        messages = TEMPORAL_RESOLVE_PROMPT.format_messages(expression=raw_value)
+        messages = TEMPORAL_RESOLVE_PROMPT.format_messages(
+            expression=raw_value,
+            question=state.get("effective_question") or state.get("question", ""),
+        )
         response = await retry_async(lambda: llm.ainvoke(messages), service="bedrock-filter-resolver-temporal", max_attempts=2, backoff_base=5.0)
         text = (response.content or "").strip()
         # Extract JSON from response — may be wrapped in markdown code fence
@@ -315,7 +318,7 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
         column_name=f.column_name,
         table_fqn=f.table_fqn,
         candidates=candidates_text,
-        question=state["question"],
+        question=state.get("effective_question") or state["question"],
         reasoning_directive=REASONING_DIRECTIVE_BRIEF,
     )
 

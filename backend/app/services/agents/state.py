@@ -20,6 +20,7 @@ class AnalyticsState(TypedDict):
     thread_id: str
     persona: str                          # executive | analyst | manager — passed in from HTTP, NOT re-detected
     question: str
+    effective_question: str             # full reconstructed intent: = question for normal, prior+current for refinements/follow-ups
 
     # ── Routing ──────────────────────────────────────────────────────────────
     question_type: str                    # general_chat | analytics
@@ -37,6 +38,7 @@ class AnalyticsState(TypedDict):
     intent_directive_instructions: str | None  # <instructions> sub-section: SQL execution requirements
     intent_directive_context: str | None       # <context> sub-section: structural guidance, informational
     filter_directive: str | None          # resolved filter list from filter_resolver (DB codes + confidence)
+    filter_directive_hint: str | None     # filter specialist reasoning (user term → DB value mappings)
     schema_directive: str | None          # code-verified structure from ir_builder (tables, joins, measures)
     semantic_ir_list: list[dict]          # list of SemanticIR (always 1 — decomposition removed)
     sql_list: list[str]                   # compiled SQL (always 1 entry)
@@ -48,6 +50,7 @@ class AnalyticsState(TypedDict):
     # ── Execution ────────────────────────────────────────────────────────────
     result_list: list[dict]               # raw query results per sub-query
     query_summary: dict | None            # QuerySummary object
+    result_was_truncated: bool            # True if any sub-query result exceeded the row cap
     no_data: bool
     reliability_flags: list[str]
     low_confidence_filters: list[dict]

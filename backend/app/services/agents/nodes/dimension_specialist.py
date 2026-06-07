@@ -42,7 +42,7 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
 
     enriched_schema = state.get("enriched_schema") or {}
     resolved_intent = state.get("resolved_intent") or {}
-    intent_summary = resolved_intent.get("intent_summary", state.get("question", ""))
+    intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
 
     # Build compact summary of measures already selected (from specialist_outputs if available)
     measures_summary = "(measures not yet available — avoid duplicating numeric aggregation columns as dimensions)"
@@ -54,7 +54,7 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
             break
 
     prompt = DIMENSION_SPECIALIST_PROMPT.format_messages(
-        question=state["question"],
+        question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
         groupable_columns_section=_build_groupable_columns_section(enriched_schema),
         refinement_section=build_refinement_section(state, role="dimensions"),

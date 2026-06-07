@@ -103,11 +103,10 @@ export default function RootLayout({
       "font-family:monospace;color:#184B9B;font-size:10px"
     );
     console.log(
-      "%c🧠 Hey, curious one! Just like Milestone Technologies engineers every\\n" +
-      "   solution to spec - this app was built just for you.\\n" +
+      "%c🧠 Hey, curious one! Just like Milestone Technologies engineers every solution to spec — this app was built just for you.\\n" +
       "   No two problems are exactly alike.\\n\\n" +
       "   Fun fact: Milestone Technologies has been powering smarter IT since 1997.\\n" +
-      "   This easter egg has been here since... you found it. Welcome aboard.\\n\\n" +
+      "   This Easter egg has been here since... you found it. Welcome aboard.\\n\\n" +
       "   Next stop: doing something amazing today. MTI Brain is online. ⚡",
       "color:#6b7a8d;font-size:11px;line-height:1.6"
     );

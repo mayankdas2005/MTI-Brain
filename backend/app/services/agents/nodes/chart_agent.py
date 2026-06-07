@@ -527,16 +527,62 @@ def _fix_large_number_tooltips(
     return spec
 
 
+def _fix_truncated_time_axis(spec: dict, query_summary: dict | None) -> dict:
+    """Set X-axis domain to true date range from ColumnStat when result was truncated.
+
+    When was_truncated=True, the Vega spec has rows only from the capped window
+    (e.g. first 100 rows = 3-4 days of a 90-day query). The X-axis auto-scales
+    to that narrow window and makes the chart look like 3-4 days of data.
+    Setting domain to [true_min, true_max] (from the stats query) makes the axis
+    span the full time range, showing where the data actually falls.
+    """
+    if not query_summary or not query_summary.get("was_truncated"):
+        return spec
+
+    date_col_stat = next(
+        (c for c in (query_summary.get("columns") or [])
+         if c.get("dtype") == "date" and c.get("min") and c.get("max")),
+        None,
+    )
+    if not date_col_stat:
+        return spec
+
+    domain = [str(date_col_stat["min"]), str(date_col_stat["max"])]
+    logger.debug(
+        "chart_agent | _fix_truncated_time_axis | domain=[{}, {}]",
+        domain[0], domain[1],
+    )
+    spec = copy.deepcopy(spec)
+
+    def _apply_domain(encoding: dict) -> None:
+        for ch in encoding.values():
+            if not isinstance(ch, dict):
+                continue
+            field_type = ch.get("type", "")
+            if field_type == "temporal" and ch.get("field"):
+                ch.setdefault("scale", {})["domain"] = domain
+
+    if isinstance(spec.get("encoding"), dict):
+        _apply_domain(spec["encoding"])
+    for layer in spec.get("layer", []):
+        if isinstance(layer, dict) and isinstance(layer.get("encoding"), dict):
+            _apply_domain(layer["encoding"])
+
+    return spec
+
+
 def _postprocess_spec(
     spec: dict,
     columns: list[str],
     rows: list[list],
     labels: dict,
+    query_summary: dict | None = None,
 ) -> dict:
     """Apply all post-processing passes to a Vega-Lite spec before sending to frontend."""
     spec = _humanize_spec_labels(spec)
     spec = _fix_large_number_axes(spec, columns, rows, labels)
     spec = _fix_large_number_tooltips(spec, columns, rows, labels)
+    spec = _fix_truncated_time_axis(spec, query_summary)
     return spec
 
 
@@ -594,6 +640,7 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
     spec = _postprocess_spec(
         _build_vega_lite_spec(chart_type, all_columns, all_rows, labels, col_type_map),
         all_columns, all_rows, labels,
+        query_summary=query_summary,
     )
 
     if not _validate_spec(spec, chart_type):
@@ -604,7 +651,7 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
         return {"chart_spec": None, "chart_type": None, "alternative_chart_specs": []}
 
     raw_alternatives = labels.get("alternative_types") or []
-    alternative_specs = _build_alternative_specs(raw_alternatives, chart_type, all_columns, all_rows, labels, col_type_map)
+    alternative_specs = _build_alternative_specs(raw_alternatives, chart_type, all_columns, all_rows, labels, col_type_map, query_summary=query_summary)
 
     logger.info(
         "chart_agent DONE | thread={} | type={} | alternatives={}",
@@ -620,6 +667,7 @@ def _build_alternative_specs(
     rows: list[list],
     labels: dict,
     col_type_map: dict | None = None,
+    query_summary: dict | None = None,
 ) -> list[dict]:
     """Build Vega-Lite specs for each LLM-suggested alternative type.
 
@@ -675,6 +723,7 @@ def _build_alternative_specs(
             spec = _postprocess_spec(
                 _build_vega_lite_spec(guarded, columns, rows, alt_labels, col_type_map),
                 columns, rows, alt_labels,
+                query_summary=query_summary,
             )
             result.append({"chart_type": guarded, "spec": spec})
         except Exception as e:
@@ -804,7 +853,7 @@ async def _plan_chart(
     )
 
     prompt = CHART_PLAN_PROMPT.format_messages(
-        question=state["question"],
+        question=state.get("effective_question") or state["question"],
         intent=intent,
         data_profile=data_profile,
         column_metadata=column_metadata,
@@ -903,7 +952,7 @@ async def _label_chart(
         return "\n".join(parts)
 
     prompt = CHART_LABEL_PROMPT.format_messages(
-        question=state["question"],
+        question=state.get("effective_question") or state["question"],
         intent=intent,
         chart_type=chart_type,
         x_column=x_column or "(none)",

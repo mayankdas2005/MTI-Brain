@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 import re as _re
 
 from app.core.logger import logger
+from app.services.agents.helpers import format_sql
 from app.services.agents.sql_validator_logic import try_fix_cte_refs, validate_sql, validate_column_names, validate_filter_types
 from app.services.agents.state import AnalyticsState
 
@@ -38,7 +39,7 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
             if fixed:
                 is_valid2, error_msg2 = validate_sql(fixed)
                 if is_valid2:
-                    fixed_sql_list[i] = fixed
+                    fixed_sql_list[i] = format_sql(fixed)
                     auto_fixed = True
                     logger.info("sql_validator | auto-fixed CTE table qualifiers | index={} | thread={}", i, state["thread_id"])
                     continue

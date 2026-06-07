@@ -7,6 +7,7 @@ interface KeyboardShortcuts {
   'cmd-shift-p'?: () => void;
   'cmd-shift-h'?: () => void;
   'cmd-/'?: () => void;
+  'cmd-comma'?: () => void;
   'cmd-period'?: () => void;
   'cmd-s'?: () => void;
   'cmd-shift-c'?: () => void;
@@ -50,6 +51,7 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
   useHotkeys('mod+shift+p', () => ref.current['cmd-shift-p']?.(), opts);
   useHotkeys('mod+shift+h', () => ref.current['cmd-shift-h']?.(), opts);
   useHotkeys('mod+/', () => ref.current['cmd-/']?.(), opts);
+  useHotkeys('mod+comma', () => ref.current['cmd-comma']?.(), opts);
   useHotkeys('mod+period', () => ref.current['cmd-period']?.(), opts);
   useHotkeys('mod+s', () => ref.current['cmd-s']?.(), opts);
   useHotkeys('mod+shift+c', () => ref.current['cmd-shift-c']?.(), opts);

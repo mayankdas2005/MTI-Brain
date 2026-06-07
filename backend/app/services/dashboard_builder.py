@@ -128,6 +128,59 @@ def _inject_into_template(body_html: str) -> str:
     return template.replace("${htmlContent}", body_html)
 
 
+def _format_query_col_stats(
+    query_col_stats: list[dict],
+    was_truncated: bool = False,
+    true_total_rows: int | None = None,
+) -> str:
+    """Format ColumnStat dicts (from pipeline done event) into the same one-line-per-column
+    format produced by _build_data_summary, so dashboard_prompt sees identical structure
+    regardless of whether true stats are available.
+    """
+    lines: list[str] = []
+    if was_truncated and true_total_rows:
+        lines.append(
+            f"Stats source: full Redshift aggregate over {true_total_rows:,} rows (exact)"
+        )
+    for c in query_col_stats:
+        name      = c.get("name") or ""
+        dtype     = c.get("dtype") or "unknown"
+        distinct  = c.get("distinct_count")
+        mn        = c.get("min")
+        mx        = c.get("max")
+        mean      = c.get("mean")
+        null_c    = c.get("null_count")
+        total_c   = c.get("total_count")
+        top_vals  = c.get("top_values") or []
+
+        null_suffix = ""
+        if null_c is not None and total_c:
+            null_suffix = f" | null={null_c}/{total_c}"
+
+        if dtype == "numeric":
+            parts = []
+            if mn is not None:
+                parts.append(f"min={mn:g}" if isinstance(mn, float) else f"min={mn}")
+            if mx is not None:
+                parts.append(f"max={mx:g}" if isinstance(mx, float) else f"max={mx}")
+            if mean is not None:
+                parts.append(f"mean={round(float(mean), 4):g}")
+            if distinct is not None:
+                parts.append(f"distinct={distinct}")
+            lines.append(f"{name} [numeric]: {' '.join(parts)}{null_suffix}")
+        elif dtype == "date":
+            range_str = f"{mn} → {mx}" if mn and mx else "(no range)"
+            dist_str  = f"   Distinct: {distinct} periods" if distinct is not None else ""
+            lines.append(f"{name} [date]: {range_str}{dist_str}{null_suffix}")
+        else:
+            dist_str = f"distinct={distinct}" if distinct is not None else ""
+            top_str  = ", ".join(f'"{v}"({n})' for v, n in top_vals[:5]) if top_vals else ""
+            stat_parts = [x for x in [dist_str, f"top=[{top_str}]" if top_str else ""] if x]
+            lines.append(f"{name} [string]: {' | '.join(stat_parts)}{null_suffix}")
+
+    return "\n".join(lines)
+
+
 async def generate_and_store(
     conversation_id: uuid.UUID,
     user_id: uuid.UUID,
@@ -166,15 +219,45 @@ async def generate_and_store(
     intent     = meta.get("intent")
     follow_ups = meta.get("follow_ups")
 
-    logger.info(f"[dashboard] STEP 1 — messages loaded | conv={conversation_id} | user_msg={'yes' if user_msg else 'no'} | asst_msg=yes | row_count={row_count} | cols={len(columns) if columns else 0}")
+    # New truncation / true-stats metadata (added by pipeline.py + chat.py)
+    sample_rows_raw: list   = meta.get("sample_rows") or []
+    query_col_stats: list   = meta.get("query_col_stats") or []
+    was_truncated: bool     = bool(meta.get("was_truncated", False))
+    true_total_rows: int | None = meta.get("true_total_rows")
+
+    logger.info(
+        f"[dashboard] STEP 1 — messages loaded | conv={conversation_id} "
+        f"| user_msg={'yes' if user_msg else 'no'} | asst_msg=yes "
+        f"| row_count={row_count} | cols={len(columns) if columns else 0} "
+        f"| was_truncated={was_truncated} | true_total_rows={true_total_rows} "
+        f"| sample_rows={len(sample_rows_raw)} | query_col_stats={len(query_col_stats)}"
+    )
 
     # ── 2. Smart data sampling — avoids context bloat for large result sets ──
     col_stats: str = ""
     sampled_rows: list | None = rows
+
     if columns and rows:
-        logger.info(f"[dashboard] STEP 2 — sampling {len(rows)} rows × {len(columns)} cols")
-        col_stats, _null_notes, sampled_rows = _build_data_summary(columns, rows)
-        logger.info(f"[dashboard] STEP 2 — sampled {len(sampled_rows)} of {len(rows)} rows")
+        if query_col_stats:
+            # True col stats from the full Redshift aggregate — more accurate than pandas on 100 rows
+            col_stats = _format_query_col_stats(query_col_stats, was_truncated, true_total_rows)
+            logger.info(
+                f"[dashboard] STEP 2 — using true col stats | was_truncated={was_truncated} "
+                f"| true_total_rows={true_total_rows}"
+            )
+            # Use smart sample rows (from result_summarizer._smart_sample) when available,
+            # else fall back to spread-sample of capped rows
+            if sample_rows_raw:
+                # sample_rows_raw is list[list] — convert to list[dict] for _build_data_summary compat
+                sampled_rows = sample_rows_raw
+                logger.info(f"[dashboard] STEP 2 — using smart sample | rows={len(sampled_rows)}")
+            else:
+                _, _null_notes, sampled_rows = _build_data_summary(columns, rows)
+                logger.info(f"[dashboard] STEP 2 — fallback spread sample | rows={len(sampled_rows)}")
+        else:
+            logger.info(f"[dashboard] STEP 2 — sampling {len(rows)} rows × {len(columns)} cols")
+            col_stats, _null_notes, sampled_rows = _build_data_summary(columns, rows)
+            logger.info(f"[dashboard] STEP 2 — sampled {len(sampled_rows)} of {len(rows)} rows")
     else:
         logger.info(f"[dashboard] STEP 2 — no rows/cols to sample (answer-only mode)")
 
@@ -190,6 +273,8 @@ async def generate_and_store(
         intent=intent,
         follow_ups=follow_ups,
         col_stats=col_stats or None,
+        was_truncated=was_truncated,
+        true_total_rows=true_total_rows,
     )
     logger.info(f"[dashboard] STEP 3 — input_md length={len(input_md)} chars")
 

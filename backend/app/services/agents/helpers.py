@@ -85,8 +85,6 @@ def format_sql(sql: str) -> str:
     return sql.strip()
 
 
-# Maximum rows passed to the narrative LLM in synthesis nodes.
-_NARRATIVE_SAMPLE_CAP = 30
 
 
 def _build_data_summary(
@@ -189,16 +187,44 @@ def _build_data_profile(
 
     Used by both synthesis.py and chart_agent.py so both LLMs see identical
     structured data: column stats + strategic DATA SAMPLE.
+
+    When query_summary.sample_rows is present (set by result_summarizer._smart_sample),
+    that 50-row canonical sample is used for the DATA SAMPLE section — all three LLM
+    consumers (synthesis, confidence, chart planning) see identical rows.
+    When query_summary.was_truncated is True, a warning is prepended so every LLM
+    knows the display rows are a sample of a larger result.
     """
     qs = query_summary or {}
     total_rows = qs.get("total_rows", len(rows))
     result_shape = qs.get("result_shape", "")
+    was_truncated = qs.get("was_truncated", False)
+    true_total_rows = qs.get("true_total_rows")
+    stats_source = qs.get("stats_source", "capped")
 
     if total_rows == 0 or not columns:
         return "--- QUERY RESULTS ---\n\nTotal rows: 0\n(no records match the query criteria)"
 
     lines: list[str] = ["--- QUERY RESULTS ---", ""]
-    header = f"Total rows: {total_rows}"
+
+    if was_truncated:
+        cap = total_rows
+        count_part = f"{true_total_rows:,} total rows" if true_total_rows else f">{cap} rows"
+        src_label = (
+            "full Redshift aggregate (exact)"
+            if stats_source == "full_result"
+            else f"first {cap} rows (approximate — stats query timed out)"
+        )
+        lines += [
+            f"⚠ TRUNCATION WARNING: This query returned {count_part} but only {cap} rows are "
+            f"available for display. The DATA SAMPLE below is a stratified {min(50, cap)}-row "
+            f"selection. Stats (distinct counts, min, max, mean) are from the {src_label}. "
+            "Do NOT extrapolate totals from the sample rows — use the stats above.",
+            "",
+        ]
+
+    header = f"Total rows (display cap): {total_rows}"
+    if true_total_rows and was_truncated:
+        header += f"   True total: {true_total_rows:,}"
     if result_shape:
         header += f"   Result shape: {result_shape}"
     lines += [header, "", "COLUMN PROFILES:", ""]
@@ -233,14 +259,18 @@ def _build_data_profile(
                 vals = sorted(str(r[i]) for r in rows if i < len(r) and r[i] is not None)
                 mn, mx = (vals[0], vals[-1]) if vals else (None, None)
             if mn:
-                distinct_dates = len(set(str(r[i]) for r in rows if i < len(r) and r[i] is not None))
-                lines.append(f"    Range: {mn}  →  {mx}   Distinct: {distinct_dates} periods")
+                distinct_periods = meta.get("distinct_count") or len(
+                    set(str(r[i]) for r in rows if i < len(r) and r[i] is not None)
+                )
+                src_note = " (full result)" if was_truncated and stats_source == "full_result" else ""
+                lines.append(f"    Range: {mn}  →  {mx}   Distinct: {distinct_periods} periods{src_note}")
 
         else:  # varchar / text / string
             distinct = meta.get("distinct_count")
             top_vals = meta.get("top_values", [])
             if distinct:
-                lines.append(f"    Distinct values: {distinct}")
+                src_note = " (full result)" if was_truncated and stats_source == "full_result" else ""
+                lines.append(f"    Distinct values: {distinct}{src_note}")
             if top_vals:
                 tv_text = "  |  ".join(f"{v} ({n} rows)" for v, n in top_vals[:5])
                 lines.append(f"    Top values:  {tv_text}")
@@ -255,18 +285,35 @@ def _build_data_profile(
 
         lines.append("")
 
-    non_null = [r for r in rows if any(v is not None and v != "" for v in r)]
-    if not non_null:
-        lines.append("DATA SAMPLE: (all returned rows contain only null values)")
-    elif len(non_null) <= 20:
-        lines.append(f"DATA SAMPLE (all {len(non_null)} rows):")
-        for r in non_null:
-            lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
+    sample_dicts = qs.get("sample_rows")
+    if sample_dicts:
+        sample_cols = [k for k in sample_dicts[0].keys() if k != "_sample_tier"] if sample_dicts else columns
+        note = (
+            f"DATA SAMPLE ({len(sample_dicts)} rows — stratified: boundary/outlier/coverage/representative"
+            + (f" — do NOT compute averages; full result has {true_total_rows:,} rows" if true_total_rows else "")
+            + "):"
+        )
+        lines.append(note)
+        for rd in sample_dicts:
+            tier = rd.get("_sample_tier", "")
+            tier_tag = f"[{tier}] " if tier else ""
+            lines.append(
+                "  " + tier_tag
+                + "   ".join(f"{c} = {rd.get(c)}" for c in sample_cols)
+            )
     else:
-        sampled = _spread_sample(non_null, cap=20)
-        lines.append(f"DATA SAMPLE ({len(sampled)} of {len(non_null)} rows — spread sample):")
-        for r in sampled:
-            lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
+        non_null = [r for r in rows if any(v is not None and v != "" for v in r)]
+        if not non_null:
+            lines.append("DATA SAMPLE: (all returned rows contain only null values)")
+        elif len(non_null) <= 20:
+            lines.append(f"DATA SAMPLE (all {len(non_null)} rows):")
+            for r in non_null:
+                lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
+        else:
+            sampled = _spread_sample(non_null, cap=20)
+            lines.append(f"DATA SAMPLE ({len(sampled)} of {len(non_null)} rows — spread sample):")
+            for r in sampled:
+                lines.append("  " + "   ".join(f"{c} = {v}" for c, v in zip(columns, r)))
 
     return "\n".join(lines)
 

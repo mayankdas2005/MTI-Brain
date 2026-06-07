@@ -63,6 +63,7 @@ from app.core.config import settings
 from app.core.rate_limit import limiter
 from app.services.chat import conversation as conv_service
 from app.services.chat import feedback as fb_service
+from app.services.agents.nodes.audit import anti_pattern_merge_key
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -153,6 +154,10 @@ def _build_sse_generator(
                 "tables_used": ",".join(save_data.get("tables_used") or []),
                 "intent": save_data.get("intent") or "",
                 "complexity": save_data.get("complexity") or "",
+                "sample_rows": save_data.get("sample_rows", []),
+                "query_col_stats": save_data.get("query_col_stats", []),
+                "was_truncated": save_data.get("was_truncated", False),
+                "true_total_rows": save_data.get("true_total_rows"),
             }),
         )
         _conf = save_data.get("confidence")
@@ -853,15 +858,19 @@ async def submit_feedback(
 
                     # Loop 2b: dislike → write :AntiPattern (any confidence level)
                     if action == "dislike":
+                        _ap_error_summary = (_comment or "User rated response negatively")[:300]
+                        _ap_tables = neo4j_context["tables_used"] or ""
+                        _ap_intent = neo4j_context["intent"] or ""
                         neo4j_client.write_anti_pattern({
                             "id": str(uuid.uuid4()),
+                            "merge_key": anti_pattern_merge_key("user_dislike", _ap_intent, _ap_tables, _ap_error_summary),
                             "question_text": (neo4j_context["question"] or "")[:500],
                             "sql_fragment": (neo4j_context["sql"] or "")[:500],
                             "error_type": "user_dislike",
-                            "error_summary": (_comment or "User rated response negatively")[:300],
+                            "error_summary": _ap_error_summary,
                             "failing_element": "",
-                            "tables_involved": neo4j_context["tables_used"] or "",
-                            "intent": neo4j_context["intent"] or "",
+                            "tables_involved": _ap_tables,
+                            "intent": _ap_intent,
                             "complexity": neo4j_context["complexity"] or "",
                             "cohere_embedding": neo4j_context["embedding"],
                         })

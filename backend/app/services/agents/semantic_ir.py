@@ -255,3 +255,6 @@ class QuerySummary(BaseModel):
     result_shape: str = "flat"          # time_series | ranking | cross_tab | kpi | flat
     reliability_flags: list[str] = Field(default_factory=list)
     result_label: str | None = None
+    was_truncated: bool = False          # True when result exceeded the row cap
+    true_total_rows: int | None = None   # COUNT(*) from full result (no LIMIT)
+    stats_source: str = "capped"         # "full_result" | "capped"

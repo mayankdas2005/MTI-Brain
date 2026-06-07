@@ -300,7 +300,7 @@ def _build_prompt(state: AnalyticsState) -> list:
         execution_error_section = ""
 
     return INTENT_RESOLVE_PROMPT.format_messages(
-        question=state["question"],
+        question=state.get("effective_question") or state["question"],
         persona=state.get("persona", "executive"),
         feedback_context=state.get("feedback_context", ""),
         conversation_context=conversation_context,

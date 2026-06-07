@@ -28,7 +28,9 @@ from app.services.agents.node_names import (
     SYNTHESIS as N_SYNTHESIS,
 )
 from app.services.agents.nodes.audit import write_query_pattern, write_schema_gaps
+from app.services.agents.neo4j.template_search import find_canonical_pattern_id
 from app.services.agents.nodes.confidence import compute_confidence
+from app.services.agents.helpers import format_sql
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
@@ -465,7 +467,7 @@ async def stream_pipeline(
                         "event": "execute.done",
                         "data": {
                             "status":        "error" if state.get("error") else "success",
-                            "sql":           sql_list[0] if sql_list else "",
+                            "sql":           format_sql(sql_list[0]) if sql_list else "",
                             "columns":       all_cols,
                             "rows":          all_rows,
                             "row_count":     len(all_rows),
@@ -498,6 +500,29 @@ async def stream_pipeline(
             if not _done_cols and _r.get("columns"):
                 _done_cols = _r["columns"]
 
+        _qs = state.get("query_summary") or {}
+        _sample_rows = [list(r.values()) for r in (_qs.get("sample_rows") or [])]
+        _query_col_stats = [
+            {
+                "name":           c.get("name"),
+                "dtype":          c.get("dtype"),
+                "distinct_count": c.get("distinct_count"),
+                "min":            c.get("min"),
+                "max":            c.get("max"),
+                "mean":           c.get("mean"),
+                "null_count":     c.get("null_count"),
+                "total_count":    c.get("total_count"),
+                "top_values":     c.get("top_values"),
+            }
+            for c in (_qs.get("columns") or [])
+        ]
+        _was_truncated = bool(_qs.get("was_truncated", False))
+        _true_total_rows = _qs.get("true_total_rows")
+        logger.info(
+            "[{}] done event | rows={} | sample_rows={} | was_truncated={} | true_total_rows={}",
+            run_id[:8], len(_done_rows), len(_sample_rows), _was_truncated, _true_total_rows,
+        )
+
         _confidence = await compute_confidence({
             **state,
             "question": question,
@@ -516,9 +541,22 @@ async def stream_pipeline(
             _first_ir = SemanticIR(**_ir_list[0]) if _ir_list else None
             _sql = state.get("sql_list", [""])[0] if state.get("sql_list") else ""
             if _first_ir and _sql:
-                _pattern_id = str(uuid.uuid4())
+                # Dedup: find canonical pattern id BEFORE emitting "done" so
+                # PostgreSQL stores the right id and feedback hits the canonical node.
+                _embedding = (state.get("semantic_context") or {}).get("query_embedding") or []
+                _intent = (state.get("resolved_intent") or {}).get("intent", "")
+                _tables = list((state.get("resolved_intent") or {}).get("anchor_tables") or [])
+                _existing_id: str | None = None
+                if _embedding:
+                    try:
+                        _existing_id = await asyncio.to_thread(
+                            find_canonical_pattern_id, _embedding, _intent, _tables
+                        )
+                    except Exception as _dedup_err:
+                        logger.warning("[{}] pattern dedup failed, creating fresh node | {}", run_id[:8], _dedup_err)
+                _pattern_id = _existing_id or str(uuid.uuid4())
                 asyncio.create_task(
-                    write_query_pattern(state, _sql, _first_ir, _confidence_score, _pattern_id)
+                    write_query_pattern(state, _sql, _first_ir, _confidence_score, _pattern_id, is_update=bool(_existing_id))
                 )
         asyncio.create_task(write_schema_gaps(state))
 
@@ -540,6 +578,10 @@ async def stream_pipeline(
                     "columns":           _done_cols,
                     "rows":              _done_rows,
                     "row_count":         len(_done_rows),
+                    "sample_rows":       _sample_rows,
+                    "query_col_stats":   _query_col_stats,
+                    "was_truncated":     _was_truncated,
+                    "true_total_rows":   _true_total_rows,
                     "chart_spec":        state.get("chart_spec"),
                     "chart_type":        state.get("chart_type"),
                     "alternative_chart_specs": state.get("alternative_chart_specs", []),

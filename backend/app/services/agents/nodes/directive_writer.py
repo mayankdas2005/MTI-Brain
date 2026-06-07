@@ -86,26 +86,41 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
     filters = resolved_intent.get("filters") or []
     dimensions = resolved_intent.get("dimensions") or []
     result_shape = resolved_intent.get("result_shape", "table")
+    query_intent = resolved_intent.get("intent") or ""
+    query_complexity = resolved_intent.get("complexity") or "simple"
 
-    # Get timeframe + time_filter_col from specialist outputs
+    # Get timeframe + time_filter_col — prefer resolved_intent (set by intent_assembler),
+    # fall back to specialist_outputs for the non-assembler path.
     specialist_outputs = state.get("specialist_outputs") or []
     timeframe = resolved_intent.get("timeframe")
-    time_filter_col = None
+    temporal_grains = resolved_intent.get("temporal_grains") or []
+    time_filter_col = resolved_intent.get("time_filter_col") or None
     for s in specialist_outputs:
         if s.get("type") == "filters":
             timeframe = timeframe or s.get("timeframe")
-            time_filter_col = s.get("time_filter_col")
+            time_filter_col = time_filter_col or s.get("time_filter_col") or None
+            temporal_grains = temporal_grains or s.get("temporal_grains") or []
             break
 
+    filter_hint = state.get("filter_directive_hint") or ""
+    filter_hint_section = (
+        f"\nFILTER VALUE MAPPINGS (from filter specialist — use for COMPUTED_FILTER):\n{filter_hint}"
+        if filter_hint else ""
+    )
+
     prompt = DIRECTIVE_WRITER_PROMPT.format_messages(
-        question=state["question"],
+        question=state.get("effective_question") or state["question"],
         anchor_tables=", ".join(anchor_tables),
         measures=_format_measures(measures),
         filters=_format_filters(filters, timeframe, time_filter_col),
         dimensions=_format_dimensions(dimensions),
         result_shape=result_shape,
         timeframe=timeframe or "not specified",
+        temporal_grains=", ".join(temporal_grains) if temporal_grains else "single",
+        query_intent=query_intent,
+        query_complexity=query_complexity,
         anchor_schema_section=_build_anchor_schema_section(enriched_schema),
+        filter_hint_section=filter_hint_section,
         refinement_section=build_refinement_section(state, role="directive"),
         reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
     )

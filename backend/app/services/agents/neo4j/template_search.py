@@ -77,13 +77,24 @@ def get_query_templates_by_ids(ids: list[str]) -> list[dict]:
 # ── QueryPattern ──────────────────────────────────────────────────────────────
 
 @neo4j_breaker
-def search_query_patterns(embedding: list[float]) -> list[dict]:
-    """Vector search for QueryPatterns — ground truth from successful prior queries."""
-    query = """CYPHER 25
+def search_query_patterns(embedding: list[float], threshold: float = 0.65, limit: int = 5) -> list[dict]:
+    """Vector search for QueryPatterns — ground truth from successful prior queries.
+
+    Returns results ordered by boosted score: raw cosine * frequency bonus * recency bonus.
+    Higher occurrence_count and recent last_seen rank above equal-similarity older patterns.
+    """
+    query = f"""CYPHER 25
     MATCH (qp:QueryPattern)
-    SEARCH qp IN (VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding LIMIT 5)
+    SEARCH qp IN (VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding LIMIT {limit})
     SCORE AS score
-    WHERE score > 0.65
+    WHERE score > $threshold
+    WITH qp, score,
+         score
+         * (1.0 + log(1.0 + coalesce(qp.occurrence_count, 1)) * 0.1)
+         * CASE WHEN qp.last_seen IS NOT NULL
+                  AND duration.between(qp.last_seen, datetime()).days < 30
+                THEN 1.1 ELSE 1.0 END
+         AS boosted_score
     RETURN qp.id AS id, qp.question_text AS question_text,
            qp.sql_cte_outline AS sql_cte_outline,
            qp.join_outline AS join_outline,
@@ -91,16 +102,54 @@ def search_query_patterns(embedding: list[float]) -> list[dict]:
            qp.tables_used AS tables_used,
            qp.intent AS intent, qp.complexity AS complexity,
            qp.recompile_count AS recompile_count,
-           qp.repair_count AS repair_count, score
+           qp.repair_count AS repair_count,
+           qp.promotion_status AS promotion_status,
+           boosted_score AS score
+    ORDER BY boosted_score DESC
     """
     t0 = time.monotonic()
     try:
-        results = _neo4j_run(query, {"embedding": embedding})
+        results = _neo4j_run(query, {"embedding": embedding, "threshold": threshold})
         logger.debug("neo4j | fn=search_query_patterns | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
         return [dict(r) for r in results]
     except Exception as e:
         logger.warning("neo4j | search_query_patterns failed (no patterns yet) | error={}", e)
         return []
+
+
+def find_canonical_pattern_id(
+    embedding: list[float],
+    intent: str,
+    tables_used: list[str],
+    threshold: float = 0.85,
+) -> str | None:
+    """Return id of an existing QueryPattern that is semantically equivalent to this execution.
+
+    Dedup guards (all must pass):
+    1. Embedding cosine similarity >= threshold (0.85)
+    2. intent matches exactly
+    3. >= 50% table overlap (skipped if either side is empty)
+    4. Candidate node must not be 'demoted'
+
+    Returns None if no match — caller should create a fresh UUID node.
+    Called synchronously from pipeline.py via asyncio.to_thread().
+    """
+    candidates = search_query_patterns(embedding, threshold=threshold, limit=3)
+    if not candidates:
+        return None
+    tables_set = set(tables_used or [])
+    for r in candidates:
+        if r.get("intent") != intent:
+            continue
+        if r.get("promotion_status") == "demoted":
+            continue
+        candidate_tables = set(r.get("tables_used") or [])
+        if tables_set and candidate_tables:
+            overlap = len(tables_set & candidate_tables) / max(len(tables_set), len(candidate_tables))
+            if overlap < 0.5:
+                continue
+        return r["id"]
+    return None
 
 
 @neo4j_breaker
@@ -147,8 +196,18 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
     SEARCH ap IN (VECTOR INDEX `antipattern_cohere_embedding` FOR $embedding LIMIT 5)
     SCORE AS score
     WHERE score > 0.65
+    WITH ap, score,
+         score
+         * (1.0 + log(1.0 + coalesce(ap.occurrence_count, 1)) * 0.15)
+         * CASE WHEN ap.last_seen IS NOT NULL
+                  AND duration.between(ap.last_seen, datetime()).days < 30
+                THEN 1.1 ELSE 1.0 END
+         AS boosted_score
     RETURN ap.id AS id, ap.error_type AS error_type, ap.error_summary AS error_summary,
-           ap.failing_element AS failing_element, ap.complexity AS complexity, score
+           ap.failing_element AS failing_element, ap.complexity AS complexity,
+           ap.occurrence_count AS occurrence_count,
+           boosted_score AS score
+    ORDER BY boosted_score DESC
     """
     t0 = time.monotonic()
     try:

@@ -6,6 +6,7 @@ nodes to Neo4j — all as fire-and-forget background tasks.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 import uuid
@@ -16,6 +17,24 @@ from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
 _MIN_CONFIDENCE_FOR_PATTERN = 60
+
+
+def _extract_pg_error_code(error_summary: str) -> str:
+    """Extract Postgres error code from Redshift error dict string, e.g. "'C': '42804'" → '42804'."""
+    m = re.search(r"'C':\s*'(\d+)'", error_summary or "")
+    return m.group(1) if m else ""
+
+
+def anti_pattern_merge_key(error_type: str, intent: str, tables_involved: str, error_summary: str) -> str:
+    """Deterministic merge key for AntiPattern dedup.
+
+    Includes pg error code so UNION mismatch (42804) and GROUP BY error (42803)
+    for the same intent+tables create separate nodes.
+    """
+    tables_sorted = ",".join(sorted(t.strip() for t in (tables_involved or "").split(",") if t.strip()))
+    pg_code = _extract_pg_error_code(error_summary)
+    raw = f"{error_type}::{intent or 'unknown'}::{tables_sorted}::{pg_code}"
+    return hashlib.md5(raw.encode()).hexdigest()
 
 
 async def write_audit_log(state: AnalyticsState, sql: str, row_count: int, status: str) -> None:
@@ -63,6 +82,7 @@ async def write_query_pattern(
     ir: SemanticIR | None,
     confidence_score: int = 0,
     pattern_id: str | None = None,
+    is_update: bool = False,
 ) -> None:
     if not ir:
         return
@@ -96,10 +116,11 @@ async def write_query_pattern(
             "liked_count": 0,
             "disliked_count": 0,
         }
-        neo4j_client.write_query_pattern(pattern_data)
+        neo4j_client.write_query_pattern(pattern_data, is_update=is_update)
         logger.info(
-            "audit | QueryPattern saved | id={} | confidence={} | intent={} | complexity={}",
-            pattern_data["id"][:8], confidence_score, ir.intent, ir.complexity,
+            "audit | QueryPattern {} | id={} | confidence={} | intent={} | is_update={}",
+            "updated" if is_update else "saved",
+            pattern_data["id"][:8], confidence_score, ir.intent, is_update,
         )
     except Exception as e:
         logger.warning("audit | write_query_pattern failed | error={}", e)
@@ -136,22 +157,26 @@ async def write_anti_pattern(
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
+        tables_involved = ",".join(ir_dict.get("anchor_tables", []))
+        intent = ir_dict.get("intent", "")
+        error_summary = error_msg[:300]
         pattern_data = {
             "id": str(uuid.uuid4()),
+            "merge_key": anti_pattern_merge_key(error_type, intent, tables_involved, error_summary),
             "question_text": state["question"],
             "sql_fragment": sql[:500] if sql else "",
             "error_type": error_type,
-            "error_summary": error_msg[:300],
+            "error_summary": error_summary,
             "failing_element": _extract_failing_element(error_msg),
-            "tables_involved": ",".join(ir_dict.get("anchor_tables", [])),
-            "intent": ir_dict.get("intent", ""),
+            "tables_involved": tables_involved,
+            "intent": intent,
             "complexity": ir_dict.get("complexity", ""),
             "cohere_embedding": embedding,
         }
         neo4j_client.write_anti_pattern(pattern_data)
         logger.debug(
-            "audit | AntiPattern saved | error_type={} | intent={} | element={}",
-            error_type, ir_dict.get("intent"), pattern_data["failing_element"],
+            "audit | AntiPattern saved | error_type={} | intent={} | element={} | merge_key={}",
+            error_type, intent, pattern_data["failing_element"], pattern_data["merge_key"][:8],
         )
     except Exception as e:
         logger.warning("audit | write_anti_pattern failed | error={}", e)

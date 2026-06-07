@@ -27,8 +27,9 @@ SCHEMA_DDL: list[str] = [
     "CREATE CONSTRAINT businessterm_unique   IF NOT EXISTS FOR (b:BusinessTerm) REQUIRE b.term    IS UNIQUE",
     "CREATE CONSTRAINT querytemplate_id      IF NOT EXISTS FOR (q:QueryTemplate) REQUIRE q.id     IS UNIQUE",
     "CREATE CONSTRAINT joinpath_id_unique    IF NOT EXISTS FOR (j:JoinPath)     REQUIRE j.id      IS UNIQUE",
-    "CREATE CONSTRAINT querypattern_id_unique IF NOT EXISTS FOR (q:QueryPattern)  REQUIRE q.id    IS UNIQUE",
-    "CREATE CONSTRAINT antipattern_id_unique  IF NOT EXISTS FOR (a:AntiPattern)   REQUIRE a.id    IS UNIQUE",
+    "CREATE CONSTRAINT querypattern_id_unique        IF NOT EXISTS FOR (q:QueryPattern) REQUIRE q.id        IS UNIQUE",
+    "CREATE CONSTRAINT antipattern_id_unique         IF NOT EXISTS FOR (a:AntiPattern)  REQUIRE a.id        IS UNIQUE",
+    "CREATE CONSTRAINT antipattern_merge_key_unique  IF NOT EXISTS FOR (a:AntiPattern)  REQUIRE a.merge_key IS UNIQUE",
 
     # ── Range indexes — Table ─────────────────────────────────────────────
     "CREATE INDEX table_domain          IF NOT EXISTS FOR (t:Table)  ON (t.business_domain)",
@@ -64,6 +65,12 @@ SCHEMA_DDL: list[str] = [
     "CREATE INDEX joins_from_table      IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.from_table)",
     "CREATE INDEX joins_to_table        IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.to_table)",
     "CREATE INDEX joins_declared        IF NOT EXISTS FOR ()-[r:JOINS_TO]-() ON (r.is_declared)",
+
+    # ── QueryPattern / AntiPattern ────────────────────────────────────────────
+    "CREATE INDEX querypattern_first_seen IF NOT EXISTS FOR (q:QueryPattern) ON (q.first_seen)",
+    "CREATE INDEX querypattern_last_seen  IF NOT EXISTS FOR (q:QueryPattern) ON (q.last_seen)",
+    "CREATE INDEX antipattern_first_seen  IF NOT EXISTS FOR (a:AntiPattern)  ON (a.first_seen)",
+    "CREATE INDEX antipattern_last_seen   IF NOT EXISTS FOR (a:AntiPattern)  ON (a.last_seen)",
 
     # ── QueryTemplate ─────────────────────────────────────────────────────
     "CREATE INDEX querytemplate_intent     IF NOT EXISTS FOR (q:QueryTemplate) ON (q.primary_intent)",
@@ -128,17 +135,87 @@ def write_join_path(run_fn: Callable, path_data: dict) -> None:
     )
 
 
-def write_query_pattern(run_fn: Callable, pattern_data: dict) -> None:
-    run_fn(
-        "MERGE (qp:QueryPattern {id: $id}) SET qp += $props",
-        id=pattern_data["id"], props=pattern_data,
-    )
+def write_query_pattern(run_fn: Callable, pattern_data: dict, is_update: bool = False) -> None:
+    if is_update:
+        run_fn(
+            """
+            MATCH (qp:QueryPattern {id: $id})
+            SET
+              qp.occurrence_count = coalesce(qp.occurrence_count, 0) + 1,
+              qp.last_seen        = datetime(),
+              qp.sql_cte_outline  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_cte_outline  ELSE qp.sql_cte_outline  END,
+              qp.join_outline     = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $join_outline     ELSE qp.join_outline     END,
+              qp.filter_summary   = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $filter_summary   ELSE qp.filter_summary   END,
+              qp.tables_used      = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $tables_used      ELSE qp.tables_used      END,
+              qp.confidence_score = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
+              qp.repair_count     = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
+              qp.recompile_count  = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
+            """,
+            **pattern_data,
+        )
+    else:
+        run_fn(
+            """
+            MERGE (qp:QueryPattern {id: $id})
+            ON CREATE SET
+              qp.question_text    = $question_text,
+              qp.sql_cte_outline  = $sql_cte_outline,
+              qp.join_outline     = $join_outline,
+              qp.filter_summary   = $filter_summary,
+              qp.tables_used      = $tables_used,
+              qp.intent           = $intent,
+              qp.complexity       = $complexity,
+              qp.user_id          = $user_id,
+              qp.cohere_embedding = $cohere_embedding,
+              qp.confidence_score = $confidence_score,
+              qp.row_count        = $row_count,
+              qp.recompile_count  = $recompile_count,
+              qp.repair_count     = $repair_count,
+              qp.promotion_status = 'active',
+              qp.liked_count      = 0,
+              qp.disliked_count   = 0,
+              qp.first_seen       = datetime(),
+              qp.occurrence_count = 1
+            ON MATCH SET
+              qp.occurrence_count = coalesce(qp.occurrence_count, 0) + 1,
+              qp.last_seen        = datetime(),
+              qp.sql_cte_outline  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_cte_outline  ELSE qp.sql_cte_outline  END,
+              qp.join_outline     = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $join_outline     ELSE qp.join_outline     END,
+              qp.filter_summary   = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $filter_summary   ELSE qp.filter_summary   END,
+              qp.tables_used      = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $tables_used      ELSE qp.tables_used      END,
+              qp.confidence_score = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
+              qp.repair_count     = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
+              qp.recompile_count  = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
+            """,
+            **pattern_data,
+        )
 
 
 def write_anti_pattern(run_fn: Callable, pattern_data: dict) -> None:
     run_fn(
-        "MERGE (ap:AntiPattern {id: $id}) SET ap += $props",
-        id=pattern_data["id"], props=pattern_data,
+        """
+        MERGE (ap:AntiPattern {merge_key: $merge_key})
+        ON CREATE SET
+          ap.id               = $id,
+          ap.question_text    = $question_text,
+          ap.sql_fragment     = $sql_fragment,
+          ap.error_type       = $error_type,
+          ap.error_summary    = $error_summary,
+          ap.failing_element  = $failing_element,
+          ap.tables_involved  = $tables_involved,
+          ap.intent           = $intent,
+          ap.complexity       = $complexity,
+          ap.cohere_embedding = $cohere_embedding,
+          ap.first_seen       = datetime(),
+          ap.occurrence_count = 1
+        ON MATCH SET
+          ap.occurrence_count = ap.occurrence_count + 1,
+          ap.last_seen        = datetime(),
+          ap.sql_fragment     = $sql_fragment,
+          ap.error_summary    = $error_summary,
+          ap.failing_element  = CASE WHEN $failing_element <> '' THEN $failing_element ELSE ap.failing_element END
+        """,
+        **pattern_data,
     )
 
 

@@ -207,8 +207,17 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     # Sonnet writes the answer from the structured insights only.
     # It never sees the raw data — hallucination from raw data is structurally impossible.
 
+    execution_error = state.get("execution_error") or ""
     no_data_context = ""
-    if no_data and zero_row_probe_result:
+    if no_data and execution_error:
+        no_data_context = (
+            "SQL GENERATION ERROR: The pipeline produced invalid SQL that could not be repaired. "
+            f"Technical error: {execution_error[:300]}. "
+            "This is an internal SQL generation failure — do NOT advise the user to check source "
+            "systems, data engineering, or data quality. Tell the user the system encountered a "
+            "technical issue generating the SQL for this query and they should rephrase or retry."
+        )
+    elif no_data and zero_row_probe_result:
         no_data_context = f"No data returned. Reason: {zero_row_probe_result}"
     elif no_data:
         no_data_context = "No data returned."

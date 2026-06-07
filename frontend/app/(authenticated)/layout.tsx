@@ -7,7 +7,7 @@ import { SearchModal } from '@/components/search-modal';
 import { ShortcutsDialog } from '@/components/shortcuts-dialog';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useEffect, useState, startTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { isAuthenticated, getStoredUser, getLoginGate, setLoginGate } from '@/lib/auth';
 import { useUIStore } from '@/lib/store/ui';
 import { useIsMobile, useIsTablet } from '@/hooks/use-mobile';
@@ -41,6 +41,7 @@ export default function AuthenticatedLayout({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const openSearch = useSearchStore((s) => s.openModal);
   const { theme, setTheme } = useTheme();
   const shortcutsOpen = useUIStore((s) => s.shortcutsOpen);
@@ -158,6 +159,10 @@ export default function AuthenticatedLayout({
   // present in Claude (Ctrl+S, Ctrl+Shift+C, Ctrl+Shift+P, Ctrl+Shift+H).
   useKeyboardShortcuts({
     'cmd-k': openSearch,
+    'cmd-comma': () => startTransition(() => {
+      if (pathname === '/settings') router.back();
+      else router.push('/settings');
+    }),
     'cmd-shift-o': () => startTransition(() => router.push('/new')),
     'cmd-shift-p': () => startTransition(() => router.push('/projects')),
     'cmd-shift-h': () => startTransition(() => router.push('/chats')),

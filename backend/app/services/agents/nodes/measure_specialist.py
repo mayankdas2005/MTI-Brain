@@ -44,10 +44,10 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
 
     enriched_schema = state.get("enriched_schema") or {}
     resolved_intent = state.get("resolved_intent") or {}
-    intent_summary = resolved_intent.get("intent_summary", state.get("question", ""))
+    intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
 
     prompt = MEASURE_SPECIALIST_PROMPT.format_messages(
-        question=state["question"],
+        question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
         measurable_columns_section=_build_measurable_columns_section(enriched_schema),
         refinement_section=build_refinement_section(state, role="measures"),
