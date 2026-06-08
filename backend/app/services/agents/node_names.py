@@ -81,6 +81,7 @@ NODE_STREAM: dict[str, str | tuple | None] = {
 INTAKE               = _id_map["intake_classifier"]
 GENERAL_CHAT         = _id_map["general_chat"]
 CONTEXT_FETCHER      = _id_map["context_fetcher"]
+TRIBAL_RETRIEVAL     = _id_map["tribal_retrieval"]
 ANCHOR_RESOLVER      = _id_map["anchor_resolver"]
 SCHEMA_ENRICHER      = _id_map["schema_enricher"]
 MEASURE_SPECIALIST   = _id_map["measure_specialist"]

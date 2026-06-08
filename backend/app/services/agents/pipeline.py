@@ -248,6 +248,7 @@ async def stream_pipeline(
         "_prev_repair_count": -1,
         "stopped": False,
         "deep_analysis": deep_analysis,
+        "tribal_facts": [],
         "max_rows": max_rows,
         "user_email": user_email,
         "current_date": time.strftime("%Y-%m-%d"),

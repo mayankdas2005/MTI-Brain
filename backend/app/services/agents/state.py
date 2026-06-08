@@ -78,6 +78,7 @@ class AnalyticsState(TypedDict):
     _prev_repair_count: int              # last repair_count at executor completion; detects new repairs in route_executor
     stopped: bool
     deep_analysis: bool
+    tribal_facts: list[dict]
     max_rows: int                         # user-configured SQL row limit (default 100, applied as LIMIT in executor)
 
     # ── Audit / lineage ───────────────────────────────────────────────────────

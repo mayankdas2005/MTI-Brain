@@ -31,6 +31,11 @@ nodes:
     tier: none
     stream: null
 
+  - id: tribal_retrieval
+    label: null
+    tier: none
+    stream: null
+
   - id: anchor_resolver
     label: "Identifying tables"
     tier: fast

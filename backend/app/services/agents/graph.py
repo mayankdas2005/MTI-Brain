@@ -50,6 +50,7 @@ from app.services.agents.node_names import (
     CHART_AGENT as N_CHART_AGENT,
     COMPRESS as N_COMPRESS,
     CONTEXT_FETCHER as N_CONTEXT_FETCHER,
+    TRIBAL_RETRIEVAL as N_TRIBAL_RETRIEVAL,
     ERROR_RESPONSE as N_ERROR_RESPONSE,
     EXECUTOR as N_EXECUTOR,
     FILTER_RESOLVER as N_FILTER_RESOLVER,
@@ -76,6 +77,7 @@ from app.services.agents.nodes.general_chat import general_chat
 from app.services.agents.nodes.intake_classifier import intake_classifier
 from app.services.agents.nodes.intent_assembler import intent_assembler
 from app.services.agents.nodes.intent_resolver import intent_resolver
+from app.services.agents.nodes.tribal_retrieval import tribal_retrieval
 from app.services.agents.nodes.measure_specialist import measure_specialist
 from app.services.agents.nodes.query_compiler import query_compiler
 from app.services.agents.nodes.schema_enricher import schema_enricher
@@ -119,6 +121,7 @@ def compile_graph():
     b.add_node(N_INTAKE,              intake_classifier,    retry_policy=LLM_RETRY)
     b.add_node(N_GENERAL_CHAT,        general_chat,         retry_policy=LLM_RETRY)
     b.add_node(N_CONTEXT_FETCHER,     context_fetcher)
+    b.add_node(N_TRIBAL_RETRIEVAL,    tribal_retrieval)
 
     # ── Single-responsibility intent pipeline ─────────────────────────────────
     # Note: intent_dispatcher is removed — for fixed 3-way parallel branches,
@@ -158,11 +161,13 @@ def compile_graph():
     )
     b.add_conditional_edges(N_GENERAL_CHAT, route_should_compress, {N_COMPRESS: N_COMPRESS, END: END})
 
-    # context_fetcher → anchor_resolver or error
+    # context_fetcher → tribal_retrieval (always) or error
+    # tribal_retrieval self-gates on deep_analysis; skips Neo4j if False
     b.add_conditional_edges(
         N_CONTEXT_FETCHER, route_after_context_fetcher,
-        {N_ERROR_RESPONSE: N_ERROR_RESPONSE, N_ANCHOR_RESOLVER: N_ANCHOR_RESOLVER},
+        {N_ERROR_RESPONSE: N_ERROR_RESPONSE, N_ANCHOR_RESOLVER: N_TRIBAL_RETRIEVAL},
     )
+    b.add_edge(N_TRIBAL_RETRIEVAL, N_ANCHOR_RESOLVER)
 
     # anchor_resolver → schema_enricher (success) or legacy intent_resolver (fallback)
     b.add_conditional_edges(

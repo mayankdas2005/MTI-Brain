@@ -145,6 +145,16 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         if memory_context else ""
     )
 
+    tribal_facts = state.get("tribal_facts") or []
+    if tribal_facts:
+        facts_text = "\n".join(
+            f"  [{f.get('type', '')}] {f.get('label', '')} — {f.get('value', '')} (status: {f.get('status', 'active')})"
+            for f in tribal_facts
+        )
+        tribal_facts_section = f"POLICY & LIMIT CONTEXT (cite relevant limits in your answer):\n{facts_text}"
+    else:
+        tribal_facts_section = ""
+
     # Build structured data profile (shared builder with chart_agent)
     data_profile = _build_data_profile(all_columns, all_rows, query_summary)
 
@@ -231,6 +241,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         conversation_section=conversation_section,
         memory_section=memory_section,
         feedback_section=feedback_section,
+        tribal_facts_section=tribal_facts_section,
     )
 
     sonnet = get_llm("balanced")

@@ -1378,6 +1378,8 @@ LANGUAGE RULES:
 
 {feedback_section}
 
+{tribal_facts_section}
+
 ---
 
 QUESTION: {question}
