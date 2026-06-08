@@ -48,13 +48,15 @@ async def run_8_path_discovery(
     tokens: list[str],
     question: str,
     domain_detected: bool,
-) -> tuple[list[dict], list[str], list[dict]]:
+) -> tuple[list[dict], list[str], list[dict], list[str], list[str]]:
     """Run all discovery paths in parallel.
 
-    Returns: (tables, entity_pinned_fqns, business_term_hits)
+    Returns: (tables, entity_pinned_fqns, business_term_hits, intent_table_fqns, domain_table_fqns)
       - tables: merged and ranked table list
       - entity_pinned_fqns: FQNs that must survive the MAX cap (entity + BT related)
       - business_term_hits: raw BT results for downstream (filter hints etc.)
+      - intent_table_fqns: FQNs found via RELEVANT_TO intent path (pre-merge, for anchor injection)
+      - domain_table_fqns: FQNs found via BELONGS_TO domain path (pre-merge, for anchor injection)
 
     Any path that errors returns [] — pipeline continues with remaining paths.
     """
@@ -105,9 +107,11 @@ async def run_8_path_discovery(
     # Collect entity-pinned FQNs BEFORE merge — these survive the MAX cap
     pinned_fqns: set[str] = set()
 
-    # Pin 1: entity_value path — table directly holds the user's entity value
+    # Pin 1: entity_value path — table directly holds the user's entity value.
+    # Only pin on real value matches (score >= 2: distinct_values or value_aliases).
+    # score=1 means the token only appeared in a column *description* — too weak to force-pin.
     for t in tables_via_entity:
-        if t.get("fqn"):
+        if t.get("fqn") and (t.get("entity_match_score") or 0) >= 2:
             pinned_fqns.add(t["fqn"])
 
     # Pin 2: BusinessTerm related_table_fqns where score >= 0.72
@@ -119,6 +123,10 @@ async def run_8_path_discovery(
 
     if pinned_fqns:
         logger.info("context_fetcher | pinned_fqns | count={} | fqns={}", len(pinned_fqns), list(pinned_fqns))
+
+    # Extract intent/domain FQNs BEFORE merge — used by anchor_resolver for deterministic injection
+    intent_table_fqns = [t["fqn"] for t in tables_via_intent if t.get("fqn")]
+    domain_table_fqns = [t["fqn"] for t in tables_via_domain if t.get("fqn")]
 
     tables = _merge_table_sources(dict(zip(path_names, path_results)), pinned_fqns)
     logger.info("context_fetcher | merged_tables | fqns={}", [t.get("fqn") for t in tables])
@@ -158,7 +166,7 @@ async def run_8_path_discovery(
     except Exception as e:
         logger.warning("context_fetcher | joinpath_expansion failed | error={}", e)
 
-    return tables, list(pinned_fqns), bt_pin_data
+    return tables, list(pinned_fqns), bt_pin_data, intent_table_fqns, domain_table_fqns
 
 
 def _merge_table_sources(

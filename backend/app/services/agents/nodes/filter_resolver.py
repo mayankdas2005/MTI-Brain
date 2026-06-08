@@ -55,6 +55,13 @@ async def filter_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
             if resolved_f is None:
                 if ir.time_filter and f.column_name == ir.time_filter.column_name:
                     time_filter_dropped = True
+                    logger.warning(
+                        "filter_resolver | TIME_FILTER DROPPED | col={}.{} not in schema "
+                        "(hallucinated or wrong table) | timeframe={} will have NO date filter | thread={}",
+                        f.table_fqn, f.column_name,
+                        ir.time_filter.raw_user_value if ir.time_filter else "?",
+                        state.get("thread_id", ""),
+                    )
                 continue
 
             if low_confidence:

@@ -41,6 +41,11 @@ nodes:
     tier: fast
     stream: [reasoning, reasoning.delta]
 
+  - id: query_planner
+    label: null
+    tier: fast
+    stream: null
+
   - id: schema_enricher
     label: null
     tier: none
@@ -70,6 +75,11 @@ nodes:
     label: "Interpreting your question"
     tier: balanced
     stream: [reasoning, reasoning.delta]
+
+  - id: schema_gap_resolver
+    label: null
+    tier: none
+    stream: null
 
   - id: intent_resolver
     label: null

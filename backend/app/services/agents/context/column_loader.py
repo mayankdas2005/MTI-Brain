@@ -89,13 +89,6 @@ def get_join_critical_cols(tables: list[dict]) -> set[tuple]:
     except Exception as e:
         logger.warning("column_loader | get_join_critical_columns failed | error={}", e)
 
-    # Augment from table metadata — time_dimension_col only (pk_columns excluded: always uuid)
-    for t in tables:
-        fqn = t.get("fqn", "")
-        tdim = t.get("time_dimension_col")
-        if tdim and not _is_uuid_col(tdim):
-            join_critical.add((fqn, tdim))
-
     logger.info("column_loader | join_critical_total | count={}", len(join_critical))
     return join_critical
 
@@ -211,7 +204,7 @@ def _merge_column_sources(
         Without this guarantee, tables ranked 8-14 get zero columns when the global
         cap is hit by earlier tables, leaving the LLM blind to join keys it needs.
     T2: semantically matched by question (from vector + fts)
-    T3: is_measurable or is_groupable
+    T3: semantic_type is analytically relevant (measure or dimension types)
     T4: everything else
 
     MAX_PER_TABLE=12, GLOBAL_CAP=80 (T2-T4 only; T1 is additive)
@@ -246,11 +239,13 @@ def _merge_column_sources(
             key=lambda c: semantic_scores.get((fqn, c.get("name", "")), 0.0),
             reverse=True,
         )
+        _T3_SEMANTIC = {"amount", "measure", "percentage", "ratio",
+                        "dimension", "code", "flag"}
         t3 = [
             c for c in cols
             if not c.get("_join_critical")
             and (fqn, c.get("name")) not in semantic_scores
-            and (c.get("is_measurable") or c.get("is_groupable"))
+            and c.get("semantic_type", "").lower() in _T3_SEMANTIC
         ]
         t4 = [c for c in cols if c not in [cc for cc in cols if cc.get("_join_critical")] + t2 + t3]
 

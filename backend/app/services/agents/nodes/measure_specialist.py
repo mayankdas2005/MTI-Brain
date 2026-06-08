@@ -1,7 +1,7 @@
 """Node 1e-A: measure_specialist — single job: extract measures.
 
 Parallel branch dispatched by intent_dispatcher via LangGraph Send API.
-Sees ONLY is_measurable=True columns from anchor tables (complete, no truncation).
+Sees numeric/measure columns from anchor tables (semantic_type or data_type based, no truncation).
 Outputs a fragment appended to state["specialist_outputs"] via Annotated[list, operator.add].
 """
 
@@ -17,9 +17,42 @@ from app.services.agents.prompts import MEASURE_SPECIALIST_PROMPT, REASONING_DIR
 from app.services.agents.state import AnalyticsState
 
 
+def _build_query_plan_section(query_plan: dict | None) -> str:
+    if not query_plan:
+        return ""
+    lines = ["USER'S EXPLICIT REQUIREMENTS — your output MUST satisfy these:"]
+    cols = query_plan.get("expected_output_cols") or []
+    if cols:
+        lines.append(f"  Metrics/columns user requested: {', '.join(cols)}")
+    if query_plan.get("is_detail_request"):
+        lines.append("  Query type: DETAIL/LIST — output measures: [] (no aggregation)")
+    else:
+        lines.append("  Query type: SUMMARY/AGGREGATE — produce measures for each requested metric")
+    time_period = query_plan.get("required_time_period")
+    if time_period:
+        lines.append(f"  Time period: {time_period}")
+    return "\n".join(lines)
+
+
+_NUMERIC_DTYPES = {"numeric", "decimal", "integer", "bigint", "float", "double precision",
+                   "real", "smallint", "int", "int2", "int4", "int8", "float4", "float8"}
+_MEASURE_SEMANTIC = {"amount", "measure", "percentage", "ratio"}
+_EXCLUDE_SEMANTIC = {"free_text", "identifier", "date"}
+
+
+def _is_measurable(c: dict) -> bool:
+    sem = c.get("semantic_type", "").lower()
+    if sem in _EXCLUDE_SEMANTIC:
+        return False
+    if sem in _MEASURE_SEMANTIC:
+        return True
+    # sem is "" or unrecognized — fall back to data_type
+    return c.get("data_type", "").lower() in _NUMERIC_DTYPES
+
+
 def _build_measurable_columns_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
-    measurable = [c for c in columns if c.get("is_measurable")]
+    measurable = [c for c in columns if _is_measurable(c)]
     if not measurable:
         return "(no measurable columns found — check anchor table schema)"
 
@@ -52,6 +85,7 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
         measurable_columns_section=_build_measurable_columns_section(enriched_schema),
         refinement_section=build_refinement_section(state, role="measures"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        query_plan_section=_build_query_plan_section(state.get("query_plan")),
     )
 
     from app.services.agents.bedrock import get_llm

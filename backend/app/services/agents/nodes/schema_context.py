@@ -19,7 +19,7 @@ from app.services.agents.state import AnalyticsState
 #   - sample_values: actual data samples may include UUIDs or raw alias strings the LLM misuses
 _COL_FIELDS_SQL = {
     "name", "table_fqn", "data_type", "semantic_type",
-    "is_measurable", "is_groupable", "filter_selectivity",
+    "filter_selectivity",
     "filter_values",
     "description",
     "temporal_grain",        # "day"/"month"/... for date cols, "none" for non-date
@@ -89,8 +89,7 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
     tables = [
         {k: v for k, v in t.items()
          if k in {"fqn", "name", "description", "grain", "table_type",
-                  "is_time_series", "time_dimension_col", "typical_join_role",
-                  "natural_measures", "natural_dimensions", "is_rollup"}}
+                  "typical_join_role", "natural_measures", "natural_dimensions", "is_rollup"}}
         for t in semantic_context.get("tables", [])
     ]
 

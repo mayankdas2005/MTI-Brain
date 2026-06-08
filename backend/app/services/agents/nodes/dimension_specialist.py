@@ -1,7 +1,7 @@
 """Node 1e-C: dimension_specialist — single job: extract dimensions.
 
 Parallel branch dispatched by intent_dispatcher via LangGraph Send API.
-Sees is_groupable=True columns from anchor tables (complete, no truncation).
+Sees dimension/code/flag semantic_type columns from anchor tables (complete, no truncation).
 """
 
 from __future__ import annotations
@@ -16,9 +16,47 @@ from app.services.agents.prompts import DIMENSION_SPECIALIST_PROMPT, REASONING_D
 from app.services.agents.state import AnalyticsState
 
 
+def _build_query_plan_section(query_plan: dict | None) -> str:
+    if not query_plan:
+        return ""
+    lines = ["USER'S EXPLICIT REQUIREMENTS — your output MUST satisfy these:"]
+    groupings = query_plan.get("required_groupings") or []
+    if groupings:
+        lines.append(f"  Group/break down by: {', '.join(groupings)}")
+    cols = query_plan.get("expected_output_cols") or []
+    if cols:
+        lines.append(f"  User requested output: {', '.join(cols)}")
+    if query_plan.get("is_detail_request"):
+        lines.append("  Query type: DETAIL/LIST — use natural grain (PK/reference) as dimensions")
+    return "\n".join(lines)
+
+
+_DIM_SEMANTIC = {"dimension", "code", "flag"}
+_MEASURE_SEMANTIC = {"amount", "measure", "percentage", "ratio"}
+_EXCLUDE_SEMANTIC = {"free_text", "identifier"}
+_VARCHAR_DTYPES = {"varchar", "character varying", "char", "bpchar", "boolean", "text"}
+
+
+def _is_dimension(c: dict) -> bool:
+    sem = c.get("semantic_type", "").lower()
+    if sem in _EXCLUDE_SEMANTIC:
+        return False
+    if sem in _DIM_SEMANTIC:
+        return True
+    if sem in _MEASURE_SEMANTIC or sem == "date":
+        return False
+    # sem is "" or unrecognized — fall back to data_type
+    dtype = c.get("data_type", "").lower()
+    if dtype in _VARCHAR_DTYPES:
+        has_grain = bool(c.get("temporal_grain") and c.get("temporal_grain") != "none")
+        is_uuid_like = c.get("filter_selectivity", "") == "low"
+        return not has_grain and not is_uuid_like
+    return False
+
+
 def _build_groupable_columns_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
-    groupable = [c for c in columns if c.get("is_groupable")]
+    groupable = [c for c in columns if _is_dimension(c)]
     if not groupable:
         return "(no groupable columns found)"
 
@@ -60,6 +98,7 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         refinement_section=build_refinement_section(state, role="dimensions"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         measures_summary=measures_summary,
+        query_plan_section=_build_query_plan_section(state.get("query_plan")),
     )
 
     from app.services.agents.bedrock import get_llm

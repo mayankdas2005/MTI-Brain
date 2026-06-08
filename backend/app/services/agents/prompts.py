@@ -96,8 +96,6 @@ When the user says only "yes", "sure", "go ahead", "please", "show me", "ok", or
   If {prior_was_analytics} == YES → the user is accepting a data follow-up → analytics
   If {prior_was_analytics} == NO  → the user wants to continue a conversation → general_chat
 
-(Affirmative routing is already decided before this prompt runs — this rule is here for context only.)
-
 ---
 
 CLASSIFICATION:
@@ -357,10 +355,7 @@ FORWARD-LOOKING TEMPORAL EXPRESSIONS — output as timeframe string exactly:
   The system resolves these to SQL date range expressions downstream.
 
 IMPLICIT DIMENSION RULE — include context columns users expect to see in output:
-1. TIME AXIS: Follow TEMPORAL DIMENSION RULE above exactly — do not add date to dimensions for kpi
-   shape or when timeframe is a pure filter with no time breakdown. The single governing rule:
-   add the date column to dimensions when result_shape = "time_series", OR when result_shape is
-   table/comparison AND the user asked for a breakdown by time period ("by month", "monthly", etc.).
+1. TIME AXIS: Follow TEMPORAL DIMENSION RULE above exactly.
 2. ENTITY CONTEXT: When filtering by a named entity (account, company, bank, counterparty),
    include the entity identifier column in dimensions so users see WHICH entity each row covers.
 3. COMPARISON SHAPE: "match X against Y", "compare X to Y", "reconcile", "discrepancies" →
@@ -501,7 +496,9 @@ MACHINE-READABLE FIELDS — use these EXACT prefixes, one per line, so the pipel
   ANCHOR_TABLES: lpp.table_a, lpp.table_b
   RESULT_SHAPE: kpi | table | ratio | time_series | comparison
   PERIOD_GRAIN: day | week | month | quarter | year
-  SCHEMA_GAP: <concept the schema cannot answer>
+  SCHEMA_GAP_JOIN: lpp.table_a | lpp.table_b    (missing join key between two tables)
+  SCHEMA_GAP_TABLE: lpp.table_name             (table schema not provided)
+  SCHEMA_GAP_CONCEPT: plain English concept    (concept with no known table)
   CONFIDENCE_NOTE: 0.XX  (<one-sentence reason>)
   NO_EXTRA_FILTERS: <reason hallucination risk is high>
 Free-form notes (no prefix required): standard value filters, join workarounds, business logic.
@@ -573,6 +570,11 @@ INTERVAL syntax with months/years is NOT supported — replace with DATEADD:
   ✗ INTERVAL '1 year'  →  DATEADD(year, -1, date)
   ✗ date + INTERVAL '3 months'  →  DATEADD(month, 3, date)
   ✗ INTERVAL '4 weeks'  →  DATEADD(week, 4, date)
+  ✗ date_add(unit, n, date)  — MySQL function, does NOT exist in Redshift → use DATEADD(unit, n, date)
+  ✗ DATEADD('day', n, date)  — datepart MUST be an unquoted keyword, NEVER a quoted string
+      WRONG:  DATEADD('day', -7, col)   CORRECT: DATEADD(day, -7, col)
+  ✗ CAST(boolean_col AS VARCHAR) / boolean_col::VARCHAR  — Redshift cannot cast boolean to varchar
+      CORRECT: CASE WHEN col THEN 'true' ELSE 'false' END
 
 USER QUESTION: {question}
 
@@ -677,6 +679,27 @@ RULES:
    - Never infer a date format from a column name. If sample values (shown as [enum: ...] in
      SCHEMA REFERENCE) do not look like YYYY-MM-DD or a recognizable date pattern, the column is
      not date-parseable.
+   - "cannot cast type boolean to character varying": Redshift CANNOT cast boolean to varchar.
+     Find every CAST(col AS VARCHAR) / col::VARCHAR where col is a boolean column (data_type=boolean
+     in SCHEMA REFERENCE). Replace with: CASE WHEN col THEN 'true' ELSE 'false' END
+   - "function pg_catalog.date_add does not exist": Remove date_add() entirely. Replace with
+     DATEADD(unit, n, date) where unit is an UNQUOTED keyword (day, month, year, week).
+     If the error says argument type "unknown" for DATEADD: the datepart is quoted — remove the
+     quotes: DATEADD('day',...) → DATEADD(day,...)
+3f. AMBIGUOUS COLUMN REFERENCE (error 42702 "column reference X is ambiguous"):
+   - Find EVERY unqualified occurrence of column X in the full SQL (SELECT, ON, WHERE, GROUP BY,
+     HAVING, ORDER BY).
+   - For EACH occurrence, determine its LOCAL scope: look at the FROM / JOIN clause of the SELECT
+     block (or CTE body) that contains it — list only the aliases visible there.
+   - Qualify X with the alias that owns it in that scope. NEVER use an alias that is NOT in that
+     scope's FROM/JOIN clause.
+   - If the validator message says "tables in scope: f, fva_by_entity", the ONLY valid prefixes
+     for that CTE are `f.` and `fva_by_entity.` — do not use any other prefix.
+   - If the same column name exists in multiple in-scope tables, choose the one that matches the
+     query intent (e.g. the driving fact table, not a lookup).
+   - This is a scope-aware qualification fix — never guess a table alias from outside the scope.
+   ✗ WRONG: CTE reads FROM f, fva_by_entity → qualifying with `api.company_ref` (api not in scope)
+   ✓ RIGHT: CTE reads FROM f, fva_by_entity → qualify as `f.company_ref` or `fva_by_entity.company_ref`
 4. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
    the corrected SQL — formatting, ordering, alias style. These override your defaults.
 
@@ -691,6 +714,13 @@ If PRIOR REPAIR ATTEMPTS shows previous attempts: state what each attempt tried 
 Identify the exact cause of the current error. State the minimal fix that avoids all prior attempts.
 For column errors, name the replacement column found in PRIMARY COLUMNS of SCHEMA REFERENCE and
 why it matches the intent. Check grain if the error involves a JOIN.
+For "column reference X is ambiguous" (42702): list the FROM/JOIN aliases that are in scope at
+EACH occurrence of X. Then qualify X only with an alias from that in-scope list.
+
+SELF-CHECK after writing the fix:
+1. SCOPE CHECK: Did you change anything outside the reported error? If yes, revert those changes — fix only what's broken.
+2. SEMANTIC CHECK: Does the repaired SQL still SELECT the same columns and apply the same business filters as the original? A repair that silently drops a GROUP BY or removes a date filter is worse than the original error.
+3. PRIOR ATTEMPT AVOIDANCE: Confirm your fix does not repeat any prior approach. State why each prior attempt failed and why yours is different.
 </reasoning>
 <sql>
 fixed SQL here
@@ -730,6 +760,8 @@ CONTRACT FORMAT — output one block per CTE, then FINAL SELECT:
 
   CTE <exact_name>
     reads_from: <real tables (schema.table AS alias, ...) | upstream CTE names>
+    join_on:    <alias1.col = alias2.col, ...>   (REQUIRED when reads_from has 2+ sources;
+                ALWAYS alias-qualified — NEVER a bare column name on either side of =)
     exports:    <alias (source: expression_or_raw_col), ...>
     aggregates: yes | no
     group_by:   <export_alias1, export_alias2>  (only when aggregates: yes)
@@ -746,6 +778,13 @@ COLUMN FORWARDING RULES:
   - A CTE reading from an upstream CTE may ONLY reference aliases listed in that CTE's exports.
     It CANNOT use schema.table.column for any table not in its own reads_from.
   - If a downstream CTE needs a raw column from a base table, the BASE CTE must export it.
+  - JOIN ON QUALIFICATION — MANDATORY: Every `join_on` entry MUST use alias-qualified column names
+    on BOTH sides (e.g. `f.company_ref = fva.company_ref`). NEVER write a bare column name in a
+    join_on field. The sql_generator copies join_on conditions verbatim — a bare column here
+    becomes a bare column in the SQL and causes Redshift error 42702 "column reference is ambiguous".
+  - SHARED COLUMN NAMES: If two sources in reads_from both export a column with the same name
+    (e.g. both export `company_ref`), the join_on MUST qualify both sides with their respective
+    aliases so the sql_generator can write an unambiguous ON clause.
   - REDSHIFT ALIAS RULE: a SELECT alias defined in CTE N cannot be used in another expression
     in the SAME CTE N SELECT. If column B depends on alias A, put them in separate CTEs.
   - DERIVED EXPRESSIONS (DATE_TRUNC, CAST, arithmetic): define in the earliest CTE that has the
@@ -757,6 +796,51 @@ COLUMN FORWARDING RULES:
     RIGHT: GROUP BY CAST(DATE_TRUNC('WEEK', col) AS DATE)  +  ORDER BY CAST(DATE_TRUNC('WEEK', col) AS DATE)
     PREFERRED: Compute the date expression in an upstream CTE as a named alias; reference that alias
     in both GROUP BY and ORDER BY — eliminates all expression-mismatch risk.
+
+DEAD CTE AND TABLE PROHIBITION — CRITICAL:
+  Plan ONLY the CTEs whose exports chain directly back to FINAL SELECT.
+  Step 1 of reasoning starts with the FINAL SELECT columns. Step 2 traces backward.
+  ANY CTE whose columns do not appear in FINAL SELECT (directly or via intermediate CTEs) MUST
+  NOT be included. No bridge CTEs, no "context" CTEs, no "might be useful" CTEs.
+  A CTE that only feeds a LEFT JOIN whose columns never reach FINAL SELECT is a dead CTE.
+  ✗ WRONG: plan a bank_fee_bridge CTE if no column from bank_fee appears in FINAL SELECT
+  ✗ WRONG: plan a company_bridge CTE "for context" when the question is about payment exceptions
+  ✓ RIGHT: only plan CTEs whose exports are traceable, alias by alias, to a FINAL SELECT column
+
+  DEAD TABLE IN JOIN/EXISTS — EQUALLY PROHIBITED:
+  Never add a table to reads_from or plan an EXISTS subquery for a table unless:
+    (a) At least one column from that table appears in this CTE's exports (reaches FINAL SELECT), OR
+    (b) The table is a confirmed bridge in JOIN_CHAIN from the SCHEMA DIRECTIVE, OR
+    (c) The table provides a WHERE filter column on the primary fact table AND has a confirmed join key.
+  Tables listed as UNRESOLVED_PAIRS in the SCHEMA DIRECTIVE have NO confirmed join path.
+  NEVER include them in any CTE — not as a JOIN, not as EXISTS, not as a subquery.
+  An EXISTS subquery with a NULL or absent join column silently returns FALSE for every row → zero results.
+  ✗ WRONG: reads_from: fva, lpp.bank_account, lpp.cash_flow, lpp.forecast_cash_flow
+           (only fva columns reach FINAL SELECT; the other three are dead joins)
+  ✓ RIGHT: reads_from: lpp.forecast_vs_actual AS fva
+           (all FINAL SELECT columns come from fva; other tables omitted)
+
+JOIN CARDINALITY — NO CARTESIAN PRODUCTS:
+  ✗ NEVER plan a JOIN with ON 1=1 or with no join condition — this is a Cartesian product.
+  ✗ NEVER plan a bridge CTE chain (A→B→C→D) just to reach a table when A and D have no
+    shared key and none of B/C/D columns appear in FINAL SELECT.
+  If two tables have no confirmed join path, omit the join — do NOT invent a bridge path.
+
+SNAPSHOT_DATES PATTERN — FOR STALE-DATA FALLBACK ONLY:
+  When you need MAX(<date_col>) from multiple tables as the stale-data anchor, use DIRECT
+  SUBQUERIES — never CROSS JOIN + WHERE 1=0:
+    ✓ CORRECT:
+      CTE snapshot_dates
+        reads_from: (no base table — all subquery)
+        exports: max_pe_date (source: (SELECT MAX(detected_at)::TIMESTAMP FROM lpp.payment_exception)),
+                 max_ar_date (source: (SELECT MAX(return_date) FROM lpp.ach_return))
+    ✗ WRONG:
+      FROM lpp.payment_exception, lpp.ach_return, ... WHERE 1=0
+      UNION ALL SELECT (SELECT MAX(...)), ...
+  Cast timestamptz columns to TIMESTAMP in the subquery:
+    (SELECT MAX(col)::TIMESTAMP FROM tbl)  — prevents DATEADD type mismatch on timestamptz.
+  Only include max_date for tables whose date column is ACTUALLY used in a DATEADD/DATE_TRUNC
+  stale-data branch in a downstream CTE. Do not collect MAX() for tables that are not date-filtered.
 
 JOIN KEY VALIDATION:
   ON clauses in PRE-COMPUTED JOIN CHAIN carry evidence comments:
@@ -784,19 +868,19 @@ DUAL-GRAIN PATTERN — apply ONLY when EXECUTE INSTRUCTIONS contains a DUAL_GRAI
 {reasoning_directive}
 
 <reasoning>
-Step 1 — FINAL SELECT first: list every column the question requires in the output.
-Step 2 — Work backward: for each output column, trace which CTE must export it and which base table provides it.
-Step 3 — Name each CTE with a clear purpose label (e.g. recent_transactions, latest_snapshot, main_result).
-Step 4 — Forwarding audit: for each CTE, verify every alias it references exists in its upstream exports.
-         If a required column is missing from an upstream export, add it now — not in the SQL.
-Step 5 — Aggregation placement: which CTE does the GROUP BY + aggregate? Mark it aggregates: yes.
-         All raw columns needed for GROUP BY must be in the base CTE's exports.
-Step 6 — WHERE slot: mark the CTE where QUERY SPECIFICATION filters logically apply (usually the aggregating CTE or the final join CTE).
-Step 7 — DATE RANGE FILTERS: for any date range filter you include in a where_slot (including those
+Step 1 — FINAL SELECT first: list every column the question requires in the output. These are the ONLY columns that justify any CTE existing.
+Step 2 — Work backward: for each output column, trace which CTE must export it and which base table provides it. Every CTE planned must have at least one export alias that reaches FINAL SELECT. If a CTE's columns do not appear in FINAL SELECT, do not plan it.
+Step 3 — Dead CTE audit: before naming any CTE, ask "does at least one column from this CTE appear, directly or via forwarding, in FINAL SELECT?" If no — drop it.
+Step 4 — Name each CTE with a clear purpose label (e.g. recent_transactions, latest_snapshot, main_result).
+Step 5 — Forwarding audit: for each CTE, verify every alias it references exists in its upstream exports. If a required column is missing from an upstream export, add it now — not in the SQL.
+Step 6 — Aggregation placement: which CTE does the GROUP BY + aggregate? Mark it aggregates: yes. All raw columns needed for GROUP BY must be in the base CTE's exports.
+Step 7 — WHERE slot: mark the CTE where QUERY SPECIFICATION filters logically apply (usually the aggregating CTE or the final join CTE).
+Step 8 — DATE RANGE FILTERS: for any date range filter you include in a where_slot (including those
          from COMPUTED_FILTER directives), note the OR MAX branch. Every date range filter on a
          time-series column MUST have both branches:
            col >= DATEADD(day,-60,CURRENT_DATE) OR col >= DATEADD(day,-60,(SELECT MAX(col) FROM tbl))
          Add both branches explicitly in your where_slot annotations.
+Step 9 — LOOKUP CTE CHECK: For any CTE that maps one key to another (a dimension lookup — company_ref → business_unit, code → label, vendor_ref → vendor_name), verify it has NO where_slot time filter. Lookup CTEs must span full history. A time-filtered lookup silently NULLs out entities not active in the query window.
 </reasoning>
 
 <plan>
@@ -808,10 +892,16 @@ Step 7 — DATE RANGE FILTERS: for any date range filter you include in a where_
 
 SQL_GENERATE_PROMPT = ChatPromptTemplate.from_template(
     """You are writing an Amazon Redshift SQL query. Redshift is NOT PostgreSQL — the following
-PostgreSQL constructs are INVALID and will cause runtime errors:
+constructs are INVALID and will cause runtime errors:
   ✗ INTERVAL '1 year' / INTERVAL '3 months' / INTERVAL '4 weeks'  → use DATEADD(year,-1,date)
   ✗ date + INTERVAL '...'                                          → use DATEADD(unit, n, date)
   ✗ CURRENT_DATE - INTERVAL '...'                                  → use DATEADD(unit, -n, CURRENT_DATE)
+  ✗ date_add(unit, n, date)  — MySQL function, does NOT exist in Redshift → use DATEADD(unit, n, date)
+  ✗ DATEADD('day', n, date)  — datepart MUST be an unquoted keyword, never a quoted string
+      WRONG:  DATEADD('day', -7, col)   ← 'day' as string = "unknown" type error
+      CORRECT: DATEADD(day, -7, col)
+  ✗ CAST(boolean_col AS VARCHAR) / boolean_col::VARCHAR  — Redshift cannot cast boolean to varchar
+      CORRECT: CASE WHEN col THEN 'true' ELSE 'false' END
   ✗ GENERATE_SERIES, WITH RECURSIVE, FILTER (WHERE ...)           → not supported
   ✗ SELECT alias forward-reference: referencing a SELECT alias in another expression in the
     SAME SELECT clause is INVALID (Redshift evaluates all SELECT expressions in parallel):
@@ -867,7 +957,8 @@ RULES:
 1. PRE-COMPUTED JOIN CHAIN (or BASE TABLE for single-table queries) gives the exact FROM + JOIN
    sequence for the first CTE — copy it verbatim. Every table referenced by column name must
    appear in a FROM or JOIN of that CTE; never write schema.table.column for a table that is not
-   in the FROM or a JOIN. Never drop or invent tables.
+   in the FROM or a JOIN. Never drop or invent tables. You may substitute a different ON clause
+   ONLY when VOCABULARY OVERLAP HINTS in UNRESOLVED JOIN PAIRS provide a better-evidenced join column.
    Rule 1a overrides all others; each subsequent sub-rule (1b–1d) is an exception that only
    applies in the stated condition.
 1a. SCHEMA DIRECTIVE JOIN_CHAIN (in DIRECTIVES above): when present, gives confirmed ON clauses.
@@ -887,9 +978,52 @@ RULES:
     PRE-COMPUTED JOIN CHAIN, you MUST add one or more of the listed narrowing candidate columns
     to that ON clause (e.g. AND t.company_ref = u.company_ref). Never remove tables or existing
     join conditions — only add AND clauses to narrow the join predicate.
-2. Use PRE-COMPUTED JOIN CHAIN as shown. You may substitute a different ON clause ONLY when
-   VOCABULARY OVERLAP HINTS in UNRESOLVED JOIN PAIRS provide a better-evidenced join column.
-2b. TIME FILTER in QUERY SPECIFICATION → add to WHERE clause verbatim. Never reinterpret or omit it.
+1d. CROSS JOIN / ON 1=1 PROHIBITION: NEVER use CROSS JOIN or write ON 1=1 / ON TRUE between
+    multi-row tables — both produce Cartesian products. Every JOIN must have an explicit ON clause.
+    If a join path cannot be determined: (a) use UNRESOLVED JOIN PAIRS guidance, or (b) omit the table.
+    ✗ WRONG: LEFT JOIN webhook_event_filtered AS wef ON 1 = 1
+    EXCEPTION — single-row scalar CTEs: CROSS JOIN is permitted ONLY when the joined CTE contains
+    exactly one row (a snapshot_dates CTE built entirely from scalar subqueries with no FROM clause).
+1f. DEAD CTE PROHIBITION: Do NOT write a CTE whose columns never appear in the final SELECT
+    (directly or forwarded through intermediate CTEs). Every CTE must have at least one export
+    column that chains to the final SELECT. Bridge CTEs that only feed other bridge CTEs that
+    feed a LEFT JOIN whose columns are unused are dead CTEs — omit them entirely.
+    Before writing any CTE, verify: "does at least one column from this CTE appear in SELECT?"
+1g. SNAPSHOT_DATES CTE — stale-data anchors ONLY via direct subqueries:
+    When collecting MAX(<date_col>) values from multiple tables for stale-data OR MAX fallback,
+    use scalar subqueries — NEVER a multi-table CROSS JOIN with WHERE 1=0:
+      ✓ CORRECT:
+          WITH snapshot_dates AS (
+            SELECT
+              (SELECT MAX(detected_at)::TIMESTAMP FROM lpp.payment_exception) AS max_pe_date,
+              (SELECT MAX(return_date)             FROM lpp.ach_return)        AS max_ar_date
+          )
+      ✗ WRONG:
+          WITH snapshot_dates AS (
+            SELECT MAX(pe.detected_at), MAX(ar.return_date)
+            FROM lpp.payment_exception AS pe, lpp.ach_return AS ar
+            WHERE 1 = 0
+            UNION ALL SELECT (SELECT MAX(...)), (SELECT MAX(...))
+          )
+    Cast timestamptz columns to TIMESTAMP in the subquery to prevent DATEADD type errors:
+      (SELECT MAX(detected_at)::TIMESTAMP FROM lpp.payment_exception)
+    Only collect MAX() for tables whose date column is used in a stale-data OR MAX WHERE branch.
+1h. DEAD TABLE PROHIBITION: Never JOIN, EXISTS, or subquery a table unless at least ONE of:
+    (a) At least one column from that table appears in FINAL SELECT (directly or forwarded), OR
+    (b) The table is a confirmed bridge in the PRE-COMPUTED JOIN CHAIN (path_tables), OR
+    (c) The table provides a WHERE/HAVING filter column AND has a confirmed ON clause to the
+        primary fact table (shown in JOIN_CHAIN).
+    Tables listed in UNRESOLVED_PAIRS have NO confirmed join path — OMIT them entirely.
+    Never use EXISTS/IN subqueries to force an anchor table into the query to satisfy a table
+    list requirement. A dead EXISTS with a NULL join column silently filters every row to zero.
+    ✗ WRONG: AND EXISTS (SELECT 1 FROM lpp.bank_account ba
+                         JOIN lpp.cash_flow cf ON cf.account_ref = ba.code
+                         JOIN lpp.forecast_cash_flow fcf ON fcf.account_ref = cf.account_ref
+                         WHERE ba.company_ref = fva.company_ref)
+             ← lpp.bank_account, lpp.cash_flow, lpp.forecast_cash_flow have UNRESOLVED joins
+               and contribute no FINAL SELECT columns → their EXISTS returns FALSE → zero rows
+    ✓ RIGHT:  Omit all three tables. Generate from lpp.forecast_vs_actual alone.
+2. TIME FILTER in QUERY SPECIFICATION → add to WHERE clause verbatim. Never reinterpret or omit it.
    STALE-DATA FALLBACK — UNIVERSAL: this OR MAX rule applies to EVERY date range filter on any
    time-series column, including filters from COMPUTED_FILTER directives or any other source.
    Whenever you write `col >= DATEADD(...)` or `col >= CURRENT_DATE - ...` for a time-series
@@ -980,14 +1114,10 @@ RULES:
    exists, use a subquery or CTE to pre-aggregate one side before joining.
 9. Apply LIMIT shown in QUERY SPECIFICATION to the final SELECT.
 10. Start with WITH. One statement. No semicolons.
-10b. WHERE FILTERS ARE CLOSED — do NOT invent EXISTS, IN, or ANY subqueries for tables that are
-    not in ANCHOR TABLES or PRE-COMPUTED JOIN CHAIN. Every filter in QUERY SPECIFICATION already
-    lists the exact table and column.
-    SCHEMA REFERENCE columns show filter_values as vocabulary hints only — these are NOT
-    pre-resolved filter values. All actual filter values come from FILTER DIRECTIVE and QUERY
-    SPECIFICATION. Do not use filter_values entries directly in WHERE clauses.
-    In particular: a column's description text is documentation, not a DB value. Never use it in
-    WHERE. Use only the values listed under `[enum: ...]` or the values in FILTERS.
+10b. SCHEMA REFERENCE filter_values are vocabulary hints only — NOT pre-resolved filter values.
+    All actual filter values come from FILTER DIRECTIVE and QUERY SPECIFICATION only.
+    A column's description text is documentation, not a DB value — never use it in WHERE.
+    Use only values listed under `[enum: ...]` or the values in FILTERS.
 11. UNRESOLVED JOIN PAIRS (if the section appears above): you MUST provide an ON clause for every
     listed table pair. Priority order:
     a. VOCABULARY OVERLAP HINTS in that section — these show columns with actual shared data values.
@@ -998,20 +1128,22 @@ RULES:
 12. PREVIOUS SQL ATTEMPT (if the section appears above): read it carefully. Identify what made it
     wrong or produce bad results. Your new SQL must be substantively different — do not repeat the
     same table selection, the same join approach, or the same CTE structure that failed.
-13. SIMILAR QUERY PATTERNS (if the section appears above): treat these as structural reference for
-    CTE design and join ordering. Adapt the pattern to the current QUERY SPECIFICATION — do not copy
-    alias names or filters that do not apply to this query.
-14. COLUMN QUALIFICATION — MANDATORY. Every column reference MUST be prefixed with its table alias.
-    Never write a bare column name when two or more tables are present in the same FROM/JOIN scope.
-    Bare columns cause Redshift error 42702 "column reference is ambiguous" when the same column
-    name exists in more than one joined table (e.g. account_ref appears in both lpp.cash_balance
-    and lpp.payment_transaction).
+13. SIMILAR QUERY PATTERNS (if the section appears above): these are LLM-generated SQL outlines
+    from prior successful runs — "successful" means no DB error, NOT that the SQL was optimal.
+    Use ONLY for table names and join key hints. The CTE CONTRACT above is the authoritative
+    structure — never copy a prior query's CTE layout over the contract.
+14. COLUMN QUALIFICATION — MANDATORY. Qualify ALL column references with their table or CTE alias
+    everywhere: SELECT, WHERE, ON, GROUP BY, HAVING, and ORDER BY. This includes CTE JOIN ON clauses —
+    both sides must carry the alias prefix. NEVER use a bare column name when two or more tables are
+    in scope. Bare columns cause Redshift error 42702 "column reference is ambiguous".
     WRONG:  SELECT account_ref, amount FROM lpp.cash_balance cb JOIN lpp.payment_transaction pt ...
     CORRECT: SELECT cb.account_ref, cb.amount FROM lpp.cash_balance cb JOIN lpp.payment_transaction pt ...
-    This applies in SELECT, WHERE, ON, GROUP BY, HAVING, and ORDER BY — everywhere.
-14. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
+    WRONG (CTE ON clause):   ON ip.company_ref = company_ref
+    CORRECT (CTE ON clause): ON ip.company_ref = cr_valid.company_ref
+    If the CTE CONTRACT has a `join_on:` line, copy it verbatim — it already carries correct aliases.
+15. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
     every clause. These override your default choices for formatting, ordering, and style.
-15. CTE CONTRACT (if the section appears above): three binding constraints.
+16. CTE CONTRACT (if the section appears above): three binding constraints.
     A. NAME LOCK — use the exact CTE names from the contract. Do not rename, merge, split, or add CTEs.
        The validator checks CTE names against the contract. A renamed CTE is a validation failure.
     B. EXPORT CONTRACT — each CTE's SELECT must contain every alias listed in its exports block.
@@ -1031,7 +1163,7 @@ RULES:
       quarter → TO_CHAR(DATE_TRUNC('quarter', col), 'YYYY-"Q"Q')     → YYYY-Q1
       year    → TO_CHAR(DATE_TRUNC('year',    col), 'YYYY')          → YYYY
     Never output a full ISO timestamp (e.g. 2026-08-01T00:00:00+00:00) for period columns.
-16. RESULT SHAPE: ratio (if shown in QUERY SPECIFICATION):
+18. RESULT SHAPE: ratio (if shown in QUERY SPECIFICATION):
     This query asks for X÷Y — a single ratio value, NOT two separate rows.
     Pattern: aggregate each entity in one CTE, then pivot with CASE-WHEN division:
 
@@ -1049,7 +1181,7 @@ RULES:
 
     Final SELECT returns ONE row with ONE numeric column.
     Do NOT GROUP BY both values separately — that produces two rows, not a ratio.
-18. UNION / INTERSECT / EXCEPT — ORDER BY RULE:
+19. UNION / INTERSECT / EXCEPT — ORDER BY RULE:
     When combining result sets with UNION ALL / UNION / INTERSECT / EXCEPT, the ORDER BY clause
     MUST reference only column aliases present in the SELECT list of EVERY branch of the set operation.
     - ✗ WRONG:  SELECT a AS col_a, b FROM t1 UNION ALL SELECT c, d FROM t2 ORDER BY b
@@ -1069,7 +1201,7 @@ Output reasoning in <reasoning>...</reasoning> and complete SQL in <sql>...</sql
 Check each dynamic section above in order:
   - If UNRESOLVED JOIN PAIRS exists: state the ON clause chosen for each pair and why.
   - If PREVIOUS SQL ATTEMPT exists: state what was wrong and how this query differs.
-  - If SIMILAR QUERY PATTERNS exists: state which pattern you are adapting and how.
+  - If SIMILAR QUERY PATTERNS exists: state which tables and join keys from the reference are relevant. Confirm the CTE CONTRACT (not the prior query structure) is what you are following.
   - If USER SQL PREFERENCES exists: list each preference and confirm it is applied.
 State the FROM clause of the first CTE: "First CTE FROM: <table>" — confirm it matches the BASE TABLE
 or the first entry of PRE-COMPUTED JOIN CHAIN. Then list every JOIN applied in that CTE.
@@ -1086,6 +1218,12 @@ CTE COLUMN FORWARDING AUDIT (mandatory — do this before writing SQL):
   Format: "CTE <name> needs from <upstream>: [col1, col2] — all present? YES/NO"
   If NO: add the missing column(s) to the upstream SELECT before writing the query.
   Final SELECT needs from <last CTE>: [col1, col2] — all present? YES/NO
+
+SELF-CHECK before emitting SQL:
+1. DEAD CTE SCAN: List every CTE name in your WITH clause. Verify each appears in at least one downstream FROM or JOIN (in another CTE or the final SELECT). Remove any that don't. A dead CTE signals a planning error.
+2. COLUMN QUALIFICATION: Scan every SELECT, WHERE, ON, GROUP BY, ORDER BY clause. Every column reference must have a table or alias prefix. Bare column names in any clause cause Redshift error 42702.
+3. TIME COLUMN: If INSTRUCTIONS include "time_filter: table.column", apply the FILTER DIRECTIVE date range to that column. You are substituting the column, not adding a new filter — FILTER_LIST_COMPLETE still holds.
+4. CROSS JOIN CHECK: Every CROSS JOIN must be to a CTE that contains exactly one row (a snapshot CTE built entirely from scalar subqueries with no FROM clause). If you cannot confirm it is single-row, replace with an explicit JOIN condition.
 </reasoning>
 <sql>
 complete Redshift SQL here
@@ -1153,6 +1291,11 @@ RULES:
   NEVER start with Validate, Retrieve, Confirm whether, Analyze, Quantify, or Identify.
   These are spoken advisory questions, not data retrieval tasks. No multi-part questions.
 - humanize all names: snake_case → Title Case, drop prefixes (lpp_, IHB_USD_ → IHB Investment).
+
+SELF-CHECK before emitting insights:
+1. DATA GROUNDING: For every "observation" you write, point to the specific number or value in the data rows that supports it. If you cannot point to a row, remove the observation.
+2. TREND GATE: Do not describe a trend from fewer than 3 data points. Two values is a comparison, not a trend.
+3. IMPLICATION CHECK: Does each "implication" follow logically from the observation, or does it require outside knowledge? If it requires inference beyond the data, hedge it ("may indicate", "warrants investigation") rather than stating it as fact.
 
 <insights>
 {{ JSON here }}
@@ -1256,7 +1399,6 @@ DEPTH CALIBRATION — match answer depth to data richness:
 ---
 
 NON-OBVIOUS INSIGHT RULE (applies to all personas):
-Your job is not to describe what the user can already see in the table. Surface what it MEANS.
 Every finding must pass the "so what?" test. If a reader says "so what?" after reading it, it fails.
 
   WEAK (describing): "7 accounts have $0 balance and have not transacted in 60 days."
@@ -1304,7 +1446,8 @@ Sections: ### Situation | ### What Needs Attention | ### Actions | ### Watch Lis
   Ground every sentence in a number or entity from the result.
 
   ### What Needs Attention
-  3-5 issues. Each: **[Issue]** — [fact + **bold number**]; [operational consequence if not addressed];
+  Up to 3-5 issues (subject to DEPTH CALIBRATION above — 1-2 for single_value data).
+  Each: **[Issue]** — [fact + **bold number**]; [operational consequence if not addressed];
   [urgency signal — deadline, threshold, or deteriorating trend].
   Most urgent issue first.
 
@@ -1438,6 +1581,15 @@ Step 5 — DECISION LINE DRAFT
 
 Step 6 — STRUCTURE CHECK
   Confirm section order matches persona. Confirm Decision/Scenario Analysis has content.
+
+Step 7 — SELF-CHECK before emitting:
+  1. DEPTH COUNT: Count your findings. If findings > DEPTH_CALIBRATION limit for this
+     result_shape, trim to the most business-critical ones. Do not exceed the limit.
+  2. GATE 1 CHECK: Does every section open with a business implication, not a data
+     description? If you wrote "X was 87.3%" as an opener, rewrite to lead with what
+     that means — "X is below policy threshold" or "X signals elevated risk".
+  3. SINGLE VALUE GATE: If result_shape = single_value, you have at most 1-2 findings.
+     If you wrote 3+, trim now — do not force structure onto a single metric.
 </reasoning>
 <answer>
 Answer for the {persona}. ### headers, **bold key numbers in every bullet**, no emojis, no raw column names.
@@ -1899,7 +2051,6 @@ Examples:
   "last quarter"      → {{"operator":"BETWEEN_SQL","start":"DATE_TRUNC('quarter',DATEADD(quarter,-1,CURRENT_DATE))","end":"DATEADD(day,-1,DATE_TRUNC('quarter',CURRENT_DATE))"}}
   "Q3 2024"           → {{"operator":"BETWEEN_SQL","start":"2024-07-01","end":"2024-09-30"}}
   "CONFIRMED"         → {{"operator":null}}
-  "last_30_days"      → {{"operator":">=","value":"DATEADD(day,-30,CURRENT_DATE)"}}
 
 User question: {question}
 Expression: {expression}"""
@@ -1914,12 +2065,16 @@ Each variant removes filter conditions progressively to identify the cause.
 Return JSON only — no explanation, no markdown fences.
 
 Rules:
-- Keep all CTEs (WITH clauses) intact in all variants
-- Keep all JOINs intact in all three variants
-- Only remove WHERE/HAVING conditions as instructed per variant (see per-key rules below)
+- Preserve all structural elements (CTEs, JOINs) intact — only remove WHERE/HAVING conditions as instructed per variant (see per-key rules below)
 - Output only valid Redshift SQL
 - bare_join_sql may simplify to a basic COUNT(*) from the primary tables with their join
 - Do NOT invent new table names, column names, or aliases not in the original SQL
+
+SELF-CHECK before emitting variants:
+1. STRUCTURE PRESERVATION: In all three variants, CTEs and JOINs from the original SQL must be present and unchanged. Only WHERE/HAVING conditions are removed.
+2. VARIANT no_time_filter_sql: Only date/time conditions removed. All other WHERE conditions (entity filters, status filters, business rules) are preserved.
+3. VARIANT no_any_filter_sql: All WHERE/HAVING removed. JOINs and CTEs still intact.
+4. VARIANT bare_join_sql: SELECT COUNT(*) from primary tables only — no JOINs beyond the primary pair, no CTEs, no WHERE. If you kept extra JOINs here, remove them.
 
 Output format:
 {{
@@ -1939,14 +2094,45 @@ Original SQL:
 # ─── Single-Responsibility Agent Prompts ─────────────────────────────────────
 # Each prompt has exactly one job. Context is minimal — only what that job needs.
 
+QUERY_PLANNER_PROMPT = ChatPromptTemplate.from_template(
+    """You are a query specification extractor. Your ONLY job is to read the user's question
+and extract what they explicitly want to see in the output. You do NOT select tables, columns,
+or write SQL — that happens later with the actual database schema.
+
+User question: {question}
+
+Extract ONLY what is explicitly stated. Do not infer, expand, or add anything not directly mentioned.
+
+{reasoning_directive}
+
+<output>
+{{
+  "expected_output_cols": ["metric or concept names user explicitly mentioned — e.g. 'exception_type', 'volume', 'avg_resolution_time', 'manpower_efforts'"],
+  "required_groupings": ["how user wants data broken down — e.g. 'by exception type', 'by currency'"],
+  "required_time_period": "exact time phrase from question or null",
+  "is_detail_request": false,
+  "explicit_entities": ["named entities to filter on — e.g. 'JPMorgan', 'USD', 'wire transfer'"]
+}}
+</output>
+
+is_detail_request = true ONLY when user asks to list, show, retrieve, display, or find individual records.
+False for summary/aggregate/report queries (volume by X, average Y, total Z grouped by W).
+
+SELF-CHECK before outputting:
+1. EXPLICIT DIMENSIONS: Scan for "by X", "broken down by X", "per X", "across X". Each must appear in required_groupings.
+2. THRESHOLDS: Scan for "above X%", "below X", "outside policy of X", "exceeds X", "flag units with X". Each must appear in explicit_entities. A threshold defines the analytical goal — do not omit.
+3. TIME PERIOD: Copy the user's exact words for required_time_period. Do not paraphrase or normalize."""
+)
+
+
 ANCHOR_RESOLVER_PROMPT = ChatPromptTemplate.from_template(
     """You are a table selector. Your ONLY job is to identify which database tables are needed
 to answer the user's question. You do NOT write SQL, extract columns, or build filters.
 
-Available tables:
+Available tables (⚑ markers = high-confidence match — these tables MUST be selected):
 {tables_section}
 
-Business terms:
+Business terms (if [tables: ...] listed, those tables MUST be in anchor_tables):
 {business_terms_section}
 
 Example intent patterns:
@@ -1958,9 +2144,11 @@ User question: {question}
 
 Rules:
 - Select 2-4 tables maximum
-- Pick tables based on their description, grain, and business domain
-- If the question mentions a specific metric (e.g. "maturity", "balance", "invoice"), pick tables
-  that COULD contain that metric based on their grain and description
+- Tables marked [⚑ business-term] MUST be included — the user named concepts that
+  live in those tables
+- If any business term shows [tables: ...], include those tables — they are confirmed
+  mappings of the user's concept to specific database tables
+- Pick remaining tables based on description, grain, and business domain
 - result_shape must be one of: kpi | table | ratio | time_series | comparison
 
 ----
@@ -1972,6 +2160,11 @@ Output your reasoning in <reasoning>...</reasoning>, then the JSON in <output>..
 <reasoning>
 State which tables match the question and why — one sentence per table.
 </reasoning>
+SELF-CHECK before outputting anchor_tables:
+1. TABLE JUSTIFICATION: For each table beyond your top 2, name the specific output column or confirmed join key that requires it. If you cannot name one, remove the table.
+2. RESULT SHAPE: Match the question verb — "compare"/"vs" → comparison; "trend"/"over time" → time_series; "total"/"how much" with no breakdown → single_value; "rate"/"ratio" → comparison or kpi; default → table.
+3. COUNT CHECK: More than 5 anchor tables is almost always wrong. If you have >5, remove the weakest until every remaining one is justified.
+
 <output>
 {{
   "anchor_tables": ["schema.table_name", ...],
@@ -1986,13 +2179,21 @@ MEASURE_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
     """You are a metric extractor. Your ONLY job is to identify which columns to aggregate
 to answer the user's question. You do NOT select filters, dimensions, or write directives.
 
-These are the MEASURABLE columns available (is_measurable=True):
+These are the MEASURABLE columns available (numeric/amount types):
 {measurable_columns_section}
 
 User question: {question}
 Intent summary: {intent_summary}
 {refinement_section}
+{query_plan_section}
 Rules:
+- EXPLICIT METRICS ONLY: Only output measures for columns the user explicitly asked to sum,
+  count, average, or total.
+- LIST/DETAIL QUERIES: If the user asks to list, show, retrieve, display, or find individual
+  records (e.g. "list all transfers", "show transactions", "what are the wire payments",
+  "find invoices"), output measures: [] and explain in measure_directive why no aggregation
+  is needed. Amount thresholds ("over 1 million") are FILTERS, not measures — they go in
+  threshold_specs (handled by filter_specialist), NOT in measures.
 - Select only columns that can be meaningfully aggregated (SUM, AVG, COUNT) to answer the question
 - Aggregation choices: SUM (totals/amounts), AVG (rates/ratios), COUNT (counts)
 - For ratio result_shape: set aggregation to null — the SQL generator computes the ratio
@@ -2006,6 +2207,7 @@ Output your reasoning in <reasoning>...</reasoning>, then the JSON in <output>..
 
 <reasoning>
 State which columns match the requested metrics and what aggregation applies — one sentence per measure.
+If this is a list/detail query, explicitly state "no aggregation needed — listing request".
 </reasoning>
 <output>
 {{
@@ -2015,11 +2217,17 @@ State which columns match the requested metrics and what aggregation applies —
   "derived_measures": [
     {{"alias": "net_cash_flow", "expression": "SUM(inflows) - SUM(outflows)", "aggregation": "NONE"}}
   ],
-  "measure_directive": "one line summarizing what is being measured"
+  "measure_directive": "one line summarizing what is being measured, or 'no aggregation — listing request'"
 }}
 </output>
 Use derived_measures when the user asks to compute an expression combining multiple columns
-(net flow, ratio, running total). Leave as [] if only direct column aggregations are needed."""
+(net flow, ratio, running total). Leave as [] if only direct column aggregations are needed.
+For list/detail queries, output measures: [] and derived_measures: [].
+
+SELF-CHECK before outputting:
+1. EMPTY MEASURES GATE: If the question is NOT a list/detail query and your measures = [], explain why in measure_directive. Name what the user asked for and why the schema can't supply it directly. A silent empty return for an analytical question is always wrong.
+2. EXPLICIT METRIC CHECK: If the user requested a specific metric by name or formula (rate, total, average, percentage, ratio), it must appear in measures, derived_measures, or be explained in measure_directive as a schema gap.
+3. AGGREGATION MATCH: SUM for totals/amounts; AVG for rates/averages; COUNT for counts; derived_measures (numerator/denominator) for ratios/percentages."""
 )
 
 
@@ -2033,12 +2241,9 @@ These are the FILTERABLE columns available:
 User question: {question}
 Intent summary: {intent_summary}
 {refinement_section}
-{entity_hints_section}
+{query_plan_section}
 CRITICAL RULES:
-- raw_user_value must ALWAYS be the user's exact words — NEVER a DB code from the values list
-  Example: user says "JPMorgan" → raw_user_value = "JPMorgan" (NOT "BANK_JPM")
-  Example: user says "last 90 days" → raw_user_value = "last_90_days" as timeframe
-  Value resolution to DB codes is handled by a downstream system — your job is extraction only
+- For time_filter_col, use only columns labeled [time-filter eligible]. Never use [metadata timestamp] columns.
 - For time filters: set timeframe to a standard string, time_filter_col to the exact column,
   and temporal_grains to a list of grains ([] if no breakdown).
   Past:    today, last_7_days, last_30_days, last_90_days, last_12_months,
@@ -2071,7 +2276,13 @@ State which filters were detected from the question and which columns they map t
 }}
 </output>
 Use threshold_specs when the user asks to FLAG, HIGHLIGHT, or IDENTIFY rows that breach a threshold
-(e.g. "below $200M minimum" → value=200000000, "exceeds limit" → operator=>). Leave as [] if none."""
+(e.g. "below $200M minimum" → value=200000000, "exceeds limit" → operator=>). Leave as [] if none.
+
+SELF-CHECK before outputting:
+1. TIME COLUMN: Is time_filter_col labeled [time-filter eligible] in the columns above? If not, you picked a metadata timestamp — go back and pick a [time-filter eligible] column. If none exists, set time_filter_col to null and note it in filter_directive_hint.
+2. NAMED ENTITIES: Did the user name a specific entity (company name, region, code, supplier)? It must appear in filters[]. A named entity absent from filters[] is a silent miss.
+3. THRESHOLDS: Did the user mention a compliance threshold, policy rate, or target value ("95% on-time", "above $1M", "outside policy")? Capture it as a threshold_spec entry — not as a filter. A threshold computes a HAVING condition, not a WHERE condition.
+4. SILENT OMISSIONS: If a filter the user clearly wants is absent from the available columns, state it in filter_directive_hint as: "MISSING: user requested filter on [X] but no matching column found". Never silently drop it."""
 )
 
 
@@ -2079,14 +2290,19 @@ DIMENSION_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
     """You are a dimension extractor. Your ONLY job is to identify which columns to group by
 or display in the output to answer the user's question. You do NOT select measures or filters.
 
-These are the GROUPABLE columns available (is_groupable=True):
+These are the GROUPABLE columns available (dimension/code/flag types):
 {groupable_columns_section}
 
 User question: {question}
 Intent summary: {intent_summary}
 Measures already selected: {measures_summary}
 {refinement_section}
+{query_plan_section}
 Rules:
+- GROUP BY columns must reflect what the user explicitly asked to group or break down by.
+  If the user asked for a list without specifying grouping, use natural grain columns
+  (primary key, reference ID, or unique identifier for individual records).
+- Never add dimension columns from tables not in anchor_tables (no cross-schema guessing).
 - Select columns that users expect to see in the output (company name, currency, date, category)
 - Do NOT include columns already selected as measures
 - For KPI result_shape: dimensions should be empty (single aggregate)
@@ -2108,7 +2324,12 @@ State which grouping columns match what the user wants to see broken down by —
   ],
   "dimension_directive": "one line summarizing grouping"
 }}
-</output>"""
+</output>
+
+SELF-CHECK before outputting:
+1. REQUESTED BREAKDOWN COVERAGE: Scan the question for "by X", "broken down by X", "per X", "across X", "for each X". For each: if X maps to a groupable column → include in dimensions[]; if no match exists → include in dimension_directive: "MISSING: user requested breakdown by [X] — no matching column in available schema". Never silently omit a requested dimension.
+2. NO EXTRAS: Do not add dimensions the user did not request. An unrequested dimension changes the grain and can explode row count.
+3. DIMENSION_DIRECTIVE COMPLETENESS: If any requested dimension is missing, dimension_directive must say so explicitly."""
 )
 
 
@@ -2131,6 +2352,7 @@ Assembled intent:
 Complete schema for anchor tables (all columns):
 {anchor_schema_section}
 {filter_hint_section}
+{query_plan_section}
 User question: {question}
 {refinement_section}
 ----
@@ -2148,6 +2370,8 @@ Think through:
 - Does temporal_grains have 2+ entries? If yes, this is a dual-grain query → emit DUAL_GRAIN
 - If complexity=complex or query_intent mentions multiple horizons/thresholds/derived values,
   plan multi-CTE breakdown with explicit COMPUTATION lines for each derived measure.
+- If USER'S EXPLICIT TIME PERIOD is shown with a ⚠ warning, filter_specialist failed to extract
+  the time filter — you MUST resolve it here by emitting TIME_FILTER + COMPUTED_FILTER.
 </reasoning>
 
 Write the directive using these EXACT machine-readable prefixes (one per line):
@@ -2160,14 +2384,44 @@ Write the directive using these EXACT machine-readable prefixes (one per line):
   DUAL_GRAIN: <fine_grain>+<coarse_grain>          (ONLY when temporal_grains has 2+ entries — signals two-CTE + UNION structure)
 
 Rules:
-- SCHEMA_GAP: write one line per concept that is missing from the anchor table schemas shown above
+- SCHEMA_GAP: write one line per gap using EXACTLY one of these three typed prefixes:
+    SCHEMA_GAP_JOIN: lpp.table_a | lpp.table_b
+        → when no FK / join key is visible between two specific tables
+        → list ONLY the two table FQNs, pipe-separated, nothing else on the line
+    SCHEMA_GAP_TABLE: lpp.table_name
+        → when a table's full column list is missing from the schema above
+        → list ONLY the single table FQN, nothing else on the line
+    SCHEMA_GAP_CONCEPT: <1-4 word noun phrase describing the missing concept>
+        → when a concept is needed but you cannot name a specific table
+        → MUST be a SHORT noun phrase (1-4 words) as a column name would appear
+        → Good: "direction_flag", "row_type_code", "flow_classification_code"
+        → Bad: full sentences, descriptions with "column for", "status that indicates", etc.
+        → Plain English only — no table names or column names on this line
+  Examples:
+    SCHEMA_GAP_JOIN: lpp.payment_exception | lpp.ach_return
+    SCHEMA_GAP_TABLE: lpp.payment_exception
+    SCHEMA_GAP_CONCEPT: payment_exception_date
+  NEVER embed table names inside SCHEMA_GAP_CONCEPT lines.
+  A downstream resolver parses these machine-read lines exactly — any deviation silently drops the gap.
 - CONFIDENCE_NOTE: 0.90+ if all columns found; 0.70-0.89 if some approximations; 0.50-0.69 if key columns missing
 - TIME_FILTER: always specify the exact column — pick the most semantically correct date column for the timeframe
+- FALLBACK TIME FILTER: If timeframe=not specified but USER'S EXPLICIT TIME PERIOD is present above
+  (with a ⚠ warning), you MUST emit both TIME_FILTER and COMPUTED_FILTER. Pick the best date column
+  from the anchor schema — prefer detected_at, created_at, transaction_date, event_date over
+  rollup_date, updated_at, loaded_at, last_modified (those are data-freshness timestamps, not business
+  event dates). A missing time filter on an explicit time request is a directive failure.
 - DUAL_GRAIN: emit exactly one line when temporal_grains lists 2+ grains (e.g. ["week", "month"] → DUAL_GRAIN: week+month).
   The fine grain (first entry) is the shorter window; the coarse grain (second entry) is the longer window.
   The horizon boundary label MUST use the MAX-date anchor from a snapshot CTE, NOT CURRENT_DATE, so stale data
   gets correctly labeled (e.g. CASE WHEN period <= DATEADD(day,28,max_date) THEN 'week_view' ELSE 'month_view' END).
   Do NOT emit DUAL_GRAIN for single-grain queries even if multiple COMPUTATION lines exist.
+
+SELF-CHECK before emitting the directive:
+1. TIME ANCHOR: If TEMPORAL COLUMNS is present in SCHEMA DIRECTIVE, pick the column that is the logical time anchor for your computation (on-time rate → due_date; invoice volume → issue_date; payment cleared → execution_date). State your choice as TIME_FILTER: table.column. NEVER silently follow a default when your computation proves a different column is correct.
+2. LOOKUP CTEs: Any CTE that maps one key to another (company_ref → business_unit, code → label) is a LOOKUP CTE. Lookup CTEs MUST NOT have WHERE time filters — they must be complete across all history. A time-filtered lookup causes NULL dimension values for entities with no events in the window.
+3. DEAD CTEs: List every CTE name you define. Verify each one is referenced in a downstream CTE's FROM/JOIN or in the final SELECT. If a CTE is not referenced — remove it entirely. Do not emit unused CTEs.
+4. INFERRED JOINS: For every JOIN not in JOIN_CHAIN or UNRESOLVED_PAIRS, emit it as SCHEMA_GAP_JOIN — not as a silent inference.
+5. OVERRIDE AUTHORITY: If filter_specialist, dimension_specialist, or measure_specialist returned something that conflicts with what the schema and computation require, you are authorized — and obligated — to correct it here. Deferring to a weaker upstream signal when you have better evidence is a failure mode.
 
 <directive>
 <instructions>
@@ -2176,11 +2430,13 @@ COMPUTED_FILTER lines here (if any)
 DUAL_GRAIN line here (if temporal_grains has 2+ entries)
 </instructions>
 <context>
-JOIN_PATH lines (if any)
+JOIN_PATH lines (if any, e.g. JOIN_PATH: lpp.a.col = lpp.b.col)
 TIME_FILTER: schema.table.col
 ANCHOR_TABLES: comma-separated list
 RESULT_SHAPE: {result_shape}
-SCHEMA_GAP lines (if any)
+SCHEMA_GAP_JOIN: lpp.table_a | lpp.table_b      (one line per missing join key — FQNs only)
+SCHEMA_GAP_TABLE: lpp.table_name                (one line per table with missing schema)
+SCHEMA_GAP_CONCEPT: plain English concept       (one line per concept with no known table)
 CONFIDENCE_NOTE: 0.XX (reason)
 </context>
 </directive>"""
@@ -2197,16 +2453,19 @@ QUERY RESULTS:
 {data_profile}
 
 Scan every value. A value is implausible when:
-- Any balance > $100 billion for what appears to be a single account
+- Any balance > $1 trillion for a SINGLE account or single-entity row
+- IMPORTANT: If the result has 1-5 rows with column names containing "total_", "sum_",
+  "aggregate_", "grand_total", or "cash_balance", these are AGGREGATED sums across many
+  accounts or the whole portfolio — DO NOT flag these regardless of magnitude.
+  A total cash balance of $200B–$800B for a large corporate treasury is COMPLETELY NORMAL.
+  Only flag individual account-level rows with impossible values (e.g. one account with $1T+).
 - Any percentage > 10,000%
 - Any date strictly before 1990
 - Any date strictly after 2035
 - Any count < 0
 
-CRITICAL date rule: any date between 1990 and 2035 is VALID — before or after today.
-Future-dated records (maturity dates, forecast periods, scheduled payments) are normal in treasury.
+Future-dated records (maturity dates, forecast periods, scheduled payments) are normal in treasury — do NOT flag them.
 A date like 2026-04-01 when today is 2026-06-05 is simply a past date — it is NOT a concern.
-Only flag dates outside the 1990–2035 window.
 
 Rules:
 - If NO implausible values: output triggered=false, reason=null

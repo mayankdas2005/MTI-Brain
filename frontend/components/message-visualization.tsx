@@ -224,13 +224,20 @@ function humanizeEncoding(spec: Record<string, unknown>): Record<string, unknown
     }
   }
 
-  // Humanize explicit tooltip array entries
+  // Humanize explicit tooltip array entries.
+  // Also re-humanize titles that look like raw identifiers (snake_case or SCREAMING_CASE)
+  // — the backend may have set title to the raw column name.
   const tooltipEnc = enc.tooltip;
   if (Array.isArray(tooltipEnc)) {
     newEnc.tooltip = tooltipEnc.map((item: unknown) => {
       if (!item || typeof item !== 'object') return item;
       const t = item as Record<string, unknown>;
-      if (typeof t.field !== 'string' || t.title != null) return t;
+      if (typeof t.field !== 'string') return t;
+      const existingTitle = t.title != null ? String(t.title) : null;
+      const looksRaw = existingTitle === null
+        || existingTitle.includes('_')
+        || /^[A-Z0-9]+$/.test(existingTitle);
+      if (!looksRaw) return t;
       return { ...t, title: toTitleCase(t.field) };
     });
     changed = true;
@@ -335,7 +342,10 @@ function fmtKpi(value: unknown): string {
 }
 
 function KpiCard({ values }: { values: Record<string, unknown>[] }) {
-  const entries = values.flatMap((row) => Object.entries(row));
+  const entries = values
+    .flatMap((row) => Object.entries(row))
+    .filter(([, v]) => v != null && v !== '' && !Number.isNaN(v as number));
+  if (!entries.length) return null;
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 py-2">
       {entries.map(([key, value], i) => (
@@ -896,7 +906,11 @@ export function MessageVisualization({
   if (!currentNormalized) return null;
 
   if (currentNormalized === 'kpi_card') {
-    const values = (activeSpec.values as Record<string, unknown>[] | undefined) ?? [];
+    const rawValues = (activeSpec.values as Record<string, unknown>[] | undefined) ?? [];
+    // Filter rows where every value is null/undefined/NaN/empty — nothing to display
+    const values = rawValues.filter(row =>
+      Object.values(row).some(v => v != null && v !== '' && !Number.isNaN(v as number))
+    );
     if (!values.length) return null;
     return (
       <div className="mt-3 rounded-xl border border-border px-4 pt-3 pb-2 bg-sidebar">

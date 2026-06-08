@@ -574,39 +574,9 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
                 f"   [stale-data-fallback — same window anchored to MAX date instead of CURRENT_DATE]"
             )
 
-        extra = []
-        for t in schema_ctx.get("tables", []):
-            fqn  = t.get("fqn", "")
-            tcol = t.get("time_dimension_col", "")
-            if fqn and tcol and t.get("is_time_series") and fqn != primary_fqn and fqn in anchor_tables_set:
-                extra.append(f"  {fqn}.{tcol} {tf_clause}")
-                stale_extra = apply_stale_fallback(tf_op, tf_val, tcol, fqn)
-                if stale_extra is not None:
-                    stale_extra_clause = render_filter_value(tf_op, stale_extra)
-                    extra.append(f"  OR {fqn}.{tcol} {stale_extra_clause}   [stale-data-fallback]")
-        if extra:
-            lines.append("  Apply same boundary to ALL other time-series tables in this query:")
-            lines.extend(extra)
-            lines.append("  (Omitting these causes full-history scans → timeout)")
         lines.append("")
     else:
-        snapshot_tables = [
-            (t.get("fqn", ""), t.get("time_dimension_col", ""))
-            for t in schema_ctx.get("tables", [])
-            if t.get("is_time_series") and t.get("time_dimension_col")
-               and t.get("fqn") in anchor_tables_set
-        ]
-        if snapshot_tables:
-            lines.append("TIME FILTER: none specified")
-            lines.append("  MANDATORY — these tables are daily snapshots.")
-            lines.append("  For current/recent data, filter on BOTH conditions (no truncation, no transformation):")
-            for fqn, tcol in snapshot_tables:
-                lines.append(f"    WHERE {fqn}.{tcol} = CURRENT_DATE")
-                lines.append(f"       OR {fqn}.{tcol} = (SELECT MAX({tcol}) FROM {fqn})")
-            lines.append("  CURRENT_DATE covers live data. MAX subquery covers stale snapshots.")
-            lines.append("  Never apply DATE_TRUNC or DATEADD to either side.")
-            lines.append("  Exception: omit the date filter ONLY for full-history queries (trends, all-time totals).")
-            lines.append("")
+        pass
 
     measures = spec.get("measures") or []
     dimensions = spec.get("dimensions") or []
@@ -916,8 +886,10 @@ def _build_schema_reference(schema_ctx: dict) -> str:
         lines.append(f"  {fqn:<40}{role_str}{desc_str}{grain_str}".rstrip())
     lines.append("")
 
-    primary_cols = [c for c in columns if "is_groupable" in c or "is_measurable" in c]
-    secondary_cols = [c for c in columns if "is_groupable" not in c and "is_measurable" not in c]
+    _PRIMARY_SEMANTIC = {"amount", "measure", "percentage", "ratio",
+                         "dimension", "code", "flag"}
+    primary_cols = [c for c in columns if c.get("semantic_type", "").lower() in _PRIMARY_SEMANTIC]
+    secondary_cols = [c for c in columns if c.get("semantic_type", "").lower() not in _PRIMARY_SEMANTIC]
 
     if primary_cols:
         lines.append("PRIMARY COLUMNS (grouped by table — ONLY use columns listed under each table; do not cross-reference):")
@@ -938,12 +910,14 @@ def _build_schema_reference(schema_ctx: dict) -> str:
             for c in cols:
                 name = c.get("name", "")
                 dtype = c.get("data_type", c.get("semantic_type", ""))
-                semantic_type = c.get("semantic_type", "")
-                is_measurable = c.get("is_measurable", False)
-                is_groupable = c.get("is_groupable", False)
+                semantic_type = c.get("semantic_type", "").lower()
                 desc = c.get("description", "")
                 filter_values = c.get("filter_values") or c.get("sample_values") or []
 
+                _AGG_SEMANTIC = {"amount", "measure", "percentage", "ratio"}
+                _GRP_SEMANTIC = {"dimension", "code", "flag"}
+                is_measurable = semantic_type in _AGG_SEMANTIC
+                is_groupable = semantic_type in _GRP_SEMANTIC
                 marker = "[AGG]" if is_measurable else ("[GRP]" if is_groupable else "")
                 sem_marker = _semantic_markers.get(semantic_type, "")
                 col_ref = f"  {fqn}.{name}"
@@ -972,11 +946,14 @@ def _build_schema_reference(schema_ctx: dict) -> str:
             name = c.get("name", "")
             dtype = c.get("data_type", c.get("semantic_type", ""))
             semantic_type = c.get("semantic_type", "")
+            desc = c.get("description", "")
             filter_values = c.get("filter_values") or c.get("sample_values") or []
             sem_marker = _sec_semantic_markers.get(semantic_type, "")
             line = f"  {fqn}.{name:<50} {dtype}"
             if sem_marker:
                 line += f"  {sem_marker}"
+            if desc:
+                line += f'  "{desc}"'
             if filter_values:
                 vals_str = ", ".join(str(v) for v in filter_values[:8])
                 line += f"   [enum: {vals_str}]"
@@ -1188,32 +1165,34 @@ def _build_query_patterns_section(
     repair = top.get("repair_count") or 0
     if not (outline or join_outline):
         return ""
+    # Query patterns are LLM-generated SQL from prior successful runs — "successful" means no
+    # DB error, NOT that the SQL was optimal or structurally correct. Present as reference only:
+    # use for table names and join key hints, never as a structural template to copy.
     if pattern_matched and pattern_name:
         header = (
-            f"MATCHED PATTERN: \"{pattern_name}\" — adapt this pattern to the current question "
-            "rather than generating from scratch:"
+            f"PRIOR QUERY REFERENCE (LLM-generated, not human-verified): \"{pattern_name}\" — "
+            "use ONLY as a hint for which tables and join keys were used in a similar question. "
+            "Do NOT copy its CTE structure — follow the CTE CONTRACT above instead."
         )
     else:
-        header = "SIMILAR QUERY PATTERNS (prior successful query for a similar question — use as structural guide):"
+        header = (
+            "SIMILAR QUERY REFERENCE (LLM-generated, not human-verified — reference only): "
+            "use ONLY for table names and join key hints. Do NOT copy its structure."
+        )
     lines = [header]
     if question_text:
         lines.append(f"  Question:   \"{question_text}\"")
     lines += [
-        f"  Intent:     {intent}",
         f"  Tables:     {tables}",
     ]
-    if complexity:
-        lines.append(f"  Complexity: {complexity}")
-    if outline:
-        lines.append(f"  Structure:  {outline}")
     if join_outline:
-        lines.append(f"  Joins:      {join_outline}")
+        lines.append(f"  Join keys:  {join_outline}")
     if filter_summary:
         lines.append(f"  Filters:    {filter_summary}")
     if recompile or repair:
         lines.append(
-            f"  Note: this pattern needed {recompile} recompile(s) and {repair} repair(s) — "
-            "study its join keys and filter patterns carefully before adapting."
+            f"  Warning: this prior query needed {recompile} recompile(s) and {repair} repair(s) — "
+            "its structure had problems; use only its table/join-key hints."
         )
     return "\n".join(lines)
 

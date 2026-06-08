@@ -700,6 +700,9 @@ def _resolve_filter_values(
         resolved.append(raw)
         modes.append("unknown")
 
+    if all(m == "unknown" for m in modes):
+        return "UNRESOLVED", resolved
+
     if all(m == "exact" for m in modes):
         op = "=" if len(resolved) == 1 else "IN"
     else:
@@ -743,7 +746,19 @@ def _build_filter_specs(
             norm_op, norm_values = _resolve_filter_values(
                 col_name, f["table_fqn"], raw_list, raw_op, semantic_context,
             )
-            if norm_op == "ILIKE_MULTI":
+            if norm_op == "UNRESOLVED":
+                for v in norm_values:
+                    filters.append(FilterSpec(
+                        table_fqn=f["table_fqn"],
+                        column_name=col_name,
+                        operator="=",
+                        value=v,
+                        raw_user_value=raw_value,
+                        resolved=False,
+                        is_having=is_having,
+                    ))
+                continue
+            elif norm_op == "ILIKE_MULTI":
                 for v in norm_values:
                     filters.append(FilterSpec(
                         table_fqn=f["table_fqn"],
@@ -852,21 +867,18 @@ def _find_date_column(
     semantic_context: dict,
     intent_directive: str = "",
 ) -> tuple[str, str]:
-    """Metadata-driven date column selection — five ranked passes, no hardcoded names.
+    """Metadata-driven date column selection — three ranked passes, no hardcoded names.
 
-    Pass 0: TIME_FILTER column in intent directive — highest priority. The intent resolver
-            often identifies the correct time column from business context (e.g. repayment_date
-            for a maturity query) even when metadata points to a different column (drawdown_date).
-    Pass 1: table.time_dimension_col — authoritative field set during ingestion.
-    Pass 2: column.temporal_grain is set.
-    Pass 3: date/timestamp data_type on a time-series table.
-    Pass 4: any date/timestamp data_type (last resort).
+    Pass 0: TIME_FILTER column in intent directive — highest priority.
+    Pass 1: column.temporal_grain is set — returns FIRST match as default.
+            When multiple temporal columns exist on the primary table, the SCHEMA DIRECTIVE
+            emits the full TEMPORAL COLUMNS list so directive_writer can pick the right one.
+    Pass 2: any date/timestamp data_type (last resort).
     """
     import re as _re
     columns = semantic_context.get("columns", [])
 
     # Pass 0: column named in intent directive TIME_FILTER line wins over metadata.
-    # e.g. "TIME_FILTER: lpp.borrowing.repayment_date BETWEEN ..." → use repayment_date
     if intent_directive:
         for line in intent_directive.splitlines():
             if line.strip().upper().startswith("TIME_FILTER:"):
@@ -883,20 +895,12 @@ def _find_date_column(
                                 )
                                 return candidate_fqn, candidate_col
                 break
-    tables_meta = {t["fqn"]: t for t in (semantic_context.get("tables") or []) if t.get("fqn")}
 
     _DATE_TYPES = {"date", "timestamp", "datetime"}
     _DATE_SEMANTICS = {"date", "datetime", "timestamp"}
 
-    # Pass 1: time_dimension_col on a time-series table
-    for table in anchor_tables:
-        t_meta = tables_meta.get(table, {})
-        if t_meta.get("is_time_series") and t_meta.get("time_dimension_col"):
-            col_name = t_meta["time_dimension_col"]
-            logger.info("ir_builder | date_col | table={} col={} via=time_dimension_col", table, col_name)
-            return table, col_name
-
-    # Pass 2: column.temporal_grain is set
+    # Pass 1: column.temporal_grain is set — return first match as default.
+    # Multiple candidates are exposed via TEMPORAL COLUMNS in _build_schema_directive.
     for table in anchor_tables:
         for col in columns:
             if col.get("table_fqn") != table:
@@ -905,19 +909,7 @@ def _find_date_column(
                 logger.info("ir_builder | date_col | table={} col={} via=temporal_grain", table, col["name"])
                 return table, col["name"]
 
-    # Pass 3: date/timestamp column on a time-series table
-    for table in anchor_tables:
-        t_meta = tables_meta.get(table, {})
-        if not t_meta.get("is_time_series"):
-            continue
-        for col in columns:
-            if col.get("table_fqn") != table:
-                continue
-            if col.get("data_type", "").lower() in _DATE_TYPES:
-                logger.info("ir_builder | date_col | table={} col={} via=data_type+is_time_series", table, col["name"])
-                return table, col["name"]
-
-    # Pass 4: any date/timestamp column
+    # Pass 2: any date/timestamp data_type (last resort)
     for table in anchor_tables:
         for col in columns:
             if col.get("table_fqn") != table:

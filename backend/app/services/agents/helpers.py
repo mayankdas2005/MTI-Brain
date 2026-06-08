@@ -69,6 +69,26 @@ def apply_stale_fallback(operator: str, value, col_name: str, table_fqn: str):
     return value.replace("CURRENT_DATE", max_expr)
 
 
+def _strip_dead_ctes(parsed) -> None:
+    """Remove CTEs that are defined but never referenced downstream (sqlglot AST in-place)."""
+    from sqlglot import exp
+    with_clause = parsed.args.get("with")
+    if not with_clause:
+        return
+    cte_aliases = {cte.alias for cte in with_clause.expressions}
+    if not cte_aliases:
+        return
+    table_refs = {t.name for t in parsed.find_all(exp.Table)}
+    dead = cte_aliases - table_refs
+    if not dead:
+        return
+    live = [cte for cte in with_clause.expressions if cte.alias not in dead]
+    if live:
+        with_clause.set("expressions", live)
+    else:
+        parsed.args.pop("with", None)
+
+
 def format_sql(sql: str) -> str:
     """Pretty-print SQL using sqlglot (Redshift dialect). Falls back to stripped string on parse error."""
     if not sql.strip():
@@ -79,6 +99,7 @@ def format_sql(sql: str) -> str:
             sql, read="redshift", error_level=sqlglot.ErrorLevel.IGNORE
         )
         if parsed:
+            _strip_dead_ctes(parsed)
             return parsed.sql(dialect="redshift", pretty=True)
     except Exception:
         pass

@@ -118,7 +118,7 @@ def trim_objects(objects: list[dict], join_critical_cols: set[tuple] | None = No
             key = (fqn, name)
             if join_critical_cols and key in join_critical_cols:
                 pass  # keep full description for join-critical columns
-            elif cleaned.get("is_measurable"):
+            elif cleaned.get("semantic_type", "").lower() in ("amount", "measure", "percentage", "ratio"):
                 cleaned["description"] = cleaned["description"][:100]
             else:
                 cleaned["description"] = cleaned["description"][:60]
@@ -142,7 +142,7 @@ def trim_objects(objects: list[dict], join_critical_cols: set[tuple] | None = No
             key = (fqn, name)
             if join_critical_cols and key in join_critical_cols:
                 cleaned["synonyms"] = cleaned["synonyms"][:3]
-            elif cleaned.get("is_measurable"):
+            elif cleaned.get("semantic_type", "").lower() in ("amount", "measure", "percentage", "ratio"):
                 cleaned["synonyms"] = cleaned["synonyms"][:2]
             else:
                 cleaned.pop("synonyms", None)  # don't show synonyms for non-critical columns

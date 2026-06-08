@@ -9,6 +9,17 @@ from __future__ import annotations
 import operator
 from typing import Annotated
 
+
+def _specialist_outputs_reducer(existing: list, update: list) -> list:
+    """Append-or-reset reducer for specialist_outputs.
+
+    If update[0] == {"__reset__": True}, clears the list (stale cross-turn state fix).
+    Otherwise appends — standard LangGraph Send accumulation for parallel specialists.
+    """
+    if update and isinstance(update[0], dict) and update[0].get("__reset__"):
+        return list(update[1:])
+    return (existing or []) + (update or [])
+
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
@@ -30,9 +41,10 @@ class AnalyticsState(TypedDict):
 
     # ── Pipeline ─────────────────────────────────────────────────────────────
     semantic_context: dict | None         # output of context_fetcher (Phase 1: tables + Group A, no columns)
+    query_plan: dict | None               # output of query_planner — user's explicit output spec (cols, groupings, time, entities)
     enriched_schema: dict | None          # output of schema_enricher — complete columns for anchor_tables only
     anchor_tables_resolved: list[str]     # output of anchor_resolver — 2-4 anchor tables before ir_builder
-    specialist_outputs: Annotated[list[dict], operator.add]  # accumulates from 3 parallel specialists via Send
+    specialist_outputs: Annotated[list[dict], _specialist_outputs_reducer]  # accumulates from 3 parallel specialists via Send; reset each turn by intake_classifier
     resolved_intent: dict | None          # output of intent_assembler (same format as old intent_resolver)
     intent_directive: str | None              # raw directive from intent_resolver <directive> tag
     intent_directive_instructions: str | None  # <instructions> sub-section: SQL execution requirements

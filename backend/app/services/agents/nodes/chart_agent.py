@@ -24,6 +24,34 @@ _VALID_CHART_TYPES = {
 }
 
 
+def _drop_blank_columns(columns: list[str], rows: list[list]) -> tuple[list[str], list[list]]:
+    """Drop columns where every value is None, NaN, 0, '0', or '' — they produce blank charts."""
+    import math
+    if not rows or not columns:
+        return columns, rows
+
+    def _is_blank(v) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, float) and math.isnan(v):
+            return True
+        return v in (0, 0.0, "", "0")
+
+    keep = [
+        i for i, _ in enumerate(columns)
+        if any(
+            not _is_blank(row[i])
+            for row in rows
+            if i < len(row)
+        )
+    ]
+    if len(keep) == len(columns):
+        return columns, rows
+    new_cols = [columns[i] for i in keep]
+    new_rows = [[row[i] for i in keep if i < len(row)] for row in rows]
+    return new_cols, new_rows
+
+
 def _build_col_type_map(columns: list[str], rows: list[list]) -> dict[str, str]:
     """Build a normalized col_type_map using pandas on the actual data.
 
@@ -267,6 +295,12 @@ def _humanize_spec_labels(spec: dict) -> dict:
                 item["title"] = _snake_to_title(existing)
 
     def _humanize_encoding(encoding: dict) -> None:
+        # Top-level tooltip array (most chart types put tooltip directly in encoding,
+        # not nested inside a channel object)
+        top_tt = encoding.get("tooltip")
+        if isinstance(top_tt, list):
+            _humanize_tooltip_list(top_tt)
+
         for ch in encoding.values():
             if not isinstance(ch, dict):
                 continue
@@ -612,6 +646,12 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
         )
         return {"chart_spec": None}
 
+    # Strip columns where every value is 0/null — they cause blank charts when picked as metrics
+    all_columns, all_rows = _drop_blank_columns(all_columns, all_rows)
+    if not all_columns:
+        logger.info("chart_agent | all columns blank after filtering | thread={}", state["thread_id"])
+        return {"chart_spec": None}
+
     intent = ir_list[0].get("intent", "") if ir_list else ""
     persona = state.get("persona", "executive")
 
@@ -752,6 +792,11 @@ def _sanitize_chart_type(
                     pass
 
     # Return "table" only when EVERY meaningful metric column is flat (all values identical).
+    # Skip this check for kpi_card — a single summary value is trivially "all identical"
+    # (there's only 1 row) but is absolutely correct to display as a KPI card.
+    if chart_type == "kpi_card":
+        return chart_type
+
     # Skip boolean-like columns (only values 0 and 1) — those are flags, not measures.
     # A chart is still worth showing if any real metric has variation.
     #

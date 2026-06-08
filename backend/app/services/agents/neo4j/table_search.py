@@ -15,7 +15,6 @@ _TABLE_RETURN = """
     t.grain AS grain, t.synonyms AS synonyms,
     t.business_domain AS business_domain, t.community_id AS community_id,
     t.typical_join_role AS typical_join_role, t.table_type AS table_type,
-    t.is_time_series AS is_time_series,
     t.natural_dimensions AS natural_dimensions,
     t.natural_measures AS natural_measures,
     t.is_dimension_hub AS is_dimension_hub,
@@ -26,8 +25,7 @@ _TABLE_RETURN = """
     t.in_degree AS in_degree,
     t.pk_columns AS pk_columns,
     t.pagerank_score AS pagerank_score,
-    t.intent_tags AS intent_tags,
-    t.time_dimension_col AS time_dimension_col
+    t.intent_tags AS intent_tags
 """
 
 
@@ -62,7 +60,7 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
 def search_tables_via_intents(embedding: list[float]) -> list[dict]:
     query = f"""CYPHER 25
     MATCH (i:Intent)
-    SEARCH i IN (VECTOR INDEX `intent_cohere` FOR $embedding LIMIT 5)
+    SEARCH i IN (VECTOR INDEX `intent_cohere` FOR $embedding LIMIT 10)
     SCORE AS intent_score
     WITH i, intent_score
     MATCH (t:Table)-[:RELEVANT_TO]->(i)
@@ -195,6 +193,7 @@ def search_tables_via_filter_values(tokens: list[str]) -> list[dict]:
            best_match.col   AS entity_matched_column,
            best_match.item  AS entity_matched_value,
            best_match.token AS entity_matched_token,
+           top_match_score  AS entity_match_score,
            ('entity:' + best_match.col + '~=' + best_match.token) AS matched_via
     ORDER BY top_match_score DESC, top_score DESC
     LIMIT 8

@@ -185,7 +185,7 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
             "intake_classifier | fast_path | type={} | thread={}",
             quick_result, state["thread_id"],
         )
-        return {"question_type": quick_result}
+        return {"question_type": quick_result, "specialist_outputs": [{"__reset__": True}]}
 
     # Layer 2: LLM classifier with domain/intent context from Neo4j
     ctx = _get_classifier_context()
@@ -208,7 +208,7 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
         "intake_classifier DONE | thread={} | type={} | prior_analytics={}",
         state["thread_id"], question_type, prior_analytics,
     )
-    return {"question_type": question_type}
+    return {"question_type": question_type, "specialist_outputs": [{"__reset__": True}]}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

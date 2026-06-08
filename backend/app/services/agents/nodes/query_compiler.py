@@ -38,7 +38,12 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
     """
     lines = ["SCHEMA DIRECTIVE — code-verified structure from ir_builder:"]
     lines.append(f"ANCHOR_TABLES: {', '.join(ir.anchor_tables)}")
-    lines.append("  (use exactly these tables — do not add or remove)")
+    lines.append(
+        "  (SCHEMA AVAILABLE — include a table in the SQL ONLY IF at least one of its columns "
+        "appears in FINAL SELECT, it is a confirmed bridge in JOIN_CHAIN, or it provides a "
+        "required WHERE filter on the primary fact table. Tables with UNRESOLVED joins MUST be "
+        "OMITTED entirely — never include them via EXISTS, bridge CTEs, or extra JOINs.)"
+    )
 
     if ir.join_clauses:
         lines.append("JOIN_CHAIN (copy ON clauses verbatim):")
@@ -51,12 +56,16 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
         lines.append("JOIN_CHAIN: single table — no joins needed")
 
     if ir.unresolved_join_pairs:
-        lines.append("UNRESOLVED_PAIRS (no confirmed path — use AVAILABLE JOINS in SCHEMA REFERENCE):")
+        lines.append(
+            "UNRESOLVED_PAIRS — no confirmed join path found for these table pairs. "
+            "OMIT them from the SQL entirely. Do NOT add them via EXISTS, IN subqueries, "
+            "bridge CTEs, or extra JOINs. Forcing an unresolved join produces zero rows."
+        )
         for p in ir.unresolved_join_pairs:
             candidates = ", ".join(p.get("candidate_join_columns") or [])
             lines.append(
-                f"  {p['from']} ↔ {p['to']}"
-                + (f" — candidate cols: {candidates}" if candidates else "")
+                f"  {p['from']} ↔ {p['to']} — OMIT BOTH TABLES unless one has output columns"
+                + (f" | candidate cols if a join path is later found: {candidates}" if candidates else "")
             )
 
     if ir.measures:
@@ -127,6 +136,31 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
             "do NOT use them under any name or on any other table:\n"
             + "\n".join(f"  ✗ {c}" for c in invalid)
         )
+
+    # TEMPORAL COLUMNS: when multiple date columns exist on the primary anchor table,
+    # expose all so directive_writer can pick the semantically correct one (instead of
+    # deferring to whatever _find_date_column picked as the default first match).
+    if semantic_context and ir.anchor_tables:
+        primary_table = ir.anchor_tables[0]
+        all_cols = semantic_context.get("columns") or []
+        _DATE_GRAINS = {"day", "week", "month", "quarter", "year", "hour", "minute", "date"}
+        temporal_cols = [
+            c for c in all_cols
+            if c.get("table_fqn") == primary_table
+            and c.get("temporal_grain", "").lower() in _DATE_GRAINS
+        ]
+        if len(temporal_cols) > 1:
+            lines.append(
+                "\nTEMPORAL COLUMNS on primary anchor — directive_writer: pick the one that is "
+                "the logical time anchor for your computation (state your choice as "
+                "\"time_filter: table.column\" in COMPUTATION):"
+            )
+            for c in temporal_cols:
+                desc = (c.get("description") or "")[:80]
+                col_name = c.get("name", "")
+                dtype = c.get("data_type") or "date"
+                desc_str = f"  {desc}" if desc else ""
+                lines.append(f"  {primary_table}.{col_name}   [{dtype}]{desc_str}")
 
     return "\n".join(lines)
 

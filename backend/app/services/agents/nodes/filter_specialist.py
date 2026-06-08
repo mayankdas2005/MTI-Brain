@@ -32,8 +32,26 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
     if not filterable:
         filterable = columns  # fallback: show all
 
-    lines = []
-    for c in filterable[:20]:
+    # Per-table cap: each anchor table gets at most 6 columns sorted by selectivity
+    # (high → medium → low). Prevents early-listed tables from consuming all slots
+    # and ensures every anchor table (e.g. forecast_cash_flow.direction) is represented.
+    _SEL_ORDER = {"high": 0, "medium": 1, "low": 2, None: 3}
+    from collections import defaultdict
+    by_table: dict = defaultdict(list)
+    for c in filterable:
+        by_table[c.get("table_fqn", "")].append(c)
+    capped: list = []
+    for tbl_cols in by_table.values():
+        sorted_cols = sorted(tbl_cols, key=lambda c: _SEL_ORDER.get(c.get("filter_selectivity"), 3))
+        capped.extend(sorted_cols[:6])
+
+    header_lines = [
+        "FILTERABLE COLUMNS — filter_values listed are DB enum codes (reference only).",
+        "Your raw_user_value MUST be the user's exact words. The downstream resolver maps them to DB codes.",
+        "",
+    ]
+    lines = header_lines[:]
+    for c in capped:
         fqn = c.get("table_fqn", "")
         name = c.get("name", "")
         dtype = c.get("data_type") or c.get("semantic_type", "")
@@ -47,8 +65,15 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
         sample_vals = (c.get("sample_values") or [])[:5]
         temporal_grain = c.get("temporal_grain", "")
 
-        lines.append(f"  {fqn}.{name}  [{dtype}]")
-        if temporal_grain and temporal_grain != "none":
+        dtype_lower = (dtype or "").lower()
+        is_date_type = "date" in dtype_lower or "timestamp" in dtype_lower
+        has_grain = bool(temporal_grain and temporal_grain != "none")
+        if is_date_type:
+            time_label = " [time-filter eligible]" if has_grain else " [metadata timestamp — do not use as time_filter_col]"
+        else:
+            time_label = ""
+        lines.append(f"  {fqn}.{name}  [{dtype}]{time_label}")
+        if has_grain:
             lines.append(f"    temporal_grain: {temporal_grain}")
         if desc:
             lines.append(f"    description: {desc}")
@@ -63,13 +88,33 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_query_plan_section(query_plan: dict | None) -> str:
+    if not query_plan:
+        return ""
+    lines = ["USER'S EXPLICIT REQUIREMENTS — your output MUST satisfy these:"]
+    time_period = query_plan.get("required_time_period")
+    if time_period:
+        lines.append(f"  Time period (MUST be extracted): {time_period}")
+    entities = query_plan.get("explicit_entities") or []
+    if entities:
+        lines.append(f"  Named entities to filter on: {', '.join(entities)}")
+    cols = query_plan.get("expected_output_cols") or []
+    if cols:
+        lines.append(f"  User requested output: {', '.join(cols)}")
+    return "\n".join(lines)
+
+
 def _build_entity_hints_section(entity_hints: list) -> str:
     if not entity_hints:
         return ""
-    lines = ["ENTITY HINTS — pre-matched values from semantic search. Use these exact codes in WHERE clauses:"]
+    lines = [
+        "ENTITY HINTS — named entities found in the query. You MUST include a filter for each.",
+        "Use the user's exact word as raw_user_value (the downstream system resolves it to DB code):",
+    ]
     for eh in entity_hints:
         lines.append(
-            f'  "{eh.get("token")}" → {eh.get("table_fqn")}.{eh.get("column")} = \'{eh.get("matched_value")}\''
+            f'  User said "{eh.get("token")}" → filter on {eh.get("table_fqn")}.{eh.get("column")}'
+            f'   (set raw_user_value = "{eh.get("token")}")'
         )
     return "\n".join(lines)
 
@@ -81,7 +126,6 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
     resolved_intent = state.get("resolved_intent") or {}
     _sc = state.get("semantic_context") or {}
     intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
-    entity_hints_section = _build_entity_hints_section(_sc.get("entity_hints") or [])
 
     prompt = FILTER_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
@@ -89,7 +133,7 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
         filterable_columns_section=_build_filterable_columns_section(enriched_schema),
         refinement_section=build_refinement_section(state, role="filters"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        entity_hints_section=entity_hints_section,
+        query_plan_section=_build_query_plan_section(state.get("query_plan")),
     )
 
     from app.services.agents.bedrock import get_llm

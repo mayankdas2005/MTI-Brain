@@ -57,10 +57,11 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         domain_detected = helpers.domain_keyword_detected(search_query)
 
         # ── Table discovery: all paths in parallel ────────────────────────────
-        # Returns (tables, pinned_fqns, bt_pin_data) — pinned_fqns survive the cap
-        tables, pinned_fqns, _bt_pin_data = await table_discovery.run_8_path_discovery(
-            embedding, tokens, search_query, domain_detected
-        )
+        # Returns (tables, pinned_fqns, bt_pin_data, intent_table_fqns, domain_table_fqns)
+        tables, pinned_fqns, _bt_pin_data, intent_table_fqns, domain_table_fqns = \
+            await table_discovery.run_8_path_discovery(
+                embedding, tokens, search_query, domain_detected
+            )
 
         if not tables:
             logger.warning("context_fetcher | NO tables found | thread={}", state["thread_id"])
@@ -77,6 +78,16 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         templates_merged, business_terms, intents, memory_context = group_a
         tables, hub_info, is_cross_domain, join_crit_cols, display_columns, col_lookup, entity_hints = group_b
 
+        # ── Consensus tables: found by 4+ independent discovery paths ─────────
+        # Computed before trim_objects which may strip retrieval_paths metadata.
+        # Used by anchor_resolver Signal 4 as a fallback when intent/business-term
+        # signals don't fire (e.g. Neo4j data gaps). A table in 4+ paths has strong
+        # multi-signal agreement; a false positive from entity_value alone has 1 path.
+        consensus_table_fqns = [
+            t["fqn"] for t in tables
+            if t.get("fqn") and len(t.get("retrieval_paths") or []) >= 4
+        ]
+
         # ── Trim for LLM display (join-critical gets full descriptions) ────────
         templates_trimmed = helpers.trim_objects(templates_merged)
         tables_trimmed    = helpers.trim_objects(tables)
@@ -84,20 +95,23 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
 
         # ── Assemble SemanticContext ───────────────────────────────────────────
         semantic_context = {
-            "templates":          templates_trimmed,
-            "tables":             tables_trimmed,
-            "columns":            columns_trimmed,
-            "_column_lookup":     col_lookup,
-            "join_critical_cols": list(join_crit_cols),
-            "business_terms":     business_terms,
-            "intents":            intents,
-            "is_cross_domain":    is_cross_domain,
-            "cross_domain_hub":   hub_info,
-            "session_summary":    session_summary,
-            "memory_context":     memory_context,
-            "effective_question": effective_question,
-            "is_followup":        is_followup,
-            "entity_hints":       entity_hints,
+            "templates":             templates_trimmed,
+            "tables":                tables_trimmed,
+            "columns":               columns_trimmed,
+            "_column_lookup":        col_lookup,
+            "join_critical_cols":    list(join_crit_cols),
+            "business_terms":        business_terms,
+            "intents":               intents,
+            "is_cross_domain":       is_cross_domain,
+            "cross_domain_hub":      hub_info,
+            "session_summary":       session_summary,
+            "memory_context":        memory_context,
+            "effective_question":    effective_question,
+            "is_followup":           is_followup,
+            "entity_hints":          entity_hints,
+            "intent_table_fqns":     intent_table_fqns,
+            "domain_table_fqns":     domain_table_fqns,
+            "consensus_table_fqns":  consensus_table_fqns,
         }
 
         tables_found  = [t["fqn"] for t in tables_trimmed if t.get("fqn")]
@@ -209,10 +223,12 @@ async def _fetch_group_b(
             "column": t["entity_matched_column"],
             "matched_value": t["entity_matched_value"],
             "token": t["entity_matched_token"],
+            "match_score": t.get("entity_match_score", 0),
         }
         for t in tables
         if t.get("entity_matched_column") and t.get("fqn")
         and not column_loader._is_uuid_col(t["entity_matched_column"])
+        and (t.get("entity_match_score") or 0) >= 2   # require actual value match, not description hit
     ]
 
     # Load a minimal fallback column set for the legacy intent_resolver path.

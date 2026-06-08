@@ -172,7 +172,7 @@ def _build_schema_candidates_text(semantic_context: dict) -> str:
         desc      = c.get("description", "")
         synonyms  = c.get("synonyms") or []
         is_jk     = (table_fqn, name) in join_crit_set
-        is_meas   = c.get("is_measurable", False)
+        is_meas   = c.get("semantic_type", "").lower() in ("amount", "measure", "percentage", "ratio")
 
         # Use filter_values (= value_vocabulary set in context_fetcher) — not sample_values
         samples = c.get("filter_values") or []

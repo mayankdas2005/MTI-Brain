@@ -21,7 +21,6 @@ def search_columns_vector(embedding: list[float]) -> list[dict]:
     SCORE AS score
     RETURN c.id AS id, c.name AS name, c.table_fqn AS table_fqn,
            c.semantic_type AS semantic_type, c.default_aggregation AS default_aggregation,
-           c.is_measurable AS is_measurable, c.is_groupable AS is_groupable,
            c.data_type AS data_type, c.filter_selectivity AS filter_selectivity,
            score
     """
@@ -38,7 +37,6 @@ def search_columns_fulltext(query_text: str) -> list[dict]:
     YIELD node AS c, score
     RETURN c.id AS id, c.name AS name, c.table_fqn AS table_fqn,
            c.semantic_type AS semantic_type, c.default_aggregation AS default_aggregation,
-           c.is_measurable AS is_measurable, c.is_groupable AS is_groupable,
            score LIMIT 15
     """
     t0 = time.monotonic()
@@ -60,14 +58,11 @@ def get_columns_for_tables(table_fqns: list[str]) -> list[dict]:
     query = """
     MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
     WHERE t.fqn IN $table_fqns
-      AND coalesce(c.is_surrogate_key, false) = false
     RETURN c.name AS name, c.table_fqn AS table_fqn,
            c.data_type AS data_type,
            c.semantic_type AS semantic_type,
            c.default_aggregation AS default_aggregation,
            c.description AS description,
-           c.is_measurable AS is_measurable,
-           c.is_groupable AS is_groupable,
            c.filter_selectivity AS filter_selectivity,
            c.sample_values AS sample_values,
            c.value_vocabulary AS value_vocabulary,
@@ -117,7 +112,6 @@ def get_join_critical_columns(fqns: list[str]) -> list[tuple[str, str]]:
     WHERE c.table_fqn IN $fqns
       AND c.referenced_table_fqn IS NOT NULL
       AND c.referenced_table_fqn <> ''
-      AND coalesce(c.is_surrogate_key, false) = false
     RETURN c.table_fqn AS table_fqn, c.name AS col_name
 
     UNION
@@ -208,7 +202,6 @@ def get_columns_by_ids(col_ids: list[str]) -> list[dict]:
     RETURN c.id AS id, c.name AS name, c.table_fqn AS table_fqn,
            c.data_type AS data_type, c.semantic_type AS semantic_type,
            c.description AS description, c.default_aggregation AS default_aggregation,
-           c.is_measurable AS is_measurable, c.is_groupable AS is_groupable,
            c.value_vocabulary AS value_vocabulary, c.synonyms AS synonyms
     """
     t0 = time.monotonic()

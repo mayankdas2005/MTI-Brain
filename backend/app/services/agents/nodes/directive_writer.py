@@ -41,7 +41,11 @@ def _build_anchor_schema_section(enriched_schema: dict) -> str:
             dtype = c.get("data_type") or c.get("semantic_type", "")
             desc = (c.get("description") or "")[:120]
             grain = c.get("temporal_grain", "")
-            lines.append(f"  {name}  [{dtype}]{' temporal_grain=' + grain if grain and grain != 'none' else ''}")
+            ref_table = (c.get("referenced_table_fqn") or "").strip()
+            col_line = f"  {name}  [{dtype}]{' temporal_grain=' + grain if grain and grain != 'none' else ''}"
+            if ref_table:
+                col_line += f"  [FK → {ref_table}]"
+            lines.append(col_line)
             if desc:
                 lines.append(f"    {desc}")
     return "\n".join(lines)
@@ -72,6 +76,60 @@ def _format_dimensions(dimensions: list[dict]) -> str:
         f"{d.get('table_fqn', '')}.{d.get('column_name', '')} as {d.get('alias', d.get('column_name', ''))}"
         for d in dimensions
     )
+
+
+def _compute_required_tables(
+    measures: list, dimensions: list, filters: list,
+    time_filter_col: str | None, all_anchor_tables: list,
+) -> list:
+    """Return only tables that contribute to the SQL output.
+
+    A table is required if:
+    - It provides a measure column
+    - It provides a dimension column
+    - It provides the time-filter column AND is the same table as a measure/dimension table
+    - It provides a filter column AND is the same table as a measure/dimension table
+
+    Tables with no output columns and no join-confirmed filter role are excluded.
+    This prevents the CTE planner from inventing EXISTS/bridge JOINs for irrelevant tables.
+    """
+    required: set[str] = set()
+    for m in measures:
+        if m.get("table_fqn"):
+            required.add(m["table_fqn"])
+    for d in dimensions:
+        if d.get("table_fqn"):
+            required.add(d["table_fqn"])
+    # Time filter and regular filters: only include if they live on a measure/dim table
+    output_tables = set(required)
+    if time_filter_col:
+        parts = time_filter_col.rsplit(".", 1)
+        if len(parts) == 2 and parts[0] in output_tables:
+            required.add(parts[0])
+    for f in filters:
+        fqn = f.get("table_fqn")
+        if fqn and fqn in output_tables:
+            required.add(fqn)
+    return list(required) if required else list(all_anchor_tables)
+
+
+def _build_query_plan_section(query_plan: dict | None, timeframe: str | None) -> str:
+    if not query_plan:
+        return ""
+    lines = []
+    time_period = query_plan.get("required_time_period")
+    if time_period and not timeframe:
+        lines.append(f'USER\'S EXPLICIT TIME PERIOD: "{time_period}"')
+        lines.append("  ⚠ filter_specialist did NOT extract a timeframe (schema mismatch or UNABLE_TO_EXTRACT)")
+        lines.append("  → YOU MUST emit TIME_FILTER and COMPUTED_FILTER for this period using the best date column from the schema above")
+    elif time_period:
+        lines.append(f'USER\'S EXPLICIT TIME PERIOD: "{time_period}" (filter_specialist extracted: {timeframe})')
+    cols = query_plan.get("expected_output_cols") or []
+    if cols:
+        lines.append(f"USER'S REQUESTED OUTPUT COLUMNS: {', '.join(cols)}")
+    if query_plan.get("is_detail_request"):
+        lines.append("QUERY TYPE: DETAIL/LIST — do NOT add aggregation in COMPUTATION lines")
+    return "\n".join(lines) if lines else ""
 
 
 async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dict:
@@ -108,9 +166,16 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         if filter_hint else ""
     )
 
+    required_tables = _compute_required_tables(measures, dimensions, filters, time_filter_col, anchor_tables)
+    if len(required_tables) < len(anchor_tables):
+        logger.info(
+            "directive_writer | required_tables pruned | thread={} | all={} | required={}",
+            state.get("thread_id"), anchor_tables, required_tables,
+        )
+
     prompt = DIRECTIVE_WRITER_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
-        anchor_tables=", ".join(anchor_tables),
+        anchor_tables=", ".join(required_tables),
         measures=_format_measures(measures),
         filters=_format_filters(filters, timeframe, time_filter_col),
         dimensions=_format_dimensions(dimensions),
@@ -121,6 +186,7 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         query_complexity=query_complexity,
         anchor_schema_section=_build_anchor_schema_section(enriched_schema),
         filter_hint_section=filter_hint_section,
+        query_plan_section=_build_query_plan_section(state.get("query_plan"), timeframe),
         refinement_section=build_refinement_section(state, role="directive"),
         reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
     )

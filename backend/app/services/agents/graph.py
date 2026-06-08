@@ -40,12 +40,14 @@ from app.services.agents import neo4j_client, redis_client
 from app.services.agents.memory import long_term as lt_memory
 from app.services.agents.node_names import (
     ANCHOR_RESOLVER as N_ANCHOR_RESOLVER,
+    QUERY_PLANNER as N_QUERY_PLANNER,
     SCHEMA_ENRICHER as N_SCHEMA_ENRICHER,
     MEASURE_SPECIALIST as N_MEASURE_SPECIALIST,
     FILTER_SPECIALIST as N_FILTER_SPECIALIST,
     DIMENSION_SPECIALIST as N_DIMENSION_SPECIALIST,
     INTENT_ASSEMBLER as N_INTENT_ASSEMBLER,
     DIRECTIVE_WRITER as N_DIRECTIVE_WRITER,
+    SCHEMA_GAP_RESOLVER as N_SCHEMA_GAP_RESOLVER,
     DATA_QUALITY_CHECKER as N_DATA_QUALITY_CHECKER,
     CHART_AGENT as N_CHART_AGENT,
     COMPRESS as N_COMPRESS,
@@ -63,12 +65,14 @@ from app.services.agents.node_names import (
     SYNTHESIS as N_SYNTHESIS,
 )
 from app.services.agents.nodes.anchor_resolver import anchor_resolver
+from app.services.agents.nodes.query_planner import query_planner
 from app.services.agents.nodes.chart_agent import chart_agent
 from app.services.agents.nodes.compress import compress
 from app.services.agents.nodes.context_fetcher import context_fetcher
 from app.services.agents.nodes.data_quality_checker import data_quality_checker
 from app.services.agents.nodes.dimension_specialist import dimension_specialist
 from app.services.agents.nodes.directive_writer import directive_writer
+from app.services.agents.nodes.schema_gap_resolver import schema_gap_resolver
 from app.services.agents.nodes.error_response import error_response
 from app.services.agents.nodes.executor import executor
 from app.services.agents.nodes.filter_resolver import filter_resolver
@@ -128,12 +132,14 @@ def compile_graph():
     # direct multi-edges from schema_enricher work correctly and show in the graph.
     # Send API is for variable-length fan-out (map-reduce over a list), not fixed branches.
     b.add_node(N_ANCHOR_RESOLVER,     anchor_resolver,      retry_policy=LLM_RETRY)
+    b.add_node(N_QUERY_PLANNER,       query_planner,        retry_policy=LLM_RETRY)
     b.add_node(N_SCHEMA_ENRICHER,     schema_enricher)
     b.add_node(N_MEASURE_SPECIALIST,  measure_specialist,   retry_policy=LLM_RETRY)
     b.add_node(N_FILTER_SPECIALIST,   filter_specialist,    retry_policy=LLM_RETRY)
     b.add_node(N_DIMENSION_SPECIALIST,dimension_specialist, retry_policy=LLM_RETRY)
     b.add_node(N_INTENT_ASSEMBLER,    intent_assembler,     defer=True)  # waits for all 3 specialists
     b.add_node(N_DIRECTIVE_WRITER,    directive_writer,     retry_policy=LLM_RETRY)
+    b.add_node(N_SCHEMA_GAP_RESOLVER, schema_gap_resolver)
 
     # ── Fallback: legacy intent_resolver (used when assembler fails) ──────────
     b.add_node(N_INTENT_RESOLVER,     intent_resolver,      retry_policy=LLM_RETRY)
@@ -169,11 +175,15 @@ def compile_graph():
     )
     b.add_edge(N_TRIBAL_RETRIEVAL, N_ANCHOR_RESOLVER)
 
-    # anchor_resolver → schema_enricher (success) or legacy intent_resolver (fallback)
+    # anchor_resolver → query_planner (success) or legacy intent_resolver (fallback)
+    # query_planner runs before schema_enricher to extract the user's explicit output spec.
+    # The routing fn still returns N_SCHEMA_ENRICHER for success — we redirect it to query_planner.
     b.add_conditional_edges(
         N_ANCHOR_RESOLVER, route_after_anchor_resolver,
-        {N_SCHEMA_ENRICHER: N_SCHEMA_ENRICHER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
+        {N_SCHEMA_ENRICHER: N_QUERY_PLANNER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
     )
+    # query_planner always proceeds to schema_enricher (graceful degradation built into the node)
+    b.add_edge(N_QUERY_PLANNER, N_SCHEMA_ENRICHER)
 
     # schema_enricher fans out to 3 parallel specialists via direct multi-edges.
     # LangGraph executes all three in parallel (superstep), then intent_assembler
@@ -193,8 +203,9 @@ def compile_graph():
         {N_DIRECTIVE_WRITER: N_DIRECTIVE_WRITER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
     )
 
-    # directive_writer → query_compiler
-    b.add_edge(N_DIRECTIVE_WRITER, N_QUERY_COMPILER)
+    # directive_writer → schema_gap_resolver → query_compiler
+    b.add_edge(N_DIRECTIVE_WRITER, N_SCHEMA_GAP_RESOLVER)
+    b.add_edge(N_SCHEMA_GAP_RESOLVER, N_QUERY_COMPILER)
 
     # Legacy intent_resolver → query_compiler (fallback path and recompile path)
     b.add_edge(N_INTENT_RESOLVER, N_QUERY_COMPILER)

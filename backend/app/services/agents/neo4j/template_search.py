@@ -236,7 +236,7 @@ def get_anti_patterns_by_ids(ids: list[str]) -> list[dict]:
 def search_intents(embedding: list[float]) -> list[dict]:
     query = """CYPHER 25
     MATCH (i:Intent)
-    SEARCH i IN (VECTOR INDEX `intent_cohere` FOR $embedding LIMIT 3)
+    SEARCH i IN (VECTOR INDEX `intent_cohere` FOR $embedding LIMIT 10)
     SCORE AS score
     RETURN i.name AS name, i.description AS description, score
     """
