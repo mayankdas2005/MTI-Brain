@@ -70,6 +70,11 @@ def _run_gates(sql: str) -> tuple[bool, str]:
     if not ok:
         return False, msg
 
+    # Gate 3.7 — Ambiguous column in JOIN ON (bare column ref when 2+ tables in scope share the name)
+    ok, msg = _check_ambiguous_join_on(stmt)
+    if not ok:
+        return False, msg
+
     # Gate 4 — Cartesian join detection (JOIN without ON)
     # if _has_cartesian_join(sql):
     #     return False, "JOIN without ON clause detected — cartesian product risk"
@@ -498,6 +503,69 @@ def validate_filter_types(sql: str, schema_columns: list[dict]) -> tuple[bool, s
                             f"Schema validation: column '{col_name}' is boolean — "
                             f"use TRUE or FALSE instead of string literal '{val}'"
                         )
+    except Exception:
+        pass
+
+    return True, ""
+
+
+def _check_ambiguous_join_on(parsed) -> tuple[bool, str]:
+    """Gate 3.7: detect bare (unqualified) column references in JOIN ON expressions.
+
+    If two or more tables/subquery aliases in the same SELECT scope both export
+    a column with the same name, a bare reference in the ON clause is ambiguous
+    and Redshift will raise error 42702.  We collect the aliases visible in each
+    SELECT block's FROM/JOIN clause, then check every ON expression for Column
+    nodes that have no table qualifier — flagging any name that appears in 2+
+    of those aliases' exposed columns.
+
+    Because we don't have the real schema here we use a conservative proxy:
+    flag any bare column in an ON clause that appears at least twice as a bare
+    column across the entire ON expression set of the same SELECT block.
+    """
+    import sqlglot.expressions as exp
+
+    try:
+        for select in parsed.find_all(exp.Select):
+            # Collect every JOIN in this SELECT (not nested)
+            joins = [
+                j for j in select.args.get("joins", [])
+                if isinstance(j, exp.Join)
+            ]
+            if not joins:
+                continue
+
+            # Gather all ON-clause bare column names across all JOINs in this SELECT
+            bare_by_join: list[list[str]] = []
+            for join in joins:
+                on_expr = join.args.get("on")
+                if not on_expr:
+                    continue
+                bare_cols = [
+                    col.name.lower()
+                    for col in on_expr.find_all(exp.Column)
+                    if not col.table  # no table qualifier
+                ]
+                bare_by_join.append(bare_cols)
+
+            # Count how many different JOINs expose each bare column name
+            from collections import Counter
+            col_join_count: Counter = Counter()
+            for bare_cols in bare_by_join:
+                for name in set(bare_cols):
+                    col_join_count[name] += 1
+
+            # A bare column that appears in ON clauses across 2+ JOINs in the same
+            # SELECT is unambiguously ambiguous — two tables both produce that name.
+            for col_name, count in col_join_count.items():
+                if count >= 2:
+                    return (
+                        False,
+                        f"Ambiguous column reference '{col_name}' in JOIN ON clause — "
+                        f"appears unqualified in {count} JOIN conditions within the same SELECT scope. "
+                        f"Qualify both sides: e.g. alias1.{col_name} = alias2.{col_name} "
+                        f"(Redshift error 42702).",
+                    )
     except Exception:
         pass
 

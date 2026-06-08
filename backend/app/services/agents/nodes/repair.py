@@ -166,50 +166,73 @@ async def attempt_repair(
     from app.services.agents.helpers import build_directive_section
     directive_section = build_directive_section(state)
 
-    prompt = REPAIR_PROMPT.format_messages(
-        question=state.get("effective_question") or state.get("question", ""),
-        semantic_ir_text=semantic_ir_text,
-        schema_reference=schema_reference,
-        original_sql=first_sql,
-        error_message=error_msg,
-        prior_attempts_detail=prior_attempts_detail,
-        directive_section=directive_section,
-        feedback_section=feedback_section,
-        performance_directive=_PERFORMANCE_DIRECTIVE if any(
-            kw in e.lower()
-            for e in errors
-            for kw in ("timeout", "canceling", "statement timeout", "query_timeout")
-        ) else "",
-        anti_patterns=anti_patterns,
-        candidate_paths_section=candidate_paths_section,
-        reasoning_directive=REASONING_DIRECTIVE_REPAIR,
-    )
+    _perf_directive = _PERFORMANCE_DIRECTIVE if any(
+        kw in e.lower()
+        for e in errors
+        for kw in ("timeout", "canceling", "statement timeout", "query_timeout")
+    ) else ""
+
+    def _build_prompt(attempts_detail: str) -> list:
+        return REPAIR_PROMPT.format_messages(
+            question=state.get("effective_question") or state.get("question", ""),
+            semantic_ir_text=semantic_ir_text,
+            schema_reference=schema_reference,
+            original_sql=first_sql,
+            error_message=error_msg,
+            prior_attempts_detail=attempts_detail,
+            directive_section=directive_section,
+            feedback_section=feedback_section,
+            performance_directive=_perf_directive,
+            anti_patterns=anti_patterns,
+            candidate_paths_section=candidate_paths_section,
+            reasoning_directive=REASONING_DIRECTIVE_REPAIR,
+        )
 
     llm = get_llm("deep")
 
-    @llm_breaker
-    async def _call():
-        from app.core.retry import retry_async
-        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-repair", max_attempts=2, backoff_base=5.0)
+    repaired_sql = ""
+    val_error = ""
+    for _try in range(2):
+        attempts_detail = prior_attempts_detail
+        if _try == 1:
+            attempts_detail += (
+                f"\n\nFIRST REPAIR ATTEMPT produced SQL that failed pre-execution static validation:\n"
+                f"  Validation error: {val_error}\n"
+                f"  Failing SQL preview:\n{repaired_sql[:500]}\n"
+                f"Fix the validation error specifically — do NOT repeat the same structural approach."
+            )
 
-    try:
-        response = await _call()
-    except Exception as e:
-        logger.error("repair | LLM failed | thread={} | error={}", state["thread_id"], e)
-        return None
+        prompt = _build_prompt(attempts_detail)
 
-    raw = response.content or ""
-    repaired_sql = _format_sql(parse_tag(raw, "sql") or "")
-    if not repaired_sql:
-        logger.warning("repair | produced no SQL | thread={}", state["thread_id"])
-        return None
+        @llm_breaker
+        async def _call(p=prompt):
+            from app.core.retry import retry_async
+            return await retry_async(lambda: llm.ainvoke(p, config=config), service="bedrock-repair", max_attempts=2, backoff_base=5.0)
 
-    is_valid, val_error = validate_sql(repaired_sql)
-    if not is_valid:
-        logger.warning("repair | repaired SQL failed validation | thread={} | error={}", state["thread_id"], val_error)
-        from app.services.agents.nodes.audit import write_anti_pattern
-        asyncio.create_task(write_anti_pattern(state, first_sql, first_ir, error_msg, error_type="validation_error"))
-        return None
+        try:
+            response = await _call()
+        except Exception as e:
+            logger.error("repair | LLM failed | thread={} | try={} | error={}", state["thread_id"], _try + 1, e)
+            return None
+
+        raw = response.content or ""
+        repaired_sql = _format_sql(parse_tag(raw, "sql") or "")
+        if not repaired_sql:
+            logger.warning("repair | produced no SQL | thread={} | try={}", state["thread_id"], _try + 1)
+            return None
+
+        is_valid, val_error = validate_sql(repaired_sql)
+        if is_valid:
+            break
+
+        logger.warning(
+            "repair | repaired SQL failed validation | thread={} | try={} | error={}",
+            state["thread_id"], _try + 1, val_error,
+        )
+        if _try == 1:
+            from app.services.agents.nodes.audit import write_anti_pattern
+            asyncio.create_task(write_anti_pattern(state, first_sql, first_ir, error_msg, error_type="validation_error"))
+            return None
 
     new_sql_list = [repaired_sql, *sql_list[1:]]
     logger.info("repair | succeeded | thread={}", state["thread_id"])
