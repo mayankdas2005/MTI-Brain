@@ -49,8 +49,7 @@ def _is_dimension(c: dict) -> bool:
     dtype = c.get("data_type", "").lower()
     if dtype in _VARCHAR_DTYPES:
         has_grain = bool(c.get("temporal_grain") and c.get("temporal_grain") != "none")
-        is_uuid_like = c.get("filter_selectivity", "") == "low"
-        return not has_grain and not is_uuid_like
+        return not has_grain
     return False
 
 

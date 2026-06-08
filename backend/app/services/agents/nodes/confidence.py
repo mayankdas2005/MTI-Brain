@@ -36,16 +36,22 @@ def _label(score: int) -> str:
 def _compute_score(state: dict) -> int:
     """Deterministic confidence score from state signals — no LLM involved.
 
-    Rules (applied in order):
-      Base:        75, or CONFIDENCE_NOTE value from intent directive if present
-      Schema gaps: -8 per gap   (max -30)
-      Low-conf filters: -8 each (max -24)
-      Unresolved joins: -15 each (max -30)
-      SQL repairs: -10 each     (max -20)
-      No data:     -15
-      Floor / Ceiling: 5 / 95
+    Two-layer model:
+
+    Layer 1 — Planning confidence (schema coverage before execution):
+      If directive_writer emitted CONFIDENCE_NOTE → use it as base (already encodes
+      schema gaps + feasibility). Skip the schema/join deductions — they're in the base.
+      If no CONFIDENCE_NOTE → base 75, then deduct schema gaps and unresolved joins.
+
+    Layer 2 — Execution confidence (applied on top regardless):
+      Low-conf filter resolutions: -8 each (max -24)
+      SQL repairs required:        -10 each (max -20)
+      No data returned:            -15
+
+    Floor / Ceiling: 5 / 95
     """
-    # Base: use CONFIDENCE_NOTE from intent directive if the directive writer emitted one
+    ir = (state.get("semantic_ir_list") or [{}])[0]
+
     intent_context = (state.get("intent_directive_context") or "").strip()
     m = re.search(r"CONFIDENCE_NOTE:\s*([\d.]+)", intent_context, re.IGNORECASE)
     if m:
@@ -54,26 +60,18 @@ def _compute_score(state: dict) -> int:
         except (ValueError, TypeError):
             score = 75
     else:
+        # No directive base — derive from schema signals
         score = 75
+        schema_gaps = ir.get("schema_gaps") or []
+        score -= min(len(schema_gaps) * 8, 30)
+        unresolved = ir.get("unresolved_join_pairs") or []
+        score -= min(len(unresolved) * 15, 30)
 
-    # Schema gaps from semantic IR (already parsed in ir_builder)
-    ir = (state.get("semantic_ir_list") or [{}])[0]
-    schema_gaps = ir.get("schema_gaps") or []
-    score -= min(len(schema_gaps) * 8, 30)
-
-    # Low-confidence filter resolutions
+    # Execution-time signals — always applied
     low_conf = state.get("low_confidence_filters") or []
     score -= min(len(low_conf) * 8, 24)
-
-    # Unresolved join pairs
-    unresolved = ir.get("unresolved_join_pairs") or []
-    score -= min(len(unresolved) * 15, 30)
-
-    # SQL repairs
     repair_count = int(state.get("repair_count") or 0)
     score -= min(repair_count * 10, 20)
-
-    # No data returned
     if state.get("no_data"):
         score -= 15
 

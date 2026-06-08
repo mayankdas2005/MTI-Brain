@@ -1238,6 +1238,7 @@ def _build_vega_lite_spec(
     if chart_type == "kpi_card":
         base["type"] = "kpi_card"
         base["values"] = [dict(zip(columns, row)) for row in rows[:3]]
+        base["value_format"] = val_fmt
         return base
 
     # ── Vertical bar ───────────────────────────────────────────────────────────

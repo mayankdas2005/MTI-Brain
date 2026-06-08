@@ -24,6 +24,7 @@ from app.services.agents.node_names import (
     INTENT_ASSEMBLER as N_INTENT_ASSEMBLER,
     INTENT_RESOLVER as N_INTENT_RESOLVER,
     QUERY_COMPILER as N_QUERY_COMPILER,
+    QUERY_PLANNER as N_QUERY_PLANNER,
     SCHEMA_ENRICHER as N_SCHEMA_ENRICHER,
     SQL_GENERATOR as N_SQL_GENERATOR,
     SQL_VALIDATOR as N_SQL_VALIDATOR,
@@ -59,8 +60,8 @@ def route_after_anchor_resolver(state: AnalyticsState) -> str:
     if not anchor_tables:
         logger.warning("route: anchor_resolver → intent_resolver (fallback — no tables resolved) | thread={}", state["thread_id"])
         return N_INTENT_RESOLVER
-    logger.info("route: anchor_resolver → schema_enricher | tables={} | thread={}", anchor_tables, state["thread_id"])
-    return N_SCHEMA_ENRICHER
+    logger.info("route: anchor_resolver → query_planner | tables={} | thread={}", anchor_tables, state["thread_id"])
+    return N_QUERY_PLANNER
 
 
 def route_after_intent_assembler(state: AnalyticsState) -> str:

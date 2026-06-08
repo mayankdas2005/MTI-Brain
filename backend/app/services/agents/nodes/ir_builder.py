@@ -693,10 +693,16 @@ def _resolve_filter_values(
             modes.append("partial")
             continue
 
-        logger.warning(
-            "ir_builder | filter value NOT in Redshift distinct values | {}.{} | value={} | sample={}",
-            table_fqn, column, raw, filter_values[:5],
-        )
+        if "," in str(raw):
+            logger.debug(
+                "ir_builder | filter multi-value deferring to downstream split | {}.{} | value={}",
+                table_fqn, column, raw,
+            )
+        else:
+            logger.warning(
+                "ir_builder | filter value NOT in Redshift distinct values | {}.{} | value={} | sample={}",
+                table_fqn, column, raw, filter_values[:5],
+            )
         resolved.append(raw)
         modes.append("unknown")
 

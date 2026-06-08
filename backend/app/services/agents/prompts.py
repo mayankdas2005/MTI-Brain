@@ -1028,7 +1028,8 @@ RULES:
    time-series column, including filters from COMPUTED_FILTER directives or any other source.
    Whenever you write `col >= DATEADD(...)` or `col >= CURRENT_DATE - ...` for a time-series
    column, you MUST immediately add the corresponding OR MAX branch with the IDENTICAL transformation:
-     CORRECT:  col >= DATEADD(day,-60,CURRENT_DATE) OR col >= DATEADD(day,-60,(SELECT MAX(col) FROM tbl))
+     CORRECT:  col >= DATEADD(day,-60,CURRENT_DATE) OR col >= DATEADD(day,-60,(SELECT MAX(col)::TIMESTAMP FROM tbl))
+     Always cast MAX(col)::TIMESTAMP — DATEADD fails on timestamptz input.
      WRONG:    col >= DATEADD(day,-60,CURRENT_DATE) OR col >= (SELECT MAX(col) FROM tbl)
    The raw-MAX form returns ALL data regardless of window. The transformed MAX form anchors the
    same window to the latest available data point. Apply the exact same DATEADD/transformation to
@@ -2372,6 +2373,15 @@ Think through:
   plan multi-CTE breakdown with explicit COMPUTATION lines for each derived measure.
 - If USER'S EXPLICIT TIME PERIOD is shown with a ⚠ warning, filter_specialist failed to extract
   the time filter — you MUST resolve it here by emitting TIME_FILTER + COMPUTED_FILTER.
+- FEASIBILITY CHECK (if USER'S REQUIRED GROUPINGS is present): For each required grouping,
+  ask: "Is the column that provides this dimension in the same table as the cost/measure, or
+  can it be joined via a confirmed FK?" If the cost table (e.g. bank_fee) has SCHEMA_GAP_JOIN
+  to the table with the grouping column (e.g. pos_transaction.channel), the cost measure CANNOT
+  be disaggregated by that grouping — the same aggregate value will repeat for every grouping row.
+  Set CONFIDENCE < 0.4 and explicitly name which required groupings are blocked in CONFIDENCE_NOTE.
+- ENTITY CHECK (if USER'S NAMED ENTITIES is present): Verify each named entity against the schema
+  columns' known values. If an entity (e.g. "membership") has no exact alias or enum value listed,
+  flag it in CONFIDENCE_NOTE: "entity 'X' may not match schema values — verify filter resolves correctly."
 </reasoning>
 
 Write the directive using these EXACT machine-readable prefixes (one per line):

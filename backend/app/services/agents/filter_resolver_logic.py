@@ -45,8 +45,8 @@ def resolve_tier1_combined(
         return None, 0.0, []
 
     try:
-        from rapidfuzz import fuzz, process
-        matches = process.extract(user_value, filter_values, scorer=fuzz.WRatio, limit=5)
+        from rapidfuzz import fuzz, process, utils
+        matches = process.extract(user_value, filter_values, scorer=fuzz.WRatio, processor=utils.default_process, limit=5)
     except ImportError:
         return None, 0.0, []
 
@@ -96,8 +96,8 @@ def resolve_tier2_fuzzy(
         return None, 0.0, []
 
     try:
-        from rapidfuzz import fuzz, process
-        matches = process.extract(user_value, sample_values, scorer=fuzz.WRatio, limit=5)
+        from rapidfuzz import fuzz, process, utils
+        matches = process.extract(user_value, sample_values, scorer=fuzz.WRatio, processor=utils.default_process, limit=5)
     except ImportError:
         return None, 0.0, []
 

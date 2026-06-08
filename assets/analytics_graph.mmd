@@ -26,7 +26,7 @@ graph TD;
 	__end__([<p>__end__</p>]):::last
 	__start__ --> intake_classifier;
 	anchor_resolver -.-> intent_resolver;
-	anchor_resolver -. &nbsp;schema_enricher&nbsp; .-> query_planner;
+	anchor_resolver --> query_planner;
 	chart_agent -.-> __end__;
 	chart_agent -.-> compress;
 	compress -.-> intent_assembler;

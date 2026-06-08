@@ -17,7 +17,7 @@
 
 nodes:
   - id: intake_classifier
-    label: "Understanding your question"
+    label: "Reading your question"
     tier: fast
     stream: null
 
@@ -27,7 +27,7 @@ nodes:
     stream: multi
 
   - id: context_fetcher
-    label: "Loading schema"
+    label: "Exploring data model"
     tier: none
     stream: null
 
@@ -37,12 +37,12 @@ nodes:
     stream: null
 
   - id: anchor_resolver
-    label: "Identifying tables"
+    label: "Selecting tables"
     tier: fast
     stream: [reasoning, reasoning.delta]
 
   - id: query_planner
-    label: null
+    label: "Understanding your request"
     tier: fast
     stream: null
 
@@ -52,7 +52,7 @@ nodes:
     stream: null
 
   - id: measure_specialist
-    label: "Extracting metrics"
+    label: "Finding metrics"
     tier: fast
     stream: [reasoning, reasoning.delta]
 
@@ -62,7 +62,7 @@ nodes:
     stream: [reasoning, reasoning.delta]
 
   - id: dimension_specialist
-    label: "Identifying dimensions"
+    label: "Finding groupings"
     tier: fast
     stream: [reasoning, reasoning.delta]
 
@@ -72,7 +72,7 @@ nodes:
     stream: null
 
   - id: directive_writer
-    label: "Interpreting your question"
+    label: "Planning computation"
     tier: balanced
     stream: [reasoning, reasoning.delta]
 
@@ -97,7 +97,7 @@ nodes:
     stream: [reasoning, reasoning.delta]
 
   - id: query_compiler
-    label: "Planning query"
+    label: null
     tier: none
     stream: null
 
@@ -107,22 +107,22 @@ nodes:
     stream: [reasoning, reasoning.delta]
 
   - id: sql_generator
-    label: "Building query"
+    label: "Writing SQL"
     tier: deep
     stream: [reasoning, reasoning.delta]
 
   - id: sql_validator
-    label: "Validating query"
+    label: null
     tier: none
     stream: null
 
   - id: executor
-    label: "Fetching data"
+    label: "Running query"
     tier: deep
     stream: [reasoning, reasoning.delta]
 
   - id: synthesis
-    label: "Preparing your answer"
+    label: "Preparing answer"
     tier: balanced
     stream: multi
 

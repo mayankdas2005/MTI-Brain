@@ -329,19 +329,22 @@ function getSliderInfo(spec: Record<string, unknown>): SliderInfo {
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
 
-function fmtKpi(value: unknown): string {
+function fmtKpi(value: unknown, valueFormat?: string): string {
   if (value === null || value === undefined) return '—';
   const n = Number(value);
   if (!isNaN(n)) {
     if (Math.abs(n) >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
     if (Math.abs(n) >= 1_000_000)     return `${(n / 1_000_000).toFixed(2)}M`;
     if (Math.abs(n) >= 1_000)         return `${(n / 1_000).toFixed(1)}K`;
-    return n % 1 === 0 ? n.toLocaleString() : n.toFixed(2);
+    if (valueFormat?.endsWith('%'))    return `${(n * 100).toFixed(1)}%`;
+    if (n % 1 === 0)                   return n.toLocaleString();
+    if (Math.abs(n) < 0.1)            return n.toFixed(4);
+    return n.toFixed(2);
   }
   return String(value);
 }
 
-function KpiCard({ values }: { values: Record<string, unknown>[] }) {
+function KpiCard({ values, valueFormat }: { values: Record<string, unknown>[]; valueFormat?: string }) {
   const entries = values
     .flatMap((row) => Object.entries(row))
     .filter(([, v]) => v != null && v !== '' && !Number.isNaN(v as number));
@@ -354,7 +357,7 @@ function KpiCard({ values }: { values: Record<string, unknown>[] }) {
             {key.replace(/_/g, ' ')}
           </p>
           <p className="text-2xl font-semibold text-foreground mt-1 tabular-nums">
-            {fmtKpi(value)}
+            {fmtKpi(value, valueFormat)}
           </p>
         </div>
       ))}
@@ -920,7 +923,7 @@ export function MessageVisualization({
           </div>
         )}
         {activeSpec.title ? <p className="text-sm font-medium text-foreground mb-3">{String(activeSpec.title)}</p> : null}
-        <KpiCard values={values} />
+        <KpiCard values={values} valueFormat={activeSpec.value_format as string | undefined} />
       </div>
     );
   }

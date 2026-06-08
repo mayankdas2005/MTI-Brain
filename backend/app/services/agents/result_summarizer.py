@@ -63,10 +63,10 @@ def summarize_results(
                 cs.total_count = total_rows_for_stat
             mn = true_stats.get(f"{safe}__min")
             if mn is not None:
-                cs.min = str(mn) if isinstance(mn, (date, datetime)) else float(mn) if isinstance(mn, Decimal) else mn
+                cs.min = str(mn) if isinstance(mn, (date, datetime)) else float(mn) if isinstance(mn, (Decimal, int)) else mn
             mx = true_stats.get(f"{safe}__max")
             if mx is not None:
-                cs.max = str(mx) if isinstance(mx, (date, datetime)) else float(mx) if isinstance(mx, Decimal) else mx
+                cs.max = str(mx) if isinstance(mx, (date, datetime)) else float(mx) if isinstance(mx, (Decimal, int)) else mx
             mean = true_stats.get(f"{safe}__mean")
             if mean is not None:
                 cs.mean = float(mean)

@@ -78,40 +78,6 @@ def _format_dimensions(dimensions: list[dict]) -> str:
     )
 
 
-def _compute_required_tables(
-    measures: list, dimensions: list, filters: list,
-    time_filter_col: str | None, all_anchor_tables: list,
-) -> list:
-    """Return only tables that contribute to the SQL output.
-
-    A table is required if:
-    - It provides a measure column
-    - It provides a dimension column
-    - It provides the time-filter column AND is the same table as a measure/dimension table
-    - It provides a filter column AND is the same table as a measure/dimension table
-
-    Tables with no output columns and no join-confirmed filter role are excluded.
-    This prevents the CTE planner from inventing EXISTS/bridge JOINs for irrelevant tables.
-    """
-    required: set[str] = set()
-    for m in measures:
-        if m.get("table_fqn"):
-            required.add(m["table_fqn"])
-    for d in dimensions:
-        if d.get("table_fqn"):
-            required.add(d["table_fqn"])
-    # Time filter and regular filters: only include if they live on a measure/dim table
-    output_tables = set(required)
-    if time_filter_col:
-        parts = time_filter_col.rsplit(".", 1)
-        if len(parts) == 2 and parts[0] in output_tables:
-            required.add(parts[0])
-    for f in filters:
-        fqn = f.get("table_fqn")
-        if fqn and fqn in output_tables:
-            required.add(fqn)
-    return list(required) if required else list(all_anchor_tables)
-
 
 def _build_query_plan_section(query_plan: dict | None, timeframe: str | None) -> str:
     if not query_plan:
@@ -129,6 +95,18 @@ def _build_query_plan_section(query_plan: dict | None, timeframe: str | None) ->
         lines.append(f"USER'S REQUESTED OUTPUT COLUMNS: {', '.join(cols)}")
     if query_plan.get("is_detail_request"):
         lines.append("QUERY TYPE: DETAIL/LIST — do NOT add aggregation in COMPUTATION lines")
+    groupings = query_plan.get("required_groupings") or []
+    if groupings:
+        lines.append(f"USER'S REQUIRED GROUPINGS: {', '.join(groupings)}")
+        lines.append("  ⚠ FEASIBILITY CHECK: For each required grouping, verify a column exists in anchor_tables")
+        lines.append("    that provides this dimension AND can be joined to the primary cost/measure table.")
+        lines.append("    If the cost/measure table has SCHEMA_GAP_JOIN to the grouping table → that measure CANNOT")
+        lines.append("    be disaggregated by that grouping. Set CONFIDENCE < 0.4 and name the blocked groupings.")
+    entities = query_plan.get("explicit_entities") or []
+    if entities:
+        lines.append(f"USER'S NAMED ENTITIES: {', '.join(entities)}")
+        lines.append("  → verify these exist as valid filter values in the schema columns above;")
+        lines.append("    flag in CONFIDENCE_NOTE if an entity has no matching column value")
     return "\n".join(lines) if lines else ""
 
 
@@ -166,16 +144,9 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         if filter_hint else ""
     )
 
-    required_tables = _compute_required_tables(measures, dimensions, filters, time_filter_col, anchor_tables)
-    if len(required_tables) < len(anchor_tables):
-        logger.info(
-            "directive_writer | required_tables pruned | thread={} | all={} | required={}",
-            state.get("thread_id"), anchor_tables, required_tables,
-        )
-
     prompt = DIRECTIVE_WRITER_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
-        anchor_tables=", ".join(required_tables),
+        anchor_tables=", ".join(anchor_tables),
         measures=_format_measures(measures),
         filters=_format_filters(filters, timeframe, time_filter_col),
         dimensions=_format_dimensions(dimensions),

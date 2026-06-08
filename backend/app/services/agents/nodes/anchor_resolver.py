@@ -117,16 +117,6 @@ def _inject_signal_tables(valid_anchors: list, semantic_context: dict, valid_tab
             to_add.append(fqn)
             logger.info("anchor_resolver | intent_injected | {}", fqn)
 
-    # Signal 4: path consensus — table found by 4+ independent discovery paths.
-    # Fallback when Signals 2+3 don't fire (e.g. Neo4j data gaps). Multi-signal agreement
-    # across direct_vector, FTS, businessterm, JoinPath, column_search etc. is strong evidence
-    # of relevance to this specific query. Tables with only 1-2 paths (e.g. false positives
-    # from entity_value alone) are excluded.
-    for fqn in (semantic_context.get("consensus_table_fqns") or []):
-        if fqn and fqn in valid_tables and fqn not in valid_anchors and fqn not in to_add:
-            to_add.append(fqn)
-            logger.info("anchor_resolver | consensus_injected | {} (path_count>=4)", fqn)
-
     if to_add:
         logger.info("anchor_resolver | signal_injection_total | added={}", to_add)
     return valid_anchors + to_add

@@ -180,7 +180,7 @@ def compile_graph():
     # The routing fn still returns N_SCHEMA_ENRICHER for success — we redirect it to query_planner.
     b.add_conditional_edges(
         N_ANCHOR_RESOLVER, route_after_anchor_resolver,
-        {N_SCHEMA_ENRICHER: N_QUERY_PLANNER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
+        {N_QUERY_PLANNER: N_QUERY_PLANNER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
     )
     # query_planner always proceeds to schema_enricher (graceful degradation built into the node)
     b.add_edge(N_QUERY_PLANNER, N_SCHEMA_ENRICHER)
