@@ -40,6 +40,7 @@ const SHORTCUTS: Shortcut[] = [
   { variants: ['Esc'], label: 'Stop response', section: 'chat' },
   { variants: [`${mod} R`], label: 'Retry last response', section: 'chat' },
   { variants: [`${mod} S`], label: 'Star / unstar thread', section: 'chat' },
+  { variants: [`${mod} ⇧ M`], label: 'Add to project', section: 'chat' },
   { variants: [`${mod} ⇧ C`], label: 'Copy last response', section: 'chat' },
   // { variants: [`${mod} ⇧ E`], label: 'Export conversation to PDF', section: 'chat' },
   // { variants: [`${mod} ⇧ L`], label: 'Copy share link', section: 'chat' },

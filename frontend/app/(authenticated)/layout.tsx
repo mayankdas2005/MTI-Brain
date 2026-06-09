@@ -179,6 +179,10 @@ export default function AuthenticatedLayout({
     //   window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
     // },
     'cmd-shift-l': () => setTheme(theme === 'dark' ? 'light' : 'dark'),
+    'cmd-shift-m': () => {
+      const { currentThreadId } = useThreadStore.getState();
+      if (currentThreadId) window.dispatchEvent(new CustomEvent('mti-brain:add-to-project'));
+    },
     'cmd-r': () => {
       const { currentThreadId, currentMessages, retryResponse } = useThreadStore.getState();
       if (!currentThreadId) return;

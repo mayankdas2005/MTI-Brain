@@ -14,6 +14,7 @@ interface KeyboardShortcuts {
   'cmd-shift-v'?: () => void;
   'cmd-shift-e'?: () => void;
   'cmd-shift-l'?: () => void;
+  'cmd-shift-m'?: () => void;
   'cmd-r'?: () => void;
   'cmd-enter'?: () => void;
   'escape'?: () => void;
@@ -58,6 +59,7 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
   useHotkeys('mod+shift+v', () => ref.current['cmd-shift-v']?.(), opts);
   useHotkeys('mod+shift+e', () => ref.current['cmd-shift-e']?.(), opts);
   useHotkeys('mod+shift+l', () => ref.current['cmd-shift-l']?.(), opts);
+  useHotkeys('mod+shift+m', () => ref.current['cmd-shift-m']?.(), opts);
   useHotkeys('mod+r', () => ref.current['cmd-r']?.(), opts);
   useHotkeys('mod+enter', () => ref.current['cmd-enter']?.(), opts);
   useHotkeys('shift+/', () => ref.current['question-mark']?.(), singleKeyOpts);

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { usePathname } from 'next/navigation';
-import { Star, Search, FileDown, Menu, Link2, Presentation } from 'lucide-react';
+import { Star, Search, FileDown, Menu, Link2, Presentation, FolderInput } from 'lucide-react';
 import { exportThread } from '@/lib/utils/export';
 import { exportChartAsCanvas } from '@/components/message-visualization';
 import { exportAsSlide } from '@/lib/utils/export-slide';
@@ -26,6 +26,7 @@ import { useSearchStore } from '@/lib/store/search';
 import { useActivityStore } from '@/lib/store/activity';
 import { useUIStore } from '@/lib/store/ui';
 import { useIsMobile, useIsTablet } from '@/hooks/use-mobile';
+import { MoveToProjectDialog } from '@/components/move-to-project-dialog';
 
 export function Topbar() {
   const openSearch = useSearchStore((s) => s.openModal);
@@ -118,6 +119,14 @@ export function Topbar() {
     return () => window.removeEventListener('mti-brain:export-pdf', handler);
   });
 
+  const [moveOpen, setMoveOpen] = useState(false);
+
+  useEffect(() => {
+    const handler = () => { if (currentThreadId) setMoveOpen(true); };
+    window.addEventListener('mti-brain:add-to-project', handler);
+    return () => window.removeEventListener('mti-brain:add-to-project', handler);
+  }, [currentThreadId]);
+
   // Star reward burst animation
   const [starBurst, setStarBurst] = useState(false);
   const starBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -133,7 +142,7 @@ export function Topbar() {
 
   return (
     <div
-      className="flex items-center justify-between h-12 px-3 text-[var(--header-foreground)]"
+      className="grid grid-cols-[auto_1fr_auto] items-center h-12 px-3 text-[var(--header-foreground)]"
       style={{
         backgroundColor: 'var(--header)',
         borderBottom: '1px solid var(--header-control-border)',
@@ -159,10 +168,10 @@ export function Topbar() {
         )}
       </div>
 
-      {/* Center: Thread title — stable min-h so topbar chrome never shifts */}
-      <div className="min-h-5 flex items-center">
+      {/* Center: Thread title — 1fr grid column gives stable, click-proof width */}
+      <div className="flex items-center justify-center min-w-0 overflow-hidden">
         {showThreadChrome && currentThreadTitle ? (
-          <div className="flex items-center gap-2 min-w-0 max-w-[160px] sm:max-w-xs md:max-w-md">
+          <div className="flex items-center gap-2 min-w-0 max-w-md overflow-hidden w-full">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -185,7 +194,22 @@ export function Topbar() {
               </TooltipTrigger>
               <TooltipContent side="bottom">{currentThreadStarred ? 'Unstar' : 'Star'}</TooltipContent>
             </Tooltip>
-            <span className="text-sm font-medium truncate text-[var(--header-foreground)]">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Add to project"
+                  data-onboarding="add-to-project"
+                  className="shrink-0 h-8 w-8 border border-transparent hover:border-[var(--header-control-border)] hover:bg-[var(--header-control-bg)] transition-spring active:scale-[0.82]"
+                  onClick={() => setMoveOpen(true)}
+                >
+                  <FolderInput className="w-4 h-4 text-[var(--header-foreground)]/60" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Add to project</TooltipContent>
+            </Tooltip>
+            <span className="text-sm font-medium truncate min-w-0 flex-1 text-[var(--header-foreground)]">
               {currentThreadTitle}
             </span>
           </div>
@@ -193,6 +217,14 @@ export function Topbar() {
           <Skeleton className="h-4 w-40" />
         ) : null}
       </div>
+
+      {currentThreadId && (
+        <MoveToProjectDialog
+          open={moveOpen}
+          onOpenChange={setMoveOpen}
+          threadIds={[currentThreadId]}
+        />
+      )}
 
       {/* Right: Export + Search */}
       <div className="flex items-center gap-1 sm:gap-2">
