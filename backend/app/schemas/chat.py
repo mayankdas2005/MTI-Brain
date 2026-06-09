@@ -213,6 +213,7 @@ class SearchResult(BaseModel):
     project_id: uuid.UUID | None = None
     title: str | None
     starred: bool = False
+    message_id: uuid.UUID | None = None
     match_type: str
     preview: str | None = None
     headline: str | None = None

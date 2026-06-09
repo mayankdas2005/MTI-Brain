@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, use } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useThreadStore, isThreadCreationPending } from '@/lib/store/threads';
 import { toast } from '@/lib/toast';
 import { MessageList } from '@/components/message-list';
@@ -23,6 +23,8 @@ export default function ChatPage({ params }: ChatPageProps) {
   const [hasNewResponse, setHasNewResponse] = useState(false);
   const prevStreamingRef = useRef(false);
   const streamJustEndedRef = useRef(false);
+
+  const searchParams = useSearchParams();
 
   const currentThreadId = useThreadStore((s) => s.currentThreadId);
   const currentMessages = useThreadStore((s) => s.currentMessages);
@@ -98,6 +100,10 @@ export default function ChatPage({ params }: ChatPageProps) {
     });
   }, [chatId, fetchThread, setCurrentThread, router, pendingQuestion, isStreaming, streamingThreadId]);
 
+  // Tracks whether we've already scrolled to the ?msg= target for this navigation
+  const msgScrolledRef = useRef(false);
+  useEffect(() => { msgScrolledRef.current = false; }, [chatId]);
+
   // Cmd+K is handled at the layout level (opens search modal)
 
   const streamingOrigin = useThreadStore((s) => s.streamingOrigin);
@@ -111,6 +117,17 @@ export default function ChatPage({ params }: ChatPageProps) {
   useEffect(() => {
     const isNewMessage = displayedMessages.length !== prevLenRef.current;
     prevLenRef.current = displayedMessages.length;
+
+    // Search navigation: runs regardless of isNewMessage so cached threads scroll too
+    const searchMsgId = searchParams.get('msg');
+    if (searchMsgId && !msgScrolledRef.current) {
+      const el = document.getElementById(`msg-${searchMsgId}`);
+      if (el) {
+        msgScrolledRef.current = true;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+    }
 
     // New message added → decide scroll target based on origin
     if (isNewMessage && scrollRef.current) {
@@ -163,7 +180,7 @@ export default function ChatPage({ params }: ChatPageProps) {
     if (autoScrollRef.current && scrollRef.current) {
       scrollRef.current.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
     }
-  }, [displayedMessages, autoScroll, isStreaming]);
+  }, [displayedMessages, autoScroll, isStreaming, searchParams]);
 
   // Detect response completed while scrolled up
   useEffect(() => {

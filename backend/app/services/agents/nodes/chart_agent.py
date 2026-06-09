@@ -52,6 +52,31 @@ def _drop_blank_columns(columns: list[str], rows: list[list]) -> tuple[list[str]
     return new_cols, new_rows
 
 
+def _drop_blank_rows(columns: list[str], rows: list[list]) -> list[list]:
+    """Drop rows where EVERY value is null/NaN/0/'0'/'' — fully empty rows carry no data.
+
+    Rows where only SOME cells are blank are kept: the non-blank cells are still
+    meaningful for the chart.  Applied before _drop_blank_columns so that column
+    blank-detection operates on the cleaned row set.
+    """
+    import math
+    if not rows or not columns:
+        return rows
+
+    def _is_blank(v) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, float) and math.isnan(v):
+            return True
+        return v in (0, 0.0, "", "0")
+
+    n = len(columns)
+    return [
+        row for row in rows
+        if any(not _is_blank(row[i]) for i in range(min(n, len(row))))
+    ]
+
+
 def _build_col_type_map(columns: list[str], rows: list[list]) -> dict[str, str]:
     """Build a normalized col_type_map using pandas on the actual data.
 
@@ -646,7 +671,15 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
         )
         return {"chart_spec": None}
 
-    # Strip columns where every value is 0/null — they cause blank charts when picked as metrics
+    # 1. Drop fully-blank rows (every cell null/0) before sampling — meaningless rows
+    #    skew the LLM's data profile and produce empty chart segments.
+    all_rows = _drop_blank_rows(all_columns, all_rows)
+    if not all_rows:
+        logger.info("chart_agent | all rows blank after row filtering | thread={}", state["thread_id"])
+        return {"chart_spec": None}
+
+    # 2. Drop columns whose every remaining value is 0/null — after row filtering
+    #    some columns may now be fully blank.
     all_columns, all_rows = _drop_blank_columns(all_columns, all_rows)
     if not all_columns:
         logger.info("chart_agent | all columns blank after filtering | thread={}", state["thread_id"])

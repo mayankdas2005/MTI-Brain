@@ -273,7 +273,7 @@ export function SearchModal() {
                     const hasContentMatch = !!result.headline;
                     const Icon = hasContentMatch ? FileText : MessageSquare;
                     return (
-                      <CommandItem key={result.thread_id} value={result.thread_id} onSelect={() => navigate(`/chat/${result.thread_id}`)} className="gap-2">
+                      <CommandItem key={result.thread_id} value={result.thread_id} onSelect={() => navigate(`/chat/${result.thread_id}${result.message_id ? `?msg=${result.message_id}` : ''}`)} className="gap-2">
                         <Icon className="w-4 h-4 shrink-0 mt-0.5 self-start" />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm truncate">

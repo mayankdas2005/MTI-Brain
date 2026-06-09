@@ -95,6 +95,7 @@ export interface SearchResult {
   project_id: string | null;
   title: string | null;
   starred?: boolean;
+  message_id?: string | null;
   match_type: string;
   preview: string | null;
   headline: string | null;

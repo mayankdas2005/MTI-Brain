@@ -227,7 +227,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     const timeStr = `${messageDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${messageDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 
     return (
-      <div className="flex flex-col items-end px-4 py-1 group">
+      <div id={`msg-${message.id}`} className="flex flex-col items-end px-4 py-1 group">
         {/* Persistent version pill - always visible when this turn has alternates */}
         {versionNav && (
           <div
@@ -377,6 +377,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const dashCheckFiredRef = useRef(false);
   useEffect(() => {
     if (!convId || !showDashButton) return;
+    if (dashStatus === 'idle') return;
     if (dashStatus === 'pending' && !dashTimedOut) return;
     // Deduplicate: React StrictMode fires effects twice in dev; ref prevents the double GET
     if (dashCheckFiredRef.current) return;
@@ -409,6 +410,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const gcCheckFiredRef = useRef(false);
   useEffect(() => {
     if (!showGCButton) return;
+    if (gcStatus === 'idle') return;
     if (gcStatus === 'pending' && !gcTimedOut) return;
     if (gcCheckFiredRef.current) return;
     gcCheckFiredRef.current = true;

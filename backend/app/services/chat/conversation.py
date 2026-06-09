@@ -647,6 +647,7 @@ thread_hits AS (
     SELECT
         t.id AS thread_id, t.project_id, t.title, t.created_at, t.updated_at,
         t.starred,
+        NULL::uuid AS message_id,
         NULL::text AS matched_content, NULL::text AS headline,
         'thread' AS match_type,
         -- Words from the title that fuzzy/exact-matched any search word.
@@ -705,6 +706,7 @@ message_hits AS (
     SELECT
         m.thread_id, t.project_id, t.title, t.created_at, t.updated_at,
         t.starred,
+        m.id AS message_id,
         m.content AS matched_content,
         ts_headline('english', m.content, q,
             'MaxWords=60, MinWords=30, ShortWord=3, HighlightAll=false, StartSel=<b>, StopSel=</b>'
@@ -772,13 +774,13 @@ all_hits AS (
 best_per_thread AS (
     SELECT DISTINCT ON (thread_id)
         thread_id, project_id, title, starred, created_at, updated_at,
-        match_type, matched_content, headline, matched_terms, rank
+        message_id, match_type, matched_content, headline, matched_terms, rank
     FROM all_hits
     WHERE rank > 0.4
     ORDER BY thread_id, rank DESC
 )
 SELECT thread_id, project_id, title, starred, created_at, updated_at,
-    match_type, matched_content, headline, matched_terms, rank,
+    message_id, match_type, matched_content, headline, matched_terms, rank,
     CASE WHEN match_type = 'thread' THEN title
          ELSE COALESCE(headline, LEFT(matched_content, 120))
     END AS preview
@@ -857,6 +859,7 @@ async def search_threads(
             "project_id": row.project_id,
             "title": row.title,
             "starred": row.starred,
+            "message_id": row.message_id,
             "match_type": row.match_type,
             "preview": row.preview,
             "headline": row.headline,

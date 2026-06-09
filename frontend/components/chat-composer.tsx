@@ -518,7 +518,7 @@ export function ChatComposer() {
             aria-label="Message"
             aria-expanded={slashOpen}
             aria-haspopup="listbox"
-            className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-base md:text-sm leading-relaxed focus:outline-none disabled:opacity-50 min-h-[52px]"
+            className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-base md:text-sm leading-relaxed focus:outline-none disabled:opacity-50 min-h-[68px]"
           />
           {input.length === 0 && (
             <span
