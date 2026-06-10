@@ -647,7 +647,9 @@ thread_hits AS (
     SELECT
         t.id AS thread_id, t.project_id, t.title, t.created_at, t.updated_at,
         t.starred,
-        NULL::uuid AS message_id,
+        (SELECT m.id FROM mti_brain_message m
+         WHERE m.thread_id = t.id AND m.role = 'user'
+         ORDER BY m.created_at ASC LIMIT 1) AS message_id,
         NULL::text AS matched_content, NULL::text AS headline,
         'thread' AS match_type,
         -- Words from the title that fuzzy/exact-matched any search word.

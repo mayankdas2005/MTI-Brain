@@ -254,7 +254,8 @@ export default function ChatsPage() {
           setFocusedSearchIndex((i) => Math.max(i - 1, 0));
         } else if (e.key === 'Enter' && focusedSearchIndex >= 0) {
           e.preventDefault();
-          router.push(`/chat/${searchResults[focusedSearchIndex].thread_id}`);
+          const r = searchResults[focusedSearchIndex];
+          router.push(`/chat/${r.thread_id}${r.message_id ? `#msg-${r.message_id}` : ''}`);
         } else if (e.key === 'Escape') {
           setSearch('');
         }
@@ -510,7 +511,7 @@ export default function ChatsPage() {
                       if (selectMode || selectedIds.has(result.thread_id)) {
                         toggleSelect(result.thread_id);
                       } else {
-                        router.push(`/chat/${result.thread_id}`);
+                        router.push(`/chat/${result.thread_id}${result.message_id ? `#msg-${result.message_id}` : ''}`);
                       }
                     }}
                     onMouseEnter={() => {

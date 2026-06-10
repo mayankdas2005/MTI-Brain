@@ -227,7 +227,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     const timeStr = `${messageDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${messageDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 
     return (
-      <div id={`msg-${message.id}`} className="flex flex-col items-end px-4 py-1 group">
+      <div className="flex flex-col items-end px-4 py-1 group">
         {/* Persistent version pill - always visible when this turn has alternates */}
         {versionNav && (
           <div

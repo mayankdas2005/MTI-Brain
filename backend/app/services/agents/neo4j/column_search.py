@@ -20,8 +20,8 @@ def search_columns_vector(embedding: list[float]) -> list[dict]:
     SEARCH c IN (VECTOR INDEX `col_cohere_embedding` FOR $embedding LIMIT 15)
     SCORE AS score
     RETURN c.id AS id, c.name AS name, c.table_fqn AS table_fqn,
-           c.semantic_type AS semantic_type, c.default_aggregation AS default_aggregation,
-           c.data_type AS data_type, c.filter_selectivity AS filter_selectivity,
+           c.semantic_type AS semantic_type, 
+           c.data_type AS data_type, 
            score
     """
     t0 = time.monotonic()
@@ -36,7 +36,7 @@ def search_columns_fulltext(query_text: str) -> list[dict]:
     CALL db.index.fulltext.queryNodes('col_ft_extended', $query)
     YIELD node AS c, score
     RETURN c.id AS id, c.name AS name, c.table_fqn AS table_fqn,
-           c.semantic_type AS semantic_type, c.default_aggregation AS default_aggregation,
+           c.semantic_type AS semantic_type,
            score LIMIT 15
     """
     t0 = time.monotonic()
@@ -61,9 +61,7 @@ def get_columns_for_tables(table_fqns: list[str]) -> list[dict]:
     RETURN c.name AS name, c.table_fqn AS table_fqn,
            c.data_type AS data_type,
            c.semantic_type AS semantic_type,
-           c.default_aggregation AS default_aggregation,
            c.description AS description,
-           c.filter_selectivity AS filter_selectivity,
            c.sample_values AS sample_values,
            c.value_vocabulary AS value_vocabulary,
            c.value_aliases AS value_aliases,
@@ -72,12 +70,10 @@ def get_columns_for_tables(table_fqns: list[str]) -> list[dict]:
            c.has_data AS has_data,
            c.ordinal_position AS ordinal_position,
            c.n_distinct AS n_distinct,
-           c.temporal_grain AS temporal_grain,
+
            c.top_freq_values AS top_freq_values,
            c.distinct_values AS distinct_values,
            c.is_nullable AS is_nullable,
-           c.is_pk AS is_pk,
-           c.is_foreign_key AS is_foreign_key,
            c.referenced_table_fqn AS referenced_table_fqn,
            c.referenced_column AS referenced_column
     ORDER BY c.table_fqn, c.ordinal_position
@@ -201,7 +197,7 @@ def get_columns_by_ids(col_ids: list[str]) -> list[dict]:
     MATCH (c:Column) WHERE c.id IN $col_ids
     RETURN c.id AS id, c.name AS name, c.table_fqn AS table_fqn,
            c.data_type AS data_type, c.semantic_type AS semantic_type,
-           c.description AS description, c.default_aggregation AS default_aggregation,
+           c.description AS description, c.sample_values AS sample_values, c.distinct_values AS distinct_values,
            c.value_vocabulary AS value_vocabulary, c.synonyms AS synonyms
     """
     t0 = time.monotonic()
@@ -252,10 +248,10 @@ def resolve_columns(table_fqn: str, column_names: list[str]) -> list[dict]:
     MATCH (t:Table {fqn: $table_fqn})-[:HAS_COLUMN]->(c:Column)
     WHERE c.name IN $column_names
     RETURN c.name AS name, c.table_fqn AS table_fqn, c.data_type AS data_type,
-           c.semantic_type AS semantic_type, c.default_aggregation AS default_aggregation,
+           c.semantic_type AS semantic_type, 
            c.temporal_grain AS temporal_grain, c.sample_values AS sample_values,
            c.top_freq_values AS top_freq_values, c.value_aliases AS value_aliases,
-           c.filter_selectivity AS filter_selectivity, c.value_vocabulary AS value_vocabulary,
+           c.value_vocabulary AS value_vocabulary,
            c.description AS description, c.synonyms AS synonyms
     """
     t0 = time.monotonic()

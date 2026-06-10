@@ -67,8 +67,14 @@ function ConversationTurn({
   // noisy re-announcements during virtual scroll.
   const turnIsStreaming = msgs.some((m) => m.isStreaming);
 
+  // Stable scroll anchor: always the first user message in the oldest version.
+  // Search results return the original message id (oldest version), so this
+  // anchor works even when the user has edited the message and switched to v2+.
+  const anchorId = (allMessages.get(versions[0]) || []).find((m) => m.role === 'user')?.id;
+
   return (
     <div
+      id={anchorId ? `msg-${anchorId}` : undefined}
       aria-live={turnIsStreaming ? 'polite' : undefined}
       aria-atomic="false"
     >

@@ -38,7 +38,7 @@ def load_join_path(from_fqn: str, to_fqn: str) -> dict | None:
     """Dijkstra shortest path — always k_rank=1 (there is only one Dijkstra path per pair)."""
     query = """
     MATCH (jp:JoinPath)
-    WHERE jp.from_fqn = $from AND jp.to_fqn = $to
+    WHERE (jp.from_fqn = $from AND jp.to_fqn = $to) OR (jp.from_fqn = $to AND jp.to_fqn = $from)
       AND jp.algorithm = 'dijkstra' AND jp.k_rank = 1
     RETURN jp.id AS id, jp.join_clauses AS join_clauses, jp.path_tables AS path_tables,
            jp.hop_count AS hop_count, jp.total_cost AS total_cost,
@@ -59,7 +59,7 @@ def load_join_path_yens(from_fqn: str, to_fqn: str, k_rank: int = 2) -> dict | N
     """
     query = """
     MATCH (jp:JoinPath)
-    WHERE jp.from_fqn = $from AND jp.to_fqn = $to
+    WHERE (jp.from_fqn = $from AND jp.to_fqn = $to) OR (jp.from_fqn = $to AND jp.to_fqn = $from)
       AND jp.algorithm = 'yens' AND jp.k_rank = $k_rank
     RETURN jp.id AS id, jp.join_clauses AS join_clauses, jp.path_tables AS path_tables,
            jp.hop_count AS hop_count, jp.total_cost AS total_cost,
@@ -77,7 +77,7 @@ def load_join_path_dijkstra(from_fqn: str, to_fqn: str, k_rank: int = 1) -> dict
     """Explicit Dijkstra fetch. k_rank is always 1 for Dijkstra."""
     query = """
     MATCH (jp:JoinPath)
-    WHERE jp.from_fqn = $from AND jp.to_fqn = $to
+    WHERE (jp.from_fqn = $from AND jp.to_fqn = $to) OR (jp.from_fqn = $to AND jp.to_fqn = $from)
       AND jp.algorithm = 'dijkstra' AND jp.k_rank = $k_rank
     RETURN jp.id AS id, jp.join_clauses AS join_clauses, jp.path_tables AS path_tables,
            jp.hop_count AS hop_count, jp.total_cost AS total_cost,

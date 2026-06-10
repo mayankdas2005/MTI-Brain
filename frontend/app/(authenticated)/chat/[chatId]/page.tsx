@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect, use } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useState, useRef, useEffect, useCallback, use } from 'react';
+import { useRouter } from 'next/navigation';
 import { useThreadStore, isThreadCreationPending } from '@/lib/store/threads';
 import { toast } from '@/lib/toast';
 import { MessageList } from '@/components/message-list';
@@ -23,8 +23,6 @@ export default function ChatPage({ params }: ChatPageProps) {
   const [hasNewResponse, setHasNewResponse] = useState(false);
   const prevStreamingRef = useRef(false);
   const streamJustEndedRef = useRef(false);
-
-  const searchParams = useSearchParams();
 
   const currentThreadId = useThreadStore((s) => s.currentThreadId);
   const currentMessages = useThreadStore((s) => s.currentMessages);
@@ -100,9 +98,29 @@ export default function ChatPage({ params }: ChatPageProps) {
     });
   }, [chatId, fetchThread, setCurrentThread, router, pendingQuestion, isStreaming, streamingThreadId]);
 
-  // Tracks whether we've already scrolled to the ?msg= target for this navigation
-  const msgScrolledRef = useRef(false);
-  useEffect(() => { msgScrolledRef.current = false; }, [chatId]);
+  // Hash-based scroll: when URL has #msg-<uuid>, scroll to that element.
+  // Two triggers:
+  //  1. Effect: fires on mount / chatId change / messages load (handles async load on fresh navigation)
+  //  2. hashchange listener: handles same-thread re-searches from Ctrl+K (no page reload, no message count change)
+  const lastHashScrollRef = useRef<string | null>(null);
+  useEffect(() => { lastHashScrollRef.current = null; }, [chatId]);
+
+  const scrollToHash = useCallback(() => {
+    const hash = window.location.hash;
+    if (!hash || hash === lastHashScrollRef.current) return;
+    const el = document.getElementById(hash.slice(1));
+    if (el) {
+      lastHashScrollRef.current = hash;
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
+
+  useEffect(() => { scrollToHash(); }, [displayedMessages.length, chatId, scrollToHash]);
+
+  useEffect(() => {
+    window.addEventListener('hashchange', scrollToHash);
+    return () => window.removeEventListener('hashchange', scrollToHash);
+  }, [scrollToHash]);
 
   // Cmd+K is handled at the layout level (opens search modal)
 
@@ -118,22 +136,17 @@ export default function ChatPage({ params }: ChatPageProps) {
     const isNewMessage = displayedMessages.length !== prevLenRef.current;
     prevLenRef.current = displayedMessages.length;
 
-    // Search navigation: runs regardless of isNewMessage so cached threads scroll too
-    const searchMsgId = searchParams.get('msg');
-    if (searchMsgId && !msgScrolledRef.current) {
-      const el = document.getElementById(`msg-${searchMsgId}`);
-      if (el) {
-        msgScrolledRef.current = true;
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return;
-      }
-    }
-
     // New message added → decide scroll target based on origin
     if (isNewMessage && scrollRef.current) {
-      const origin = useThreadStore.getState().streamingOrigin;
+      // Hash navigation takes priority — the hash-scroll effect handles positioning.
+      if (window.location.hash) return;
 
-      if (origin === 'retry' || origin === 'edit') {
+      const origin = useThreadStore.getState().streamingOrigin;
+      // Only honour retry/edit scroll when streaming is actively for THIS thread.
+      // stale streamingOrigin from a previous operation must not hijack a fresh load.
+      const isActiveStreamHere = isStreaming && useThreadStore.getState().streamingThreadId === chatId;
+
+      if (isActiveStreamHere && (origin === 'retry' || origin === 'edit')) {
         // Scroll to the streaming assistant message (near the retried/edited question)
         const msgId = useThreadStore.getState().streamingMessageId;
         if (msgId) {
@@ -176,11 +189,12 @@ export default function ChatPage({ params }: ChatPageProps) {
       }
     }
 
-    // Normal: scroll to bottom only if already following, and use instant to avoid fighting
-    if (autoScrollRef.current && scrollRef.current) {
+    // Normal: scroll to bottom only if already following.
+    // Guard with hash: don't snap to bottom while viewing a search-targeted message.
+    if (autoScrollRef.current && scrollRef.current && !window.location.hash) {
       scrollRef.current.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
     }
-  }, [displayedMessages, autoScroll, isStreaming, searchParams]);
+  }, [displayedMessages, autoScroll, isStreaming, chatId]);
 
   // Detect response completed while scrolled up
   useEffect(() => {
