@@ -192,7 +192,7 @@ html[data-density="compact"] {
   --font-mono:    'IBM Plex Mono', ui-monospace, monospace;
   --text-xs: 0.85rem;
   --text-xs--line-height: 1.3;
-  --text-sm: 1rem;
+  --text-sm: 0.9rem;
   --text-sm--line-height: 1.5;
   --color-background: var(--background);
   --color-foreground: var(--foreground);

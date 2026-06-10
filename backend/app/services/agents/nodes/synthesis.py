@@ -31,10 +31,6 @@ _FLAG_INSTRUCTIONS = {
         "Note: Only 1 data point was returned. You cannot draw a trend from a single point. "
         "Say so clearly to the user."
     ),
-    "low_confidence_filter": (
-        "Note: One or more filter values were matched approximately (not exact match). "
-        "Results may include slightly different data than intended. Mention the matched values."
-    ),
     "time_filter_relaxed": (
         "Note: The time filter was relaxed because the original date range returned no data. "
         "Results span a broader period than requested — state this explicitly."
@@ -180,6 +176,8 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         no_data="YES" if no_data else "NO",
         zero_row_probe_result=zero_row_probe_result,
         data_profile=data_profile,
+        tribal_facts_section=tribal_facts_section,
+        conversation_context=conversation_section,
     )
 
     haiku = get_llm("fast")
@@ -232,6 +230,17 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     elif no_data:
         no_data_context = "No data returned."
 
+    if low_confidence_filters:
+        lcf_lines = ["INTERNAL — filter confidence context (do NOT surface to user):"]
+        for _f in low_confidence_filters:
+            lcf_lines.append(
+                f"  '{_f.get('column', '')}': resolved '{_f.get('raw_value', '')}' "
+                f"→ '{_f.get('resolved_value', '')}' (fuzzy match — may not match intent)"
+            )
+        low_confidence_section = "\n".join(lcf_lines)
+    else:
+        low_confidence_section = ""
+
     writer_prompt = SYNTHESIS_PROMPT.format_messages(
         persona=state.get("persona", "executive"),
         question=state["question"],
@@ -242,6 +251,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         memory_section=memory_section,
         feedback_section=feedback_section,
         tribal_facts_section=tribal_facts_section,
+        low_confidence_section=low_confidence_section,
     )
 
     sonnet = get_llm("balanced")

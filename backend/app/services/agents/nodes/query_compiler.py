@@ -143,11 +143,12 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
     if semantic_context and ir.anchor_tables:
         primary_table = ir.anchor_tables[0]
         all_cols = semantic_context.get("columns") or []
-        _DATE_GRAINS = {"day", "week", "month", "quarter", "year", "hour", "minute", "date"}
+        _DATE_DTYPES = {"date", "timestamp", "timestamptz", "timestamp with time zone",
+                        "timestamp without time zone"}
         temporal_cols = [
             c for c in all_cols
             if c.get("table_fqn") == primary_table
-            and c.get("temporal_grain", "").lower() in _DATE_GRAINS
+            and any(dt in (c.get("data_type") or "").lower() for dt in ("date", "timestamp"))
         ]
         if len(temporal_cols) > 1:
             lines.append(

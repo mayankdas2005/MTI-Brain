@@ -10,7 +10,6 @@ the SQL LLM decides from the question context and column name.
 from __future__ import annotations
 
 from app.core.logger import logger
-from app.services.agents import neo4j_client
 from app.services.agents.context.column_loader import get_filter_values as _get_filter_values
 from app.services.agents.semantic_ir import ColumnRef, FilterSpec, SemanticIR
 
@@ -190,7 +189,11 @@ async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict 
         logger.info("ir_builder | hub_injected | fqn={}", hub_fqn)
 
     join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs = \
-        _load_join_paths(anchor_tables, intent_directive=(state or {}).get("intent_directive") or "")
+        _load_join_paths(
+            anchor_tables,
+            intent_directive=(state or {}).get("intent_directive") or "",
+            anchor_join_paths=(state or {}).get("anchor_join_paths"),
+        )
 
     raw_measures = resolved.get("measures", [])
     raw_dimensions = resolved.get("dimensions", [])
@@ -440,33 +443,46 @@ def _pick_valid_primary_path(paths: list[dict]) -> dict | None:
     return next(iter(paths), None)
 
 
-def _load_join_paths(anchor_tables: list[str], intent_directive: str = "") -> tuple[list, list, list, list, list, list]:
-    """Load join paths for consecutive table pairs.
+def _load_join_paths(
+    anchor_tables: list[str],
+    intent_directive: str = "",
+    anchor_join_paths: list[dict] | None = None,
+) -> tuple[list, list, list, list, list, list]:
+    """Load join paths — primary: anchor_join_paths from state (Neo4j ground truth).
 
-    Collects ALL available paths via collect_all_join_paths (JOINS_TO + dijkstra k1-3
-    forward/reverse + yens k1-3 forward/reverse). Primary join_clauses are set from the
-    first-priority path (JOINS_TO → dijkstra k=1 → yens k=1) for backward compat.
-    All paths are stored in candidate_join_paths for the SQL generator to choose from.
-
-    When no direct path exists between a pair, tries a 2-hop bridge via find_bridge_table().
-    If a bridge is found, it is inserted into the pair list and re-resolved.
-    If no bridge found, the pair is added to unresolved_join_pairs — NOT an empty string.
+    Tier A: use anchor_join_paths from state (set by schema_enricher).
+    Tier B: parse JOIN_PATH lines from intent_directive (directive_writer relay, fallback only).
+    Pairs with no path in either source become unresolved_pairs.
 
     Returns: (join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs)
     """
     if len(anchor_tables) <= 1:
         return [], [], list(anchor_tables), [], [], []
 
-    join_path_ids: list[str] = []
     all_join_clauses: list[str] = []
     all_path_tables: list[str] = [anchor_tables[0]]
     join_types: list[str] = []
-    candidate_join_paths: list[dict] = []
     unresolved_pairs: list[dict] = []
 
-    # Pre-parse explicit JOIN_PATH clauses from intent directive — Tier 0 (highest priority).
-    # Format: "JOIN_PATH: lpp.borrowing.facility_ref = lpp.credit_facility.code"
-    # Bidirectional: stored for both (from,to) and (to,from) orderings.
+    # Tier A: anchor_join_paths from state (Neo4j ground truth — highest confidence)
+    # Value: (join_clauses_list, path_tables_list) — all hops stored, not just first
+    state_join_lookup: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+    for path in (anchor_join_paths or []):
+        from_fqn    = path.get("from_fqn")
+        to_fqn      = path.get("to_fqn")
+        clauses     = path.get("join_clauses") or []
+        path_tables = path.get("path_tables") or []
+
+        # Handle 1-hop JOINS_TO edges: get_direct_joins() returns from_col/to_col, no join_clauses
+        if not clauses and path.get("from_col") and path.get("to_col") and from_fqn and to_fqn:
+            clauses     = [f"{from_fqn}.{path['from_col']} = {to_fqn}.{path['to_col']}"]
+            path_tables = [from_fqn, to_fqn]
+
+        if from_fqn and to_fqn and clauses:
+            state_join_lookup[(from_fqn, to_fqn)] = (list(clauses), list(path_tables))
+            state_join_lookup[(to_fqn, from_fqn)] = (list(reversed(clauses)), list(reversed(path_tables)))
+
+    # Tier B: JOIN_PATH lines from intent_directive (fallback for unresolved pairs)
     _intent_joins: dict[tuple[str, str], str] = {}
     if intent_directive:
         for _line in intent_directive.splitlines():
@@ -478,115 +494,36 @@ def _load_join_paths(anchor_tables: list[str], intent_directive: str = "") -> tu
                     _intent_joins[(_f, _t)] = _clause
                     _intent_joins[(_t, _f)] = _clause
 
-    # Work on a mutable copy — bridge insertions may expand the list
-    work_tables = list(anchor_tables)
-    i = 0
-    while i < len(work_tables) - 1:
-        from_table = work_tables[i]
-        to_table = work_tables[i + 1]
+    for i in range(len(anchor_tables) - 1):
+        from_table = anchor_tables[i]
+        to_table   = anchor_tables[i + 1]
 
-        all_paths = neo4j_client.collect_all_join_paths(from_table, to_table)
-
-        # Tier 0: inject intent directive JOIN_PATH at the front (highest priority)
-        if (from_table, to_table) in _intent_joins:
-            intent_clause = _intent_joins[(from_table, to_table)]
-            all_paths.insert(0, {
-                "id": "", "join_clauses": [intent_clause],
-                "path_tables": [from_table, to_table], "hop_count": 1,
-                "tier": "intent_directive", "direction": "forward",
-                "from_fqn": from_table, "to_fqn": to_table,
-            })
+        if (from_table, to_table) in state_join_lookup:
+            path_clauses, hop_tables = state_join_lookup[(from_table, to_table)]
+            all_join_clauses.extend(path_clauses)
+            join_types.extend(["JOIN"] * len(path_clauses))
+            for tbl in hop_tables:
+                if tbl not in all_path_tables:
+                    all_path_tables.append(tbl)
             logger.info(
-                "ir_builder | intent_join_injected | from={} to={} | clause={}",
-                from_table, to_table, intent_clause,
+                "ir_builder | join | {}<->{} | hops={} | clauses={} | via=anchor_join_paths",
+                from_table, to_table, len(path_clauses), path_clauses,
             )
-
-        for p in all_paths:
-            p.setdefault("from_fqn", from_table)
-            p.setdefault("to_fqn", to_table)
-        candidate_join_paths.extend(all_paths)
-
-        jp = _pick_valid_primary_path(all_paths)
-        if not jp:
-            # Tier A: value-overlap join — data-driven FK discovery from distinct_values.
-            # Preferred over bridge-table search: it verifies actual shared values rather
-            # than relying on graph topology (which picks high-in_degree tables like fraud_loss).
-            try:
-                overlap_cols = neo4j_client.find_join_by_value_overlap(from_table, to_table)
-            except Exception:
-                overlap_cols = []
-
-            if overlap_cols:
-                best = overlap_cols[0]
-                clause = f"{from_table}.{best['from_col']} = {to_table}.{best['to_col']}"
-                all_join_clauses.append(clause)
-                join_types.append("JOIN")
-                if to_table not in all_path_tables:
-                    all_path_tables.append(to_table)
-                logger.info(
-                    "ir_builder | value_overlap_join | from={} to={} | clause={} | overlap={}",
-                    from_table, to_table, clause, best["overlap_count"],
-                )
-                i += 1
-                continue
-
-            # Tier B: 2-hop bridge via JOINS_TO-JOINS_TO (dimension/reference tables only).
-            # Fact/event bridge tables are excluded by find_bridge_table's Cypher filter.
-            bridge_fqn = neo4j_client.find_bridge_table(from_table, to_table)
-            if bridge_fqn and bridge_fqn not in work_tables:
-                work_tables.insert(i + 1, bridge_fqn)
-                logger.info(
-                    "ir_builder | bridge_inserted | bridge={} | between={} and {}",
-                    bridge_fqn, from_table, to_table,
-                )
-                continue
-            else:
-                logger.warning(
-                    "ir_builder | unresolved_pair | from={} to={} | no path, overlap, or bridge found",
-                    from_table, to_table,
-                )
-                # Populate candidate_join_columns from value_overlap results even when they
-                # weren't strong enough to resolve the join — gives sql_generator concrete
-                # column candidates instead of a blank "no_path" signal.
-                candidate_cols = [
-                    f"{from_table}.{r['from_col']} = {to_table}.{r['to_col']}"
-                    for r in (overlap_cols or [])[:3]
-                ]
-                unresolved_pairs.append({
-                    "from": from_table,
-                    "to": to_table,
-                    "reason": "no_path",
-                    "candidate_join_columns": candidate_cols,
-                })
-                i += 1
-                continue
-
-        logger.info(
-            "ir_builder | join resolved | from={} to={} | tier={} | hops={} | paths={} | clauses={}",
-            from_table, to_table,
-            jp.get("tier", "unknown"),
-            jp.get("hop_count"),
-            len(all_paths),
-            jp.get("join_clauses"),
-        )
-
-        join_path_ids.append(jp.get("id", ""))
-        clauses = jp.get("join_clauses", [])
-        path_tbls = jp.get("path_tables", [from_table, to_table])
-
-        for j, clause in enumerate(clauses):
-            left_tbl = path_tbls[j] if j < len(path_tbls) else from_table
-            right_tbl = path_tbls[j + 1] if j + 1 < len(path_tbls) else to_table
-            all_join_clauses.append(_qualify_join_clause(clause, left_tbl, right_tbl))
+        elif (from_table, to_table) in _intent_joins:
+            clause = _intent_joins[(from_table, to_table)]
+            all_join_clauses.append(clause)
             join_types.append("JOIN")
+            if to_table not in all_path_tables:
+                all_path_tables.append(to_table)
+            logger.warning(
+                "ir_builder | join | {}<->{} | clause={} | via=directive_fallback",
+                from_table, to_table, clause,
+            )
+        else:
+            logger.warning("ir_builder | unresolved_pair | from={} to={} | no join in state or directive", from_table, to_table)
+            unresolved_pairs.append({"from": from_table, "to": to_table, "reason": "no_join_found"})
 
-        for tbl in path_tbls[1:]:
-            if tbl not in all_path_tables:
-                all_path_tables.append(tbl)
-
-        i += 1
-
-    return join_path_ids, all_join_clauses, all_path_tables, join_types, candidate_join_paths, unresolved_pairs
+    return [], all_join_clauses, all_path_tables, join_types, [], unresolved_pairs
 
 
 def _qualify_join_clause(clause: str, left_table: str, right_table: str) -> str:
@@ -816,7 +753,7 @@ async def _build_time_filter(
         return None
 
     intent_directive = (state or {}).get("intent_directive") or ""
-    table_fqn, date_col = _find_date_column(anchor_tables, semantic_context, intent_directive)
+    table_fqn, date_col = _find_date_column(anchor_tables, semantic_context, intent_directive, state=state)
 
     # Already-resolved dict: an upstream node pre-resolved the timeframe.
     # Use it directly without another resolution pass.
@@ -865,26 +802,51 @@ async def _build_time_filter(
     )
 
 
-_DATE_GRAINS = {"day", "week", "month", "quarter", "year", "hour", "minute", "date"}
-
-
 def _find_date_column(
     anchor_tables: list[str],
     semantic_context: dict,
     intent_directive: str = "",
+    state: dict | None = None,
 ) -> tuple[str, str]:
-    """Metadata-driven date column selection — three ranked passes, no hardcoded names.
+    """Metadata-driven date column selection — ranked passes, no hardcoded names.
 
-    Pass 0: TIME_FILTER column in intent directive — highest priority.
-    Pass 1: column.temporal_grain is set — returns FIRST match as default.
-            When multiple temporal columns exist on the primary table, the SCHEMA DIRECTIVE
-            emits the full TEMPORAL COLUMNS list so directive_writer can pick the right one.
-    Pass 2: any date/timestamp data_type (last resort).
+    Pass 0a: time_filter_col in resolved_intent / specialist_outputs — authoritative specialist output.
+    Pass 0b: TIME_FILTER column in intent directive — directive_writer relay.
+    Pass 1:  any date/timestamp data_type (fallback).
     """
     import re as _re
     columns = semantic_context.get("columns", [])
 
-    # Pass 0: column named in intent directive TIME_FILTER line wins over metadata.
+    # Pass 0a: authoritative — filter_specialist already determined the time column
+    resolved_intent = (state or {}).get("resolved_intent") or {}
+    time_filter_col = resolved_intent.get("time_filter_col")
+    if not time_filter_col:
+        for s in ((state or {}).get("specialist_outputs") or []):
+            if s.get("type") == "filters":
+                time_filter_col = s.get("time_filter_col")
+                break
+    if time_filter_col:
+        parts = time_filter_col.split(".")
+        if len(parts) == 3:
+            candidate_fqn = f"{parts[0]}.{parts[1]}"
+            candidate_col = parts[2]
+            if candidate_fqn in anchor_tables:
+                logger.info(
+                    "ir_builder | date_col | table={} col={} | via=specialist_direct",
+                    candidate_fqn, candidate_col,
+                )
+                return candidate_fqn, candidate_col
+            else:
+                logger.warning(
+                    "ir_builder | Pass0a_miss | time_filter_col={} not in anchor_tables={}",
+                    time_filter_col, anchor_tables,
+                )
+        else:
+            logger.warning("ir_builder | Pass0a_miss | time_filter_col={} unexpected format", time_filter_col)
+    else:
+        logger.warning("ir_builder | Pass0a_miss | no time_filter_col in specialist outputs, scanning directive")
+
+    # Pass 0b: column named in intent directive TIME_FILTER line (directive_writer relay).
     if intent_directive:
         for line in intent_directive.splitlines():
             if line.strip().upper().startswith("TIME_FILTER:"):
@@ -896,7 +858,7 @@ def _find_date_column(
                         for c in columns:
                             if c.get("table_fqn") == candidate_fqn and c.get("name") == candidate_col:
                                 logger.info(
-                                    "ir_builder | date_col | table={} col={} via=intent_directive",
+                                    "ir_builder | date_col | table={} col={} | via=intent_directive",
                                     candidate_fqn, candidate_col,
                                 )
                                 return candidate_fqn, candidate_col
@@ -905,17 +867,7 @@ def _find_date_column(
     _DATE_TYPES = {"date", "timestamp", "datetime"}
     _DATE_SEMANTICS = {"date", "datetime", "timestamp"}
 
-    # Pass 1: column.temporal_grain is set — return first match as default.
-    # Multiple candidates are exposed via TEMPORAL COLUMNS in _build_schema_directive.
-    for table in anchor_tables:
-        for col in columns:
-            if col.get("table_fqn") != table:
-                continue
-            if col.get("temporal_grain", "").lower() in _DATE_GRAINS:
-                logger.info("ir_builder | date_col | table={} col={} via=temporal_grain", table, col["name"])
-                return table, col["name"]
-
-    # Pass 2: any date/timestamp data_type (last resort)
+    # Pass 1: any date/timestamp data_type (fallback)
     for table in anchor_tables:
         for col in columns:
             if col.get("table_fqn") != table:

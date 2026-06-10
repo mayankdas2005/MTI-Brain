@@ -60,8 +60,8 @@ def route_after_anchor_resolver(state: AnalyticsState) -> str:
     if not anchor_tables:
         logger.warning("route: anchor_resolver → intent_resolver (fallback — no tables resolved) | thread={}", state["thread_id"])
         return N_INTENT_RESOLVER
-    logger.info("route: anchor_resolver → query_planner | tables={} | thread={}", anchor_tables, state["thread_id"])
-    return N_QUERY_PLANNER
+    logger.info("route: anchor_resolver → schema_enricher | tables={} | thread={}", anchor_tables, state["thread_id"])
+    return N_SCHEMA_ENRICHER
 
 
 def route_after_intent_assembler(state: AnalyticsState) -> str:

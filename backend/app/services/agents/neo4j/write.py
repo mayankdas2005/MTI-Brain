@@ -31,7 +31,7 @@ _QP_CREATE_CYPHER = """
 MERGE (qp:QueryPattern {id: $id})
 ON CREATE SET
   qp.question_text    = $question_text,
-  qp.sql_cte_outline  = $sql_cte_outline,
+  qp.sql_text         = $sql_text,
   qp.join_outline     = $join_outline,
   qp.filter_summary   = $filter_summary,
   qp.tables_used      = $tables_used,
@@ -51,7 +51,7 @@ ON CREATE SET
 ON MATCH SET
   qp.occurrence_count = coalesce(qp.occurrence_count, 0) + 1,
   qp.last_seen        = datetime(),
-  qp.sql_cte_outline  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_cte_outline  ELSE qp.sql_cte_outline  END,
+  qp.sql_text         = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_text         ELSE qp.sql_text         END,
   qp.join_outline     = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $join_outline     ELSE qp.join_outline     END,
   qp.filter_summary   = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $filter_summary   ELSE qp.filter_summary   END,
   qp.tables_used      = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $tables_used      ELSE qp.tables_used      END,
@@ -65,7 +65,7 @@ MATCH (qp:QueryPattern {id: $id})
 SET
   qp.occurrence_count = coalesce(qp.occurrence_count, 0) + 1,
   qp.last_seen        = datetime(),
-  qp.sql_cte_outline  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_cte_outline  ELSE qp.sql_cte_outline  END,
+  qp.sql_text         = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_text         ELSE qp.sql_text         END,
   qp.join_outline     = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $join_outline     ELSE qp.join_outline     END,
   qp.filter_summary   = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $filter_summary   ELSE qp.filter_summary   END,
   qp.tables_used      = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $tables_used      ELSE qp.tables_used      END,
@@ -79,9 +79,9 @@ MERGE (ap:AntiPattern {merge_key: $merge_key})
 ON CREATE SET
   ap.id               = $id,
   ap.question_text    = $question_text,
-  ap.sql_fragment     = $sql_fragment,
+  ap.sql_text         = $sql_text,
   ap.error_type       = $error_type,
-  ap.error_summary    = $error_summary,
+  ap.error_detail     = $error_detail,
   ap.failing_element  = $failing_element,
   ap.tables_involved  = $tables_involved,
   ap.intent           = $intent,
@@ -92,8 +92,8 @@ ON CREATE SET
 ON MATCH SET
   ap.occurrence_count = ap.occurrence_count + 1,
   ap.last_seen        = datetime(),
-  ap.sql_fragment     = $sql_fragment,
-  ap.error_summary    = $error_summary,
+  ap.sql_text         = $sql_text,
+  ap.error_detail     = $error_detail,
   ap.failing_element  = CASE WHEN $failing_element <> '' THEN $failing_element ELSE ap.failing_element END
 """
 
@@ -168,7 +168,7 @@ def promote_pattern_to_template(pattern_id: str) -> None:
         MERGE (t:QueryTemplate {id: p.id + '_tmpl'})
         ON CREATE SET
             t.question_text              = p.question_text,
-            t.sql_pattern                = p.sql_cte_outline,
+            t.sql_pattern                = p.sql_text,
             t.join_outline               = p.join_outline,
             t.filter_summary             = p.filter_summary,
             t.anchor_table_fqns_resolved = p.tables_used,

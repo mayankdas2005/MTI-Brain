@@ -7,6 +7,7 @@ import time
 from app.core.circuit_breaker import neo4j_breaker
 from app.core.logger import logger
 from .client import _neo4j_run
+from .table_search import _fuzzy_fts
 
 
 # ── QueryTemplate ─────────────────────────────────────────────────────────────
@@ -58,7 +59,7 @@ def search_query_templates_fulltext(query_text: str) -> list[dict]:
            score LIMIT 5
     """
     t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": query_text})
+    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
     logger.debug("neo4j | fn=search_query_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -152,29 +153,6 @@ def find_canonical_pattern_id(
     return None
 
 
-@neo4j_breaker
-def search_query_patterns_fulltext(query_text: str) -> list[dict]:
-    cypher = """
-    CALL db.index.fulltext.queryNodes('querypattern_ft', $query)
-    YIELD node AS qp, score
-    RETURN qp.id AS id, qp.question_text AS question_text,
-           qp.sql_cte_outline AS sql_cte_outline,
-           qp.join_outline AS join_outline,
-           qp.filter_summary AS filter_summary,
-           qp.tables_used AS tables_used,
-           qp.intent AS intent, qp.complexity AS complexity,
-           qp.recompile_count AS recompile_count,
-           qp.repair_count AS repair_count, score LIMIT 3
-    """
-    t0 = time.monotonic()
-    try:
-        results = _neo4j_run(cypher, {"query": query_text})
-        logger.debug("neo4j | fn=search_query_patterns_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
-        return [dict(r) for r in results]
-    except Exception as e:
-        logger.warning("neo4j | search_query_patterns_fulltext failed | error={}", e)
-        return []
-
 
 @neo4j_breaker
 def get_query_patterns_by_ids(ids: list[str]) -> list[dict]:
@@ -246,18 +224,6 @@ def search_intents(embedding: list[float]) -> list[dict]:
     return [dict(r) for r in results]
 
 
-@neo4j_breaker
-def search_intents_fulltext(query_text: str) -> list[dict]:
-    cypher = """
-    CALL db.index.fulltext.queryNodes('intent_ft', $query)
-    YIELD node AS i, score
-    RETURN i.name AS name, i.description AS description, score LIMIT 5
-    """
-    t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": query_text})
-    logger.debug("neo4j | fn=search_intents_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
-    return [dict(r) for r in results]
-
 
 # ── BusinessTerm ──────────────────────────────────────────────────────────────
 
@@ -287,7 +253,7 @@ def search_business_terms_fulltext(query_text: str) -> list[dict]:
            score LIMIT 5
     """
     t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": query_text})
+    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
     logger.debug("neo4j | fn=search_business_terms_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -317,6 +283,30 @@ def get_business_terms_by_terms(terms: list[str]) -> list[dict]:
     results = _neo4j_run(query, {"terms": terms})
     logger.debug("neo4j | fn=get_business_terms_by_terms | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r["bt"] or {}) for r in results]
+
+
+@neo4j_breaker
+def get_business_terms_for_tables(anchor_fqns: list[str]) -> list[dict]:
+    """Return BusinessTerms linked to anchor tables via REFERENCES_TABLE edges.
+
+    Returns each BT's term, definition, computation (SQL expression if available),
+    and the anchor table it references. Used by schema_enricher to build concept_mappings
+    so directive_writer can emit COMPUTATION: instead of SCHEMA_GAP_CONCEPT.
+    """
+    if not anchor_fqns:
+        return []
+    query = """
+    MATCH (bt:BusinessTerm)-[:REFERENCES_TABLE]->(t:Table)
+    WHERE t.fqn IN $anchor_fqns
+    RETURN bt.term AS term, bt.definition AS definition,
+           bt.computation AS computation, bt.sql_expression AS sql_expression,
+           bt.term_type AS term_type, bt.variants AS variants,
+           t.fqn AS table_fqn
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"anchor_fqns": anchor_fqns})
+    logger.debug("neo4j | fn=get_business_terms_for_tables | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+    return [dict(r) for r in results]
 
 
 @neo4j_breaker

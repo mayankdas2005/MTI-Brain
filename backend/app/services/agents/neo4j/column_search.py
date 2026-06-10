@@ -8,6 +8,7 @@ import time
 from app.core.circuit_breaker import neo4j_breaker
 from app.core.logger import logger
 from .client import _neo4j_run
+from .table_search import _fuzzy_fts
 
 # Regex to parse "lpp.table_name.col_name" from JoinPath join_clauses
 _FQN_COL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_$]*)")
@@ -40,7 +41,7 @@ def search_columns_fulltext(query_text: str) -> list[dict]:
            score LIMIT 15
     """
     t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": query_text})
+    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
     logger.debug("neo4j | fn=search_columns_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -248,8 +249,8 @@ def resolve_columns(table_fqn: str, column_names: list[str]) -> list[dict]:
     MATCH (t:Table {fqn: $table_fqn})-[:HAS_COLUMN]->(c:Column)
     WHERE c.name IN $column_names
     RETURN c.name AS name, c.table_fqn AS table_fqn, c.data_type AS data_type,
-           c.semantic_type AS semantic_type, 
-           c.temporal_grain AS temporal_grain, c.sample_values AS sample_values,
+           c.semantic_type AS semantic_type,
+           c.sample_values AS sample_values,
            c.top_freq_values AS top_freq_values, c.value_aliases AS value_aliases,
            c.value_vocabulary AS value_vocabulary,
            c.description AS description, c.synonyms AS synonyms

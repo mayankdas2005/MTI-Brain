@@ -144,7 +144,6 @@ async def _resolve_filter(
     # value_vocabulary = distinct_values[0..30] from ingestion pipeline.
     # sample_values (5-10 items) is NOT used — insufficient for filter resolution.
     filter_values = column_meta.get("filter_values") or []
-    filter_selectivity = column_meta.get("filter_selectivity", "medium")
 
     # value_aliases stored as list in Neo4j: ["BRL -> Brazilian Real", "USD -> US Dollar"]
     # Parse to dict: {"BRL": "Brazilian Real", ...}
@@ -195,6 +194,13 @@ async def _resolve_filter(
         return f.model_copy(update={"value": resolved_val, "resolved": True}), False
     if resolved_val and 70 <= score < 85:
         return f.model_copy(update={"value": resolved_val, "resolved": True}), True
+    if resolved_val and score == 65:
+        # Substring match: user keyword is embedded in compound codes (e.g. "operating" in "GR_AE_OPERATING_1").
+        # Use ILIKE (→ sql_generator converts to ~*) so WHERE clause becomes:
+        #   ba.code ~* 'OPERATING'   (matches all operating accounts)
+        # not:
+        #   ba.code = 'OPERATING'    (matches nothing — no row has that exact code)
+        return f.model_copy(update={"value": resolved_val, "operator": "ILIKE", "resolved": True}), True
 
     # Tier 4: Live Redshift probe — two cases:
     # 4a) vocabulary empty → probe to populate it (existing behavior)
@@ -205,7 +211,6 @@ async def _resolve_filter(
     _is_categorical = (
         column_meta.get("semantic_type", "") in _CATEGORICAL_SEMANTICS
         or "bool" in data_type
-        or filter_selectivity not in ("high",)
     )
     _CODE_SEMANTICS = frozenset({"code", "identifier"})
     _partial_vocab = (
@@ -251,9 +256,13 @@ async def _tier35_temporal_llm(raw_value: str, state: AnalyticsState) -> dict | 
         from app.services.agents.bedrock import get_llm
         from app.core.retry import retry_async
         llm = get_llm("fast")
+        query_plan = state.get("query_plan") or {}
+        temporal_grain = query_plan.get("required_time_period") or ""
+        temporal_grain_hint = f'Hint: required_time_period = "{temporal_grain}"' if temporal_grain else ""
         messages = TEMPORAL_RESOLVE_PROMPT.format_messages(
             expression=raw_value,
             question=state.get("effective_question") or state.get("question", ""),
+            temporal_grain_hint=temporal_grain_hint,
         )
         response = await retry_async(lambda: llm.ainvoke(messages), service="bedrock-filter-resolver-temporal", max_attempts=2, backoff_base=5.0)
         text = (response.content or "").strip()
@@ -320,6 +329,21 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
         f'  {i + 1}. "{c}"{f"  ({alias_map[c]})" if c in alias_map else ""}'
         for i, c in enumerate(candidates)
     )
+    entity_hints = (state.get("semantic_context") or {}).get("entity_hints") or []
+    pre_resolved = [
+        f"  Pre-matched: '{eh.get('matched_value')}' (from token '{eh.get('token')}')"
+        for eh in entity_hints
+        if eh.get("table_fqn") == f.table_fqn and eh.get("column") == f.column_name
+    ]
+    if pre_resolved:
+        logger.info(
+            "filter_resolver | tier5 | pre_resolved_hint | col={}.{} | hint={}",
+            f.table_fqn, f.column_name, pre_resolved,
+        )
+    entity_hint_section = (
+        "Pre-resolved entity hints (prefer these values):\n" + "\n".join(pre_resolved)
+        if pre_resolved else ""
+    )
     prompt = FILTER_DISAMBIGUATE_PROMPT.format_messages(
         raw_user_value=f.raw_user_value,
         column_name=f.column_name,
@@ -327,6 +351,7 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
         candidates=candidates_text,
         question=state.get("effective_question") or state["question"],
         reasoning_directive=REASONING_DIRECTIVE_BRIEF,
+        entity_hint_section=entity_hint_section,
     )
 
     llm = get_llm("fast")

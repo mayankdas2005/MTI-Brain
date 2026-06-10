@@ -89,6 +89,65 @@ async def get_embedding(text: str) -> list[float]:
     return embedding
 
 
+async def get_embeddings_batch(texts: list[str]) -> list[list[float]]:
+    """Embed multiple texts in a single Cohere API call.
+
+    Checks Redis cache per-text first. Only the cache-miss texts are sent to Cohere
+    in one batched request. Results are stored back into Redis.
+    Returns a list of embeddings in the same order as `texts`.
+    Falls back to calling get_embedding() individually if batch call fails.
+    """
+    if not texts:
+        return []
+
+    normalized = [t.strip().lower() for t in texts]
+    results: list[list[float] | None] = [None] * len(normalized)
+    miss_indices: list[int] = []
+
+    for i, key in enumerate(normalized):
+        cached = redis_client.get_embedding(key)
+        if cached:
+            results[i] = cached
+        else:
+            miss_indices.append(i)
+
+    if not miss_indices:
+        logger.debug("cohere embed batch | all_cache_hits | count={}", len(texts))
+        return results  # type: ignore[return-value]
+
+    miss_texts = [normalized[i] for i in miss_indices]
+    t0 = time.monotonic()
+    try:
+        from app.core.config import settings
+        from app.services.embeddings import _get_async_client, _EMBED_URL, _COMMON_HEADERS
+        client = await _get_async_client()
+        resp = await client.post(
+            _EMBED_URL,
+            headers=_COMMON_HEADERS,
+            json={
+                "texts": [t[:2048] for t in miss_texts],
+                "input_type": "search_query",
+                "embedding_types": ["float"],
+                "truncate": "END",
+            },
+        )
+        resp.raise_for_status()
+        batch_embeddings: list[list[float]] = resp.json()["embeddings"]["float"]
+        logger.debug(
+            "cohere embed batch | cache_misses={} | total={} | ms={:.0f}",
+            len(miss_indices), len(texts), (time.monotonic() - t0) * 1000,
+        )
+        for idx, emb in zip(miss_indices, batch_embeddings):
+            results[idx] = emb
+            redis_client.set_embedding(normalized[idx], emb)
+    except Exception as e:
+        logger.warning("cohere embed batch failed, falling back to individual calls | error={}", e)
+        for idx in miss_indices:
+            results[idx] = await get_embedding(normalized[idx])
+
+    return [r for r in results if r is not None]
+
+
 def tokenize_with_bigrams(text: str) -> list[str]:
     words = _re.findall(r"\b\w+\b", text.lower())
     tokens = list(words)
@@ -100,33 +159,20 @@ def tokenize_with_bigrams(text: str) -> list[str]:
 
 
 def trim_objects(objects: list[dict], join_critical_cols: set[tuple] | None = None) -> list[dict]:
-    """Trim objects for LLM display.
+    """Strip internal Neo4j metadata from objects before passing to LLM prompts.
 
-    Description truncation varies by column type:
-    - Join-critical columns: full description (not truncated) + synonyms shown
-    - Measurable columns: 100 chars
-    - Others: 60 chars
+    Descriptions are kept in full — truncation was causing specialists to miss
+    critical context (FK semantics, filter value meaning, grain information).
+    Synonyms are kept in full for all columns.
     """
     trimmed = []
     for obj in objects:
         cleaned = {k: v for k, v in obj.items() if k not in _STRIP_PROPS}
 
-        # Description truncation — per column priority
-        if "description" in cleaned and isinstance(cleaned["description"], str):
-            fqn = cleaned.get("table_fqn", "")
-            name = cleaned.get("name", "")
-            key = (fqn, name)
-            if join_critical_cols and key in join_critical_cols:
-                pass  # keep full description for join-critical columns
-            elif cleaned.get("semantic_type", "").lower() in ("amount", "measure", "percentage", "ratio"):
-                cleaned["description"] = cleaned["description"][:100]
-            else:
-                cleaned["description"] = cleaned["description"][:60]
-
-        # List field limits
+        # List field limits — keep reasonable caps to avoid prompt bloat
         for list_field, limit in [
             ("sample_values", 5),
-            ("value_vocabulary", 5),  # trimmed for LLM display; _column_lookup has full data
+            ("value_vocabulary", 5),
             ("value_aliases", 5),
             ("variants", 5),
             ("natural_dimensions", 6),
@@ -134,18 +180,6 @@ def trim_objects(objects: list[dict], join_critical_cols: set[tuple] | None = No
         ]:
             if list_field in cleaned and isinstance(cleaned[list_field], list):
                 cleaned[list_field] = cleaned[list_field][:limit]
-
-        # Synonyms: show for join-critical (up to 3) and measurable (up to 2)
-        if "synonyms" in cleaned and isinstance(cleaned["synonyms"], list):
-            fqn = cleaned.get("table_fqn", "")
-            name = cleaned.get("name", "")
-            key = (fqn, name)
-            if join_critical_cols and key in join_critical_cols:
-                cleaned["synonyms"] = cleaned["synonyms"][:3]
-            elif cleaned.get("semantic_type", "").lower() in ("amount", "measure", "percentage", "ratio"):
-                cleaned["synonyms"] = cleaned["synonyms"][:2]
-            else:
-                cleaned.pop("synonyms", None)  # don't show synonyms for non-critical columns
 
         trimmed.append(cleaned)
     return trimmed

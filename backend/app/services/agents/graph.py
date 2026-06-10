@@ -40,7 +40,6 @@ from app.services.agents import neo4j_client, redis_client
 from app.services.agents.memory import long_term as lt_memory
 from app.services.agents.node_names import (
     ANCHOR_RESOLVER as N_ANCHOR_RESOLVER,
-    QUERY_PLANNER as N_QUERY_PLANNER,
     SCHEMA_ENRICHER as N_SCHEMA_ENRICHER,
     MEASURE_SPECIALIST as N_MEASURE_SPECIALIST,
     FILTER_SPECIALIST as N_FILTER_SPECIALIST,
@@ -65,7 +64,6 @@ from app.services.agents.node_names import (
     SYNTHESIS as N_SYNTHESIS,
 )
 from app.services.agents.nodes.anchor_resolver import anchor_resolver
-from app.services.agents.nodes.query_planner import query_planner
 from app.services.agents.nodes.chart_agent import chart_agent
 from app.services.agents.nodes.compress import compress
 from app.services.agents.nodes.context_fetcher import context_fetcher
@@ -132,7 +130,6 @@ def compile_graph():
     # direct multi-edges from schema_enricher work correctly and show in the graph.
     # Send API is for variable-length fan-out (map-reduce over a list), not fixed branches.
     b.add_node(N_ANCHOR_RESOLVER,     anchor_resolver,      retry_policy=LLM_RETRY)
-    b.add_node(N_QUERY_PLANNER,       query_planner,        retry_policy=LLM_RETRY)
     b.add_node(N_SCHEMA_ENRICHER,     schema_enricher)
     b.add_node(N_MEASURE_SPECIALIST,  measure_specialist,   retry_policy=LLM_RETRY)
     b.add_node(N_FILTER_SPECIALIST,   filter_specialist,    retry_policy=LLM_RETRY)
@@ -175,15 +172,12 @@ def compile_graph():
     )
     b.add_edge(N_TRIBAL_RETRIEVAL, N_ANCHOR_RESOLVER)
 
-    # anchor_resolver → query_planner (success) or legacy intent_resolver (fallback)
-    # query_planner runs before schema_enricher to extract the user's explicit output spec.
-    # The routing fn still returns N_SCHEMA_ENRICHER for success — we redirect it to query_planner.
+    # anchor_resolver → schema_enricher (success) or legacy intent_resolver (fallback)
+    # query_plan is now computed concurrently inside anchor_resolver (D8b merge).
     b.add_conditional_edges(
         N_ANCHOR_RESOLVER, route_after_anchor_resolver,
-        {N_QUERY_PLANNER: N_QUERY_PLANNER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
+        {N_SCHEMA_ENRICHER: N_SCHEMA_ENRICHER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
     )
-    # query_planner always proceeds to schema_enricher (graceful degradation built into the node)
-    b.add_edge(N_QUERY_PLANNER, N_SCHEMA_ENRICHER)
 
     # schema_enricher fans out to 3 parallel specialists via direct multi-edges.
     # LangGraph executes all three in parallel (superstep), then intent_assembler

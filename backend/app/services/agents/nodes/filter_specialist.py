@@ -15,38 +15,43 @@ import re
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.helpers import build_refinement_section
+from app.services.agents.helpers import (
+    _build_entity_tokens_section,
+    build_joinable_table_graph_section,
+    build_refinement_section,
+)
 from app.services.agents.prompts import FILTER_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 
 def _build_filterable_columns_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
-    # Include all columns with medium/high filter selectivity, or date columns, or has distinct values
+    _NEVER_FILTER = {"free_text"}
     filterable = [
         c for c in columns
-        if c.get("filter_selectivity") in ("high", "medium")
-        or c.get("semantic_type") in ("date", "code", "identifier", "dimension")
-        or c.get("temporal_grain")
+        if c.get("semantic_type", "") not in _NEVER_FILTER
+        and (
+            c.get("semantic_type") in ("date", "code", "identifier", "dimension", "flag")
+            or ("date" in (c.get("data_type") or "").lower())
+            or ("timestamp" in (c.get("data_type") or "").lower())
+            or c.get("distinct_values")
+            or c.get("value_vocabulary")
+        )
     ]
     if not filterable:
         filterable = columns  # fallback: show all
 
-    # Per-table cap: each anchor table gets at most 6 columns sorted by selectivity
-    # (high → medium → low). Prevents early-listed tables from consuming all slots
-    # and ensures every anchor table (e.g. forecast_cash_flow.direction) is represented.
-    _SEL_ORDER = {"high": 0, "medium": 1, "low": 2, None: 3}
+    # Per-table cap: each anchor table gets at most 6 columns
     from collections import defaultdict
     by_table: dict = defaultdict(list)
     for c in filterable:
         by_table[c.get("table_fqn", "")].append(c)
     capped: list = []
     for tbl_cols in by_table.values():
-        sorted_cols = sorted(tbl_cols, key=lambda c: _SEL_ORDER.get(c.get("filter_selectivity"), 3))
-        capped.extend(sorted_cols[:6])
+        capped.extend(tbl_cols[:6])
 
     header_lines = [
-        "FILTERABLE COLUMNS — filter_values listed are DB enum codes (reference only).",
+        "FILTERABLE COLUMNS — known_values listed are DB enum codes (reference only).",
         "Your raw_user_value MUST be the user's exact words. The downstream resolver maps them to DB codes.",
         "",
     ]
@@ -57,34 +62,29 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
         dtype = c.get("data_type") or c.get("semantic_type", "")
         desc = (c.get("description") or "")[:200]
         synonyms = c.get("synonyms") or []
-        filter_vals = (c.get("filter_values") or [])[:10]
-        # value_aliases shows the CODE -> Human Name mapping — useful context for filter_specialist
-        # but it MUST NOT cause the specialist to output DB codes as raw_user_value
-        value_aliases = (c.get("value_aliases") or [])[:5]
-        # sample_values: actual data examples — shown here but stripped from current intent_resolver
+        distinct_vals = c.get("distinct_values") or c.get("value_vocabulary") or []
+        value_aliases = c.get("value_aliases") or []
         sample_vals = (c.get("sample_values") or [])[:5]
-        temporal_grain = c.get("temporal_grain", "")
+        n_distinct = c.get("n_distinct") or -1
 
         dtype_lower = (dtype or "").lower()
         is_date_type = "date" in dtype_lower or "timestamp" in dtype_lower
-        has_grain = bool(temporal_grain and temporal_grain != "none")
-        if is_date_type:
-            time_label = " [time-filter eligible]" if has_grain else " [metadata timestamp — do not use as time_filter_col]"
-        else:
-            time_label = ""
+        time_label = " [time-filter eligible]" if is_date_type else ""
+
         lines.append(f"  {fqn}.{name}  [{dtype}]{time_label}")
-        if has_grain:
-            lines.append(f"    temporal_grain: {temporal_grain}")
         if desc:
             lines.append(f"    description: {desc}")
         if synonyms:
             lines.append(f"    also known as: {', '.join(synonyms[:3])}")
-        if filter_vals:
-            lines.append(f"    filter_values (DB codes): {filter_vals}")
-        if value_aliases:
-            lines.append(f"    meanings (CODE -> Name): {value_aliases}")
-        if sample_vals:
+        if distinct_vals:
+            is_exhaustive = len(distinct_vals) > 0 and n_distinct > 0 and len(distinct_vals) >= n_distinct
+            label = "all_values (complete set)" if is_exhaustive else "known_values (may be partial)"
+            lines.append(f"    {label}: {distinct_vals[:20]}")
+        elif sample_vals:
             lines.append(f"    sample_values: {sample_vals}")
+        if value_aliases:
+            lines.append(f"    code_mappings (DB_CODE -> human name): {value_aliases[:8]}")
+            lines.append(f"      Use human name as raw_user_value — downstream resolves to DB code")
     return "\n".join(lines)
 
 
@@ -120,20 +120,31 @@ def _build_entity_hints_section(entity_hints: list) -> str:
 
 
 async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> dict:
-    logger.info("filter_specialist START | thread={}", state.get("thread_id", ""))
+    _sc = state.get("semantic_context") or {}
+    entity_hints = _sc.get("entity_hints") or []
+    entity_tokens = state.get("entity_tokens") or []
+
+    logger.info(
+        "filter_specialist START | thread={} | entity_hints={} | entity_tokens={}",
+        state.get("thread_id", ""),
+        [(eh.get("token"), f"{eh.get('table_fqn')}.{eh.get('column')}") for eh in entity_hints],
+        entity_tokens,
+    )
 
     enriched_schema = state.get("enriched_schema") or {}
     resolved_intent = state.get("resolved_intent") or {}
-    _sc = state.get("semantic_context") or {}
     intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
 
     prompt = FILTER_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
         filterable_columns_section=_build_filterable_columns_section(enriched_schema),
+        joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
         refinement_section=build_refinement_section(state, role="filters"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
+        entity_hints_section=_build_entity_hints_section(entity_hints),
+        entity_tokens_section=_build_entity_tokens_section(entity_tokens),
     )
 
     from app.services.agents.bedrock import get_llm
@@ -178,11 +189,16 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
         "time_filter_col": parsed.get("time_filter_col"),
         "filter_directive_hint": parsed.get("filter_directive_hint", ""),
     }
+    filter_detail = [
+        f"{f.get('column_name')} ({f.get('table_fqn')}) ← raw='{f.get('raw_user_value')}'"
+        for f in result["filters"]
+    ]
     logger.info(
-        "filter_specialist DONE | thread={} | filters={} | timeframe={} | time_col={}",
+        "filter_specialist DONE | thread={} | filters={} | timeframe={} | time_col={} | filter_detail={}",
         state.get("thread_id"),
         [f.get("column_name") for f in result["filters"]],
         result["timeframe"],
         result["time_filter_col"],
+        filter_detail,
     )
     return {"specialist_outputs": [result]}

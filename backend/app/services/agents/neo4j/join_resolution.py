@@ -72,81 +72,6 @@ def load_join_path_yens(from_fqn: str, to_fqn: str, k_rank: int = 2) -> dict | N
     return dict(result) if result else None
 
 
-@neo4j_breaker
-def load_join_path_dijkstra(from_fqn: str, to_fqn: str, k_rank: int = 1) -> dict | None:
-    """Explicit Dijkstra fetch. k_rank is always 1 for Dijkstra."""
-    query = """
-    MATCH (jp:JoinPath)
-    WHERE (jp.from_fqn = $from AND jp.to_fqn = $to) OR (jp.from_fqn = $to AND jp.to_fqn = $from)
-      AND jp.algorithm = 'dijkstra' AND jp.k_rank = $k_rank
-    RETURN jp.id AS id, jp.join_clauses AS join_clauses, jp.path_tables AS path_tables,
-           jp.hop_count AS hop_count, jp.total_cost AS total_cost,
-           jp.quality_score AS quality_score, jp.is_cross_community AS is_cross_community
-    LIMIT 1
-    """
-    t0 = time.monotonic()
-    result = _neo4j_run_single(query, {"from": from_fqn, "to": to_fqn, "k_rank": k_rank})
-    logger.debug("neo4j | fn=load_join_path_dijkstra | from={} to={} | ms={:.0f} | found={}", from_fqn, to_fqn, (time.monotonic() - t0) * 1000, result is not None)
-    return dict(result) if result else None
-
-
-def collect_all_join_paths(from_fqn: str, to_fqn: str) -> list[dict]:
-    """Collect ALL available join paths — no early exit.
-
-    Tier order:
-      1. JOINS_TO direct FK edges (both directions)
-      2. Dijkstra k_rank=1 forward + reverse
-      3. Yen's k_rank=2,3 forward + reverse
-    Deduplicates by normalized join_clauses content.
-    """
-    paths: list[dict] = []
-    seen_clauses: set[str] = set()
-
-    def _key(p: dict) -> str:
-        return "|".join(sorted(str(c) for c in (p.get("join_clauses") or [])))
-
-    def _add(path: dict | None, tier: str, direction: str = "forward") -> None:
-        if not path:
-            return
-        key = _key(path)
-        if key and key not in seen_clauses:
-            seen_clauses.add(key)
-            paths.append({**path, "tier": tier, "direction": direction})
-
-    # Tier 1: JOINS_TO direct FK edges
-    try:
-        edges = get_direct_joins([from_fqn, to_fqn])
-        for e in edges:
-            f, t = e.get("from_fqn"), e.get("to_fqn")
-            fc, tc = e.get("from_col"), e.get("to_col")
-            if not (f and t and fc and tc):
-                continue
-            direction = "forward" if f == from_fqn else "reverse"
-            clause = f"{f}.{fc} = {t}.{tc}"
-            if clause not in seen_clauses:
-                seen_clauses.add(clause)
-                paths.append({
-                    "id": "", "join_clauses": [clause],
-                    "path_tables": [f, t], "hop_count": 1,
-                    "total_cost": None, "quality_score": None,
-                    "is_cross_community": False,
-                    "tier": "joins_to", "direction": direction,
-                })
-    except Exception as exc:
-        logger.warning("neo4j | collect_all_join_paths | JOINS_TO failed | {}", exc)
-
-    # Tier 2: Dijkstra k_rank=1 (forward + reverse)
-    _add(load_join_path_dijkstra(from_fqn, to_fqn, k_rank=1), tier="dijkstra_k1", direction="forward")
-    _add(load_join_path_dijkstra(to_fqn, from_fqn, k_rank=1), tier="dijkstra_k1", direction="reverse")
-
-    # Tier 3: Yen's k_rank=2,3 (forward + reverse)
-    for k in (2, 3):
-        _add(load_join_path_yens(from_fqn, to_fqn, k_rank=k), tier=f"yens_k{k}", direction="forward")
-        _add(load_join_path_yens(to_fqn, from_fqn, k_rank=k), tier=f"yens_k{k}", direction="reverse")
-
-    logger.info("neo4j | collect_all_join_paths | from={} to={} | total_paths={}", from_fqn, to_fqn, len(paths))
-    return paths
-
 
 def load_best_join_path(from_fqn: str, to_fqn: str) -> dict | None:
     """Best available join path using 7-tier cascade. Returns None only when all tiers fail.
@@ -205,28 +130,6 @@ def load_best_join_path(from_fqn: str, to_fqn: str) -> dict | None:
     return None
 
 
-@neo4j_breaker
-def search_join_path_by_semantics(from_fqn: str, to_fqn: str) -> list[dict]:
-    """Join Tier 7: find semantically similar column pairs between two tables.
-
-    Used as a last resort when no JOINS_TO or JoinPath exists.
-    Returns candidate join pairs with similarity score.
-    """
-    query = """
-    MATCH (c1:Column {table_fqn: $from})-[r:SEMANTICALLY_SIMILAR]->(c2:Column {table_fqn: $to})
-    WHERE r.similarity >= 0.88
-    RETURN c1.name AS from_col, c2.name AS to_col, r.similarity AS confidence
-    ORDER BY r.similarity DESC LIMIT 3
-    """
-    t0 = time.monotonic()
-    try:
-        results = _neo4j_run(query, {"from": from_fqn, "to": to_fqn})
-        logger.debug("neo4j | fn=search_join_path_by_semantics | from={} to={} | ms={:.0f} | hits={}", from_fqn, to_fqn, (time.monotonic() - t0) * 1000, len(results))
-        return [dict(r) for r in results]
-    except Exception as e:
-        logger.warning("neo4j | search_join_path_by_semantics failed | error={}", e)
-        return []
-
 
 @neo4j_breaker
 def get_join_paths_by_ids(path_ids: list[str]) -> list[dict]:
@@ -279,36 +182,21 @@ def get_joinpath_joins(candidate_fqns: list[str]) -> list[dict]:
     return [dict(r) for r in results]
 
 
-@neo4j_breaker
-def find_bridge_table(from_fqn: str, to_fqn: str) -> str | None:
-    """Find a 2-hop bridge table between two tables using JOINS_TO edges.
 
-    When no direct JOINS_TO or JoinPath exists between A and C, this finds
-    a table X such that A-[:JOINS_TO]-X-[:JOINS_TO]-C.
+def get_all_join_paths_for_tables(fqns: list[str]) -> list[dict]:
+    """All confirmed join paths between tables in fqns — direct JOINS_TO + pre-computed JoinPaths.
 
-    Prefers dimension/reference/lookup tables as bridges.
-    Rejects fact/event tables — they share FK columns with many tables but are
-    semantically wrong as join intermediaries (e.g. fraud_loss bridging bank_account
-    to card_settlement_line produces business-nonsense joins).
-
-    Returns the best bridge table FQN, or None if no suitable bridge exists.
+    Thin wrapper combining get_direct_joins() and get_joinpath_joins().
+    Deduplicates by (from_fqn, to_fqn) pair — JOINS_TO (manually curated) takes precedence
+    over JoinPath (algorithmic) when both cover the same pair.
     """
-    query = """
-    MATCH (a:Table {fqn: $from_fqn})-[:JOINS_TO]-(bridge:Table)-[:JOINS_TO]-(c:Table {fqn: $to_fqn})
-    WHERE bridge.fqn <> $from_fqn AND bridge.fqn <> $to_fqn
-      AND NOT coalesce(bridge.table_type, '') IN ['fact', 'event', 'transaction', 'log', 'audit']
-    RETURN bridge.fqn AS fqn
-    ORDER BY bridge.in_degree DESC
-    LIMIT 3
-    """
-    t0 = time.monotonic()
-    try:
-        results = _neo4j_run(query, {"from_fqn": from_fqn, "to_fqn": to_fqn})
-        logger.debug(
-            "neo4j | fn=find_bridge_table | from={} to={} | ms={:.0f} | found={}",
-            from_fqn, to_fqn, (time.monotonic() - t0) * 1000, len(results),
-        )
-        return results[0]["fqn"] if results else None
-    except Exception as e:
-        logger.warning("neo4j | find_bridge_table failed | from={} to={} | error={}", from_fqn, to_fqn, e)
-        return None
+    if not fqns:
+        return []
+    direct = get_direct_joins(fqns)
+    paths = get_joinpath_joins(fqns)
+    seen: dict[tuple, dict] = {}
+    for r in direct + paths:
+        key = tuple(sorted([r.get("from_fqn", ""), r.get("to_fqn", "")]))
+        if key not in seen or (r.get("quality_score") or 0) > (seen[key].get("quality_score") or 0):
+            seen[key] = r
+    return list(seen.values())

@@ -477,6 +477,68 @@ def build_refinement_section(state: dict, role: str = "generic") -> str:
     )
 
 
+def build_joinable_table_graph_section(anchor_join_paths: list[dict] | None) -> str:
+    """Format confirmed join paths as a JOINABLE TABLE GRAPH for specialist prompts.
+
+    Specialists use this to avoid picking columns from tables that can't be joined
+    to the primary anchor table.
+    """
+    if not anchor_join_paths:
+        return ""
+    lines = [
+        "JOINABLE TABLE GRAPH — only output columns from tables connected here.",
+        "Do not reference tables absent from this graph.",
+    ]
+    for p in anchor_join_paths:
+        from_fqn = p.get("from_fqn", "")
+        to_fqn = p.get("to_fqn", "")
+        clauses = p.get("join_clauses") or []
+        if from_fqn and to_fqn:
+            clause_str = " | ".join(clauses[:2]) if clauses else "(join clause not confirmed)"
+            lines.append(f"  {from_fqn} ↔ {to_fqn}  ON: {clause_str}")
+    return "\n".join(lines)
+
+
+# ─── Shared LLM context section builders ─────────────────────────────────────
+
+def _build_entity_tokens_section(entity_tokens: list[str] | None) -> str:
+    """Format entity tokens extracted by intake_classifier for injection into LLM prompts.
+
+    These are proper nouns / named entities from the user question (e.g. "JPMorgan",
+    "operating account") that should guide column/table selection in each specialist.
+    Returns empty string when entity_tokens is None or empty.
+    """
+    if not entity_tokens:
+        return ""
+    lines = ["NAMED ENTITIES from user question (filter / dimension candidates):"]
+    for tok in entity_tokens[:5]:
+        lines.append(f"  • {tok}")
+    return "\n".join(lines)
+
+
+def _build_concept_mappings_section(concept_mappings: dict | None) -> str:
+    """Format BusinessTerm concept mappings for injection into LLM prompts.
+
+    concept_mappings: {term_name: {"definition": str, "computation": str, ...}}
+    Tells the LLM the business meaning and computation formula for derived terms
+    so it picks the right measure columns instead of inferring from column names.
+    Returns empty string when concept_mappings is None or empty.
+    """
+    if not concept_mappings:
+        return ""
+    lines = ["BUSINESS TERM DEFINITIONS (use these computations exactly):"]
+    for term, meta in list(concept_mappings.items())[:10]:
+        defn = (meta.get("definition") or "").strip()
+        comp = (meta.get("computation") or "").strip()
+        line = f"  {term}"
+        if defn:
+            line += f": {defn}"
+        if comp:
+            line += f"  → COMPUTATION: {comp}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 # ─── Section streamers (mirror quest exactly) ─────────────────────────────────
 
 class MultiSectionStreamer:

@@ -3,8 +3,8 @@ graph TD;
 	intake_classifier(intake_classifier)
 	general_chat(general_chat)
 	context_fetcher(context_fetcher)
+	tribal_retrieval(tribal_retrieval)
 	anchor_resolver(anchor_resolver)
-	query_planner(query_planner)
 	schema_enricher(schema_enricher)
 	measure_specialist(measure_specialist)
 	filter_specialist(filter_specialist)
@@ -26,12 +26,12 @@ graph TD;
 	__end__([<p>__end__</p>]):::last
 	__start__ --> intake_classifier;
 	anchor_resolver -.-> intent_resolver;
-	anchor_resolver --> query_planner;
+	anchor_resolver -.-> schema_enricher;
 	chart_agent -.-> __end__;
 	chart_agent -.-> compress;
-	compress -.-> intent_assembler;
-	context_fetcher -.-> anchor_resolver;
+	compress --> __end__;
 	context_fetcher -.-> error_response;
+	context_fetcher -. &nbsp;anchor_resolver&nbsp; .-> tribal_retrieval;
 	data_quality_checker --> synthesis;
 	dimension_specialist --> intent_assembler;
 	directive_writer --> schema_gap_resolver;
@@ -53,7 +53,6 @@ graph TD;
 	query_compiler -.-> error_response;
 	query_compiler -.-> filter_resolver;
 	query_compiler -.-> sql_generator;
-	query_planner --> schema_enricher;
 	schema_enricher --> dimension_specialist;
 	schema_enricher --> filter_specialist;
 	schema_enricher --> measure_specialist;
@@ -64,6 +63,7 @@ graph TD;
 	sql_validator -.-> sql_generator;
 	synthesis -.-> __end__;
 	synthesis -.-> chart_agent;
+	tribal_retrieval --> anchor_resolver;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

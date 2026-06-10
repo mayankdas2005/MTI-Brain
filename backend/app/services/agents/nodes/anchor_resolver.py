@@ -15,6 +15,7 @@ import json
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
+from app.services.agents.helpers import _build_entity_tokens_section
 from app.services.agents.prompts import ANCHOR_RESOLVER_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -84,42 +85,156 @@ def _build_entity_hints_section(semantic_context: dict) -> str:
     return "\n".join(lines)
 
 
-def _inject_signal_tables(valid_anchors: list, semantic_context: dict, valid_tables: set) -> list:
-    """Deterministically add high-confidence signal tables to anchor_tables after LLM selection.
+_COMPLEXITY_CAPS = {
+    "simple":   {"llm": 4, "bt": 3, "intent": 2, "domain": 1},
+    "complex":  {"llm": 7, "bt": 4, "intent": 3, "domain": 2},
+    "advanced": {"llm": 8, "bt": 5, "intent": 4, "domain": 2},
+}
+
+
+def _inject_signal_tables(
+    valid_anchors: list,
+    semantic_context: dict,
+    valid_tables: set,
+    complexity: str = "simple",
+    anchor_join_paths: list | None = None,
+) -> list:
+    """Deterministically add high-confidence signal tables after LLM selection.
 
     Signal priority (highest → lowest confidence):
-      Signal 2: BusinessTerm.related_table_fqns — concept explicitly mapped to table in Neo4j
-      Signal 3: intent_table_fqns — table RELEVANT_TO a matched intent (2-4 specific tables)
-      Signal 4: path consensus — table appeared in 4+ independent discovery paths
+      Signal 2: BusinessTerm.related_table_fqns — concept explicitly mapped to table (Neo4j ground truth)
+      Signal 3: intent_table_fqns — table RELEVANT_TO a matched intent (Neo4j ground truth)
+      Signal 4: domain_table_fqns — table BELONGS_TO a matched domain (Neo4j ground truth)
+      Signal 5: Community BRIDGES_TO — cross-schema hub tables (mandatory, not capped)
+      Signal 6: entity-FTS-pinned — per-entity FTS during context_fetcher
 
-    Signal 1 (entity_value entity hints) has been removed. The entity_value path matches user
-    tokens against all DB enum values — generic words ("cash", "days") score identically to
-    true named entities ("JPMorgan"). A true named entity appears in entity_value + direct_vector
-    + FTS + businessterm (4+ paths) and is handled by Signal 4 (consensus). A false positive
-    only appears in entity_value (1 path) and is correctly excluded.
+    JOINS_TO connectivity filter: only inject if table has FK edge to an LLM-selected anchor.
+    For 'advanced' complexity, also allow 2-hop connections.
+    JoinPath path_tables (already loaded by schema_enricher) are also treated as joinable.
 
-    Domain tables remain advisory-only — domain matches 20+ tables, too broad for force-inject.
+    Signals 2/3/4 do NOT require the table to be in the post-14-cap valid_tables pool:
+    BT/intent/domain FQNs come from Neo4j structural edges — ground truth. schema_enricher
+    loads anchor columns fresh regardless of pool membership.
     """
-    to_add = []
+    from app.services.agents import neo4j_client
 
-    # Signal 2: BusinessTerm.related_table_fqns — named concept maps to this table (unchanged)
+    caps = _COMPLEXITY_CAPS.get(complexity, _COMPLEXITY_CAPS["simple"])
+    bt_cap     = caps["bt"]
+    intent_cap = caps["intent"]
+    domain_cap = caps["domain"]
+
+    # Build joinable set: tables with JOINS_TO edge to any LLM-selected anchor
+    try:
+        direct_joins = neo4j_client.get_direct_joins(list(valid_anchors))
+        joinable_fqns: set = {r["to_fqn"] for r in direct_joins} | {r["from_fqn"] for r in direct_joins}
+        if complexity == "advanced":
+            second_hop = neo4j_client.get_direct_joins(list(joinable_fqns))
+            joinable_fqns |= {r["to_fqn"] for r in second_hop} | {r["from_fqn"] for r in second_hop}
+        # Also treat any table that appears in loaded JoinPath nodes as joinable —
+        # avoids a second Neo4j call and covers multi-hop paths without JOINS_TO edges.
+        for path in (anchor_join_paths or []):
+            for tbl in (path.get("path_tables") or []):
+                joinable_fqns.add(tbl)
+        logger.info("anchor_resolver | joinable_tables | count={} | fqns={}", len(joinable_fqns), sorted(joinable_fqns))
+    except Exception as e:
+        logger.warning("anchor_resolver | join_connectivity_fetch failed | {} — skipping filter", e)
+        joinable_fqns = valid_tables  # degrade gracefully: no connectivity filter
+
+    def _joinable(fqn: str) -> bool:
+        return fqn in joinable_fqns
+
+    to_add: list = []
+    bt_added = 0
+    intent_added = 0
+    domain_added = 0
+
+    # Signal 2: BusinessTerm.related_table_fqns — Neo4j REFERENCES_TABLE edge, not LLM output
+    # No valid_tables gate: BT FQNs are ground truth; injecting outside the 14-cap is safe.
     for term in (semantic_context.get("business_terms") or []):
+        if bt_added >= bt_cap:
+            logger.info("anchor_resolver | bt_cap_reached | cap={}", bt_cap)
+            break
         for fqn in (term.get("related_table_fqns") or []):
-            if fqn and fqn in valid_tables and fqn not in valid_anchors and fqn not in to_add:
-                to_add.append(fqn)
-                logger.info("anchor_resolver | business_term_injected | {} from '{}'", fqn, term.get("term"))
+            if bt_added >= bt_cap:
+                break
+            if fqn and fqn not in valid_anchors and fqn not in to_add:
+                if _joinable(fqn):
+                    to_add.append(fqn)
+                    bt_added += 1
+                    logger.info("anchor_resolver | bt_injected | {} from '{}'", fqn, term.get("term"))
+                else:
+                    logger.info("anchor_resolver | signal_rejected_not_joinable | fqn={} | signal=bt", fqn)
 
-    # Signal 3: intent_table_fqns — tables RELEVANT_TO a matched intent.
-    # Promoted from advisory to force-inject. An intent maps to 2-4 specific tables (not entire
-    # domains). Guard: table must be in valid_tables (appeared in at least one discovery path).
+    # Signal 3: intent_table_fqns — Neo4j RELEVANT_TO edge, not LLM output
+    # No valid_tables gate: same reasoning as Signal 2.
     for fqn in (semantic_context.get("intent_table_fqns") or []):
-        if fqn and fqn in valid_tables and fqn not in valid_anchors and fqn not in to_add:
-            to_add.append(fqn)
-            logger.info("anchor_resolver | intent_injected | {}", fqn)
+        if intent_added >= intent_cap:
+            break
+        if fqn and fqn not in valid_anchors and fqn not in to_add:
+            if _joinable(fqn):
+                to_add.append(fqn)
+                intent_added += 1
+                logger.info("anchor_resolver | intent_injected | {}", fqn)
+            else:
+                logger.info("anchor_resolver | signal_rejected_not_joinable | fqn={} | signal=intent", fqn)
 
-    if to_add:
-        logger.info("anchor_resolver | signal_injection_total | added={}", to_add)
-    return valid_anchors + to_add
+    # Signal 4: domain_table_fqns — Neo4j BELONGS_TO edge, not LLM output
+    # No LLM fallback for domain tables — if not pinned or in top-20, they are invisible.
+    for fqn in (semantic_context.get("domain_table_fqns") or []):
+        if domain_added >= domain_cap:
+            break
+        if fqn and fqn not in valid_anchors and fqn not in to_add:
+            if _joinable(fqn):
+                to_add.append(fqn)
+                domain_added += 1
+                logger.info("anchor_resolver | domain_injected | {}", fqn)
+            else:
+                logger.info("anchor_resolver | signal_rejected_not_joinable | fqn={} | signal=domain", fqn)
+
+    result = valid_anchors + to_add
+
+    # Signal 5: Community BRIDGES_TO — cross-schema hub tables (no cap, mandatory)
+    # Only runs when anchor tables span more than one community.
+    try:
+        table_meta = {t["fqn"]: t for t in (semantic_context.get("tables") or []) if t.get("fqn")}
+        community_map = {fqn: table_meta[fqn].get("community_id") for fqn in result if fqn in table_meta}
+        distinct_communities = {cid for cid in community_map.values() if cid is not None}
+        if len(distinct_communities) > 1:
+            bridges = neo4j_client.get_community_bridges(list(distinct_communities))
+            for b in bridges:
+                rel = b.get("rel") or {}
+                hub_fqn = rel.get("hub_table_fqn")
+                if hub_fqn and hub_fqn not in result and rel.get("join_safe", True):
+                    result.append(hub_fqn)
+                    logger.info("anchor_resolver | community_bridge_injected | {} between communities {}", hub_fqn, distinct_communities)
+    except Exception as e:
+        logger.warning("anchor_resolver | community_bridge_fetch failed | {} — skipping", e)
+
+    # Signal 6: entity-FTS-pinned tables — tables pinned during context_fetcher per-entity FTS
+    entity_pinned = semantic_context.get("entity_pinned_fqns") or set()
+    ent_cap = 2
+    ent_added = 0
+    result_set = set(result)
+    for fqn in sorted(entity_pinned):
+        if ent_added >= ent_cap:
+            break
+        if fqn in result_set:
+            logger.info("anchor_resolver | signal_skipped_already_selected | fqn={} | signal=entity", fqn)
+            continue
+        if not _joinable(fqn):
+            logger.info("anchor_resolver | signal_rejected_not_joinable | fqn={} | signal=entity", fqn)
+            continue
+        result.append(fqn)
+        result_set.add(fqn)
+        ent_added += 1
+        logger.info("anchor_resolver | entity_signal_injected | fqn={}", fqn)
+
+    if len(result) > len(valid_anchors):
+        logger.info(
+            "anchor_resolver | signal_injection | bt={} intent={} domain={} entity={} | total={}",
+            bt_added, intent_added, domain_added, ent_added, result,
+        )
+    return result
 
 
 def _build_intents_section(semantic_context: dict) -> str:
@@ -133,7 +248,11 @@ def _build_intents_section(semantic_context: dict) -> str:
 
 
 async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict:
-    logger.info("anchor_resolver START | thread={} | question={}", state["thread_id"], state["question"][:80])
+    import asyncio
+    import re
+
+    entity_tokens = state.get("entity_tokens") or []
+    logger.info("anchor_resolver START | thread={} | question={} | entity_tokens={}", state["thread_id"], state["question"][:80], entity_tokens)
 
     semantic_context = state.get("semantic_context") or {}
     valid_tables = {t["fqn"] for t in (semantic_context.get("tables") or []) if t.get("fqn")}
@@ -148,7 +267,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
                 f"Include them as anchor tables unless the user instruction explicitly asks to change them.]"
             )
 
-    prompt = ANCHOR_RESOLVER_PROMPT.format_messages(
+    anchor_prompt = ANCHOR_RESOLVER_PROMPT.format_messages(
         question=question,
         tables_section=_build_tables_section(semantic_context),
         business_terms_section=_build_terms_section(semantic_context),
@@ -156,28 +275,51 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         intents_section=_build_intents_section(semantic_context),
     )
 
+    from app.services.agents.prompts import QUERY_PLANNER_PROMPT
+    available_tables_lines = [
+        f"  {t.get('fqn')} — {(t.get('business_context') or t.get('description') or '')[:80]}"
+        for t in (semantic_context.get("tables") or [])[:20]
+        if t.get("fqn")
+    ]
+    available_tables_section = (
+        "AVAILABLE TABLES (verify groupings/entities against these):\n" + "\n".join(available_tables_lines)
+        if available_tables_lines else ""
+    )
+    plan_prompt = QUERY_PLANNER_PROMPT.format_messages(
+        question=question,
+        available_tables_section=available_tables_section,
+        entity_tokens_section=_build_entity_tokens_section(entity_tokens),
+        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+    )
+
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
+    from app.core.retry import retry_async
 
     llm = get_llm("fast")
 
     @llm_breaker
-    async def _call():
-        from app.core.retry import retry_async
-        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-anchor-resolver", max_attempts=2, backoff_base=5.0)
+    async def _call_anchor():
+        return await retry_async(lambda: llm.ainvoke(anchor_prompt, config=config), service="bedrock-anchor-resolver", max_attempts=2, backoff_base=5.0)
 
+    @llm_breaker
+    async def _call_plan():
+        return await retry_async(lambda: llm.ainvoke(plan_prompt, config=config), service="bedrock-query-planner", max_attempts=2, backoff_base=5.0)
+
+    # Run both Haiku calls concurrently — wall-clock ≈ one call
     try:
-        response = await _call()
-        raw = response.content if isinstance(response.content, str) else ""
+        anchor_resp, plan_resp = await asyncio.gather(_call_anchor(), _call_plan(), return_exceptions=True)
     except Exception as e:
-        logger.error("anchor_resolver | LLM failed | thread={} | error={}", state["thread_id"], e)
+        logger.error("anchor_resolver | gather failed | thread={} | error={}", state["thread_id"], e)
         return {"anchor_tables_resolved": [], "error": f"anchor_resolver failed: {e}"}
 
-    # Extract JSON from <output> tags
-    import re
+    # Parse anchor response
+    if isinstance(anchor_resp, Exception):
+        logger.error("anchor_resolver | LLM failed | thread={} | error={}", state["thread_id"], anchor_resp)
+        return {"anchor_tables_resolved": [], "error": f"anchor_resolver failed: {anchor_resp}"}
+    raw = anchor_resp.content if isinstance(anchor_resp.content, str) else ""
     m = re.search(r"<output>(.*?)</output>", raw, re.DOTALL | re.IGNORECASE)
     json_str = m.group(1).strip() if m else raw
-
     try:
         import json_repair
         parsed = json_repair.loads(json_str)
@@ -189,27 +331,58 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     result_shape = parsed.get("result_shape", "table")
     intent_summary = parsed.get("intent_summary", "")
 
+    # Parse query plan response (non-fatal on failure)
+    query_plan: dict = {}
+    if isinstance(plan_resp, Exception):
+        logger.warning("anchor_resolver | query_plan LLM failed (non-fatal) | thread={} | error={}", state["thread_id"], plan_resp)
+    else:
+        plan_raw = plan_resp.content if isinstance(plan_resp.content, str) else ""
+        pm = re.search(r"<output>(.*?)</output>", plan_raw, re.DOTALL | re.IGNORECASE)
+        plan_str = pm.group(1).strip() if pm else plan_raw
+        try:
+            query_plan = json_repair.loads(plan_str) or {}
+        except Exception:
+            logger.warning("anchor_resolver | query_plan JSON parse failed (non-fatal) | thread={}", state["thread_id"])
+
+    logger.info(
+        "anchor_resolver | query_plan | complexity={} | output_cols={} | groupings={} | time_period={} | entities={}",
+        query_plan.get("complexity"), query_plan.get("expected_output_cols"),
+        query_plan.get("required_groupings"), query_plan.get("required_time_period"),
+        query_plan.get("explicit_entities"),
+    )
+
     # Validate against known tables — drop hallucinated names
     valid_anchors = [t for t in anchor_tables if t in valid_tables]
     invalid = [t for t in anchor_tables if t not in valid_tables]
     if invalid:
         logger.warning("anchor_resolver | invalid_tables_dropped | {} | thread={}", invalid, state["thread_id"])
 
-    # Hard cap at 4 on LLM selection — entity/term/intent/domain signals inject on top of this.
-    valid_anchors = valid_anchors[:4]
+    # Complexity from the freshly parsed query_plan — controls table budgets
+    complexity = query_plan.get("complexity", "simple")
+    if complexity not in _COMPLEXITY_CAPS:
+        complexity = "simple"
+    llm_cap = _COMPLEXITY_CAPS[complexity]["llm"]
 
-    # Deterministic injection: entity-matched, business-term, intent, and domain tables
-    # must always be in anchor_tables regardless of LLM selection.
-    valid_anchors = _inject_signal_tables(valid_anchors, semantic_context, valid_tables)
+    # Hard cap on LLM selection — complexity-tiered: simple=4, complex=7, advanced=8
+    valid_anchors = valid_anchors[:llm_cap]
+
+    logger.info("anchor_resolver | llm_selected | tables={} | complexity={}", valid_anchors, complexity)
+
+    # Deterministic injection with JOINS_TO connectivity filter + per-signal-type caps
+    valid_anchors = _inject_signal_tables(
+        valid_anchors, semantic_context, valid_tables, complexity,
+        anchor_join_paths=state.get("anchor_join_paths") or [],
+    )
 
     logger.info(
-        "anchor_resolver DONE | thread={} | anchor_tables={} | result_shape={} | intent={}",
-        state["thread_id"], valid_anchors, result_shape, intent_summary[:60],
+        "anchor_resolver DONE | thread={} | complexity={} | llm_cap={} | anchor_tables={} | result_shape={} | intent={}",
+        state["thread_id"], complexity, llm_cap, valid_anchors, result_shape, intent_summary[:60],
     )
 
     # Store in resolved_intent stub so query_compiler can read result_shape
     existing_resolved = state.get("resolved_intent") or {}
     return {
         "anchor_tables_resolved": valid_anchors,
+        "query_plan": query_plan,
         "resolved_intent": {**existing_resolved, "result_shape": result_shape, "anchor_tables": valid_anchors},
     }

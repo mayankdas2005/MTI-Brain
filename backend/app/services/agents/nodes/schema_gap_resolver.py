@@ -101,6 +101,28 @@ async def schema_gap_resolver(state: AnalyticsState, config: RunnableConfig) -> 
             logger.warning("schema_gap_resolver | table load failed | {} | error={}", load_fqns, e)
 
     # ── Pass 2: SCHEMA_GAP_CONCEPT — fulltext search for matching columns (parallel) ───────
+    # Shortcut: if concept_mappings already has an entry for this concept, skip Neo4j.
+    concept_mappings = state.get("concept_mappings") or {}
+    if concept_mappings and concepts:
+        cm_normalized = {k.lower().replace("_", " ") for k in concept_mappings}
+        cm_keys_lower = {k.lower() for k in concept_mappings}
+        unresolved: list[str] = []
+        for concept in concepts:
+            c_lower = concept.lower()
+            if c_lower in cm_normalized or c_lower.replace(" ", "_") in cm_keys_lower:
+                logger.info(
+                    "schema_gap_resolver | concept_mappings_hit | concept={} — skipping Neo4j",
+                    concept,
+                )
+            else:
+                unresolved.append(concept)
+        if len(unresolved) < len(concepts):
+            logger.info(
+                "schema_gap_resolver | concept_mappings resolved {}/{} concept(s) | thread={}",
+                len(concepts) - len(unresolved), len(concepts), state.get("thread_id", ""),
+            )
+        concepts = unresolved
+
     async def _concept_search(concept: str) -> list[dict]:
         try:
             return await asyncio.to_thread(neo4j_client.search_columns_fulltext, concept) or []

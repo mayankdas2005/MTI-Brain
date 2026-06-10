@@ -27,7 +27,15 @@ from . import helpers, table_discovery, column_loader, cross_domain
 
 
 async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict:
-    logger.info("context_fetcher START | thread={} | question={}", state["thread_id"], state["question"][:80])
+    entity_tokens = state.get("entity_tokens") or None
+    # search_variants are corrected/expanded entity tokens from intake_classifier (abbrev expansions,
+    # typo fixes). They replace raw entity_tokens everywhere in discovery + downstream prompts.
+    search_variants = state.get("search_variants") or entity_tokens or None
+    search_terms    = state.get("search_terms") or []
+    logger.info(
+        "context_fetcher START | thread={} | question={} | entity_tokens={} | search_variants={} | search_terms={}",
+        state["thread_id"], state["question"][:80], entity_tokens, search_variants, search_terms,
+    )
 
     try:
         # ── Short-term memory + follow-up detection ────────────────────────────
@@ -51,16 +59,32 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             search_query = raw_question
             effective_question = raw_question
 
-        # ── Embed question (Cohere, Redis-cached) ──────────────────────────────
-        embedding = await retry_async(lambda: helpers.get_embedding(search_query), service="redis")
+        # ── Embed question + focused search_terms in one Cohere batch call ────
+        # all_to_embed[0] = full question (unchanged path for existing discovery logic)
+        # all_to_embed[1:] = focused 2-4 word phrases from intake_classifier (Layer 2)
+        all_to_embed = [search_query] + list(search_terms)
+        all_embeddings = await retry_async(
+            lambda: helpers.get_embeddings_batch(all_to_embed), service="redis"
+        )
+        embedding           = all_embeddings[0] if all_embeddings else []
+        search_term_embeds  = all_embeddings[1:] if len(all_embeddings) > 1 else []
+        logger.debug(
+            "context_fetcher | batch_embed | total_texts={} | term_embeds={}",
+            len(all_to_embed), len(search_term_embeds),
+        )
+
         tokens    = helpers.tokenize_with_bigrams(search_query)
         domain_detected = helpers.domain_keyword_detected(search_query)
 
         # ── Table discovery: all paths in parallel ────────────────────────────
-        # Returns (tables, pinned_fqns, bt_pin_data, intent_table_fqns, domain_table_fqns)
-        tables, pinned_fqns, _bt_pin_data, intent_table_fqns, domain_table_fqns = \
+        # Returns (tables, pinned_fqns, bt_pin_data, intent_table_fqns, domain_table_fqns, entity_pinned_fqns)
+        # Pass search_variants as entity_tokens so corrected/expanded tokens reach all discovery paths.
+        tables, pinned_fqns, _bt_pin_data, intent_table_fqns, domain_table_fqns, entity_pinned_fqns = \
             await table_discovery.run_8_path_discovery(
-                embedding, tokens, search_query, domain_detected
+                embedding, tokens, search_query, domain_detected,
+                entity_tokens=search_variants,
+                search_term_embeds=search_term_embeds,
+                search_terms=list(search_terms),
             )
 
         if not tables:
@@ -72,11 +96,11 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         # Group B: depends on tables — cross-domain, join-critical cols, column loading
         (group_a, group_b) = await asyncio.gather(
             _fetch_group_a(embedding, search_query, state["user_id"]),
-            _fetch_group_b(tables, embedding, search_query),
+            _fetch_group_b(tables, embedding, search_query, entity_tokens=search_variants),
         )
 
         templates_merged, business_terms, intents, memory_context = group_a
-        tables, hub_info, is_cross_domain, join_crit_cols, display_columns, col_lookup, entity_hints = group_b
+        tables, hub_info, is_cross_domain, join_crit_cols, display_columns, col_lookup, entity_hints, entity_col_tables = group_b
 
         # ── Consensus tables: found by 4+ independent discovery paths ─────────
         # Computed before trim_objects which may strip retrieval_paths metadata.
@@ -112,6 +136,8 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             "intent_table_fqns":     intent_table_fqns,
             "domain_table_fqns":     domain_table_fqns,
             "consensus_table_fqns":  consensus_table_fqns,
+            "entity_pinned_fqns":    set(entity_pinned_fqns),
+            "entity_col_tables":     list(entity_col_tables),
         }
 
         tables_found  = [t["fqn"] for t in tables_trimmed if t.get("fqn")]
@@ -122,9 +148,10 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
 
         logger.info(
             "context_fetcher DONE | thread={} | is_followup={} | tables={} | cols={} | "
-            "is_cross_domain={} | hub={}",
+            "is_cross_domain={} | hub={} | entity_pinned={} | entity_col_tables={}",
             state["thread_id"], is_followup, tables_found, columns_found,
             is_cross_domain, hub_info.get("hub_table_fqn") if hub_info else "none",
+            sorted(entity_pinned_fqns), sorted(entity_col_tables),
         )
         return {"semantic_context": semantic_context, "effective_question": effective_question, "error": None}
 
@@ -185,6 +212,7 @@ async def _fetch_group_b(
     tables: list[dict],
     embedding: list[float],
     search_query: str,
+    entity_tokens: list[str] | None = None,
 ) -> tuple:
     """Group B: table enrichment that depends on table discovery results.
 
@@ -237,8 +265,8 @@ async def _fetch_group_b(
     # We load only T1 (join-critical) + top semantic matches to keep it fast and non-redundant.
     # This is intentionally lighter than the old full column load — just enough for intent_resolver
     # to identify measures, filters, and join keys without hallucinating.
-    display_columns, col_lookup = await asyncio.to_thread(
-        column_loader.load_and_prioritize, tables, embedding, search_query, join_crit_cols
+    display_columns, col_lookup, entity_col_tables = await asyncio.to_thread(
+        column_loader.load_and_prioritize, tables, embedding, search_query, join_crit_cols, entity_tokens
     )
 
-    return tables, hub_info, is_cross_domain, join_crit_cols, display_columns, col_lookup, entity_hints
+    return tables, hub_info, is_cross_domain, join_crit_cols, display_columns, col_lookup, entity_hints, entity_col_tables

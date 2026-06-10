@@ -163,8 +163,17 @@ async def attempt_repair(
         if fb else ""
     )
 
-    from app.services.agents.helpers import build_directive_section
+    from app.services.agents.helpers import build_directive_section, _build_entity_tokens_section
     directive_section = build_directive_section(state)
+
+    entity_tokens_section = _build_entity_tokens_section(state.get("entity_tokens") or [])
+
+    resolved_intent_repair = state.get("resolved_intent") or {}
+    _time_filter_col = resolved_intent_repair.get("time_filter_col") or ""
+    time_col_highlight_section = (
+        f"AUTHORITATIVE TIME FILTER COLUMN: {_time_filter_col} — use this, do not substitute"
+        if _time_filter_col else ""
+    )
 
     _perf_directive = _PERFORMANCE_DIRECTIVE if any(
         kw in e.lower()
@@ -175,6 +184,8 @@ async def attempt_repair(
     def _build_prompt(attempts_detail: str) -> list:
         return REPAIR_PROMPT.format_messages(
             question=state.get("effective_question") or state.get("question", ""),
+            entity_tokens_section=entity_tokens_section,
+            time_col_highlight_section=time_col_highlight_section,
             semantic_ir_text=semantic_ir_text,
             schema_reference=schema_reference,
             original_sql=first_sql,

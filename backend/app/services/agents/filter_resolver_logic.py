@@ -41,6 +41,15 @@ def resolve_tier1_combined(
         if str(v).lower() == user_lower:
             return v, 100.0, []
 
+    # Substring check: user value appears literally inside a stored value.
+    # Catches short qualifiers embedded in compound codes (e.g. "operating" → "GR_US_INC_OPERATING_1").
+    # Return the user's keyword (uppercased) — NOT the specific matched code — so the SQL generator
+    # emits ~* 'OPERATING' (matches all operating accounts) rather than ~* 'GR_AE_OPERATING_1'
+    # (would match only that one code).  The ~* operator is case-insensitive so uppercase is fine.
+    substring_hits = [v for v in (filter_values or []) if user_lower in str(v).lower()]
+    if substring_hits:
+        return user_value.upper(), 65.0, []
+
     if not filter_values or len(filter_values) > 500:
         return None, 0.0, []
 

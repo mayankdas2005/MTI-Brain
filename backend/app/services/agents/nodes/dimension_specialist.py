@@ -11,7 +11,11 @@ import re
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.helpers import build_refinement_section
+from app.services.agents.helpers import (
+    _build_entity_tokens_section,
+    build_joinable_table_graph_section,
+    build_refinement_section,
+)
 from app.services.agents.prompts import DIMENSION_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -48,8 +52,7 @@ def _is_dimension(c: dict) -> bool:
     # sem is "" or unrecognized — fall back to data_type
     dtype = c.get("data_type", "").lower()
     if dtype in _VARCHAR_DTYPES:
-        has_grain = bool(c.get("temporal_grain") and c.get("temporal_grain") != "none")
-        return not has_grain
+        return True
     return False
 
 
@@ -66,11 +69,17 @@ def _build_groupable_columns_section(enriched_schema: dict) -> str:
         dtype = c.get("data_type") or c.get("semantic_type", "")
         desc = (c.get("description") or "")[:150]
         synonyms = c.get("synonyms") or []
+        distinct_vals = c.get("distinct_values") or c.get("value_vocabulary") or []
+        sample_vals = (c.get("sample_values") or [])[:5]
         lines.append(f"  {fqn}.{name}  [{dtype}]")
         if desc:
             lines.append(f"    description: {desc}")
         if synonyms:
             lines.append(f"    also known as: {', '.join(synonyms[:3])}")
+        if distinct_vals:
+            lines.append(f"    example_values: {distinct_vals[:8]}")
+        elif sample_vals:
+            lines.append(f"    example_values: {sample_vals}")
     return "\n".join(lines)
 
 
@@ -94,10 +103,12 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
         groupable_columns_section=_build_groupable_columns_section(enriched_schema),
+        joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
         refinement_section=build_refinement_section(state, role="dimensions"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         measures_summary=measures_summary,
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
+        entity_tokens_section=_build_entity_tokens_section(state.get("entity_tokens") or []),
     )
 
     from app.services.agents.bedrock import get_llm

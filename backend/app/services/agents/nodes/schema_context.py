@@ -19,10 +19,8 @@ from app.services.agents.state import AnalyticsState
 #   - sample_values: actual data samples may include UUIDs or raw alias strings the LLM misuses
 _COL_FIELDS_SQL = {
     "name", "table_fqn", "data_type", "semantic_type",
-    "filter_selectivity",
     "filter_values",
     "description",
-    "temporal_grain",        # "day"/"month"/... for date cols, "none" for non-date
     "referenced_table_fqn",  # semantic FK target table (empty for non-reference cols)
     "referenced_column",     # semantic FK target column
 }
@@ -206,26 +204,10 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
             from_fqn = ir.path_tables[i]
             to_fqn = ir.path_tables[i + 1]
             candidate_cols = _discover_candidate_join_columns(from_fqn, to_fqn, semantic_context)
-
-            # Tier 7: If no shared column names, try SEMANTICALLY_SIMILAR column bridge
-            sem_bridge = []
-            if not candidate_cols:
-                try:
-                    sem_bridge = neo4j_client.search_join_path_by_semantics(from_fqn, to_fqn)
-                    if sem_bridge:
-                        logger.info(
-                            "schema_context | semantic_bridge | from={} to={} | pairs={}",
-                            from_fqn, to_fqn,
-                            [(s.get("from_col"), s.get("to_col")) for s in sem_bridge],
-                        )
-                except Exception:
-                    pass
-
             unresolved_pairs.append({
                 "from": from_fqn,
                 "to": to_fqn,
                 "candidate_join_columns": candidate_cols,
-                "semantic_bridge_columns": sem_bridge,
             })
 
     primary_col_count = sum(1 for c in columns if c.get("table_fqn") in primary_fqns)

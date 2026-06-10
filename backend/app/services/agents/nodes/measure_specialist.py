@@ -12,7 +12,12 @@ import re
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.helpers import build_refinement_section
+from app.services.agents.helpers import (
+    _build_concept_mappings_section,
+    _build_entity_tokens_section,
+    build_joinable_table_graph_section,
+    build_refinement_section,
+)
 from app.services.agents.prompts import MEASURE_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -64,11 +69,14 @@ def _build_measurable_columns_section(enriched_schema: dict) -> str:
         desc = (c.get("description") or "")[:200]
         default_agg = c.get("default_aggregation", "SUM")
         synonyms = c.get("synonyms") or []
+        sample_vals = (c.get("sample_values") or [])[:4]
         lines.append(f"  {fqn}.{name}  [{dtype}]  default={default_agg}")
         if desc:
             lines.append(f"    description: {desc}")
         if synonyms:
             lines.append(f"    also known as: {', '.join(synonyms[:3])}")
+        if sample_vals:
+            lines.append(f"    sample_values: {sample_vals}")
     return "\n".join(lines)
 
 
@@ -83,9 +91,12 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
         measurable_columns_section=_build_measurable_columns_section(enriched_schema),
+        joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
         refinement_section=build_refinement_section(state, role="measures"),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
+        concept_mappings_section=_build_concept_mappings_section(state.get("concept_mappings")),
+        entity_tokens_section=_build_entity_tokens_section(state.get("entity_tokens") or []),
     )
 
     from app.services.agents.bedrock import get_llm

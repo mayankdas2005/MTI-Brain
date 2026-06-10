@@ -8,6 +8,19 @@ from app.core.circuit_breaker import neo4j_breaker
 from app.core.logger import logger
 from .client import _neo4j_run
 
+
+def _fuzzy_fts(text: str, min_len: int = 3) -> str:
+    """Append Lucene edit-distance-1 (~) to each token >= min_len chars.
+
+    Turns "jpmorgen closing balanc" into "jpmorgen~ closing~ balanc~" so
+    Lucene's FTS index tolerates single-char typos. Skips tokens that already
+    end with ~ and short tokens (articles, prepositions) to avoid false matches.
+    """
+    return " ".join(
+        t + "~" if len(t) >= min_len and not t.endswith("~") else t
+        for t in text.split()
+    )
+
 # Shared RETURN clause for table properties — used by all table search functions.
 # No numeric scores exposed — use matched_via for path attribution.
 _TABLE_RETURN = """
@@ -51,7 +64,7 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
     RETURN {_TABLE_RETURN}, score, 'direct_fts' AS matched_via LIMIT 10
     """
     t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": query_text})
+    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
     logger.debug("neo4j | fn=search_tables_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
     return [dict(r) for r in results]
 
@@ -248,7 +261,7 @@ def search_tables_via_business_terms(embedding: list[float], query_text: str) ->
     """
     try:
         t0 = time.monotonic()
-        rows = _neo4j_run(fts_query, {"query": query_text})
+        rows = _neo4j_run(fts_query, {"query": _fuzzy_fts(query_text)})
         logger.debug("neo4j | fn=search_tables_via_business_terms | fts | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(rows))
         for r in rows:
             d = dict(r)
@@ -296,7 +309,7 @@ def search_tables_via_columns(embedding: list[float], query_text: str) -> list[d
     """
     try:
         t0 = time.monotonic()
-        rows = _neo4j_run(fts_query, {"query": query_text})
+        rows = _neo4j_run(fts_query, {"query": _fuzzy_fts(query_text)})
         logger.debug("neo4j | fn=search_tables_via_columns | fts | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(rows))
         for r in rows:
             d = dict(r)
@@ -483,7 +496,7 @@ def get_business_terms_with_related_tables(embedding: list[float], query_text: s
     LIMIT 5
     """
     try:
-        rows = _neo4j_run(fts_query, {"query": query_text})
+        rows = _neo4j_run(fts_query, {"query": _fuzzy_fts(query_text)})
         for r in rows:
             term = r.get("term")
             if term and term not in seen:

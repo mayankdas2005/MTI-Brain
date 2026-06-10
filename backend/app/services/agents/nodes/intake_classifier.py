@@ -202,13 +202,19 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
     )
 
     result = await _call_llm(prompt, config)
-    question_type = _parse_type(result)
+    question_type, entity_tokens, search_terms, search_variants = _parse_intake(result)
 
     logger.info(
-        "intake_classifier DONE | thread={} | type={} | prior_analytics={}",
-        state["thread_id"], question_type, prior_analytics,
+        "intake_classifier DONE | thread={} | type={} | entity_tokens={} | search_terms={} | search_variants={} | prior_analytics={}",
+        state["thread_id"], question_type, entity_tokens, search_terms, search_variants, prior_analytics,
     )
-    return {"question_type": question_type, "specialist_outputs": [{"__reset__": True}]}
+    return {
+        "question_type": question_type,
+        "entity_tokens": entity_tokens or None,
+        "search_terms": search_terms or None,
+        "search_variants": search_variants or entity_tokens or None,
+        "specialist_outputs": [{"__reset__": True}],
+    }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -231,17 +237,21 @@ async def _call_llm(prompt, config: RunnableConfig) -> str:
     return response.content or ""
 
 
-def _parse_type(raw: str) -> str:
+def _parse_intake(raw: str) -> tuple[str, list[str], list[str], list[str]]:
+    """Parse LLM output — returns (question_type, entity_tokens, search_terms, search_variants)."""
     from json_repair import loads as json_loads
     try:
         output = parse_tag(raw, "output") or raw.strip()
         data = json_loads(output)
         qtype = data.get("type", "analytics")
         if qtype not in ("general_chat", "analytics"):
-            return "analytics"
-        return qtype
+            qtype = "analytics"
+        entity_tokens   = [str(e) for e in (data.get("entity_tokens") or []) if e][:8]
+        search_terms    = [str(t) for t in (data.get("search_terms") or []) if t][:3]
+        search_variants = [str(v) for v in (data.get("search_variants") or []) if v][:8]
+        return qtype, entity_tokens, search_terms, search_variants
     except Exception:
-        return "analytics"  # Layer 3 fallback: attempt analytics over silent drop
+        return "analytics", [], [], []  # Layer 3 fallback
 
 
 def _format_conversation(messages: list, session_summary: str = "") -> str:

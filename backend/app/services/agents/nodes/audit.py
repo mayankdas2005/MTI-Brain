@@ -100,7 +100,7 @@ async def write_query_pattern(
         pattern_data = {
             "id": pattern_id or str(uuid.uuid4()),
             "question_text": state["question"],
-            "sql_cte_outline": _extract_cte_outline(sql),
+            "sql_text": sql or "",
             "join_outline": _extract_join_outline(sql),
             "filter_summary": _extract_filter_summary(ir),
             "tables_used": list(ir.anchor_tables),
@@ -159,14 +159,13 @@ async def write_anti_pattern(
         embedding = await _get_embedding(state["question"])
         tables_involved = ",".join(ir_dict.get("anchor_tables", []))
         intent = ir_dict.get("intent", "")
-        error_summary = error_msg[:300]
         pattern_data = {
             "id": str(uuid.uuid4()),
-            "merge_key": anti_pattern_merge_key(error_type, intent, tables_involved, error_summary),
+            "merge_key": anti_pattern_merge_key(error_type, intent, tables_involved, error_msg),
             "question_text": state["question"],
-            "sql_fragment": sql[:500] if sql else "",
+            "sql_text": sql or "",
             "error_type": error_type,
-            "error_summary": error_summary,
+            "error_detail": error_msg,
             "failing_element": _extract_failing_element(error_msg),
             "tables_involved": tables_involved,
             "intent": intent,
@@ -180,14 +179,6 @@ async def write_anti_pattern(
         )
     except Exception as e:
         logger.warning("audit | write_anti_pattern failed | error={}", e)
-
-
-def _extract_cte_outline(sql: str) -> str:
-    if not sql:
-        return ""
-    cte_names = re.findall(r"(\w+)\s+AS\s*\(", sql, re.IGNORECASE)
-    table_refs = re.findall(r"FROM\s+(lpp\.\w+)", sql, re.IGNORECASE)
-    return f"CTEs: {', '.join(cte_names[:4])} | Tables: {', '.join(set(table_refs))}"
 
 
 def _extract_join_outline(sql: str) -> str:

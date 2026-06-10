@@ -754,7 +754,11 @@ def _build_alternative_specs(
     Skips any type that duplicates the primary, fails guardrails, or raises during build.
     """
     # Pairs that are visually equivalent — never show both.
-    _REDUNDANT_PAIRS: set[frozenset] = {frozenset({"bar", "bar_horizontal"})}
+    _REDUNDANT_PAIRS: set[frozenset] = {
+        frozenset({"bar", "bar_horizontal"}),
+        frozenset({"line", "multi_line"}),
+        frozenset({"pie", "donut"}),
+    }
 
     # Per-alternative label overrides supplied by the LLM
     alt_label_map: dict = labels.get("alternative_labels") or {}
@@ -785,7 +789,7 @@ def _build_alternative_specs(
         guarded = _apply_guardrails(alt_type, columns, col_type_map or {}, len(rows))
         if guarded in seen or guarded not in _VALID_CHART_TYPES:
             continue
-        if any(frozenset({primary_type, guarded}) == pair for pair in _REDUNDANT_PAIRS):
+        if any(frozenset({s, guarded}) in _REDUNDANT_PAIRS for s in seen):
             continue
         seen.add(guarded)
         try:
@@ -930,6 +934,15 @@ async def _plan_chart(
         if fb else ""
     )
 
+    from app.services.agents.helpers import _build_concept_mappings_section
+    resolved_intent_chart = state.get("resolved_intent") or {}
+    result_shape = resolved_intent_chart.get("result_shape") or "table"
+    temporal_grains = resolved_intent_chart.get("temporal_grains") or []
+
+    result_shape_hint = f"SUGGESTED OUTPUT SHAPE (from query analysis): {result_shape}"
+    temporal_grains_section = "TIME GRAINS: " + ", ".join(temporal_grains) if temporal_grains else ""
+    concept_map_section = _build_concept_mappings_section(state.get("concept_mappings"))
+
     prompt = CHART_PLAN_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent=intent,
@@ -937,6 +950,9 @@ async def _plan_chart(
         column_metadata=column_metadata,
         feedback_section=feedback_section,
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        result_shape_hint=result_shape_hint,
+        temporal_grains_section=temporal_grains_section,
+        concept_mappings_section=concept_map_section,
     )
 
     from app.services.agents.bedrock import get_llm
@@ -1029,6 +1045,9 @@ async def _label_chart(
                 parts.append(f"  - {alt}")
         return "\n".join(parts)
 
+    from app.services.agents.helpers import _build_concept_mappings_section
+    label_concept_map_section = _build_concept_mappings_section(state.get("concept_mappings"))
+
     prompt = CHART_LABEL_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent=intent,
@@ -1042,6 +1061,7 @@ async def _label_chart(
         y_value_format=y_value_format,
         alternatives=_fmt_alternatives(),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        concept_mappings_section=label_concept_map_section,
     )
 
     from app.services.agents.bedrock import get_llm

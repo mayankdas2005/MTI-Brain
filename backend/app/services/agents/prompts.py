@@ -128,10 +128,52 @@ Conversation history:
 
 User question: "{question}"
 
-Output only this JSON inside <output> tags:
-<output>{{"type": "analytics"}}</output>
-OR
-<output>{{"type": "general_chat"}}</output>"""
+Output only this JSON inside <output> tags — four fields:
+  "type": "analytics" or "general_chat"
+  "entity_tokens": list of ALL significant non-stopword terms from the question that would
+    appear as filter values or column/table names in the data. Capture:
+      - Named entities / counterparties: "JPMorgan", "Chase", "Visa"
+      - Account qualifiers: "operating", "custody", "treasury", "disbursement", "concentration"
+      - Balance / record type qualifiers: "closing", "opening", "ledger", "intraday", "settled"
+      - Transaction / instrument types: "wire", "ACH", "FX", "hedge", "sweep"
+      - Currency codes: "USD", "EUR", "GBP"
+      - Any other domain-specific noun or qualifier that is NOT a pure stopword
+    Rules: max 8 tokens. Exclude pure stopwords: "show", "me", "the", "our", "for", "last",
+      "days", "weeks", "months", "what", "how", "give", "list", "compare", "by", "and", "or".
+    Empty list [] if no such tokens.
+  "search_terms": list of up to 3 focused keyword phrases for Neo4j discovery.
+    Each phrase is 2-4 words, no stopwords, targeting a different aspect of the query:
+      item 0: entity + qualifier  e.g. "JPMorgan operating account"
+      item 1: measure or concept  e.g. "closing balance"
+      item 2: domain terms        e.g. "cash balance bank"
+    Do NOT include the full question. Empty list [] if query is general_chat.
+  "search_variants": list of corrected/expanded spellings of entity_tokens.
+    Expand financial abbreviations and fix typos. Max 8 items.
+    ACH → ["ACH", "automated clearing house"]
+    FX  → ["FX", "foreign exchange"]
+    DSO → ["DSO", "days sales outstanding"]
+    DPO → ["DPO", "days payable outstanding"]
+    DIO → ["DIO", "days inventory outstanding"]
+    MTM → ["MTM", "mark to market"]
+    RTP → ["RTP", "real-time payment"]
+    POS / point-of-sale → ["POS", "point of sale"]
+    Typos: "jpmorgen" → ["JPMorgan", "JP Morgan"]
+    If no correction/expansion needed, mirror entity_tokens. Empty [] if general_chat.
+
+Examples:
+<output>{{"type": "analytics", "entity_tokens": ["JPMorgan", "operating", "closing", "balance", "account"], "search_terms": ["JPMorgan operating account", "closing balance", "cash balance bank"], "search_variants": ["JPMorgan", "JP Morgan", "operating", "closing"]}}</output>
+<output>{{"type": "analytics", "entity_tokens": ["ACH"], "search_terms": ["ACH receipts payment", "ACH volume", "payment receipts"], "search_variants": ["ACH", "automated clearing house"]}}</output>
+<output>{{"type": "analytics", "entity_tokens": ["wire transfers"], "search_terms": ["wire transfer payment", "wire disbursement", "payment outgoing"], "search_variants": ["wire transfer", "wire", "wire payment"]}}</output>
+<output>{{"type": "analytics", "entity_tokens": [], "search_terms": ["bank account currency", "account balance", "multi-currency bank"], "search_variants": []}}</output>
+<output>{{"type": "analytics", "entity_tokens": ["FX", "hedges"], "search_terms": ["FX hedge notional", "foreign exchange exposure", "derivative hedge"], "search_variants": ["FX", "foreign exchange", "hedge", "FX hedge"]}}</output>
+<output>{{"type": "analytics", "entity_tokens": ["DSO", "DPO", "DIO"], "search_terms": ["DSO DPO working capital", "days sales payable outstanding", "accounts receivable payable inventory"], "search_variants": ["DSO", "days sales outstanding", "DPO", "days payable outstanding", "DIO", "days inventory outstanding"]}}</output>
+<output>{{"type": "analytics", "entity_tokens": ["card sales", "acquirer", "settlements"], "search_terms": ["card sales settlement acquirer", "gross net reconciliation", "merchant acquirer deposit"], "search_variants": ["acquirer", "card sales", "settlement", "point of sale", "POS"]}}</output>
+<output>{{"type": "analytics", "entity_tokens": ["liquidity", "daily receipts"], "search_terms": ["liquidity stress test", "cash receipts forecast", "minimum threshold breach"], "search_variants": ["liquidity", "receipts", "daily receipts"]}}</output>
+<output>{{"type": "analytics", "entity_tokens": [], "search_terms": ["total liquidity available", "cash balance position", "available funds"], "search_variants": []}}</output>
+<output>{{"type": "analytics", "entity_tokens": [], "search_terms": ["cash forecast liquidity", "inflows outflows historical", "liquidity minimum threshold"], "search_variants": []}}</output>
+<output>{{"type": "analytics", "entity_tokens": ["FX", "interest rate"], "search_terms": ["treasury health liquidity debt", "FX interest rate exposure", "cash position risk"], "search_variants": ["FX", "foreign exchange", "interest rate", "rate exposure"]}}</output>
+<output>{{"type": "analytics", "entity_tokens": ["treasury position"], "search_terms": ["treasury position action", "treasury status", "cash liquidity"], "search_variants": ["treasury position"]}}</output>
+<output>{{"type": "general_chat", "entity_tokens": [], "search_terms": [], "search_variants": []}}</output>"""
 )
 
 # ─── Node G: General Chat ────────────────────────────────────────────────────
@@ -535,6 +577,7 @@ Column: {column_name}  in table: {table_fqn}
 User said: "{raw_user_value}"
 Context question: {question}
 
+{entity_hint_section}
 Known database codes (numbered; business meanings shown in parentheses when available):
 {candidates}
 
@@ -577,6 +620,10 @@ INTERVAL syntax with months/years is NOT supported — replace with DATEADD:
       CORRECT: CASE WHEN col THEN 'true' ELSE 'false' END
 
 USER QUESTION: {question}
+
+{entity_tokens_section}
+
+{time_col_highlight_section}
 
 {prior_attempts_detail}
 
@@ -674,7 +721,7 @@ RULES:
    - If the column name ends in _id, _ref, _key, _code, _no, or _num — it is an identifier, NOT a
      date. Remove the conversion entirely.
    - To filter on a specific snapshot, use direct string equality: WHERE snapshot_id = '<value>'
-   - Use only columns whose schema entry shows temporal_grain or whose name contains date/time/period
+   - Use only columns whose data_type is date/timestamp or whose name contains date/time/period
      for date arithmetic.
    - Never infer a date format from a column name. If sample values (shown as [enum: ...] in
      SCHEMA REFERENCE) do not look like YYYY-MM-DD or a recognizable date pattern, the column is
@@ -736,6 +783,8 @@ Output a complete CTE contract that the SQL generator must follow exactly.
 USER QUESTION: {question}
 
 {directive_section}
+
+{groupings_hint_section}
 
 {prior_error_section}
 
@@ -921,6 +970,8 @@ USER QUESTION: {question}
 {entity_hints_section}
 
 {directive_section}
+
+{time_col_highlight_section}
 
 {unresolved_joins_section}
 
@@ -1241,6 +1292,10 @@ INSIGHT_EXTRACTOR_PROMPT = ChatPromptTemplate.from_template(
 
 QUESTION: {question}
 
+{tribal_facts_section}
+
+{conversation_context}
+
 {current_date_context}
 
 {flag_instructions_text}
@@ -1524,6 +1579,8 @@ LANGUAGE RULES:
 
 {tribal_facts_section}
 
+{low_confidence_section}
+
 ---
 
 QUESTION: {question}
@@ -1624,6 +1681,11 @@ Output ONLY the structural plan — no axis labels, no chart titles.
 
 QUESTION: {question}
 Intent:   {intent}
+
+{result_shape_hint}
+{temporal_grains_section}
+
+{concept_mappings_section}
 
 ---
 
@@ -1892,6 +1954,8 @@ Y-axis format:     {y_value_format}
 Alternatives:
 {alternatives}
 
+{concept_mappings_section}
+
 ---
 
 X AXIS LABEL — derives from {x_column}, not from the question topic:
@@ -2053,6 +2117,7 @@ Examples:
   "Q3 2024"           → {{"operator":"BETWEEN_SQL","start":"2024-07-01","end":"2024-09-30"}}
   "CONFIRMED"         → {{"operator":null}}
 
+{temporal_grain_hint}
 User question: {question}
 Expression: {expression}"""
 )
@@ -2088,6 +2153,10 @@ Output format:
 USER QUESTION: {question}
 ANCHOR TABLES: {anchor_tables}
 
+{entity_tokens_section}
+
+{low_confidence_section}
+
 Original SQL:
 {original_sql}"""
 )
@@ -2102,6 +2171,10 @@ or write SQL — that happens later with the actual database schema.
 
 User question: {question}
 
+{available_tables_section}
+
+{entity_tokens_section}
+
 Extract ONLY what is explicitly stated. Do not infer, expand, or add anything not directly mentioned.
 
 {reasoning_directive}
@@ -2112,12 +2185,18 @@ Extract ONLY what is explicitly stated. Do not infer, expand, or add anything no
   "required_groupings": ["how user wants data broken down — e.g. 'by exception type', 'by currency'"],
   "required_time_period": "exact time phrase from question or null",
   "is_detail_request": false,
-  "explicit_entities": ["named entities to filter on — e.g. 'JPMorgan', 'USD', 'wire transfer'"]
+  "explicit_entities": ["named entities to filter on — e.g. 'JPMorgan', 'USD', 'wire transfer'"],
+  "complexity": "simple"
 }}
 </output>
 
 is_detail_request = true ONLY when user asks to list, show, retrieve, display, or find individual records.
 False for summary/aggregate/report queries (volume by X, average Y, total Z grouped by W).
+
+complexity must be exactly one of:
+  "simple"   — single table or 1-2 joins, basic SELECT/WHERE/GROUP BY
+  "complex"  — 3+ joins, window functions, or multi-step aggregation
+  "advanced" — cross-schema, recursive CTEs, or unknown join paths
 
 SELF-CHECK before outputting:
 1. EXPLICIT DIMENSIONS: Scan for "by X", "broken down by X", "per X", "across X". Each must appear in required_groupings.
@@ -2183,10 +2262,13 @@ to answer the user's question. You do NOT select filters, dimensions, or write d
 These are the MEASURABLE columns available (numeric/amount types):
 {measurable_columns_section}
 
+{joinable_table_graph}
 User question: {question}
 Intent summary: {intent_summary}
 {refinement_section}
 {query_plan_section}
+{concept_mappings_section}
+{entity_tokens_section}
 Rules:
 - EXPLICIT METRICS ONLY: Only output measures for columns the user explicitly asked to sum,
   count, average, or total.
@@ -2239,10 +2321,13 @@ to answer the user's question. You do NOT select measures, dimensions, or write 
 These are the FILTERABLE columns available:
 {filterable_columns_section}
 
+{joinable_table_graph}
 User question: {question}
 Intent summary: {intent_summary}
 {refinement_section}
 {query_plan_section}
+{entity_hints_section}
+{entity_tokens_section}
 CRITICAL RULES:
 - For time_filter_col, use only columns labeled [time-filter eligible]. Never use [metadata timestamp] columns.
 - For time filters: set timeframe to a standard string, time_filter_col to the exact column,
@@ -2294,11 +2379,13 @@ or display in the output to answer the user's question. You do NOT select measur
 These are the GROUPABLE columns available (dimension/code/flag types):
 {groupable_columns_section}
 
+{joinable_table_graph}
 User question: {question}
 Intent summary: {intent_summary}
 Measures already selected: {measures_summary}
 {refinement_section}
 {query_plan_section}
+{entity_tokens_section}
 Rules:
 - GROUP BY columns must reflect what the user explicitly asked to group or break down by.
   If the user asked for a list without specifying grouping, use natural grain columns
@@ -2350,8 +2437,18 @@ Assembled intent:
 - query_intent: {query_intent}
 - complexity: {query_complexity}
 
+SPECIALIST-DETERMINED VALUES — authoritative; emit these exactly, do NOT substitute:
+  Time filter column: {time_filter_col}
+    → You MUST emit: TIME_FILTER: {time_filter_col}
+    → Do NOT substitute another date column unless time_filter_col = "not specified"
+  Filter columns already resolved by specialist:
+{filter_columns_section}
+    → Emit COMPUTED_FILTER for each non-time filter using exactly the column names shown above
+
 Complete schema for anchor tables (all columns):
 {anchor_schema_section}
+{confirmed_join_paths_section}
+{concept_mappings_section}
 {filter_hint_section}
 {query_plan_section}
 User question: {question}
@@ -2364,7 +2461,7 @@ Output your reasoning in <reasoning>...</reasoning>, then the directive in <dire
 
 <reasoning>
 Think through:
-- Which join paths can be confirmed from the schema above? (column names, FK relationships)
+- Which join paths can be confirmed? If CONFIRMED JOIN PATHS is present, emit JOIN_PATH: for each listed pair — do NOT emit SCHEMA_GAP_JOIN for those pairs. Only emit SCHEMA_GAP_JOIN for pairs NOT listed there.
 - Does the timeframe/filter require a derived expression? (→ COMPUTED_FILTER)
 - Are any requested measures or dimensions missing from the anchor schemas? (→ SCHEMA_GAP)
 - What confidence level is appropriate given schema coverage?

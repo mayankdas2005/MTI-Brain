@@ -40,9 +40,8 @@ def _build_anchor_schema_section(enriched_schema: dict) -> str:
             name = c.get("name", "")
             dtype = c.get("data_type") or c.get("semantic_type", "")
             desc = (c.get("description") or "")[:120]
-            grain = c.get("temporal_grain", "")
             ref_table = (c.get("referenced_table_fqn") or "").strip()
-            col_line = f"  {name}  [{dtype}]{' temporal_grain=' + grain if grain and grain != 'none' else ''}"
+            col_line = f"  {name}  [{dtype}]"
             if ref_table:
                 col_line += f"  [FK → {ref_table}]"
             lines.append(col_line)
@@ -110,6 +109,58 @@ def _build_query_plan_section(query_plan: dict | None, timeframe: str | None) ->
     return "\n".join(lines) if lines else ""
 
 
+def _build_concept_mappings_section(concept_mappings: dict | None) -> str:
+    if not concept_mappings:
+        return ""
+    lines = ["CONCEPT MAPPINGS — business terms linked to anchor tables (emit COMPUTATION: not SCHEMA_GAP_CONCEPT):"]
+    for term, info in concept_mappings.items():
+        computation = info.get("computation") or ""
+        definition = (info.get("definition") or "")[:120]
+        table_fqn = info.get("table_fqn") or ""
+        line = f"  {term}"
+        if table_fqn:
+            line += f"  [{table_fqn}]"
+        if definition:
+            line += f"  — {definition}"
+        lines.append(line)
+        if computation:
+            lines.append(f"    COMPUTATION: {term.lower().replace(' ', '_')} = {computation}")
+    return "\n".join(lines)
+
+
+def _build_filter_columns_section(filters: list[dict], timeframe: str | None, time_filter_col: str | None) -> str:
+    lines = []
+    if time_filter_col and timeframe:
+        lines.append(f"  {time_filter_col}  (time window: {timeframe})")
+    for f in filters:
+        fqn = f.get("table_fqn", "")
+        col = f.get("column_name", "")
+        val = f.get("raw_value") or f.get("raw_user_value", "")
+        op = f.get("operator", "=")
+        if fqn and col:
+            lines.append(f"  {fqn}.{col} {op} '{val}'")
+    return "\n".join(lines) if lines else "  (none)"
+
+
+def _build_confirmed_join_paths_section(anchor_join_paths: list[dict] | None) -> str:
+    if not anchor_join_paths:
+        return ""
+    lines = ["CONFIRMED JOIN PATHS (emit JOIN_PATH: for each — do NOT emit SCHEMA_GAP_JOIN for these pairs):"]
+    for p in anchor_join_paths:
+        from_fqn = p.get("from_fqn", "")
+        to_fqn = p.get("to_fqn", "")
+        clauses = p.get("join_clauses") or p.get("from_col") and [
+            f"{from_fqn}.{p.get('from_col')} = {to_fqn}.{p.get('to_col')}"
+        ] or []
+        if clauses:
+            lines.append(f"  {from_fqn} ↔ {to_fqn}")
+            for clause in (clauses if isinstance(clauses, list) else [clauses]):
+                lines.append(f"    JOIN_PATH: {clause}")
+        else:
+            lines.append(f"  {from_fqn} ↔ {to_fqn}  (join clause not available — emit JOIN_PATH with best matching columns)")
+    return "\n".join(lines)
+
+
 async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("directive_writer START | thread={}", state.get("thread_id", ""))
 
@@ -138,6 +189,8 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
             temporal_grains = temporal_grains or s.get("temporal_grains") or []
             break
 
+    logger.info("directive_writer | resolved_time_filter_col={} | timeframe={}", time_filter_col, timeframe)
+
     filter_hint = state.get("filter_directive_hint") or ""
     filter_hint_section = (
         f"\nFILTER VALUE MAPPINGS (from filter specialist — use for COMPUTED_FILTER):\n{filter_hint}"
@@ -156,10 +209,14 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         query_intent=query_intent,
         query_complexity=query_complexity,
         anchor_schema_section=_build_anchor_schema_section(enriched_schema),
+        confirmed_join_paths_section=_build_confirmed_join_paths_section(state.get("anchor_join_paths")),
+        concept_mappings_section=_build_concept_mappings_section(state.get("concept_mappings")),
         filter_hint_section=filter_hint_section,
         query_plan_section=_build_query_plan_section(state.get("query_plan"), timeframe),
         refinement_section=build_refinement_section(state, role="directive"),
         reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
+        time_filter_col=time_filter_col or "not specified",
+        filter_columns_section=_build_filter_columns_section(filters, timeframe, time_filter_col),
     )
 
     from app.services.agents.bedrock import get_llm
@@ -184,6 +241,22 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
     instructions_text = parse_tag(directive_raw, "instructions") or ""
     context_text = parse_tag(directive_raw, "context") or ""
 
+    # Log TIME_FILTER emission — authoritative column emitted to directive
+    time_filter_emitted = None
+    join_paths_emitted = 0
+    for line in directive_raw.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("TIME_FILTER:") and time_filter_emitted is None:
+            time_filter_emitted = stripped
+        if "JOIN_PATH:" in stripped.upper():
+            join_paths_emitted += 1
+
+    if time_filter_emitted:
+        logger.info("directive_writer | time_filter_emitted | {}", time_filter_emitted)
+    else:
+        logger.warning("directive_writer | TIME_FILTER missing from directive | thread={}", state.get("thread_id"))
+
+    logger.info("directive_writer | join_paths_emitted | count={}", join_paths_emitted)
     logger.info(
         "directive_writer DONE | thread={} | has_instructions={} | has_context={}",
         state.get("thread_id"), bool(instructions_text.strip()), bool(context_text.strip()),

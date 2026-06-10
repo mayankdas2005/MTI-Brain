@@ -174,12 +174,21 @@ async def generate_sql_llm(
     cte_plan = await _plan_cte_columns(spec, query_blueprint, schema_reference, state, config, directive_section)
     cte_column_plan = _build_cte_plan_section(cte_plan)
 
+    resolved_intent_for_highlight = state.get("resolved_intent") or {}
+    _time_filter_col = resolved_intent_for_highlight.get("time_filter_col") or ""
+    time_col_highlight_section = (
+        f"AUTHORITATIVE TIME FILTER COLUMN: {_time_filter_col}\n"
+        f"  → Use this column for all date range filters. Do NOT substitute another date column."
+        if _time_filter_col else ""
+    )
+
     from app.services.agents.prompts import SQL_GENERATE_PROMPT
     prompt = SQL_GENERATE_PROMPT.format_messages(
         question=state.get("effective_question") or state.get("question", ""),
         cross_domain_section=cross_domain_section,
         entity_hints_section=entity_hints_section,
         directive_section=directive_section,
+        time_col_highlight_section=time_col_highlight_section,
         query_blueprint=query_blueprint,
         schema_reference=schema_reference,
         anti_patterns=anti_patterns,
@@ -273,9 +282,17 @@ async def _plan_cte_columns(
             planner_candidate_section = _build_candidate_join_paths_section(ir_for_planner, col_lookup_for_planner)
         planner_blueprint = query_blueprint + ("\n" + planner_candidate_section if planner_candidate_section else "")
 
+        groupings = (state.get("query_plan") or {}).get("required_groupings") or []
+        groupings_hint_section = (
+            "REQUIRED GROUPINGS (user explicitly requested — ensure GROUP BY for each):\n"
+            + "\n".join(f"  • {g}" for g in groupings)
+            if groupings else ""
+        )
+
         prompt = CTE_COLUMN_PLANNER_PROMPT.format_messages(
             question=state.get("effective_question") or state.get("question", ""),
             directive_section=directive_section,
+            groupings_hint_section=groupings_hint_section,
             prior_error_section=prior_error_section,
             query_blueprint=planner_blueprint,
             schema_reference=schema_reference,
@@ -413,9 +430,7 @@ def _build_cte_plan_section(plan: str) -> str:
 def _get_join_overlap_evidence(
     on_clause: str,
     col_lookup: dict,
-    selectivity_lookup: dict | None = None,
     ref_table_lookup: dict | None = None,
-    temporal_grain_lookup: dict | None = None,
     dtype_lookup: dict | None = None,
     semantic_type_lookup: dict | None = None,
 ) -> str:
@@ -453,53 +468,6 @@ def _get_join_overlap_evidence(
         elif ref_b and ref_b == join_to_b:
             evidence += f"  [semantic ref → {ref_b} ✓]"
 
-    # Temporal grain annotation (only when not 'none'/empty)
-    if temporal_grain_lookup:
-        grain_a = temporal_grain_lookup.get(col_a, "")
-        grain_b = temporal_grain_lookup.get(col_b, "")
-        if grain_a and grain_a not in ("none", ""):
-            evidence += f"  [temporal_grain={grain_a}]"
-        elif grain_b and grain_b not in ("none", ""):
-            evidence += f"  [temporal_grain={grain_b}]"
-
-    # Low-cardinality join key warning using actual Redshift pg_stats selectivity
-    if selectivity_lookup:
-        sel_a = selectivity_lookup.get(col_a, "")
-        sel_b = selectivity_lookup.get(col_b, "")
-        if sel_a == "low" or sel_b == "low":
-            table_a_fqn = f"{cols[0][0]}.{cols[0][1]}"
-            table_b_fqn = f"{cols[1][0]}.{cols[1][1]}"
-            candidates: list[tuple[str, int]] = []
-            for fqn, sel in selectivity_lookup.items():
-                if sel not in ("medium", "high"):
-                    continue
-                parts = fqn.rsplit(".", 1)
-                if len(parts) != 2:
-                    continue
-                tbl, cname = parts
-                if tbl not in (table_a_fqn, table_b_fqn):
-                    continue
-                if cname in (col_a_name, col_b_name) or _is_uuid_col(cname):
-                    continue
-                if dtype_lookup and dtype_lookup.get(fqn, "") == "boolean":
-                    continue
-                if semantic_type_lookup and semantic_type_lookup.get(fqn, "") in ("flag", "indicator"):
-                    continue
-                # For high selectivity: only include confirmed semantic references
-                if sel == "high":
-                    if not (ref_table_lookup and ref_table_lookup.get(fqn, "")):
-                        continue
-                candidates.append((cname, 0 if sel == "medium" else 1))
-            candidates.sort(key=lambda x: x[1])
-            top = [c for c, _ in candidates[:3]]
-            hint = f" Narrowing candidates: {', '.join(top)}." if top else ""
-            evidence += (
-                f"\n    -- ⚠ LOW-CARDINALITY JOIN KEY (filter_selectivity=low,"
-                f" ≤50 distinct values per Redshift pg_stats) —"
-                f" fact-to-fact join risk: every row on side A matches every row on"
-                f" side B with the same key value, multiplying rows.{hint}"
-                f" See Rule 1 addendum."
-            )
     return evidence
 
 
@@ -517,16 +485,8 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
         }
 
     _cols = schema_ctx.get("columns", [])
-    selectivity_lookup = {
-        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("filter_selectivity", "")
-        for c in _cols if c.get("table_fqn") and c.get("name")
-    }
     ref_table_lookup = {
         f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("referenced_table_fqn", "")
-        for c in _cols if c.get("table_fqn") and c.get("name")
-    }
-    temporal_grain_lookup = {
-        f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("temporal_grain", "")
         for c in _cols if c.get("table_fqn") and c.get("name")
     }
     dtype_lookup = {
@@ -714,9 +674,7 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
             lines.append(f"    ON {on_clause}")
             evidence = _get_join_overlap_evidence(
                 on_clause, col_lookup,
-                selectivity_lookup=selectivity_lookup,
                 ref_table_lookup=ref_table_lookup,
-                temporal_grain_lookup=temporal_grain_lookup,
                 dtype_lookup=dtype_lookup,
                 semantic_type_lookup=semantic_type_lookup,
             )
@@ -1028,35 +986,23 @@ def _build_unresolved_joins_section(unresolved_pairs: list[dict], col_lookup: di
     if not unresolved_pairs:
         return ""
     vocab_hints = _find_vocabulary_join_hints(unresolved_pairs, col_lookup or {})
-    lines = ["UNRESOLVED JOIN PAIRS — no pre-computed path found in Neo4j. You MUST resolve each of these:\n"]
+    lines = ["UNRESOLVED JOIN PAIRS — no confirmed path from directive. Use ADDITIONAL JOINS or column overlap below:\n"]
     for pair in unresolved_pairs:
         from_t = pair.get("from", "")
         to_t = pair.get("to", "")
         candidates = pair.get("candidate_join_columns", [])
-        sem_bridge = pair.get("semantic_bridge_columns", [])
-        lines.append(f"  {from_t} → {to_t}")
+        lines.append(f"  {from_t} → {to_t}  [UNRESOLVED]")
         if candidates:
-            lines.append(f"    candidate_join_columns: {candidates}")
-            lines.append("    → Check ADDITIONAL JOINS in SCHEMA REFERENCE first (use ON clause exactly if found).")
-            lines.append("    → Otherwise JOIN ON the most semantically specific candidate column.")
-        elif sem_bridge:
-            bridge_strs = [
-                f"{from_t}.{b.get('from_col')} = {to_t}.{b.get('to_col')}"
-                for b in sem_bridge[:2]
-                if b.get("from_col") and b.get("to_col")
-            ]
-            lines.append(f"    semantic_bridge (similarity >= 0.88): {bridge_strs}")
-            lines.append("    → Use the semantic bridge as the ON clause — these columns are semantically equivalent.")
+            lines.append(f"    candidate_join_columns (shared names): {candidates}")
+            lines.append("    → Check ADDITIONAL JOINS first; otherwise JOIN ON the most specific candidate.")
         hints = vocab_hints.get((from_t, to_t), [])
         if hints:
-            lines.append("    VOCABULARY OVERLAP HINTS (columns sharing actual data values — strong join candidates):")
+            lines.append("    VOCABULARY OVERLAP (columns sharing actual values):")
             for fc, tc, shared in hints:
-                total_note = f"{len(shared)} shown" if len(shared) == 5 else f"{len(shared)} total"
-                lines.append(f"      {fc} = {tc}")
-                lines.append(f"        shared ({total_note}): {', '.join(shared)}")
-        else:
-            lines.append("    (no vocabulary overlap found — use column name and description similarity)")
-        lines.append("    → NEVER produce a CROSS JOIN or omit the table.\n")
+                lines.append(f"      {fc} = {tc}  (shared: {', '.join(shared)})")
+        if not candidates and not hints:
+            lines.append("    (no candidate columns found — use column description similarity)")
+        lines.append("    → Do NOT produce a CROSS JOIN or omit this table.\n")
     return "\n".join(lines)
 
 
