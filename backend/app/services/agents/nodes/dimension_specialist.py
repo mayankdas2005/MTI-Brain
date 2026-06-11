@@ -35,25 +35,21 @@ def _build_query_plan_section(query_plan: dict | None) -> str:
     return "\n".join(lines)
 
 
-_DIM_SEMANTIC = {"dimension", "code", "flag"}
-_MEASURE_SEMANTIC = {"amount", "measure", "percentage", "ratio"}
-_EXCLUDE_SEMANTIC = {"free_text", "identifier"}
-_VARCHAR_DTYPES = {"varchar", "character varying", "char", "bpchar", "boolean", "text"}
+_NUMERIC_DTYPES = frozenset({
+    "numeric", "decimal", "integer", "bigint", "float", "double precision",
+    "real", "smallint", "int", "int2", "int4", "int8", "float4", "float8",
+})
+_EXCLUDE_SEMANTIC = {"free_text"}
 
 
 def _is_dimension(c: dict) -> bool:
     sem = c.get("semantic_type", "").lower()
     if sem in _EXCLUDE_SEMANTIC:
         return False
-    if sem in _DIM_SEMANTIC:
-        return True
-    if sem in _MEASURE_SEMANTIC or sem == "date":
-        return False
-    # sem is "" or unrecognized — fall back to data_type
     dtype = c.get("data_type", "").lower()
-    if dtype in _VARCHAR_DTYPES:
-        return True
-    return False
+    if dtype in _NUMERIC_DTYPES:
+        return False
+    return True
 
 
 def _build_groupable_columns_section(enriched_schema: dict) -> str:
@@ -88,7 +84,11 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
 
     enriched_schema = state.get("enriched_schema") or {}
     resolved_intent = state.get("resolved_intent") or {}
-    intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
+    query_intent_lines = state.get("query_intent") or []
+    if query_intent_lines:
+        intent_summary = "USER'S STATED GOAL (framing only — do NOT derive column names from this section):\n" + "\n".join(query_intent_lines)
+    else:
+        intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
 
     # Build compact summary of measures already selected (from specialist_outputs if available)
     measures_summary = "(measures not yet available — avoid duplicating numeric aggregation columns as dimensions)"

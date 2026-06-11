@@ -69,6 +69,9 @@ neo4j:
     connection_timeout_seconds: 10 # Seconds before a connection attempt times out
     acquisition_timeout_seconds: 10 # Seconds to wait for a free pool connection
 
+sql_validator:
+  explain_cost_threshold: 10000000  # Cost units above which EXPLAIN triggers LARGE_TABLE_SCAN flag
+
 redis:
   pool:
     max_connections: 20            # Cap on pooled Redis connections

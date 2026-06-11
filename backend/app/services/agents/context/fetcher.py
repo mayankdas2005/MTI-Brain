@@ -91,6 +91,31 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             logger.warning("context_fetcher | NO tables found | thread={}", state["thread_id"])
             return {"error": "semantic_layer_unavailable", "semantic_context": None}
 
+        # K2: canonical domain direct lookup for multi-domain queries (Q3 pattern)
+        # Extracts DOMAIN lines from query_intent and runs a targeted BELONGS_TO Cypher query.
+        # Guarantees domain coverage even when vector search misses a domain's primary tables.
+        _canonical_domains = [
+            l.split(":", 1)[1].strip()
+            for l in (state.get("query_intent") or [])
+            if l.startswith("DOMAIN:")
+        ]
+        if _canonical_domains:
+            try:
+                _domain_rows = await asyncio.to_thread(
+                    neo4j_client.get_tables_for_canonical_domains, _canonical_domains
+                )
+                _domain_fqns = [r["fqn"] for r in _domain_rows if r.get("fqn")]
+                if _domain_fqns:
+                    _existing_fqns = {f for f in domain_table_fqns}
+                    _new_fqns = [f for f in _domain_fqns if f not in _existing_fqns]
+                    domain_table_fqns = list(domain_table_fqns) + _new_fqns
+                    logger.info(
+                        "context_fetcher | canonical_domain_lookup | domains={} | new_fqns={} | thread={}",
+                        _canonical_domains, _new_fqns, state["thread_id"],
+                    )
+            except Exception as _e:
+                logger.warning("context_fetcher | canonical_domain_lookup failed | error={}", _e)
+
         # ── Groups A + B run in parallel ───────────────────────────────────────
         # Group A: independent of table results — templates, terms, intents, memory
         # Group B: depends on tables — cross-domain, join-critical cols, column loading

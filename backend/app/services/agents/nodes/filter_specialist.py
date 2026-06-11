@@ -24,18 +24,22 @@ from app.services.agents.prompts import FILTER_SPECIALIST_PROMPT, REASONING_DIRE
 from app.services.agents.state import AnalyticsState
 
 
+_NUMERIC_DTYPES = frozenset({
+    "numeric", "decimal", "integer", "bigint", "float", "double precision",
+    "real", "smallint", "int", "int2", "int4", "int8", "float4", "float8",
+})
+_NEVER_FILTER = {"free_text"}
+
+
 def _build_filterable_columns_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
-    _NEVER_FILTER = {"free_text"}
     filterable = [
         c for c in columns
         if c.get("semantic_type", "") not in _NEVER_FILTER
         and (
-            c.get("semantic_type") in ("date", "code", "identifier", "dimension", "flag")
-            or ("date" in (c.get("data_type") or "").lower())
-            or ("timestamp" in (c.get("data_type") or "").lower())
-            or c.get("distinct_values")
-            or c.get("value_vocabulary")
+            "date" in (c.get("data_type") or "").lower()
+            or "timestamp" in (c.get("data_type") or "").lower()
+            or (c.get("data_type") or "").lower() not in _NUMERIC_DTYPES
         )
     ]
     if not filterable:
@@ -133,7 +137,11 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
 
     enriched_schema = state.get("enriched_schema") or {}
     resolved_intent = state.get("resolved_intent") or {}
-    intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
+    query_intent_lines = state.get("query_intent") or []
+    if query_intent_lines:
+        intent_summary = "USER'S STATED GOAL (framing only — do NOT derive column names from this section):\n" + "\n".join(query_intent_lines)
+    else:
+        intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
 
     prompt = FILTER_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],

@@ -202,6 +202,10 @@ async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict 
 
     measures = _enrich_aggregations(measures, semantic_context)
 
+    # Deduplicate: remove from dimensions any column already in measures (aggregate use wins)
+    measure_keys = {(m.table_fqn, m.column_name) for m in measures}
+    dimensions = [d for d in dimensions if (d.table_fqn, d.column_name) not in measure_keys]
+
     filters = _build_filter_specs(resolved.get("filters", []), raw_measures, semantic_context)
     time_filter = await _build_time_filter(resolved.get("timeframe"), anchor_tables, semantic_context, state)
 
@@ -522,6 +526,14 @@ def _load_join_paths(
         else:
             logger.warning("ir_builder | unresolved_pair | from={} to={} | no join in state or directive", from_table, to_table)
             unresolved_pairs.append({"from": from_table, "to": to_table, "reason": "no_join_found"})
+            # Keep path_tables and join_clauses index-aligned even for unresolved pairs.
+            # Without this placeholder, the NEXT resolved pair's clause ends up at the wrong
+            # index (i), causing sql_generator to emit an ON clause referencing a table not
+            # yet in the chain (the G2 alignment bug).
+            if to_table not in all_path_tables:
+                all_path_tables.append(to_table)
+            all_join_clauses.append(None)
+            join_types.append("JOIN")
 
     return [], all_join_clauses, all_path_tables, join_types, [], unresolved_pairs
 

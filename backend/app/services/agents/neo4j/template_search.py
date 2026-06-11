@@ -289,17 +289,17 @@ def get_business_terms_by_terms(terms: list[str]) -> list[dict]:
 def get_business_terms_for_tables(anchor_fqns: list[str]) -> list[dict]:
     """Return BusinessTerms linked to anchor tables via REFERENCES_TABLE edges.
 
-    Returns each BT's term, definition, computation (SQL expression if available),
-    and the anchor table it references. Used by schema_enricher to build concept_mappings
-    so directive_writer can emit COMPUTATION: instead of SCHEMA_GAP_CONCEPT.
+    Returns each BT's term, description, term_category, term_type, and variants.
+    Used by schema_enricher to build concept_mappings shown to directive_writer.
+    BusinessTerm nodes do NOT have definition/computation/sql_expression properties.
     """
     if not anchor_fqns:
         return []
     query = """
     MATCH (bt:BusinessTerm)-[:REFERENCES_TABLE]->(t:Table)
     WHERE t.fqn IN $anchor_fqns
-    RETURN bt.term AS term, bt.definition AS definition,
-           bt.computation AS computation, bt.sql_expression AS sql_expression,
+    RETURN bt.term AS term, bt.description AS description,
+           bt.term_category AS term_category,
            bt.term_type AS term_type, bt.variants AS variants,
            t.fqn AS table_fqn
     """
@@ -347,3 +347,30 @@ def get_all_intent_names() -> list[str]:
         for r in results
         if r.get("name")
     ]
+
+
+@neo4j_breaker
+def get_tables_for_canonical_domains(domain_names: list[str]) -> list[dict]:
+    """Direct Domain→Table lookup using canonical domain names from query_intent DOMAIN lines.
+
+    Returns [{fqn, description, domain_name}] for tables belonging to any of the named domains.
+    Used by context_fetcher to guarantee domain coverage for multi-domain queries (Q3 pattern).
+    Falls back to empty list on any failure — never blocks the pipeline.
+    """
+    if not domain_names:
+        return []
+    query = """
+    MATCH (t:Table)-[:BELONGS_TO]->(d:Domain)
+    WHERE d.name IN $names
+    RETURN t.fqn AS fqn,
+           coalesce(t.description, '') AS description,
+           d.name AS domain_name
+    ORDER BY t.fqn
+    """
+    t0 = time.monotonic()
+    results = _neo4j_run(query, {"names": domain_names})
+    logger.debug(
+        "neo4j | fn=get_tables_for_canonical_domains | domains={} | ms={:.0f} | hits={}",
+        domain_names, (time.monotonic() - t0) * 1000, len(results),
+    )
+    return [dict(r) for r in results if r.get("fqn")]

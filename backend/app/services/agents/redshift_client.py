@@ -275,3 +275,38 @@ async def execute_query(
         elapsed_ms = (time.monotonic() - t0) * 1000
         logger.error("redshift error | thread={} | ms={:.0f} | error={}", thread_id, elapsed_ms, e)
         raise
+
+
+async def fetch_table_distkeys(schema: str, table: str) -> dict[str, bool]:
+    """Return {column_name: is_distkey} from pg_table_def.
+
+    Empty dict on any failure (pg_table_def requires pg_catalog access;
+    may be unavailable on Redshift Serverless).
+    """
+    sql = (
+        "SELECT \"column\", distkey "
+        "FROM pg_table_def "
+        "WHERE schemaname = %s AND tablename = %s"
+    )
+    try:
+        _, rows = await asyncio.to_thread(_execute_sync, sql, [schema, table], 10, True)
+        return {str(r[0]): bool(r[1]) for r in rows}
+    except Exception as e:
+        logger.debug("redshift | fetch_distkeys | {}.{} | unavailable | error={}", schema, table, e)
+        return {}
+
+
+async def run_explain(sql: str) -> list[str]:
+    """Run EXPLAIN on a SQL string and return the plan lines.
+
+    Uses quiet=True to suppress the SQL preview log (EXPLAIN text is large).
+    Returns empty list on any failure — caller treats empty as no flags detected.
+    Never blocks query execution on EXPLAIN failure.
+    """
+    explain_sql = "EXPLAIN " + sql
+    try:
+        _, rows = await asyncio.to_thread(_execute_sync, explain_sql, None, 15, True)
+        return [str(row[0]) for row in rows]
+    except Exception as e:
+        logger.warning("redshift | run_explain failed | error={}", e)
+        return []

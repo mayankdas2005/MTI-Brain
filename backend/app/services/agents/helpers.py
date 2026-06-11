@@ -39,6 +39,8 @@ def render_filter_value(operator: str, value) -> str:
         quoted = ", ".join(f"'{v}'" for v in vals)
         return f"IN ({quoted})"
     v = value if isinstance(value, str) else str(value)
+    if op in ("ILIKE", "LIKE"):
+        return f"~* '{v}'"
     return f"{operator} {v}"
 
 
@@ -433,7 +435,17 @@ def build_directive_section(state: dict) -> str:
             "  1. FILTER DIRECTIVE — resolved DB codes are authoritative; never substitute\n"
             "  2. SCHEMA DIRECTIVE — code-verified join clauses; copy ON clauses verbatim\n"
             "  3. EXECUTE INSTRUCTIONS — computation/CTE logic; preserve formulas\n"
-            "  4. CONTEXT — informational only; shapes intent but never overrides above"
+            "  4. CONTEXT — informational only; shapes intent but never overrides above\n"
+            "\n"
+            "ADDITIVE RULE (not a conflict): COMPUTED_FILTER and FILTER DIRECTIVE target different columns.\n"
+            "  FILTER DIRECTIVE = base table column filters (WHERE bank.name ~* 'JPM'). Apply always.\n"
+            "  COMPUTED_FILTER = predicates on derived values (WHERE running_total < 200000000). Apply always.\n"
+            "  Never substitute one for the other. Both appear in the final SQL simultaneously.\n"
+            "\n"
+            "TIME_FILTER UNIQUENESS: If EXECUTE INSTRUCTIONS contains multiple TIME_FILTER lines, use\n"
+            "  the FIRST one only. A second TIME_FILTER is a planner error — do not create a second\n"
+            "  date range filter from it. DUAL_GRAIN lines handle multi-grain sub-partitioning, not\n"
+            "  a second outer date window."
         )
     return "\n\n".join(parts) if parts else ""
 

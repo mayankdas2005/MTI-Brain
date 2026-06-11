@@ -29,7 +29,7 @@ graph TD;
 	anchor_resolver -.-> schema_enricher;
 	chart_agent -.-> __end__;
 	chart_agent -.-> compress;
-	compress --> __end__;
+	compress -.-> intent_assembler;
 	context_fetcher -.-> error_response;
 	context_fetcher -. &nbsp;anchor_resolver&nbsp; .-> tribal_retrieval;
 	data_quality_checker --> synthesis;

@@ -58,13 +58,12 @@ REASONING_DIRECTIVE_BRIEF = (
 REASONING_DIRECTIVE_SQL = (
     "You are generating SQL from a pre-computed specification. "
     "Anchor tables, measures, dimensions, and resolved filters are authoritative. "
-    "Pre-computed join clauses are valid when provided — use them verbatim. "
-    "For any UNRESOLVED JOIN PAIR, use the candidate columns listed to determine the correct join predicate. "
-    "Never invent table names, column names, or schema prefixes not listed in the schema reference. "
-    "Reason only about: (1) which columns each CTE must forward, "
+    "Join priority: pre-computed verbatim > unresolved pairs. "
+    "Then reason: (1) which columns each CTE must forward, "
     "(2) which columns are aggregated vs grouped, "
     "(3) what expression to write for each derived alias, "
     "(4) how to resolve any unresolved join pairs from the evidence provided. "
+    "Never invent table names, column names, or schema prefixes not listed in the schema reference. "
     "3–5 sentences max."
     + _REASONING_NO_LEAK
 )
@@ -79,101 +78,97 @@ REASONING_DIRECTIVE_REPAIR = (
 # ─── Node 0: Intake Classifier ───────────────────────────────────────────────
 
 INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
-    """You are the intake classifier for a financial analytics assistant.
+    """You classify financial analytics questions and extract entity tokens for graph search.
 
-SYSTEM SCOPE — this assistant can run SQL queries against data in these business domains:
+SYSTEM SCOPE — this assistant queries organizational financial data in these domains:
   {domain_list}
 
-Analytical question patterns this system answers:
-  {intent_list}
+CLASSIFY as "analytics" when the question asks for SPECIFIC ORGANIZATIONAL DATA — accounts, balances,
+transactions, exposures, payments, entities, forecasts, rates.
+CLASSIFY as "general_chat" when the question is a DEFINITION, EXPLANATION, or CAPABILITY QUESTION
+answerable without any database query.
 
----
+FOLLOW-UP DETECTION: If this question continues or refers to a prior analytics answer in the
+conversation — whether through referential words, topic continuation, or implicit context — set
+is_followup=true. Consider the full semantic meaning, not just surface keywords.
 
-SHORT AFFIRMATIVE RULE (highest priority — applies before any other rule):
-PRIOR TURN WAS ANALYTICS: {prior_was_analytics}
+TIEBREAKER: When ambiguous → "analytics". A failed query returns "no data found"; a misclassified
+data question silently disappears.
 
-When the user says only "yes", "sure", "go ahead", "please", "show me", "ok", or similar:
-  If {prior_was_analytics} == YES → the user is accepting a data follow-up → analytics
-  If {prior_was_analytics} == NO  → the user wants to continue a conversation → general_chat
-
----
-
-CLASSIFICATION:
-
-  analytics — route here when the question asks for:
-    - A specific metric, balance, volume, rate, exposure, or threshold for this organization
-    - A trend, comparison, breakdown, ranking, or forecast over time or entities
-    - A lookup of accounts, transactions, counterparties, fraud cases, or payments
-    - Any question whose answer requires a database query against org-specific financial data
-    - Questions using business shorthand: "DSO", "ACH returns", "FX exposure", "sweep activity",
-      "dormant accounts", "maturity ladder", "concentration", "idle cash", etc.
-
-  general_chat — route here when the question is:
-    - A definition or conceptual explanation that can be answered from textbook knowledge alone
-      with no org-specific data needed
-      e.g.  "What is treasury management?" → general_chat
-            "What is our treasury balance?" → analytics  ← "our" signals org-specific data
-    - A question about the assistant's own capabilities or identity
-    - Completely off-topic (not financial / not in SYSTEM SCOPE above)
-
-TIEBREAKER:
-  - If the question mentions any domain, entity, time period, or metric from SYSTEM SCOPE → analytics
-  - Default: analytics — it is better to attempt a query and return "no data found" than to
-    silently answer a data question with general text
-
----
-
-Conversation history:
+Conversation context:
 {conversation_context}
 
 User question: "{question}"
 
-Output only this JSON inside <output> tags — four fields:
-  "type": "analytics" or "general_chat"
-  "entity_tokens": list of ALL significant non-stopword terms from the question that would
-    appear as filter values or column/table names in the data. Capture:
-      - Named entities / counterparties: "JPMorgan", "Chase", "Visa"
-      - Account qualifiers: "operating", "custody", "treasury", "disbursement", "concentration"
-      - Balance / record type qualifiers: "closing", "opening", "ledger", "intraday", "settled"
-      - Transaction / instrument types: "wire", "ACH", "FX", "hedge", "sweep"
-      - Currency codes: "USD", "EUR", "GBP"
-      - Any other domain-specific noun or qualifier that is NOT a pure stopword
-    Rules: max 8 tokens. Exclude pure stopwords: "show", "me", "the", "our", "for", "last",
-      "days", "weeks", "months", "what", "how", "give", "list", "compare", "by", "and", "or".
-    Empty list [] if no such tokens.
-  "search_terms": list of up to 3 focused keyword phrases for Neo4j discovery.
-    Each phrase is 2-4 words, no stopwords, targeting a different aspect of the query:
-      item 0: entity + qualifier  e.g. "JPMorgan operating account"
-      item 1: measure or concept  e.g. "closing balance"
-      item 2: domain terms        e.g. "cash balance bank"
-    Do NOT include the full question. Empty list [] if query is general_chat.
-  "search_variants": list of corrected/expanded spellings of entity_tokens.
-    Expand financial abbreviations and fix typos. Max 8 items.
-    ACH → ["ACH", "automated clearing house"]
-    FX  → ["FX", "foreign exchange"]
-    DSO → ["DSO", "days sales outstanding"]
-    DPO → ["DPO", "days payable outstanding"]
-    DIO → ["DIO", "days inventory outstanding"]
-    MTM → ["MTM", "mark to market"]
-    RTP → ["RTP", "real-time payment"]
-    POS / point-of-sale → ["POS", "point of sale"]
-    Typos: "jpmorgen" → ["JPMorgan", "JP Morgan"]
-    If no correction/expansion needed, mirror entity_tokens. Empty [] if general_chat.
+<output>
+{{
+  "type": "analytics" | "general_chat",
+  "is_followup": false,
+  "complexity": "simple" | "complex" | "advanced",
+  "entity_tokens": ["named entities, qualifiers, instrument types, currency codes that appear as DB values — max 8"],
+  "search_terms": ["2-4 word phrases for table/column discovery — 3 for simple, up to 6 for complex/advanced"],
+  "search_variants": ["corrected or expanded forms of entity_tokens — max 8"],
+  "query_intent": ["GOAL: ...", "TIME: ...", "CONDITION: ...", "OUTPUT: ..."]
+}}
+</output>
 
-Examples:
-<output>{{"type": "analytics", "entity_tokens": ["JPMorgan", "operating", "closing", "balance", "account"], "search_terms": ["JPMorgan operating account", "closing balance", "cash balance bank"], "search_variants": ["JPMorgan", "JP Morgan", "operating", "closing"]}}</output>
-<output>{{"type": "analytics", "entity_tokens": ["ACH"], "search_terms": ["ACH receipts payment", "ACH volume", "payment receipts"], "search_variants": ["ACH", "automated clearing house"]}}</output>
-<output>{{"type": "analytics", "entity_tokens": ["wire transfers"], "search_terms": ["wire transfer payment", "wire disbursement", "payment outgoing"], "search_variants": ["wire transfer", "wire", "wire payment"]}}</output>
-<output>{{"type": "analytics", "entity_tokens": [], "search_terms": ["bank account currency", "account balance", "multi-currency bank"], "search_variants": []}}</output>
-<output>{{"type": "analytics", "entity_tokens": ["FX", "hedges"], "search_terms": ["FX hedge notional", "foreign exchange exposure", "derivative hedge"], "search_variants": ["FX", "foreign exchange", "hedge", "FX hedge"]}}</output>
-<output>{{"type": "analytics", "entity_tokens": ["DSO", "DPO", "DIO"], "search_terms": ["DSO DPO working capital", "days sales payable outstanding", "accounts receivable payable inventory"], "search_variants": ["DSO", "days sales outstanding", "DPO", "days payable outstanding", "DIO", "days inventory outstanding"]}}</output>
-<output>{{"type": "analytics", "entity_tokens": ["card sales", "acquirer", "settlements"], "search_terms": ["card sales settlement acquirer", "gross net reconciliation", "merchant acquirer deposit"], "search_variants": ["acquirer", "card sales", "settlement", "point of sale", "POS"]}}</output>
-<output>{{"type": "analytics", "entity_tokens": ["liquidity", "daily receipts"], "search_terms": ["liquidity stress test", "cash receipts forecast", "minimum threshold breach"], "search_variants": ["liquidity", "receipts", "daily receipts"]}}</output>
-<output>{{"type": "analytics", "entity_tokens": [], "search_terms": ["total liquidity available", "cash balance position", "available funds"], "search_variants": []}}</output>
-<output>{{"type": "analytics", "entity_tokens": [], "search_terms": ["cash forecast liquidity", "inflows outflows historical", "liquidity minimum threshold"], "search_variants": []}}</output>
-<output>{{"type": "analytics", "entity_tokens": ["FX", "interest rate"], "search_terms": ["treasury health liquidity debt", "FX interest rate exposure", "cash position risk"], "search_variants": ["FX", "foreign exchange", "interest rate", "rate exposure"]}}</output>
-<output>{{"type": "analytics", "entity_tokens": ["treasury position"], "search_terms": ["treasury position action", "treasury status", "cash liquidity"], "search_variants": ["treasury position"]}}</output>
-<output>{{"type": "general_chat", "entity_tokens": [], "search_terms": [], "search_variants": []}}</output>"""
+RULES:
+entity_tokens: named counterparties, qualifiers (operating, closing, custody), instrument types (ACH, wire, FX),
+  currency codes, named thresholds. Exclude verbs and stopwords. Max 8.
+search_terms: 3 for simple/kpi; up to 6 for complex/multi-domain/forecast. Cover different aspects:
+  entity+qualifier, measure/concept, domain terms, policy/threshold if present.
+search_variants: expand abbreviations (FX → "foreign exchange"), fix typos. Mirror entity_tokens if no expansion.
+complexity: "simple" = single metric, one table likely. "complex" = multi-domain or multi-join.
+  "advanced" = forecast, multi-horizon, derived computations, policy checks.
+is_followup: true when question semantically continues a prior analytics answer — even without explicit
+  referential words ("What about the FX exposure?" after a treasury briefing is a follow-up).
+query_intent: JSON array of typed lines describing WHAT the user wants to ACCOMPLISH.
+  Each line starts with one of: GOAL | TIME | COMPARISON | DOMAIN | CONDITION | SCENARIO | CONTEXT | OUTPUT
+  GOAL (required, 1 line): primary objective — what the user wants to produce or decide.
+  TIME: one line per distinct time reference. Include direction + duration + grain.
+    "TIME: Last 30 days, daily granularity"
+    "TIME: 4-week forward projection at weekly granularity"
+    TWO TIME lines for two-horizon queries — never collapse into one.
+  COMPARISON: what is compared vs what, and how.
+    "COMPARISON: Actual inflows vs forecast, by entity, 30-day window"
+    "COMPARISON: Seasonality from same calendar period last year"
+  DOMAIN: one line per domain for multi-domain synthesis. "DOMAIN: liquidity", "DOMAIN: FX exposure"
+  CONDITION: threshold, flag, or row filter — include value, operator, and type keyword.
+    type = Highlight when user says "flag/highlight/identify which/show which" (CASE WHEN — all rows kept)
+    type = Filter when user says "only/excluding/restrict to/where X is Y" (WHERE — rows removed)
+    "CONDITION: Highlight (flag — all rows visible) any week where projected liquidity < $200M"
+    "CONDITION: Filter — only accounts with balance > $1M"
+    "CONDITION: Highlight disbursements deviating > 3 standard deviations from vendor baseline"
+  SCENARIO: hypothetical assumption for stress tests — NOT a data filter.
+    "SCENARIO: Assume 20% drop in daily receipts for 30-day window"
+  CONTEXT: prior state, external reference data, or enterprise policy context needed.
+    "CONTEXT: Follow-up to prior treasury analysis — enterprise policy context needed"
+    "CONTEXT: External peer data needed — Walmart, Target, Home Depot, Kroger"
+  OUTPUT (required, 1 line): how the result will be used; what must be prominent.
+    "OUTPUT: Single KPI value for baseline"
+    "OUTPUT: Operational risk forecast — breach weeks must be prominent"
+  query_intent is ALWAYS fresh — never copied from a prior turn, even for follow-up queries.
+  For general_chat type: query_intent = []
+
+DEMO QUERY EXAMPLES:
+
+Q1 — "What is our total liquidity available today?"
+<output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["liquidity", "today"], "search_terms": ["total liquidity available", "cash balance position", "available funds"], "search_variants": ["liquidity", "available cash", "liquid assets", "cash position"], "query_intent": ["GOAL: Establish current total liquidity as a single baseline number", "TIME: Today — point-in-time, not a range", "OUTPUT: Single KPI value"]}}</output>
+
+Q2 — "Build a 4-week and 3-month cash forecast using historical inflows and outflows. Factor in seasonality from the same period last year, and highlight any week where projected liquidity falls below our $200M minimum threshold."
+<output>{{"type": "analytics", "is_followup": false, "complexity": "advanced", "entity_tokens": ["cash forecast", "inflows", "outflows", "seasonality", "$200M", "threshold"], "search_terms": ["cash flow forecast inflows outflows", "liquidity threshold minimum", "seasonality historical cash", "cash forecast projection", "minimum liquidity threshold breach", "weekly monthly cash flow"], "search_variants": ["cash forecast", "cash flow projection", "inflows", "receipts", "outflows", "disbursements", "liquidity threshold", "minimum balance"], "query_intent": ["GOAL: Build dual-horizon cash forecast for operational risk decision-making", "TIME: 4-week forward projection at weekly granularity", "TIME: 3-month forward projection at monthly granularity", "COMPARISON: Seasonality from same calendar period last year", "CONDITION: Highlight (flag — all rows visible) any week where projected running liquidity < $200M", "OUTPUT: Operational risk forecast — breach weeks must be prominent"]}}</output>
+
+Q3 — "Give me a one-page CFO briefing on treasury health: liquidity, debt, FX, interest rate exposure, and key risks."
+<output>{{"type": "analytics", "is_followup": false, "complexity": "complex", "entity_tokens": ["treasury health", "liquidity", "debt", "FX", "interest rate", "exposure", "risks"], "search_terms": ["treasury health liquidity position", "debt interest rate exposure", "FX foreign exchange risk", "treasury risk key metrics", "CFO briefing treasury", "liquidity debt FX summary"], "search_variants": ["treasury health", "treasury position", "FX", "foreign exchange", "interest rate", "rate exposure", "debt obligations", "key risks"], "query_intent": ["GOAL: Synthesize treasury health across domains into a one-page executive artifact", "DOMAIN: liquidity position", "DOMAIN: debt profile", "DOMAIN: FX exposure", "DOMAIN: interest rate exposure", "DOMAIN: key risks", "OUTPUT: CFO-ready briefing — domain summaries, not a single metric"]}}</output>
+
+Q4 — "Does this treasury position require action before the CFO briefing?" (follow-up to Q3)
+<output>{{"type": "analytics", "is_followup": true, "complexity": "complex", "entity_tokens": ["treasury position", "action", "CFO briefing"], "search_terms": ["treasury action required policy", "CFO briefing threshold", "treasury risk action"], "search_variants": ["treasury position", "action required", "CFO briefing", "policy threshold"], "query_intent": ["GOAL: Assess whether current treasury position requires action before the CFO briefing", "CONTEXT: Follow-up to prior treasury analysis — enterprise policy and commitment context needed", "OUTPUT: Decision recommendation (yes/no) with rationale — not a data summary"]}}</output>
+
+Other examples:
+<output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["JPMorgan", "operating", "balance"], "search_terms": ["JPMorgan operating account", "closing balance", "cash balance bank"], "search_variants": ["JPMorgan", "JP Morgan", "operating"], "query_intent": ["GOAL: Retrieve closing balance for JPMorgan operating account", "TIME: Last 7 days", "OUTPUT: Daily balance trend"]}}</output>
+<output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["ACH"], "search_terms": ["ACH receipts payment", "ACH volume", "payment receipts"], "search_variants": ["ACH", "automated clearing house"], "query_intent": ["GOAL: Total ACH receipts for the period", "TIME: Yesterday — point-in-time", "OUTPUT: Single total value"]}}</output>
+<output>{{"type": "analytics", "is_followup": false, "complexity": "complex", "entity_tokens": ["FX", "hedges"], "search_terms": ["FX hedge notional", "foreign exchange exposure", "derivative hedge", "FX hedge position"], "search_variants": ["FX", "foreign exchange", "hedge", "FX hedge"], "query_intent": ["GOAL: Report total notional of outstanding FX hedges by currency", "DOMAIN: FX hedging", "OUTPUT: Summary table by currency pair"]}}</output>
+<output>{{"type": "general_chat", "is_followup": false, "complexity": "simple", "entity_tokens": [], "search_terms": [], "search_variants": [], "query_intent": []}}</output>"""
 )
 
 # ─── Node G: General Chat ────────────────────────────────────────────────────
@@ -254,11 +249,8 @@ DIMENSION COMPLETENESS: Include ALL columns the user explicitly names as groupin
 If the user says "by A, B, and C", all three MUST appear in dimensions. Do not drop dimensions
 due to perceived redundancy. If the question mentions a time period alongside other breakdown
 dimensions, the date column also belongs in dimensions (see TEMPORAL DIMENSION RULE below).
-AGGREGATION — always set for kpi, table, time_series, comparison shapes. For ratio shape only: leave null — the SQL generator computes the ratio expression.
-  - User asks for total / sum / aggregate → SUM
-  - User asks for average / mean / typical → AVG
-  - User asks for count / how many → COUNT
-  - Ambiguous amount / value / balance column → SUM (safe default)
+AGGREGATION — set to null always. measure_specialist assigns aggregation functions (SUM/AVG/COUNT).
+  The intent_resolver identifies WHAT is measured, not HOW (aggregation function is not your job).
   - Ambiguous rate / ratio / percentage / yield column → AVG
   - result_shape = "ratio" → aggregation = null (exception to all rules above)
 
@@ -398,11 +390,11 @@ FORWARD-LOOKING TEMPORAL EXPRESSIONS — output as timeframe string exactly:
 
 IMPLICIT DIMENSION RULE — include context columns users expect to see in output:
 1. TIME AXIS: Follow TEMPORAL DIMENSION RULE above exactly.
-2. ENTITY CONTEXT: When filtering by a named entity (account, company, bank, counterparty),
-   include the entity identifier column in dimensions so users see WHICH entity each row covers.
-3. COMPARISON SHAPE: "match X against Y", "compare X to Y", "reconcile", "discrepancies" →
+2. COMPARISON SHAPE: "match X against Y", "compare X to Y", "reconcile", "discrepancies" →
    result_shape = "comparison". Include both X value and Y value as separate measures.
    Add a cte_steps entry describing the delta: "compute variance = X - Y".
+NOTE: Named entity filters (JPMorgan, USD) are RESTRICT signals — they go in filters[], NOT dimensions.
+  dimension_specialist handles PARTITION signals ("by bank", "per currency").
 
 ---
 
@@ -468,8 +460,7 @@ USER QUESTION: {question}
 
 {reasoning_directive}
 
-Output your reasoning in <reasoning>...</reasoning>, then the resolved intent in <output>...</output>,
-then the structured directive in <directive>...</directive> with <instructions> and <context> sub-sections.
+Output your reasoning in <reasoning>...</reasoning>, then the resolved intent in <output>...</output>.
 
 <reasoning>
 If PREVIOUS EXECUTION FAILURE section appears above: identify which table, column, or join caused
@@ -503,51 +494,7 @@ Leave both arrays empty [] when not explicitly requested.
   "limit": null,
   "order_by": []
 }}
-</output>
-<directive>
-After <output>, emit this directive with two sub-sections — written from your same reasoning context.
-
-<instructions>
-SQL execution requirements NOT already handled by the filter system. Be exhaustive.
-Use the CORRECT key for each type — these have different SQL effects:
-
-COMPUTATION — adds a derived column to a CTE (does NOT filter rows from output):
-    e.g. COMPUTATION: breach_flag = CASE WHEN cumulative_cash < liquidity_floor THEN TRUE ELSE FALSE END
-    e.g. COMPUTATION: headroom = cumulative_cash - liquidity_floor
-    e.g. COMPUTATION: weighted_avg_yield = SUM(yield*market_value)/NULLIF(SUM(market_value),0)
-
-COMPUTED_FILTER — adds WHERE clause to FILTER which rows appear in final output (removes rows):
-    e.g. COMPUTED_FILTER: WHERE cumulative_cash < 200000000  ("highlight breach weeks" → show ONLY those weeks)
-    e.g. COMPUTED_FILTER: WHERE bank_deposit_ts IS NULL  ("pending" → show only pending rows)
-    e.g. COMPUTED_FILTER: WHERE headroom < 0  (only negative headroom rows)
-    The derived column is computed in an upstream CTE; the WHERE is applied in the final SELECT.
-
-CTE PATTERNS — deduplication or latest-row selection (not a filter, a CTE structure):
-    e.g. BENCHMARK_RATE_FILTER: ROW_NUMBER() OVER (PARTITION BY benchmark_code ORDER BY rate_date DESC) = 1
-
-Do NOT include standard value filters (status='X', amount>N, type IN(...)) — those are
-resolved by the filter system and appear in FILTER DIRECTIVE. Do not duplicate them.
-Max 120 chars/line.
-</instructions>
-
-<context>
-Structural guidance and informational context (not SQL predicates).
-MACHINE-READABLE FIELDS — use these EXACT prefixes, one per line, so the pipeline can parse them:
-  JOIN_PATH: schema.table.col = schema.table.col
-  TIME_FILTER: schema.table.col
-  ANCHOR_TABLES: lpp.table_a, lpp.table_b
-  RESULT_SHAPE: kpi | table | ratio | time_series | comparison
-  PERIOD_GRAIN: day | week | month | quarter | year
-  SCHEMA_GAP_JOIN: lpp.table_a | lpp.table_b    (missing join key between two tables)
-  SCHEMA_GAP_TABLE: lpp.table_name             (table schema not provided)
-  SCHEMA_GAP_CONCEPT: plain English concept    (concept with no known table)
-  CONFIDENCE_NOTE: 0.XX  (<one-sentence reason>)
-  NO_EXTRA_FILTERS: <reason hallucination risk is high>
-Free-form notes (no prefix required): standard value filters, join workarounds, business logic.
-Any other judgment call, workaround, or business logic note the SQL generator needs.
-Max 120 chars/line.
-</context>
-</directive>"""
+</output>"""
 )
 
 # ─── Node C: Clarification ───────────────────────────────────────────────────
@@ -584,13 +531,15 @@ Known database codes (numbered; business meanings shown in parentheses when avai
 ---
 
 Rules:
-1. resolved_value MUST be the DB code (left side before the parenthesis), not the business label.
-2. When meanings are shown in parentheses, match the user's term to the label first, then return
-   the code on the left.
+1. Match the user's term to the MEANING LABEL first (what the code means, shown in parentheses).
+   If no meanings shown, match directly to the DB code.
+2. Extract the DB CODE (left side before the parenthesis) — not the label.
    Example: user said "Brazilian Real", list has  1. "BRL"  (Brazilian Real)  2. "USD"  (US Dollar)
    → resolved_value = "BRL"  (return the code, not "Brazilian Real")
-3. Copy the DB code character-for-character — same casing, same spacing. No modification.
-4. If no candidate fits: resolved_value = null
+3. Partial match rule: if the user's term is a substring or close variant of a meaning label, choose it.
+   Example: user said "real" → matches "Brazilian Real" → resolved_value = "BRL"
+4. Copy the DB code character-for-character — same casing, same spacing. No modification.
+5. If no candidate fits: resolved_value = null
 
 Example (no meanings): user said "monthly", list has  1. "MONTHLY"  2. "QUARTERLY"
 → <output>{{"resolved_value": "MONTHLY"}}</output>
@@ -774,11 +723,125 @@ fixed SQL here
 </sql>"""
 )
 
+REPAIR_SYNTAX_PROMPT = ChatPromptTemplate.from_template(
+    """You are fixing a Redshift SQL syntax or dialect error. SURGICAL FIX ONLY — change nothing except the reported error.
+
+REDSHIFT DIALECT RULES (most common sources of syntax errors):
+  ✗ INTERVAL '1 year'          → DATEADD(year, -1, date)
+  ✗ date + INTERVAL '3 months' → DATEADD(month, 3, date)
+  ✗ date_add(unit, n, date)    → DATEADD(unit, n, date)  [MySQL, not Redshift]
+  ✗ DATEADD('day', n, date)    → DATEADD(day, n, date)  [datepart must be unquoted keyword]
+  ✗ CAST(bool_col AS VARCHAR)  → CASE WHEN col THEN 'true' ELSE 'false' END
+  ✗ EXISTS/IN subquery on non-anchor tables → remove entirely (eliminates all rows)
+  ✗ ORDER BY expression not in SELECT list (with UNION ALL) → alias it in every branch
+  ✗ ORDER BY position integer outside SELECT list range → use column alias instead
+
+FILTER VALUES ARE DB CODES: values in WHERE clauses are exact Redshift strings already resolved.
+  Never translate, humanize, or substitute them.
+
+STALE-DATA FALLBACK: Any OR MAX branch in the original SQL MUST be preserved:
+  col >= DATEADD(day,-60,CURRENT_DATE) OR col >= DATEADD(day,-60,(SELECT MAX(col)::TIMESTAMP FROM tbl))
+  Apply the same transformation to BOTH sides of the OR.
+
+ERROR TO FIX: {error_message}
+BROKEN SQL: {original_sql}
+{prior_attempts_detail}
+{schema_reference}
+
+{reasoning_directive}
+<reasoning>Identify exact error. State the one-line fix. If prior attempts exist: why each failed and how this differs.</reasoning>
+<sql>fixed SQL here</sql>"""
+)
+
+REPAIR_STRUCTURE_PROMPT = ChatPromptTemplate.from_template(
+    """You are fixing a Redshift SQL structural error. SURGICAL FIX ONLY — change nothing except the reported error.
+
+CTE EXPORT ERROR — the only fix pattern:
+  Error: "CTE 'X' references column 'col' not exported by upstream CTE 'Y'"
+  Fix:  1. Find CTE Y in the SQL.
+        2. Add 'col' (or the expression producing it) to Y's SELECT list.
+        3. Change NOTHING else — not CTE names, not joins, not aggregation.
+
+COLUMN SCOPE ERROR (42702 "column reference is ambiguous"):
+  Fix:  1. Identify every FROM/JOIN alias in scope at the error location.
+        2. Qualify the bare column with the correct alias from that scope only.
+        3. Never use an alias not present in that CTE's FROM/JOIN.
+  ✗ WRONG: CTE reads FROM f, fva_by_entity → qualifying with api.company_ref (api not in scope)
+  ✓ RIGHT: CTE reads FROM f, fva_by_entity → qualify as f.company_ref or fva_by_entity.company_ref
+
+JOIN COLUMN ERROR — column does not exist in table:
+  Fix:  1. Check CANDIDATE JOIN PATHS for a pre-validated alternative ON clause.
+        2. If not found: check PRIMARY COLUMNS in SCHEMA REFERENCE.
+        3. Use only columns explicitly listed there.
+
+Do NOT change query semantics, CTE names, aggregation logic, or filter values.
+Filter values are already-resolved DB codes — never substitute them.
+
+ERROR TO FIX: {error_message}
+BROKEN SQL: {original_sql}
+{prior_attempts_detail}
+{candidate_paths_section}
+{schema_reference}
+{semantic_ir_text}
+
+{reasoning_directive}
+<reasoning>Identify exact error type (export/scope/join). State which CTE needs the fix. Confirm what changes and what stays the same.</reasoning>
+<sql>fixed SQL here</sql>"""
+)
+
+# ─── Performance repair (EXPLAIN-driven rewrite) ─────────────────────────────
+
+REPAIR_PERFORMANCE_PROMPT = ChatPromptTemplate.from_template(
+    """You are rewriting a Redshift SQL for performance. DO NOT change query semantics or output columns.
+
+PROBLEM FLAGS: {explain_flags}
+EXPLAIN OUTPUT (first 3000 chars):
+{explain_output}
+
+REWRITE STRATEGY:
+
+CROSS_JOIN_BROADCAST or LARGE_TABLE_SCAN (entity filters applied after full-table scan):
+  1. matching_entities CTE: resolve entity/hierarchy filters FIRST — join entity hierarchy tables
+     and apply all entity WHERE filters here. This CTE produces a small result (typically 1-10 rows).
+  2. fact_window CTE: filter the fact table using matching_entities + 365-day date pre-filter.
+     Use: WHERE fact.fk_col IN (SELECT key_col FROM matching_entities)
+          AND fact.date_col >= DATEADD(DAY, -365, CURRENT_DATE)
+     This narrows the Seq Scan from a full-table scan to hundreds of rows.
+  3. bounds CTE: compute MAX(date) from fact_window — NOT from the raw fact table.
+  4. base_data CTE: apply the exact date window from bounds.
+
+DIST_BOTH (distribution key mismatch — join columns are not DISTKEYs):
+  Add a filter before the join to reduce redistributed data volume.
+  If joining on non-DISTKEY columns is unavoidable, pre-aggregate one side before joining.
+
+CARTESIAN_RISK: Apply the same CROSS_JOIN_BROADCAST rewrite — pre-filter reduces data volume
+  so any subsequent CROSS JOIN with a scalar CTE is safe (1-row broadcast).
+
+ORIGINAL SQL:
+{original_sql}
+
+Rules:
+- Preserve all filter values, join ON conditions, output columns, and OR MAX fallback patterns exactly.
+- Change only CTE ordering and filter pushdown structure.
+- Do NOT rename tables, change aggregation functions, or alter WHERE predicate semantics.
+
+<reasoning>Identify the primary flag. State which CTE restructuring resolves it. List exactly what changes and what stays the same.</reasoning>
+<sql>rewritten SQL here</sql>"""
+)
+
 # ─── CTE Column Planner (fast pre-pass before SQL generation) ─────────────────
 
 CTE_COLUMN_PLANNER_PROMPT = ChatPromptTemplate.from_template(
     """You are a CTE structural planner. Do NOT write SQL.
 Output a complete CTE contract that the SQL generator must follow exactly.
+
+PERFORMANCE REQUIREMENT (when present in query_blueprint):
+The CTE structure specified under "PERFORMANCE REQUIREMENT" is NAME-LOCKED and SOURCE-LOCKED.
+Do NOT:
+  - Rename the prescribed CTEs (matching_X, X_window, X_max, base_data)
+  - Change reads_from to use the raw fact table instead of the windowed CTE
+  - Move entity filters out of the FILTER CTE into base_data WHERE
+Treat the prescribed structure as your first-pass contract and fill in column exports only.
 
 USER QUESTION: {question}
 
@@ -998,11 +1061,16 @@ ANTI-PATTERNS (do not repeat these):
 
 {candidate_join_paths_section}
 
-CONFLICT RESOLUTION — when DIRECTIVES above contradict each other, apply this priority (highest to lowest):
-  1. FILTER DIRECTIVE (resolved DB values — authoritative; do not alter any value)
-  2. SCHEMA DIRECTIVE (code-verified join clauses — use verbatim per Rule 1a)
-  3. EXECUTE INSTRUCTIONS (computation logic — follow unless contradicted by 1 or 2 above)
-  4. CONTEXT (informational guidance only — never overrides 1, 2, or 3)
+AUTHORITY HIERARCHY (highest to lowest — no exceptions):
+  1. FILTER DIRECTIVE: exact WHERE/HAVING conditions — copy verbatim, change nothing
+  2. PRE-COMPUTED JOIN CHAIN (or SCHEMA DIRECTIVE JOIN_CHAIN if present): copy FROM/JOIN verbatim
+  3. CTE CONTRACT (if present): names, exports, source constraints are binding
+  4. EXECUTE INSTRUCTIONS: derived expressions and COMPUTED_FILTER predicates
+  5. QUERY SPECIFICATION: SELECT columns, GROUP BY, LIMIT, ORDER BY
+  6. Your judgment: only for anything not covered by 1-5
+
+If any input from 1-5 conflicts with a lower-numbered source: the higher-numbered source wins.
+Never invent a JOIN, filter, or column not traceable to a source in 1-5.
 
 RULES:
 1. PRE-COMPUTED JOIN CHAIN (or BASE TABLE for single-table queries) gives the exact FROM + JOIN
@@ -1025,6 +1093,13 @@ RULES:
                           "lpp.bank_branch.code = lpp.bank_account.branch_ref"]:
      JOIN lpp.bank_branch bb ON <prior_table>.branch_ref = bb.code
      JOIN lpp.bank b ON bb.bank_ref = b.code
+1b2. DISTKEY JOIN PREFERENCE (Redshift): When column metadata shows `[distkey]` on a column,
+    prefer using that column in JOIN ON conditions — joins on DISTKEY columns avoid DS_DIST_BOTH
+    data redistribution, which is a major performance anti-pattern in Redshift.
+    If the confirmed ON clause already uses a [distkey] column, no change needed.
+    If the confirmed ON clause does NOT use a [distkey] column and an alternative join path exists
+    that does use a [distkey] column, prefer the [distkey] path (override 1a only when a validated
+    alternative with [distkey] exists in AVAILABLE JOINS — never invent a join column).
 1c. LOW-CARDINALITY JOIN KEY: When ⚠ LOW-CARDINALITY JOIN KEY appears for a join in the
     PRE-COMPUTED JOIN CHAIN, you MUST add one or more of the listed narrowing candidate columns
     to that ON clause (e.g. AND t.company_ref = u.company_ref). Never remove tables or existing
@@ -1090,19 +1165,11 @@ RULES:
    Never apply DATE_TRUNC to either side of a snapshot date filter.
    This rule applies to all date filters including those from COMPUTED_FILTER directives — the
    source does NOT exempt a date filter from the OR MAX rule.
-3. FILTER TYPE ENFORCEMENT — check SCHEMA REFERENCE data_type BEFORE writing any predicate.
-   This rule OVERRIDES the [exact] tag when the value conflicts with the column's data_type:
-   • boolean / bool → value MUST be SQL literal TRUE or FALSE (unquoted, never quoted).
-     Mapping: affirmative terms (includes, actual, yes, true, 1, active, on) → TRUE
-              negative terms (excludes, estimated, no, false, 0, inactive, off, missing, non) → FALSE
-     Example: includes_actual = 'Includes Actual'  →  includes_actual = TRUE
-   • integer / bigint / smallint → value MUST be a plain integer literal (strip $, commas, spaces).
-     Example: amount = '$1,000'  →  amount = 1000
-   • numeric / decimal / float / double precision → numeric literal, allow decimal point (strip $, commas).
-     Example: rate = '3.5%'  →  rate = 3.5
-   • varchar / text with [enum: ...] in SCHEMA REFERENCE → value MUST exactly match one of the enum codes.
-     If QUERY SPECIFICATION has a label/description, map it to the nearest enum code.
-3b. FILTER SYNTAX (3 tiers):
+3. FILTER VALUES ARE ALREADY RESOLVED: Every filter value in FILTER DIRECTIVE is the exact DB string.
+   Do NOT translate, humanize, or re-interpret these values. Operator is already set — copy it.
+   String filters use ~* syntax — copy verbatim from FILTER DIRECTIVE.
+   Boolean columns: TRUE/FALSE (not 'true'/'false'). Numeric: integer literal (no $, commas).
+3b. FILTER SYNTAX (3 tiers — when operator not already given by FILTER DIRECTIVE):
    a. Column marked [enum: ...] in SCHEMA REFERENCE → EXACT match only:
         col = 'CODE'   or   col IN ('C1', 'C2')
       Map user's phrasing to nearest code in list. ILIKE is FORBIDDEN on enum columns.
@@ -1193,9 +1260,7 @@ RULES:
     WRONG (CTE ON clause):   ON ip.company_ref = company_ref
     CORRECT (CTE ON clause): ON ip.company_ref = cr_valid.company_ref
     If the CTE CONTRACT has a `join_on:` line, copy it verbatim — it already carries correct aliases.
-15. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
-    every clause. These override your default choices for formatting, ordering, and style.
-16. CTE CONTRACT (if the section appears above): three binding constraints.
+15. CTE CONTRACT (if the section appears above): three binding constraints.
     A. NAME LOCK — use the exact CTE names from the contract. Do not rename, merge, split, or add CTEs.
        The validator checks CTE names against the contract. A renamed CTE is a validation failure.
     B. EXPORT CONTRACT — each CTE's SELECT must contain every alias listed in its exports block.
@@ -1364,6 +1429,105 @@ SELF-CHECK before emitting insights:
 # Does NOT receive raw data — only structured insights from Phase 1.
 # Hallucination is structurally prevented: can only use what Phase 1 extracted.
 
+# M18: persona-specific structure sections — sent individually so Sonnet only sees
+# the relevant persona block (not all 4 simultaneously).
+_SYNTHESIS_PERSONA_STRUCTURES: dict[str, str] = {
+    "analyst": """PERSONA STRUCTURE (### headers, no emojis, blank line between every section):
+
+━━━ ANALYST ━━━
+Sections: ### Key Findings | ### Signal in the Noise | ### Data Gaps | ### Next Analysis
+
+  ### Key Findings
+  Open with a markdown table showing every key column and value.
+  Below the table: 2-3 bullets interpreting the aggregate picture — not describing individual rows.
+
+  ### Signal in the Noise
+  What is abnormal, at the extreme, or structurally unexpected in this data?
+  Each bullet: **[What]** — [magnitude vs normal]; [why it matters operationally].
+  If nothing is abnormal: "All values are within expected range for this dataset."
+
+  ### Data Gaps
+  Which columns are NULL, incomplete, or absent — and what decision does each gap block?
+  Each bullet: **[Missing field]** — [what analysis or action it blocks].
+  Skip this section if data is complete.
+
+  ### Next Analysis
+  3 short questions (≤12 words each) the analyst would naturally ask next.
+  Each must reference a specific entity, number, or pattern from the result.
+  Phrasing: "How does [X] compare to [Y]?", "Which [entity] is driving [metric]?",
+  "What caused [specific anomaly]?" — spoken questions to a trusted data advisor, not task instructions.""",
+
+    "manager": """PERSONA STRUCTURE (### headers, no emojis, blank line between every section):
+
+━━━ MANAGER ━━━
+Sections: ### Situation | ### What Needs Attention | ### Actions | ### Watch List
+
+  ### Situation
+  2-3 sentences: what is happening, at what scale, in what timeframe.
+  Ground every sentence in a number or entity from the result.
+
+  ### What Needs Attention
+  Up to 3-5 issues (subject to DEPTH CALIBRATION above — 1-2 for single_value data).
+  Each: **[Issue]** — [fact + **bold number**]; [operational consequence if not addressed];
+  [urgency signal — deadline, threshold, or deteriorating trend].
+  Most urgent issue first.
+
+  ### Actions
+  Numbered. Each = imperative + owner + deadline + expected outcome.
+  1. [Do X] — [treasury ops / finance / etc.] by [timeframe]; expected: [specific measurable result].
+  "If deferred:" one line on what gets worse and when.
+
+  ### Watch List
+  2-3 metrics to monitor over next 30/60/90 days. Each = metric + threshold that triggers escalation.""",
+
+    "director": """PERSONA STRUCTURE (### headers, no emojis, blank line between every section):
+
+━━━ DIRECTOR ━━━
+Sections: ### Strategic Finding | ### Risk & Exposure | ### Recommendations | ### Scenario Analysis
+
+  ### Strategic Finding
+  **One bold sentence: the strategic implication — not the data point.**
+  BAD: "5 accounts are closed with zero balance."
+  GOOD: "**5 GR_VE accounts closed September 2024 remain legally open in the system** — every month
+         of delay extends regulatory dormancy risk and generates avoidable overhead."
+
+  ### Risk & Exposure
+  3 bullets. Each: **[Risk]** — [magnitude or range]; [trigger or deadline]; [what confirms or dismisses it].
+
+  ### Recommendations
+  3 numbered. Each = action + functional owner + deadline + strategic outcome.
+  Underneath: "If deferred: [specific consequence — cost, deadline, regulatory trigger]."
+
+  ### Scenario Analysis
+  *(write this section only if ≥ 2 findings support distinct scenarios)*
+  **If resolved:** [what improves, estimated magnitude, by when]
+  **If ignored:** [what worsens, at what point, what event triggers escalation]
+  Ground both in actual values from the result. If exact figures unavailable, state the estimate and assumption.""",
+
+    "executive": """PERSONA STRUCTURE (### headers, no emojis, blank line between every section):
+
+━━━ EXECUTIVE ━━━
+Sections: ### Verdict | ### What This Means | ### Decision
+
+  ### Verdict
+  **One bold sentence. The most important finding. One key number. One implication.**
+  No additional prose on this line or directly below it.
+  Must answer: what happened, and why does it matter to this business right now?
+
+  ### What This Means
+  2-3 bullets (as many as the insights support) — they build the business case for the Decision.
+  Structure: context → risk → what-if (or: what happened → what's at stake → path forward).
+  Each: **[Label]** — [grounded fact + **bold number**]; [business implication]; [urgency or cost of inaction].
+  For single_value depth: 1-2 bullets is correct. Do not pad to 3 if the data doesn't support it.
+
+  ### Decision
+  **[Bold imperative — specific action, named functional owner, time-bound.]**
+  If actioned: [expected business outcome in plain terms].
+  *(if insights support no specific action: "Confirm whether [most material finding] is ongoing — Group Treasury, this week.")*
+  If deferred: [specific consequence — cost, risk, regulatory deadline — grounded in the data].""",
+}
+
+
 SYNTHESIS_PROMPT = ChatPromptTemplate.from_template(
     """You are a senior financial analyst writing a briefing for a {persona}.
 Write ONLY from the PRE-EXTRACTED INSIGHTS below. Do not add facts, numbers, or entities not present in them.
@@ -1450,7 +1614,10 @@ DEPTH CALIBRATION — match answer depth to data richness:
 
   RULE: A section with fewer than 2 grounded, non-repetitive points must be dropped entirely.
   A tight 2-section answer is better than a padded 4-section answer with thin content.
-  The persona structure is a CEILING (what you can use), not a floor (what you must use).
+  CEILING: ≥2 grounded findings required to write any section — EXCEPT Verdict and Decision.
+  FLOOR: Verdict and Decision always appear. For single_value or few-finding responses,
+  derive from the single most material finding — one finding is sufficient for these two sections.
+  All other sections (Scenario Analysis, Risk & Exposure, Strategic Finding, etc.) require ≥2 findings.
 
 ---
 
@@ -1469,91 +1636,7 @@ NUMBERS RULE:
 
 ---
 
-PERSONA STRUCTURES (### headers, no emojis, blank line between every section):
-
-━━━ ANALYST ━━━
-Sections: ### Key Findings | ### Signal in the Noise | ### Data Gaps | ### Next Analysis
-
-  ### Key Findings
-  Open with a markdown table showing every key column and value.
-  Below the table: 2-3 bullets interpreting the aggregate picture — not describing individual rows.
-
-  ### Signal in the Noise
-  What is abnormal, at the extreme, or structurally unexpected in this data?
-  Each bullet: **[What]** — [magnitude vs normal]; [why it matters operationally].
-  If nothing is abnormal: "All values are within expected range for this dataset."
-
-  ### Data Gaps
-  Which columns are NULL, incomplete, or absent — and what decision does each gap block?
-  Each bullet: **[Missing field]** — [what analysis or action it blocks].
-  Skip this section if data is complete.
-
-  ### Next Analysis
-  3 short questions (≤12 words each) the analyst would naturally ask next.
-  Each must reference a specific entity, number, or pattern from the result.
-  Phrasing: "How does [X] compare to [Y]?", "Which [entity] is driving [metric]?",
-  "What caused [specific anomaly]?" — spoken questions to a trusted data advisor, not task instructions.
-
-━━━ MANAGER ━━━
-Sections: ### Situation | ### What Needs Attention | ### Actions | ### Watch List
-
-  ### Situation
-  2-3 sentences: what is happening, at what scale, in what timeframe.
-  Ground every sentence in a number or entity from the result.
-
-  ### What Needs Attention
-  Up to 3-5 issues (subject to DEPTH CALIBRATION above — 1-2 for single_value data).
-  Each: **[Issue]** — [fact + **bold number**]; [operational consequence if not addressed];
-  [urgency signal — deadline, threshold, or deteriorating trend].
-  Most urgent issue first.
-
-  ### Actions
-  Numbered. Each = imperative + owner + deadline + expected outcome.
-  1. [Do X] — [treasury ops / finance / etc.] by [timeframe]; expected: [specific measurable result].
-  "If deferred:" one line on what gets worse and when.
-
-  ### Watch List
-  2-3 metrics to monitor over next 30/60/90 days. Each = metric + threshold that triggers escalation.
-
-━━━ DIRECTOR ━━━
-Sections: ### Strategic Finding | ### Risk & Exposure | ### Recommendations | ### Scenario Analysis
-
-  ### Strategic Finding
-  **One bold sentence: the strategic implication — not the data point.**
-  BAD: "5 accounts are closed with zero balance."
-  GOOD: "**5 GR_VE accounts closed September 2024 remain legally open in the system** — every month
-         of delay extends regulatory dormancy risk and generates avoidable overhead."
-
-  ### Risk & Exposure
-  3 bullets. Each: **[Risk]** — [magnitude or range]; [trigger or deadline]; [what confirms or dismisses it].
-
-  ### Recommendations
-  3 numbered. Each = action + functional owner + deadline + strategic outcome.
-  Underneath: "If deferred: [specific consequence — cost, deadline, regulatory trigger]."
-
-  ### Scenario Analysis  ← MANDATORY — always write this section
-  **If resolved:** [what improves, estimated magnitude, by when]
-  **If ignored:** [what worsens, at what point, what event triggers escalation]
-  Ground both in actual values from the result. If exact figures unavailable, state the estimate and assumption.
-
-━━━ EXECUTIVE ━━━
-Sections: ### Verdict | ### What This Means | ### Decision
-
-  ### Verdict
-  **One bold sentence. The most important finding. One key number. One implication.**
-  No additional prose on this line or directly below it.
-  Must answer: what happened, and why does it matter to this business right now?
-
-  ### What This Means
-  2-3 bullets (as many as the insights support) — they build the business case for the Decision.
-  Structure: context → risk → what-if (or: what happened → what's at stake → path forward).
-  Each: **[Label]** — [grounded fact + **bold number**]; [business implication]; [urgency or cost of inaction].
-  For single_value depth: 1-2 bullets is correct. Do not pad to 3 if the data doesn't support it.
-
-  ### Decision  ← MANDATORY — never leave this blank
-  **[Bold imperative — specific action, named functional owner, time-bound.]**
-  If actioned: [expected business outcome in plain terms].
-  If deferred: [specific consequence — cost, risk, regulatory deadline — grounded in the data].
+{persona_structure}
 
 ---
 
@@ -1580,6 +1663,8 @@ LANGUAGE RULES:
 {tribal_facts_section}
 
 {low_confidence_section}
+
+{query_intent_section}
 
 ---
 
@@ -1797,7 +1882,8 @@ STEP 2 — PICK THE CHART TYPE
   If the question contains ANY of: "trend", "over [N] days/weeks/months/years",
   "trailing [N]", "over time", "history", "daily/weekly/monthly [metric]" →
   chart MUST be one of: line / multi_line / area / stacked_area / dual_axis.
-  NO EXCEPTIONS. grouped_bar, stacked_bar, bar, kpi_card are FORBIDDEN when TREND OVERRIDE fires.
+  grouped_bar, stacked_bar, kpi_card are FORBIDDEN when TREND OVERRIDE fires.
+  EXCEPTION: when date Distinct ≤ 3, use bar even for trend questions (a 2–3 point line is misleading).
 
   USER CHART PREFERENCES (if section appears above): override all patterns above.
 
@@ -2150,6 +2236,13 @@ Output format:
   "diagnosis_hint":      "<one sentence: most likely reason for zero rows>"
 }}
 
+NOTE: When the SQL uses an early-filter CTE structure (contains CTEs named matching_*,
+*_window, *_max, base_data), the staged probe runs BEFORE this LLM call:
+  ENTITY_FILTER_NO_MATCH — entity filter CTE returns 0 rows (entity not in system)
+  DATE_RANGE_EMPTY       — entity matches, but no fact rows in the last 365 days
+  WINDOW_TOO_TIGHT       — data exists in broad window; exact date window is too narrow
+These result types are returned directly without an LLM call and without the JSON format above.
+
 USER QUESTION: {question}
 ANCHOR TABLES: {anchor_tables}
 
@@ -2223,13 +2316,17 @@ Example intent patterns:
 User question: {question}
 
 Rules:
-- Select 2-4 tables maximum
+- Minimum 2 tables. For multi-domain queries (≥3 DOMAIN lines in the question, e.g. liquidity + debt + FX): 1 table per named domain — no fixed maximum; incomplete domain coverage is worse than a larger anchor set. (See MULTI-DOMAIN exception below.)
 - Tables marked [⚑ business-term] MUST be included — the user named concepts that
   live in those tables
 - If any business term shows [tables: ...], include those tables — they are confirmed
   mappings of the user's concept to specific database tables
-- Pick remaining tables based on description, grain, and business domain
+- For each table beyond the top 2, name one output column or join key that requires it.
+  If you cannot name one, remove the table.
 - result_shape must be one of: kpi | table | ratio | time_series | comparison
+- MULTI-DOMAIN EXCEPTION: when the question lists 3+ named domains (liquidity, debt, FX, interest
+  rate, etc.) select the PRIMARY anchor table for EACH domain — even if total count exceeds 5.
+  Incomplete domain coverage is worse than a larger anchor set for multi-domain synthesis queries.
 
 ----
 
@@ -2238,12 +2335,12 @@ Rules:
 Output your reasoning in <reasoning>...</reasoning>, then the JSON in <output>...</output>.
 
 <reasoning>
-State which tables match the question and why — one sentence per table.
+For each table: name it, then name the specific output column or join key that requires it.
 </reasoning>
 SELF-CHECK before outputting anchor_tables:
-1. TABLE JUSTIFICATION: For each table beyond your top 2, name the specific output column or confirmed join key that requires it. If you cannot name one, remove the table.
-2. RESULT SHAPE: Match the question verb — "compare"/"vs" → comparison; "trend"/"over time" → time_series; "total"/"how much" with no breakdown → single_value; "rate"/"ratio" → comparison or kpi; default → table.
-3. COUNT CHECK: More than 5 anchor tables is almost always wrong. If you have >5, remove the weakest until every remaining one is justified.
+1. TABLE JUSTIFICATION: For each table, name one output column or confirmed join key. If you cannot name one, remove the table.
+2. RESULT SHAPE: Match the question verb — "compare"/"vs" → comparison; "trend"/"over time" → time_series; "total"/"how much" with no breakdown → kpi; "rate"/"ratio" → ratio or kpi; default → table.
+3. COUNT CHECK: More than 5 anchor tables is almost always wrong — EXCEPT for multi-domain synthesis queries (3+ named domains). For single-domain queries: if >5, remove the weakest until every remaining one is justified by rule 1.
 
 <output>
 {{
@@ -2256,8 +2353,11 @@ SELF-CHECK before outputting anchor_tables:
 
 
 MEASURE_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
-    """You are a metric extractor. Your ONLY job is to identify which columns to aggregate
-to answer the user's question. You do NOT select filters, dimensions, or write directives.
+    """You identify which columns to AGGREGATE to answer the user's question.
+
+A MEASURE is a numeric column the user wants SUMMARIZED: total, average, count, min, max.
+A LIST QUERY has NO measures — the user wants individual rows, not aggregated values.
+  Signal for lists: "show me", "list all", "find", "display" WITHOUT "total/sum/average/count".
 
 These are the MEASURABLE columns available (numeric/amount types):
 {measurable_columns_section}
@@ -2269,28 +2369,23 @@ Intent summary: {intent_summary}
 {query_plan_section}
 {concept_mappings_section}
 {entity_tokens_section}
-Rules:
-- EXPLICIT METRICS ONLY: Only output measures for columns the user explicitly asked to sum,
-  count, average, or total.
-- LIST/DETAIL QUERIES: If the user asks to list, show, retrieve, display, or find individual
-  records (e.g. "list all transfers", "show transactions", "what are the wire payments",
-  "find invoices"), output measures: [] and explain in measure_directive why no aggregation
-  is needed. Amount thresholds ("over 1 million") are FILTERS, not measures — they go in
-  threshold_specs (handled by filter_specialist), NOT in measures.
-- Select only columns that can be meaningfully aggregated (SUM, AVG, COUNT) to answer the question
-- Aggregation choices: SUM (totals/amounts), AVG (rates/ratios), COUNT (counts)
-- For ratio result_shape: set aggregation to null — the SQL generator computes the ratio
-- alias: use a clear business name (e.g. "total_principal" not "amount")
 
-----
+AGGREGATION:
+  SUM   → totals, amounts, values, balances
+  AVG   → rates, ratios, averages, yields
+  COUNT → counts, volumes, how-many
+  null  → ratio result_shape only (SQL generator computes the division)
+
+For DERIVED measures (net flow, ratio, running total): use derived_measures[].
+Use default_aggregation hint when provided and user did not specify differently.
+alias: clear business name (e.g. "total_balance" not "amount").
 
 {reasoning_directive}
 
-Output your reasoning in <reasoning>...</reasoning>, then the JSON in <output>...</output>.
-
 <reasoning>
 State which columns match the requested metrics and what aggregation applies — one sentence per measure.
-If this is a list/detail query, explicitly state "no aggregation needed — listing request".
+For list queries: state "no aggregation — user wants individual records."
+For aggregation queries with empty measures: name the metric and why no column matches.
 </reasoning>
 <output>
 {{
@@ -2300,23 +2395,40 @@ If this is a list/detail query, explicitly state "no aggregation needed — list
   "derived_measures": [
     {{"alias": "net_cash_flow", "expression": "SUM(inflows) - SUM(outflows)", "aggregation": "NONE"}}
   ],
-  "measure_directive": "one line summarizing what is being measured, or 'no aggregation — listing request'"
+  "measure_directive": "what is being measured | 'no aggregation — listing request' | 'MISSING: user asked for X but no matching column found'"
 }}
 </output>
-Use derived_measures when the user asks to compute an expression combining multiple columns
-(net flow, ratio, running total). Leave as [] if only direct column aggregations are needed.
-For list/detail queries, output measures: [] and derived_measures: [].
 
-SELF-CHECK before outputting:
-1. EMPTY MEASURES GATE: If the question is NOT a list/detail query and your measures = [], explain why in measure_directive. Name what the user asked for and why the schema can't supply it directly. A silent empty return for an analytical question is always wrong.
-2. EXPLICIT METRIC CHECK: If the user requested a specific metric by name or formula (rate, total, average, percentage, ratio), it must appear in measures, derived_measures, or be explained in measure_directive as a schema gap.
-3. AGGREGATION MATCH: SUM for totals/amounts; AVG for rates/averages; COUNT for counts; derived_measures (numerator/denominator) for ratios/percentages."""
+Examples (mentally validate before emitting):
+"total cash balances" → measures=[{{balance, SUM, alias: total_balance}}]
+"how many accounts" → measures=[{{account_id, COUNT, alias: account_count}}]
+"list all wire transfers" → measures=[], derived_measures=[], measure_directive="no aggregation — listing request"
+"net cash flow" → derived_measures=[{{net_cash_flow, SUM(inflows)-SUM(outflows)}}]
+"average FX rate" → measures=[{{rate, AVG, alias: avg_rate}}]
+
+DEMO QUERIES:
+Q1 "total liquidity available today" → measures=[{{liquidity/available_balance, SUM, alias: total_liquidity}}]
+Q2 "inflows and outflows forecast" → measures=[{{inflow_amount, SUM}}, {{outflow_amount, SUM}}], derived_measures=[{{net_cash_flow, SUM(inflows)-SUM(outflows)}}]
+Q3 "CFO briefing: liquidity, debt, FX, interest rate exposure" → measures per domain (total_liquidity, total_debt, fx_exposure, rate_exposure)
+Q4 "does this treasury position require action" → measures=[] (judgment query, no aggregation)"""
 )
 
 
 FILTER_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
-    """You are a filter extractor. Your ONLY job is to identify what conditions to apply
-to answer the user's question. You do NOT select measures, dimensions, or write directives.
+    """You identify FILTER CONDITIONS from the user's question.
+
+FILTER — restricts which rows enter the result (WHERE clause).
+  Signal: "only X", "for X", "at X", "where X is Y", named entities, currency codes.
+  Includes numeric thresholds that EXCLUDE rows: "only accounts over $1M" → WHERE balance > 1000000.
+
+THRESHOLD — flags rows without removing them (CASE WHEN or HAVING flag).
+  Signal: "flag", "highlight", "identify which X exceed Y", "mark accounts below Z".
+  Goes in threshold_specs[]. Does NOT reduce row count.
+
+QUALIFIER pattern — adjective attached to a metric noun: "closing balance", "actual exposure".
+  Look for a column in anchor tables whose description or sample_values encodes that qualifier.
+  If found: add filter with raw_user_value = the qualifier word (e.g. "closing").
+  If not found: ignore it. Do NOT hardcode column names — use column descriptions.
 
 These are the FILTERABLE columns available:
 {filterable_columns_section}
@@ -2328,55 +2440,86 @@ Intent summary: {intent_summary}
 {query_plan_section}
 {entity_hints_section}
 {entity_tokens_section}
-CRITICAL RULES:
-- For time_filter_col, use only columns labeled [time-filter eligible]. Never use [metadata timestamp] columns.
-- For time filters: set timeframe to a standard string, time_filter_col to the exact column,
-  and temporal_grains to a list of grains ([] if no breakdown).
+
+TIME RULES:
+  time_filter_col: MUST be a column labeled [time-filter eligible] in the filterable columns list above.
+    The [time-filter eligible] label means data_type is date, timestamp, or timestamptz.
+    NEVER select character varying, varchar, text, char, integer, or bigint columns as time_filter_col,
+    even if their name suggests time (snapshot_id, period_code, date_key, fiscal_period, snapshot_date).
+    If no [time-filter eligible] column exists for the primary anchor table: set time_filter_col to null.
+  timeframe: standard slug (last_30_days, next_quarter, this_month, etc.) or ISO date for custom, or null.
   Past:    today, last_7_days, last_30_days, last_90_days, last_12_months,
            this_month, last_month, this_quarter, last_quarter, this_year, last_year, ytd
   Forward: next_7_days, next_30_days, next_4_weeks, next_90_days, next_3_months,
            next_quarter, next_12_months, next_year
-  Dual horizon (e.g. "4 weeks and 3 months"): use the broadest window as timeframe (next_3_months),
-  set temporal_grains=["week","month"]
-  Custom date: custom
+  Dual horizon (EC10 rule): when 2+ TIME lines appear in USER'S STATED GOAL above:
+    timeframe = the BROADEST horizon (largest window) — e.g. next_3_months for "4-week and 3-month".
+    temporal_grains = ALL distinct grains across ALL TIME lines — set INDEPENDENTLY of timeframe.
+    Example: TIME: 4-week weekly + TIME: 3-month monthly → timeframe=next_3_months, temporal_grains=["week","month"]
+  temporal_grains: [] unless user asks for time BREAKDOWN; list all grains for multi-horizon queries.
 
-----
+SCENARIO lines in USER'S STATED GOAL (EC5 rule): SCENARIO lines are NOT filters.
+  Do NOT emit any filter, threshold_spec, or time constraint for SCENARIO lines.
+  Ignore them completely — directive_writer handles SCENARIO lines.
+
+CONDITION lines from USER'S STATED GOAL (EC3 rule):
+  If CONDITION line contains "Highlight"/"flag"/"all rows visible": emit as threshold_specs[] ONLY.
+    Do NOT emit as a filter (WHERE clause). All rows remain visible.
+  If CONDITION line contains "Filter"/"only"/"excluding": emit as filters[].
+  This prevents the same threshold from being emitted by both filter_specialist AND directive_writer.
 
 {reasoning_directive}
 
-Output your reasoning in <reasoning>...</reasoning>, then the JSON in <output>...</output>.
-
 <reasoning>
-State which filters were detected from the question and which columns they map to — one sentence per filter.
+One sentence each: which filters, timeframe, qualifier, and thresholds were detected.
+For CONDITION lines in USER'S STATED GOAL: state whether each is Highlight (threshold_specs) or Filter.
+For SCENARIO lines: state "SCENARIO — ignored, not a filter."
+For missing named entities: state them explicitly.
 </reasoning>
 <output>
 {{
   "filters": [
     {{"table_fqn": "lpp.table", "column_name": "col", "operator": "=", "raw_user_value": "user's exact words"}}
   ],
-  "timeframe": "next_90_days",
-  "temporal_grains": ["month"],
-  "time_filter_col": "lpp.table.col_name",
-  "filter_directive_hint": "one line: TIME_FILTER: lpp.table.col | or filter summary",
-  "threshold_specs": [{{"expression": "cumulative_balance", "operator": "<", "value": 200000000, "label": "below_threshold_flag", "is_having": false}}]
+  "timeframe": "last_30_days | null",
+  "temporal_grains": [],
+  "time_filter_col": "lpp.table.col_name | null",
+  "filter_directive_hint": "TIME_FILTER: lpp.table.col | MISSING: filter on X not found",
+  "threshold_specs": [{{"expression": "balance", "operator": "<", "value": 200000000, "label": "below_threshold", "is_having": false}}]
 }}
 </output>
-Use threshold_specs when the user asks to FLAG, HIGHLIGHT, or IDENTIFY rows that breach a threshold
-(e.g. "below $200M minimum" → value=200000000, "exceeds limit" → operator=>). Leave as [] if none.
 
-SELF-CHECK before outputting:
-1. TIME COLUMN: Is time_filter_col labeled [time-filter eligible] in the columns above? If not, you picked a metadata timestamp — go back and pick a [time-filter eligible] column. If none exists, set time_filter_col to null and note it in filter_directive_hint.
-2. NAMED ENTITIES: Did the user name a specific entity (company name, region, code, supplier)? It must appear in filters[]. A named entity absent from filters[] is a silent miss.
-3. THRESHOLDS: Did the user mention a compliance threshold, policy rate, or target value ("95% on-time", "above $1M", "outside policy")? Capture it as a threshold_spec entry — not as a filter. A threshold computes a HAVING condition, not a WHERE condition.
-4. SILENT OMISSIONS: If a filter the user clearly wants is absent from the available columns, state it in filter_directive_hint as: "MISSING: user requested filter on [X] but no matching column found". Never silently drop it."""
+Examples:
+"JPMorgan USD accounts last 30 days" → filters=[{{bank=JPMorgan}}, {{currency=USD}}], timeframe=last_30_days
+"only accounts over $1M" → filters=[{{balance > 1000000}}] (excludes rows → IS a filter, not threshold)
+"flag balances below $200M" → threshold_specs=[{{balance < 200000000}}] (flags rows → NOT a filter)
+"closing balance last quarter" → filters with qualifier if balance_type/date_basis column has 'CLOSING' in sample_values
+
+DEMO QUERIES:
+Q1 "total liquidity available today" → filters=[], timeframe="today"
+Q2 "4-week and 3-month cash forecast... falls below $200M minimum threshold" →
+    filters=[], timeframe="next_3_months", temporal_grains=["week","month"],
+    threshold_specs=[{{expression: projected_liquidity, operator: <, value: 200000000, label: below_threshold_flag, is_having: false}}]
+Q3 "CFO briefing: liquidity, debt, FX, interest rate exposure" → filters=[], timeframe=null
+Q4 "does this treasury position require action" → inherit filters from Q3 conversation context via is_followup=true"""
 )
 
 
 DIMENSION_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
-    """You are a dimension extractor. Your ONLY job is to identify which columns to group by
-or display in the output to answer the user's question. You do NOT select measures or filters.
+    """You identify DIMENSION columns — the columns used to GROUP or PARTITION the result.
 
-These are the GROUPABLE columns available (dimension/code/flag types):
+A DIMENSION is what the user wants results BROKEN DOWN BY or displayed PER ROW.
+Signal: "by X", "per X", "for each X", "breakdown by X", "list [entities] with [metric]".
+
+RESTRICT vs PARTITION:
+  "JPMorgan balance" → JPMorgan RESTRICTS to one value (filter, not dimension).
+  "balance by bank" → bank PARTITIONS across all values (dimension).
+
+For KPI queries (single number): return dimensions=[].
+For list queries: include natural identifier columns (account_id, name, reference).
+Never include columns already selected as measures.
+
+These are the GROUPABLE columns available (non-numeric + date types):
 {groupable_columns_section}
 
 {joinable_table_graph}
@@ -2386,38 +2529,33 @@ Measures already selected: {measures_summary}
 {refinement_section}
 {query_plan_section}
 {entity_tokens_section}
-Rules:
-- GROUP BY columns must reflect what the user explicitly asked to group or break down by.
-  If the user asked for a list without specifying grouping, use natural grain columns
-  (primary key, reference ID, or unique identifier for individual records).
-- Never add dimension columns from tables not in anchor_tables (no cross-schema guessing).
-- Select columns that users expect to see in the output (company name, currency, date, category)
-- Do NOT include columns already selected as measures
-- For KPI result_shape: dimensions should be empty (single aggregate)
-- alias: use a clear business name (e.g. "entity" for company_ref, "currency" for currency_code)
-
-----
 
 {reasoning_directive}
 
-Output your reasoning in <reasoning>...</reasoning>, then the JSON in <output>...</output>.
-
 <reasoning>
-State which grouping columns match what the user wants to see broken down by — one sentence per dimension.
+One sentence per dimension: which grouping columns match what the user wants broken down by.
+For missing breakdowns: name them explicitly.
 </reasoning>
 <output>
 {{
   "dimensions": [
     {{"table_fqn": "lpp.table", "column_name": "col", "alias": "entity", "aggregation": null, "semantic_type": "dimension"}}
   ],
-  "dimension_directive": "one line summarizing grouping"
+  "dimension_directive": "grouping summary | 'MISSING: user requested breakdown by X — no matching column'"
 }}
 </output>
 
-SELF-CHECK before outputting:
-1. REQUESTED BREAKDOWN COVERAGE: Scan the question for "by X", "broken down by X", "per X", "across X", "for each X". For each: if X maps to a groupable column → include in dimensions[]; if no match exists → include in dimension_directive: "MISSING: user requested breakdown by [X] — no matching column in available schema". Never silently omit a requested dimension.
-2. NO EXTRAS: Do not add dimensions the user did not request. An unrequested dimension changes the grain and can explode row count.
-3. DIMENSION_DIRECTIVE COMPLETENESS: If any requested dimension is missing, dimension_directive must say so explicitly."""
+Examples:
+"total balance by currency" → dimensions=[{{currency_code, alias: currency}}]
+"list all JPMorgan accounts" → dimensions=[{{account_id}}, {{account_name}}]
+"total balance" → dimensions=[] (single KPI — no grouping)
+"balance by currency for USD only" → dimensions=[{{currency_code}}] (USD is a filter, handled separately)
+
+DEMO QUERIES:
+Q1 "total liquidity available today" → dimensions=[] (single KPI)
+Q2 "4-week and 3-month cash forecast" → dimensions=[{{date_col, alias: forecast_period}}]
+Q3 "CFO briefing: liquidity, debt, FX, interest rate exposure" → dimensions=[{{domain/category alias}}] — one row per domain
+Q4 "does this treasury position require action" → dimensions=[] (judgment, not a grouping query)"""
 )
 
 
@@ -2437,13 +2575,37 @@ Assembled intent:
 - query_intent: {query_intent}
 - complexity: {query_complexity}
 
+QUERY_INTENT HANDLING RULES (apply to each typed line in query_intent above):
+  CONDITION line with "Highlight"/"flag"/"all rows visible" (EC3):
+    → Do NOT emit COMPUTED_COLUMN or COMPUTED_FILTER. filter_specialist already wrote
+      threshold_specs for this. Emitting it again creates two competing threshold expressions.
+  CONDITION line with "Filter"/"only"/"excluding" (EC3):
+    → This is a WHERE filter. filter_resolver owns entity value filters. Only emit
+      COMPUTED_FILTER if the predicate requires a derived SQL expression (e.g. WHERE headroom < 0).
+  COMPARISON line (EC4):
+    → Emit SCHEMA_GAP_CONCEPT only (note that baseline data is needed).
+    → NEVER emit a second TIME_FILTER. One TIME_FILTER per directive — two = broken SQL.
+    → Correct form: SCHEMA_GAP_CONCEPT: yoy_baseline — prior-year window needed;
+      sql_generator: add parallel CTE using DATEADD(year,-1,...) on the same time_filter_col.
+  SCENARIO line (EC5):
+    → Emit SCENARIO_ASSUMPTION using the measure alias from the MEASURES section above.
+    → NEVER hardcode a column name from the question text — use the alias name.
+    → Form: SCENARIO_ASSUMPTION: stressed_inflows = SUM({{alias_of_inflow_measure}} * factor)
+    → If no matching measure alias exists: emit SCHEMA_GAP_CONCEPT describing the factor.
+  OUTPUT line (EC9):
+    → OUTPUT lines are narrative framing for synthesis only. Produce NO SQL from them.
+    → "Prominent" / "must be visible" = synthesis instruction, not ORDER BY, HAVING, or LIMIT.
+  GOAL / CONTEXT lines: framing only — produce no directive from them.
+
 SPECIALIST-DETERMINED VALUES — authoritative; emit these exactly, do NOT substitute:
   Time filter column: {time_filter_col}
     → You MUST emit: TIME_FILTER: {time_filter_col}
     → Do NOT substitute another date column unless time_filter_col = "not specified"
   Filter columns already resolved by specialist:
 {filter_columns_section}
-    → Emit COMPUTED_FILTER for each non-time filter using exactly the column names shown above
+    → These are informational. Entity value filters (bank name, currency, account type) are
+      resolved by filter_resolver — do NOT emit COMPUTED_FILTER for them here.
+      Only emit COMPUTED_FILTER for derived predicates (e.g. WHERE headroom < 0, WHERE cumulative < threshold).
 
 Complete schema for anchor tables (all columns):
 {anchor_schema_section}
@@ -2460,25 +2622,26 @@ User question: {question}
 Output your reasoning in <reasoning>...</reasoning>, then the directive in <directive>...</directive>.
 
 <reasoning>
-Think through:
-- Which join paths can be confirmed? If CONFIRMED JOIN PATHS is present, emit JOIN_PATH: for each listed pair — do NOT emit SCHEMA_GAP_JOIN for those pairs. Only emit SCHEMA_GAP_JOIN for pairs NOT listed there.
-- Does the timeframe/filter require a derived expression? (→ COMPUTED_FILTER)
-- Are any requested measures or dimensions missing from the anchor schemas? (→ SCHEMA_GAP)
-- What confidence level is appropriate given schema coverage?
-- Does temporal_grains have 2+ entries? If yes, this is a dual-grain query → emit DUAL_GRAIN
-- If complexity=complex or query_intent mentions multiple horizons/thresholds/derived values,
-  plan multi-CTE breakdown with explicit COMPUTATION lines for each derived measure.
-- If USER'S EXPLICIT TIME PERIOD is shown with a ⚠ warning, filter_specialist failed to extract
-  the time filter — you MUST resolve it here by emitting TIME_FILTER + COMPUTED_FILTER.
-- FEASIBILITY CHECK (if USER'S REQUIRED GROUPINGS is present): For each required grouping,
-  ask: "Is the column that provides this dimension in the same table as the cost/measure, or
-  can it be joined via a confirmed FK?" If the cost table (e.g. bank_fee) has SCHEMA_GAP_JOIN
-  to the table with the grouping column (e.g. pos_transaction.channel), the cost measure CANNOT
-  be disaggregated by that grouping — the same aggregate value will repeat for every grouping row.
-  Set CONFIDENCE < 0.4 and explicitly name which required groupings are blocked in CONFIDENCE_NOTE.
-- ENTITY CHECK (if USER'S NAMED ENTITIES is present): Verify each named entity against the schema
-  columns' known values. If an entity (e.g. "membership") has no exact alias or enum value listed,
-  flag it in CONFIDENCE_NOTE: "entity 'X' may not match schema values — verify filter resolves correctly."
+Decide which directive lines to emit:
+  1. TIME_FILTER: Which column is the business event timestamp? Use time_filter_col if set and not "not specified".
+     If not set: pick from anchor schema — prefer event dates (transaction_date, detected_at) over freshness dates (loaded_at, updated_at).
+     If timeframe is null but question contains a time reference, emit TIME_FILTER anyway.
+  2. COMPUTATION: Does any measure require a derived SQL expression (net value = A - B, weighted average)?
+     Emit COMPUTATION only for derived expressions. Do NOT emit for simple SUM/AVG/COUNT measures.
+     ENUM SAFETY: When COMPUTATION contains CASE WHEN on a categorical column, look up that column's
+     sample_values or distinct_values in the ANCHOR SCHEMA section below and use ONLY those exact values.
+     NEVER guess enum values from the question text or column name.
+       ✗ WRONG: CASE WHEN direction = 'INFLOW' THEN ...   (guessed from question — not in schema)
+       ✓ RIGHT:  CASE WHEN direction = 'IN' THEN ...       (from sample_values: ['IN', 'OUT', 'BOTH'])
+     If sample_values is empty for a categorical column you need in a CASE WHEN:
+       → emit SCHEMA_GAP_CONCEPT: <column_name>_enum_values — sample_values not loaded; sql_generator: verify actual enum codes before using in CASE WHEN.
+  3. COMPUTED_FILTER: Only for derived predicates (WHERE cumulative_cash < 200000000, WHERE headroom < 0).
+     NEVER emit COMPUTED_FILTER for entity value filters (bank name, currency code, account type) — those are already resolved by filter_resolver.
+  4. SCHEMA_GAP: Is any required concept absent from the anchor schema?
+     Use SCHEMA_GAP_JOIN (two tables, no FK), SCHEMA_GAP_TABLE (table missing), SCHEMA_GAP_CONCEPT (concept unknown).
+     Do NOT emit SCHEMA_GAP_TABLE for bridge/lookup tables that exist in CONFIRMED JOIN PATHS.
+  5. CONFIDENCE: 0.90+ all columns confirmed; 0.70-0.89 approximations; 0.50-0.69 key columns missing.
+  6. DUAL_GRAIN: Only emit when temporal_grains has 2+ entries.
 </reasoning>
 
 Write the directive using these EXACT machine-readable prefixes (one per line):
@@ -2512,11 +2675,10 @@ Rules:
   A downstream resolver parses these machine-read lines exactly — any deviation silently drops the gap.
 - CONFIDENCE_NOTE: 0.90+ if all columns found; 0.70-0.89 if some approximations; 0.50-0.69 if key columns missing
 - TIME_FILTER: always specify the exact column — pick the most semantically correct date column for the timeframe
-- FALLBACK TIME FILTER: If timeframe=not specified but USER'S EXPLICIT TIME PERIOD is present above
-  (with a ⚠ warning), you MUST emit both TIME_FILTER and COMPUTED_FILTER. Pick the best date column
-  from the anchor schema — prefer detected_at, created_at, transaction_date, event_date over
-  rollup_date, updated_at, loaded_at, last_modified (those are data-freshness timestamps, not business
-  event dates). A missing time filter on an explicit time request is a directive failure.
+- FALLBACK TIME FILTER: If timeframe is null but the question contains a time reference ("last quarter",
+  "this month", "next 30 days"), you MUST emit TIME_FILTER. Pick the best date column from the anchor schema
+  — prefer event dates (detected_at, transaction_date, event_date, created_at) over freshness dates
+  (rollup_date, updated_at, loaded_at, last_modified). A missing time filter on an explicit time request is a directive failure.
 - DUAL_GRAIN: emit exactly one line when temporal_grains lists 2+ grains (e.g. ["week", "month"] → DUAL_GRAIN: week+month).
   The fine grain (first entry) is the shorter window; the coarse grain (second entry) is the longer window.
   The horizon boundary label MUST use the MAX-date anchor from a snapshot CTE, NOT CURRENT_DATE, so stale data
@@ -2528,7 +2690,7 @@ SELF-CHECK before emitting the directive:
 2. LOOKUP CTEs: Any CTE that maps one key to another (company_ref → business_unit, code → label) is a LOOKUP CTE. Lookup CTEs MUST NOT have WHERE time filters — they must be complete across all history. A time-filtered lookup causes NULL dimension values for entities with no events in the window.
 3. DEAD CTEs: List every CTE name you define. Verify each one is referenced in a downstream CTE's FROM/JOIN or in the final SELECT. If a CTE is not referenced — remove it entirely. Do not emit unused CTEs.
 4. INFERRED JOINS: For every JOIN not in JOIN_CHAIN or UNRESOLVED_PAIRS, emit it as SCHEMA_GAP_JOIN — not as a silent inference.
-5. OVERRIDE AUTHORITY: If filter_specialist, dimension_specialist, or measure_specialist returned something that conflicts with what the schema and computation require, you are authorized — and obligated — to correct it here. Deferring to a weaker upstream signal when you have better evidence is a failure mode.
+5. ENUM VALUES: For every CASE WHEN in a COMPUTATION line, verify the literal value (e.g. 'IN', 'OUT') appears in that column's sample_values or distinct_values in the ANCHOR SCHEMA section. If it doesn't — either correct it or replace the COMPUTATION with a SCHEMA_GAP_CONCEPT.
 
 <directive>
 <instructions>

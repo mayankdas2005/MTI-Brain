@@ -199,7 +199,10 @@ async def schema_gap_resolver(state: AnalyticsState, config: RunnableConfig) -> 
 
     if new_cols:
         semantic_context["_column_lookup"] = existing_lookup
-        semantic_context["columns"] = list(semantic_context.get("columns") or []) + new_cols
+        existing_cols = list(semantic_context.get("columns") or [])
+        existing_keys = {(c.get("table_fqn"), c.get("name")) for c in existing_cols}
+        deduped_new = [c for c in new_cols if (c.get("table_fqn"), c.get("name")) not in existing_keys]
+        semantic_context["columns"] = existing_cols + deduped_new
         result["semantic_context"] = semantic_context
         result["anchor_tables_resolved"] = updated_anchor
 

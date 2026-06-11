@@ -14,6 +14,46 @@ from app.services.agents.sql_validator_logic import try_fix_cte_refs, validate_s
 from app.services.agents.state import AnalyticsState
 
 
+def _extract_root_cost(text: str) -> float:
+    """Extract the upper bound cost estimate from the first EXPLAIN cost= line.
+
+    Pure string split — no regex.
+    """
+    for line in text.split("\n"):
+        if "cost=" in line:
+            after_cost = line.split("cost=", 1)[1]
+            range_part = after_cost.split(" ")[0]
+            upper = range_part.split("..")[-1]
+            try:
+                return float(upper)
+            except ValueError:
+                continue
+    return 0.0
+
+
+def _parse_explain_flags(text: str, cost_threshold: float) -> list[str]:
+    """Parse Redshift EXPLAIN output for performance anti-patterns.
+
+    Pure string search — no regex.
+    Returns a list of flag strings; empty list means no issues detected.
+    """
+    flags: list[str] = []
+    for line in text.split("\n"):
+        if "DS_BCAST_INNER" in line and "CROSS_JOIN_BROADCAST" not in flags:
+            flags.append("CROSS_JOIN_BROADCAST")
+        if "DS_DIST_BOTH" in line and "DIST_BOTH" not in flags:
+            flags.append("DIST_BOTH")
+        if "DS_DIST_OUTER" in line and "DIST_OUTER" not in flags:
+            flags.append("DIST_OUTER")
+        if "Nested Loop Join in the query plan" in line and "CARTESIAN_RISK" not in flags:
+            flags.append("CARTESIAN_RISK")
+    for line in text.split("\n"):
+        if "Seq Scan on" in line and "cost=" in line and "LARGE_TABLE_SCAN" not in flags:
+            if _extract_root_cost(line) > cost_threshold:
+                flags.append("LARGE_TABLE_SCAN")
+    return flags
+
+
 async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
     sql_list = state.get("sql_list", [])
     recompile_count = state.get("recompile_count", 0)
@@ -127,6 +167,33 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
 
         if new_flags != list(state.get("reliability_flags") or []):
             result["reliability_flags"] = new_flags
+
+        # Phase 2: EXPLAIN — only runs when all static gates pass
+        from app.services.agents.redshift_client import run_explain as _run_explain
+        from app.core.config import settings as _settings
+        _cost_threshold = float(
+            getattr(getattr(_settings, "sql_validator", None), "explain_cost_threshold", None) or 10_000_000
+        )
+        _sql_to_explain = fixed_sql_list[0] if fixed_sql_list else ""
+        if _sql_to_explain:
+            _explain_lines = await _run_explain(_sql_to_explain)
+            _explain_text = "\n".join(_explain_lines)
+            _explain_cost = _extract_root_cost(_explain_text)
+            _explain_flags = _parse_explain_flags(_explain_text, _cost_threshold)
+            if _explain_flags:
+                logger.warning(
+                    "sql_validator | EXPLAIN flags={} | cost={:.0f} | thread={}",
+                    _explain_flags, _explain_cost, state["thread_id"],
+                )
+            else:
+                logger.info(
+                    "sql_validator | EXPLAIN clean | cost={:.0f} | thread={}",
+                    _explain_cost, state["thread_id"],
+                )
+            result["explain_cost"] = _explain_cost
+            result["explain_flags"] = _explain_flags
+            result["explain_output"] = _explain_text
+            result["needs_performance_repair"] = bool(_explain_flags)
 
         return result
 

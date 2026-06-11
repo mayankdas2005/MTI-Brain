@@ -394,7 +394,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       })
       .catch(() => {
         // 404 = DB record deleted or never created → clear stale localStorage
-        if (dashStatus !== 'idle') removeDash(convId);
+        removeDash(convId);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId, showDashButton]);
@@ -425,7 +425,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
         }
       })
       .catch(() => {
-        if (gcStatus !== 'idle') removeGC(convId);
+        removeGC(convId);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId, showGCButton]);

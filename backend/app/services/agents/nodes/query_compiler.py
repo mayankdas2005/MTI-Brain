@@ -56,17 +56,30 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
         lines.append("JOIN_CHAIN: single table — no joins needed")
 
     if ir.unresolved_join_pairs:
-        lines.append(
-            "UNRESOLVED_PAIRS — no confirmed join path found for these table pairs. "
-            "OMIT them from the SQL entirely. Do NOT add them via EXISTS, IN subqueries, "
-            "bridge CTEs, or extra JOINs. Forcing an unresolved join produces zero rows."
-        )
+        path_table_set = set(ir.path_tables or [])
+        lines.append("UNRESOLVED_PAIRS — no direct join clause for these pairs:")
         for p in ir.unresolved_join_pairs:
-            candidates = ", ".join(p.get("candidate_join_columns") or [])
-            lines.append(
-                f"  {p['from']} ↔ {p['to']} — OMIT BOTH TABLES unless one has output columns"
-                + (f" | candidate cols if a join path is later found: {candidates}" if candidates else "")
-            )
+            from_t, to_t = p["from"], p["to"]
+            from_reachable = from_t in path_table_set
+            to_reachable   = to_t   in path_table_set
+            if from_reachable and not to_reachable:
+                note = (
+                    f"  {from_t} is in JOIN_CHAIN. {to_t} has no confirmed path — "
+                    f"include {to_t} only if it has required SELECT columns; "
+                    f"join via the nearest bridge table already in JOIN_CHAIN."
+                )
+            elif not from_reachable and to_reachable:
+                note = (
+                    f"  {to_t} is in JOIN_CHAIN. {from_t} has no confirmed path — "
+                    f"include {from_t} only if it has required SELECT columns."
+                )
+            else:
+                note = (
+                    f"  {from_t} ↔ {to_t} — neither confirmed in JOIN_CHAIN. "
+                    f"Include only the table with required SELECT columns; "
+                    f"join via any confirmed bridge in JOIN_CHAIN."
+                )
+            lines.append(note)
 
     if ir.measures:
         m_strs = [f"{m.column_name} ({m.aggregation or 'SUM'})" for m in ir.measures]
@@ -104,28 +117,30 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
                     + " — do NOT use any other column from this table"
                 )
 
-    # Anchor tables whose join clause failed validation — restrict their columns so the LLM
-    # doesn't invent names that don't exist (e.g. ba.company_ref on bank_account which only
-    # has 'code'). These tables are hub-injected anchors with no confirmed join path.
+    # Truly orphaned anchor tables (in unresolved_join_pairs AND not reachable via path_tables).
+    # Only these get a column restriction — tables already in path_tables are reachable and
+    # do not need a FAILED-JOIN label (that label caused LLM paralysis on tables like FCF/LP
+    # that ARE reachable through the join chain, just not via a direct consecutive-pair edge).
     if semantic_context and ir.unresolved_join_pairs:
         col_lookup_2: dict = semantic_context.get("_column_lookup") or {}
         anchor_set_2 = set(ir.anchor_tables)
-        failed_anchors: set[str] = set()
+        reachable_set = set(ir.path_tables or [])
+        orphaned_anchors: set[str] = set()
         for p in ir.unresolved_join_pairs:
             for key in ("from", "to"):
                 t = p.get(key, "")
-                if t in anchor_set_2:
-                    failed_anchors.add(t)
-        for tbl in sorted(failed_anchors):
+                if t in anchor_set_2 and t not in reachable_set:
+                    orphaned_anchors.add(t)
+        for tbl in sorted(orphaned_anchors):
             tbl_cols = sorted({col for fqn, col in col_lookup_2 if fqn == tbl})
             if tbl_cols:
                 lines.append(
-                    f"FAILED-JOIN ANCHOR TABLE {tbl} — join validation failed; "
-                    f"available columns: {', '.join(tbl_cols)} — do NOT use any other column from this table"
+                    f"ORPHANED ANCHOR TABLE {tbl} — no join path to rest of chain; "
+                    f"available columns: {', '.join(tbl_cols)} — use subquery or omit if not needed in SELECT"
                 )
             else:
                 lines.append(
-                    f"FAILED-JOIN ANCHOR TABLE {tbl} — join validation failed; no confirmed columns available"
+                    f"ORPHANED ANCHOR TABLE {tbl} — no join path and no confirmed columns"
                 )
 
     # Explicitly invalid columns — hallucinated by intent specialists + proactively blocked.
@@ -277,6 +292,39 @@ async def _handle_single(
     schema_directive = _build_schema_directive(ir, semantic_context=semantic_context)
     logger.info("query_compiler | SCHEMA DIRECTIVE | thread={}\n{}", thread_id, schema_directive)
 
+    # L4: build early_filter_spec for deep-join queries (join_depth > 2)
+    # The CTE planner uses this to generate a NAME-LOCKED early-filter CTE structure
+    # that resolves entity filters BEFORE the fact table scan — eliminates DS_BCAST_INNER.
+    early_filter_spec = None
+    path_tables = ir.path_tables or []
+    if len(path_tables) > 2 and ir.time_filter:
+        fact_table = path_tables[0]
+        entity_tables = path_tables[1:]
+        entity_join_clauses = [c for i, c in enumerate(ir.join_clauses or []) if c and i > 0]
+        entity_filters = [f.model_dump() for f in ir.filters if f.table_fqn in entity_tables]
+        fact_fk = (ir.join_clauses or [None])[0]
+        entity_base = entity_tables[0].rsplit(".", 1)[-1] if entity_tables else "entity"
+        fact_base = fact_table.rsplit(".", 1)[-1]
+        time_filter_col = (
+            f"{ir.time_filter.table_fqn}.{ir.time_filter.column_name}"
+            if ir.time_filter else None
+        )
+        early_filter_spec = {
+            "fact_table": fact_table,
+            "entity_tables": entity_tables,
+            "entity_join_clauses": entity_join_clauses,
+            "entity_filters": entity_filters,
+            "time_filter_col": time_filter_col,
+            "fact_fk_to_first_entity": fact_fk,
+            "entity_base": entity_base,
+            "fact_base": fact_base,
+            "join_depth": len(path_tables),
+        }
+        logger.info(
+            "query_compiler | early_filter_spec built | fact={} | entity_chain={} | thread={}",
+            fact_table, entity_tables, thread_id,
+        )
+
     if has_unresolved:
         logger.info("query_compiler | unresolved filters | routing to filter_resolver | thread={}", thread_id)
         return {
@@ -284,6 +332,7 @@ async def _handle_single(
             "filter_resolution_needed": True,
             "filter_directive": filter_directive,
             "schema_directive": schema_directive,
+            **({"early_filter_spec": early_filter_spec} if early_filter_spec else {}),
         }
 
     logger.info("query_compiler | all filters resolved | routing to sql_generator | thread={}", thread_id)
@@ -292,4 +341,5 @@ async def _handle_single(
         "filter_resolution_needed": False,
         "filter_directive": filter_directive,
         "schema_directive": schema_directive,
+        **({"early_filter_spec": early_filter_spec} if early_filter_spec else {}),
     }

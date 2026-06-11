@@ -174,13 +174,15 @@ async def generate_sql_llm(
     cte_plan = await _plan_cte_columns(spec, query_blueprint, schema_reference, state, config, directive_section)
     cte_column_plan = _build_cte_plan_section(cte_plan)
 
-    resolved_intent_for_highlight = state.get("resolved_intent") or {}
-    _time_filter_col = resolved_intent_for_highlight.get("time_filter_col") or ""
-    time_col_highlight_section = (
-        f"AUTHORITATIVE TIME FILTER COLUMN: {_time_filter_col}\n"
-        f"  → Use this column for all date range filters. Do NOT substitute another date column."
-        if _time_filter_col else ""
-    )
+    # M2: TIME_FILTER is emitted exclusively by directive_writer in directive_section.
+    # Do NOT inject a second AUTHORITATIVE TIME FILTER COLUMN — two sources with no priority rule
+    # causes the CTE planner to pick between them non-deterministically.
+    time_col_highlight_section = ""
+
+    # M12: avoid injecting literal "(none)" into anti-patterns section — CTE planner already
+    # uses the same guard via planner_anti_patterns. Match that behaviour for SQL_GENERATE_PROMPT.
+    _anti_raw = anti_patterns if isinstance(anti_patterns, str) else ""
+    sql_anti_patterns = "" if (not _anti_raw or _anti_raw.strip() in ("(none)", "")) else _anti_raw
 
     from app.services.agents.prompts import SQL_GENERATE_PROMPT
     prompt = SQL_GENERATE_PROMPT.format_messages(
@@ -191,7 +193,7 @@ async def generate_sql_llm(
         time_col_highlight_section=time_col_highlight_section,
         query_blueprint=query_blueprint,
         schema_reference=schema_reference,
-        anti_patterns=anti_patterns,
+        anti_patterns=sql_anti_patterns,
         reasoning_directive=reasoning_directive,
         unresolved_joins_section=unresolved_joins_section,
         feedback_section=feedback_section,
@@ -282,6 +284,12 @@ async def _plan_cte_columns(
             planner_candidate_section = _build_candidate_join_paths_section(ir_for_planner, col_lookup_for_planner)
         planner_blueprint = query_blueprint + ("\n" + planner_candidate_section if planner_candidate_section else "")
 
+        # L4: inject early-filter CTE blueprint for deep-join queries (join_depth > 2)
+        # The NAME-LOCKED structure prescribes entity-first CTE ordering to avoid DS_BCAST_INNER.
+        early_filter_spec = state.get("early_filter_spec")
+        if early_filter_spec:
+            planner_blueprint = _build_early_filter_blueprint(early_filter_spec) + "\n\n" + planner_blueprint
+
         groupings = (state.get("query_plan") or {}).get("required_groupings") or []
         groupings_hint_section = (
             "REQUIRED GROUPINGS (user explicitly requested — ensure GROUP BY for each):\n"
@@ -307,11 +315,19 @@ async def _plan_cte_columns(
             backoff_base=3.0,
         )
         plan = parse_tag(response.content or "", "plan").strip()
+        # M4 + M23: validate plan before declaring it binding — bad name or dead CTE → no contract
+        validated = _validate_cte_plan(plan)
+        if validated is None:
+            logger.warning(
+                "sql_generator | cte_plan_invalid_or_dead_cte | falling back to no-contract | thread={}",
+                state["thread_id"],
+            )
+            return ""
         logger.info(
             "sql_generator | CTE planner done | thread={} | plan_len={}",
-            state["thread_id"], len(plan),
+            state["thread_id"], len(validated),
         )
-        return plan
+        return validated
     except Exception as e:
         logger.warning(
             "sql_generator | CTE planner failed (degrading gracefully) | thread={} | error={}",
@@ -408,6 +424,58 @@ Tables span multiple business domains. Instructions:
 """
 
 
+def _validate_cte_plan(plan: str) -> str | None:
+    """Return plan unchanged if valid, None if plan is malformed or contains dead CTEs.
+
+    Checks (pure string, no regex):
+    - At least one CTE defined
+    - All CTE names start with letter or underscore (no digit-leading names)
+    - Every CTE except the last appears at least twice (definition + downstream reference)
+      — a CTE found only once is a dead CTE that will never feed the FINAL SELECT
+
+    Returns None → caller falls back to no-contract mode (uses SCHEMA DIRECTIVE only).
+    Conservative: a corrupt contract is worse than no contract.
+    """
+    if not plan or not plan.strip():
+        return None
+
+    lines = plan.split("\n")
+    cte_names: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("CTE "):
+            name_part = stripped[4:].split(" ")[0].rstrip(":")
+            if not name_part:
+                return None
+            if not (name_part[0].isalpha() or name_part[0] == "_"):
+                logger.warning("sql_generator | cte_plan_invalid_name | name={}", name_part)
+                return None
+            cte_names.append(name_part)
+
+    if not cte_names:
+        return None
+
+    # Dead CTE check: each CTE except the last must appear ≥2 times in plan
+    # (once as definition, ≥1 as downstream reference)
+    for cte_name in cte_names[:-1]:
+        count = 0
+        pos = 0
+        while True:
+            idx = plan.find(cte_name, pos)
+            if idx == -1:
+                break
+            count += 1
+            pos = idx + len(cte_name)
+        if count < 2:
+            logger.warning(
+                "sql_generator | dead_cte_detected | name={} | occurrences={} | falling back",
+                cte_name, count,
+            )
+            return None
+
+    return plan
+
+
 def _build_cte_plan_section(plan: str) -> str:
     if not plan:
         return ""
@@ -469,6 +537,70 @@ def _get_join_overlap_evidence(
             evidence += f"  [semantic ref → {ref_b} ✓]"
 
     return evidence
+
+
+def _build_early_filter_blueprint(spec: dict) -> str:
+    """Build a NAME-LOCKED CTE performance blueprint for deep-join queries.
+
+    Prescribes the entity-first CTE structure that eliminates DS_BCAST_INNER
+    and large-table Seq Scans. Pure string construction — no regex.
+    """
+    fact_table = spec.get("fact_table", "fact_table")
+    entity_tables = spec.get("entity_tables") or []
+    entity_base = spec.get("entity_base", "entity")
+    fact_base = spec.get("fact_base", "fact")
+    time_filter_col = spec.get("time_filter_col", "")
+    fact_fk = spec.get("fact_fk_to_first_entity", "")
+    entity_join_clauses = spec.get("entity_join_clauses") or []
+    entity_filters = spec.get("entity_filters") or []
+    join_depth = spec.get("join_depth", 3)
+
+    entity_chain = ", ".join(entity_tables)
+    ef_lines = [
+        f"PERFORMANCE REQUIREMENT (Redshift — deep join detected, join_depth={join_depth}):",
+        "Use this MANDATORY CTE structure. CTE names below are NAME-LOCKED — do not rename or merge:",
+        "",
+        f"CTE matching_{entity_base}  [FILTER CTE — resolves entity filter, returns small result]",
+        f"  reads_from: {entity_chain}",
+        f"  where_slot: yes  ← all entity filters go here (NOT in base_data or WHERE)",
+    ]
+    if entity_filters:
+        for f in entity_filters[:3]:
+            ef_lines.append(f"  filter: {f.get('table_fqn', '')}.{f.get('column_name', '')} {f.get('operator', '=')} '{f.get('value', f.get('raw_value', ''))}'")
+    if entity_join_clauses:
+        for j in entity_join_clauses[:3]:
+            ef_lines.append(f"  join: {j}")
+    fk_col = fact_fk.split("=")[0].strip() if fact_fk else f"{fact_table}.fk"
+    ef_lines += [
+        f"  exports: {fk_col} AS fk_col",
+        "",
+        f"CTE {fact_base}_window  [FACT WINDOW — narrows fact table scan]",
+        f"  reads_from: {fact_table}",
+        f"  where: fact.fk_col IN (SELECT fk_col FROM matching_{entity_base})",
+    ]
+    if time_filter_col:
+        ef_lines.append(f"  AND {time_filter_col} >= DATEADD(DAY, -365, CURRENT_DATE)  ← 365-day pre-filter")
+    ef_lines += [
+        "  exports: all columns needed by downstream CTEs",
+        "",
+        f"CTE {fact_base}_max  [BOUNDS — MAX(date) from window, NOT from raw {fact_table}]",
+        f"  reads_from: {fact_base}_window",
+        "  aggregates: yes",
+    ]
+    if time_filter_col:
+        tf_col_name = time_filter_col.split(".")[-1]
+        ef_lines.append(f"  exports: max_d AS MAX({tf_col_name})")
+    ef_lines += [
+        "",
+        "CTE base_data  [FINAL WINDOW — apply exact date range from bounds]",
+        f"  reads_from: {fact_base}_window CROSS JOIN {fact_base}_max",
+        "  where_slot: yes  ← exact date range filter goes here",
+        "  exports: all output columns",
+        "",
+        "This structure eliminates DS_BCAST_INNER and large-table Seq Scan in Redshift EXPLAIN.",
+        "PERFORMANCE REQUIREMENT ends here. CTE names above are NAME-LOCKED.",
+    ]
+    return "\n".join(ef_lines)
 
 
 def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None = None) -> str:

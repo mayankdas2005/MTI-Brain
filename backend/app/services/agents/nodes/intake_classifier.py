@@ -202,17 +202,25 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
     )
 
     result = await _call_llm(prompt, config)
-    question_type, entity_tokens, search_terms, search_variants = _parse_intake(result)
+    question_type, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent = _parse_intake(result)
+
+    # Combine current search_terms with prior turn's terms for follow-up queries
+    prior_search_terms = list(state.get("search_terms") or [])
+    combined_search_terms = _combine_search_terms(search_terms, prior_search_terms, is_followup)
 
     logger.info(
-        "intake_classifier DONE | thread={} | type={} | entity_tokens={} | search_terms={} | search_variants={} | prior_analytics={}",
-        state["thread_id"], question_type, entity_tokens, search_terms, search_variants, prior_analytics,
+        "intake_classifier DONE | thread={} | type={} | is_followup={} | complexity={} | entity_tokens={} | search_terms={} | combined={} | prior_analytics={} | query_intent_lines={} | query_intent={}",
+        state["thread_id"], question_type, is_followup, complexity, entity_tokens,
+        search_terms, combined_search_terms, prior_analytics, len(query_intent), query_intent,
     )
     return {
         "question_type": question_type,
+        "is_followup": is_followup,
+        "complexity": complexity,
         "entity_tokens": entity_tokens or None,
-        "search_terms": search_terms or None,
+        "search_terms": combined_search_terms or None,
         "search_variants": search_variants or entity_tokens or None,
+        "query_intent": query_intent or None,
         "specialist_outputs": [{"__reset__": True}],
     }
 
@@ -237,8 +245,8 @@ async def _call_llm(prompt, config: RunnableConfig) -> str:
     return response.content or ""
 
 
-def _parse_intake(raw: str) -> tuple[str, list[str], list[str], list[str]]:
-    """Parse LLM output — returns (question_type, entity_tokens, search_terms, search_variants)."""
+def _parse_intake(raw: str) -> tuple[str, bool, str, list[str], list[str], list[str], list[str]]:
+    """Parse LLM output — returns (question_type, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent)."""
     from json_repair import loads as json_loads
     try:
         output = parse_tag(raw, "output") or raw.strip()
@@ -246,12 +254,41 @@ def _parse_intake(raw: str) -> tuple[str, list[str], list[str], list[str]]:
         qtype = data.get("type", "analytics")
         if qtype not in ("general_chat", "analytics"):
             qtype = "analytics"
+        is_followup     = bool(data.get("is_followup", False))
+        complexity      = data.get("complexity", "simple")
+        if complexity not in ("simple", "complex", "advanced"):
+            complexity = "simple"
         entity_tokens   = [str(e) for e in (data.get("entity_tokens") or []) if e][:8]
-        search_terms    = [str(t) for t in (data.get("search_terms") or []) if t][:3]
+        search_terms    = [str(t) for t in (data.get("search_terms") or []) if t][:6]
         search_variants = [str(v) for v in (data.get("search_variants") or []) if v][:8]
-        return qtype, entity_tokens, search_terms, search_variants
+        # query_intent: typed line list — validate each entry is a non-empty string starting with a known label
+        _VALID_LABELS = ("GOAL:", "TIME:", "COMPARISON:", "DOMAIN:", "CONDITION:", "SCENARIO:", "CONTEXT:", "OUTPUT:")
+        raw_intent = data.get("query_intent") or []
+        query_intent = [
+            str(line).strip()
+            for line in raw_intent
+            if str(line).strip() and any(str(line).strip().startswith(lbl) for lbl in _VALID_LABELS)
+        ][:12]
+        return qtype, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent
     except Exception:
-        return "analytics", [], [], []  # Layer 3 fallback
+        return "analytics", False, "simple", [], [], [], []  # Layer 3 fallback
+
+
+def _combine_search_terms(
+    current_terms: list[str],
+    prior_terms: list[str],
+    is_followup: bool,
+) -> list[str]:
+    """For follow-up queries: merge current (priority) + prior terms, max 6, deduplicated by containment."""
+    if not is_followup:
+        return current_terms
+    combined = list(current_terms)
+    for pt in (prior_terms or []):
+        if not any(pt.lower() in ct.lower() or ct.lower() in pt.lower() for ct in combined):
+            combined.append(pt)
+        if len(combined) >= 6:
+            break
+    return combined
 
 
 def _format_conversation(messages: list, session_summary: str = "") -> str:

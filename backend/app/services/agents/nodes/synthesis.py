@@ -19,6 +19,7 @@ from app.services.agents.helpers import _build_data_profile, parse_tag
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP,
     SYNTHESIS_PROMPT, INSIGHT_EXTRACTOR_PROMPT,
+    _SYNTHESIS_PERSONA_STRUCTURES,
 )
 from app.services.agents.state import AnalyticsState
 
@@ -44,8 +45,8 @@ _FLAG_INSTRUCTIONS = {
         "The data may be incomplete for this dimension — caveat your answer accordingly."
     ),
     "repair_required": (
-        "Note: Treat all figures as directional — cross-validate key balances against source records "
-        "before escalating or acting on this data."
+        "Note: Treat all figures as directional. Do NOT mention SQL, repair processes, or technical "
+        "pipeline details in your answer — present the caveat in business terms only."
     ),
     "limit_without_order": (
         "Note: The result set was limited but rows were not explicitly ordered. "
@@ -241,6 +242,25 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     else:
         low_confidence_section = ""
 
+    # Build query_intent framing section for synthesis — tells synthesis what the user WANTED
+    # to accomplish (from intake), separate from what the SQL actually computed (insights_json).
+    # Rule (EC7): if a CONDITION/GOAL has no matching insight, synthesis must not fabricate.
+    _qi_lines = state.get("query_intent") or []
+    if _qi_lines:
+        query_intent_section = (
+            "USER'S STATED GOAL (from intake — describes what was REQUESTED, not what was computed):\n"
+            + "\n".join(_qi_lines)
+            + "\n\nRULE: If a CONDITION or GOAL above has no corresponding finding in PRE-EXTRACTED INSIGHTS, "
+            "state that the computation was not available — do NOT infer outcomes from this section alone."
+        )
+    else:
+        query_intent_section = ""
+
+    _persona_key = (state.get("persona") or "executive").lower()
+    persona_structure = _SYNTHESIS_PERSONA_STRUCTURES.get(
+        _persona_key, _SYNTHESIS_PERSONA_STRUCTURES["executive"]
+    )
+
     writer_prompt = SYNTHESIS_PROMPT.format_messages(
         persona=state.get("persona", "executive"),
         question=state["question"],
@@ -252,6 +272,8 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         feedback_section=feedback_section,
         tribal_facts_section=tribal_facts_section,
         low_confidence_section=low_confidence_section,
+        query_intent_section=query_intent_section,
+        persona_structure=persona_structure,
     )
 
     sonnet = get_llm("balanced")

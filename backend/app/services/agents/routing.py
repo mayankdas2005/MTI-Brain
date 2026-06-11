@@ -86,11 +86,14 @@ def route_compiler(state: AnalyticsState) -> str:
     if state.get("error") and not state.get("semantic_ir_list"):
         logger.info("route: query_compiler → error_response (IR build failed) | thread={}", state["thread_id"])
         return N_ERROR_RESPONSE
-    if state.get("filter_resolution_needed"):
-        logger.info("route: query_compiler → filter_resolver | thread={}", state["thread_id"])
-        return N_FILTER_RESOLVER
-    logger.info("route: query_compiler → sql_generator | thread={}", state["thread_id"])
-    return N_SQL_GENERATOR
+    # M7: always route through filter_resolver so filter_directive is always written.
+    # When filter_resolution_needed=False, filter_resolver does only string-building (fast).
+    # Without this, sql_generator receives no FILTER DIRECTIVE and must guess WHERE predicates.
+    logger.info(
+        "route: query_compiler → filter_resolver | resolution_needed={} | thread={}",
+        state.get("filter_resolution_needed", False), state["thread_id"],
+    )
+    return N_FILTER_RESOLVER
 
 
 def route_filter_resolver(state: AnalyticsState) -> str:

@@ -25,6 +25,93 @@ from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
 
+def _build_entity_probe_sql(spec: dict) -> str:
+    """Build COUNT(*) SQL to probe the entity filter CTE in isolation (Stage E1).
+
+    Pure string construction — no regex. Returns empty string if spec is incomplete.
+    """
+    entity_tables = spec.get("entity_tables") or []
+    entity_join_clauses = spec.get("entity_join_clauses") or []
+    entity_filters = spec.get("entity_filters") or []
+
+    if not entity_tables:
+        return ""
+
+    lines = [f"SELECT COUNT(*) AS cnt FROM {entity_tables[0]}"]
+    for i, clause in enumerate(entity_join_clauses):
+        if clause and (i + 1) < len(entity_tables):
+            lines.append(f"JOIN {entity_tables[i + 1]} ON {clause}")
+
+    where_parts = []
+    for f in entity_filters:
+        fqn = f.get("table_fqn", "")
+        col = f.get("column_name", "")
+        op = f.get("operator", "=")
+        val = f.get("value") or f.get("raw_value") or f.get("raw_user_value", "")
+        if fqn and col and val:
+            where_parts.append(f"{fqn}.{col} {op} '{val}'")
+
+    if where_parts:
+        lines.append("WHERE " + " AND ".join(where_parts))
+
+    return "\n".join(lines)
+
+
+def _build_fact_range_probe_sql(spec: dict) -> str:
+    """Build COUNT(*) SQL to probe the fact table with entity FK + broad 365-day window (Stage E2).
+
+    Pure string construction — no regex. Returns empty string if spec is incomplete.
+    """
+    fact_table = spec.get("fact_table") or ""
+    entity_tables = spec.get("entity_tables") or []
+    entity_join_clauses = spec.get("entity_join_clauses") or []
+    entity_filters = spec.get("entity_filters") or []
+    time_filter_col = spec.get("time_filter_col") or ""
+    fact_fk = spec.get("fact_fk_to_first_entity") or ""
+
+    if not fact_table or not entity_tables or not time_filter_col:
+        return ""
+
+    # Build entity subquery
+    sub_lines = [f"SELECT * FROM {entity_tables[0]}"]
+    for i, clause in enumerate(entity_join_clauses):
+        if clause and (i + 1) < len(entity_tables):
+            sub_lines.append(f"JOIN {entity_tables[i + 1]} ON {clause}")
+
+    where_parts = []
+    for f in entity_filters:
+        fqn = f.get("table_fqn", "")
+        col = f.get("column_name", "")
+        op = f.get("operator", "=")
+        val = f.get("value") or f.get("raw_value") or f.get("raw_user_value", "")
+        if fqn and col and val:
+            where_parts.append(f"{fqn}.{col} {op} '{val}'")
+    if where_parts:
+        sub_lines.append("WHERE " + " AND ".join(where_parts))
+
+    sub_sql = "    " + "\n    ".join(sub_lines)
+
+    # Extract FK column from fact_fk (form: "lpp.table.col = lpp.other.col")
+    fk_col = ""
+    if fact_fk and " = " in fact_fk:
+        fk_col = fact_fk.split(" = ")[0].strip()
+
+    if fk_col:
+        return (
+            f"SELECT COUNT(*) AS cnt\n"
+            f"FROM {fact_table}\n"
+            f"WHERE {fk_col} IN (\n"
+            f"{sub_sql}\n"
+            f")\n"
+            f"AND {time_filter_col} >= DATEADD(DAY, -365, CURRENT_DATE)"
+        )
+    return (
+        f"SELECT COUNT(*) AS cnt\n"
+        f"FROM {fact_table}\n"
+        f"WHERE {time_filter_col} >= DATEADD(DAY, -365, CURRENT_DATE)"
+    )
+
+
 def _describe_filters(filters: list) -> str:
     parts = []
     for f in filters:
@@ -178,6 +265,58 @@ async def zero_row_probe(ir: SemanticIR | None, state: AnalyticsState) -> dict:
     having_filters = [f for f in (ir.filters or []) if f.is_having and f.resolved]
     where_filters  = [f for f in (ir.filters or []) if not f.is_having and f.resolved]
     time_filter    = ir.time_filter if (ir.time_filter and ir.time_filter.resolved) else None
+
+    # Staged probe — runs BEFORE LLM probe when early-filter CTE structure is detected.
+    # Uses early_filter_spec (set by query_compiler for join_depth > 2) to probe:
+    #   E1: entity filter in isolation (matching_X CTE equivalent)
+    #   E2: fact table + entity FK + 365-day broad window
+    # This gives precise diagnosis without an LLM call when the CTE is early-filter structured.
+    early_filter_spec = state.get("early_filter_spec")
+    if early_filter_spec and "matching_" in generated_sql:
+        entity_probe_sql = _build_entity_probe_sql(early_filter_spec)
+        if entity_probe_sql:
+            e1 = await _run_count(entity_probe_sql, state)
+            logger.info("zero_row_probe | staged_E1 (entity filter) | count={} | thread={}", e1, state["thread_id"])
+            if e1 == 0:
+                entity_base = (early_filter_spec.get("entity_base") or "entity")
+                return {
+                    "probe_type": "ENTITY_FILTER_NO_MATCH",
+                    "needs_clarification": True,
+                    "reason": (
+                        f"The entity filter on {entity_base} matches 0 records. "
+                        "The filter value may not exist in the system, or the spelling/casing may be different. "
+                        "Try relaxing or removing the entity filter to confirm the query structure is correct."
+                    ),
+                }
+            # E1 returned rows — entity filter is fine, check fact date range
+            fact_range_sql = _build_fact_range_probe_sql(early_filter_spec)
+            if fact_range_sql:
+                e2 = await _run_count(fact_range_sql, state)
+                logger.info("zero_row_probe | staged_E2 (fact date range) | count={} | thread={}", e2, state["thread_id"])
+                if e2 == 0:
+                    fact_table = early_filter_spec.get("fact_table", "the fact table")
+                    time_col = early_filter_spec.get("time_filter_col", "")
+                    return {
+                        "probe_type": "DATE_RANGE_EMPTY",
+                        "needs_clarification": True,
+                        "reason": (
+                            f"The entity filter matches {e1:,} record(s), but {fact_table} "
+                            f"has no rows for those entities in the last 365 days"
+                            + (f" (column: {time_col})" if time_col else "")
+                            + ". The data may not be loaded for this time period."
+                        ),
+                    }
+                # E2 returned rows — data exists in broad window; exact window is too tight
+                logger.info("zero_row_probe | staged_E2 passed | narrowing to exact window | thread={}", state["thread_id"])
+                return {
+                    "probe_type": "WINDOW_TOO_TIGHT",
+                    "needs_clarification": True,
+                    "reason": (
+                        f"The entity filter matches {e1:,} record(s) and {e2:,} fact rows exist in a broad window, "
+                        "but the specific requested date range returns 0 rows. "
+                        "The SQL will be retried with the OR MAX(date) fallback to include the nearest available data."
+                    ),
+                }
 
     # Ask Opus to generate diagnostic probe SQLs
     probe_sqls = await _llm_generate_probe_sqls(generated_sql, state)

@@ -39,19 +39,17 @@ def _build_query_plan_section(query_plan: dict | None) -> str:
     return "\n".join(lines)
 
 
-_NUMERIC_DTYPES = {"numeric", "decimal", "integer", "bigint", "float", "double precision",
-                   "real", "smallint", "int", "int2", "int4", "int8", "float4", "float8"}
-_MEASURE_SEMANTIC = {"amount", "measure", "percentage", "ratio"}
-_EXCLUDE_SEMANTIC = {"free_text", "identifier", "date"}
+_NUMERIC_DTYPES = frozenset({
+    "numeric", "decimal", "integer", "bigint", "float", "double precision",
+    "real", "smallint", "int", "int2", "int4", "int8", "float4", "float8",
+})
+_EXCLUDE_SEMANTIC = {"free_text"}
 
 
 def _is_measurable(c: dict) -> bool:
     sem = c.get("semantic_type", "").lower()
     if sem in _EXCLUDE_SEMANTIC:
         return False
-    if sem in _MEASURE_SEMANTIC:
-        return True
-    # sem is "" or unrecognized — fall back to data_type
     return c.get("data_type", "").lower() in _NUMERIC_DTYPES
 
 
@@ -85,7 +83,11 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
 
     enriched_schema = state.get("enriched_schema") or {}
     resolved_intent = state.get("resolved_intent") or {}
-    intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
+    query_intent_lines = state.get("query_intent") or []
+    if query_intent_lines:
+        intent_summary = "USER'S STATED GOAL (framing only — do NOT derive column names from this section):\n" + "\n".join(query_intent_lines)
+    else:
+        intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
 
     prompt = MEASURE_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],

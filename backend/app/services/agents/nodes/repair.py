@@ -13,7 +13,12 @@ from langchain_core.runnables import RunnableConfig
 from app.core.logger import logger
 from app.services.agents import neo4j_client
 from app.services.agents.helpers import parse_tag
-from app.services.agents.prompts import REASONING_DIRECTIVE_REPAIR, REPAIR_PROMPT
+from app.services.agents.prompts import (
+    REASONING_DIRECTIVE_REPAIR,
+    REPAIR_PROMPT,
+    REPAIR_SYNTAX_PROMPT,
+    REPAIR_STRUCTURE_PROMPT,
+)
 
 _PERFORMANCE_DIRECTIVE = """--- PERFORMANCE DIRECTIVES ---
 If the error is a timeout or the query is slow, rewrite for Redshift performance as a senior DBA.
@@ -35,10 +40,8 @@ Business logic, tables, filters, and metric definitions must stay identical. App
 
   i. CONDITIONAL — If the error message mentions a subquery, EXISTS, or IN clause AND those
      tables are not in the ANCHOR TABLES of QUERY INTENT → remove those subqueries as the first
-     action before any other performance fix. Otherwise skip Rule i and proceed to Rule a.
+     action before any other performance fix. Otherwise skip Rule i and proceed to Rule c.
      When applicable: these are hallucinations that eliminate rows; removing them is correct.
-  a. Push WHERE filters into CTEs — never scan full tables and filter at the outer level.
-  b. Aggregate before joining — one aggregation CTE per table, then join small results.
   c. Drop SELECT * and unused CTE columns.
   d. Replace DISTINCT with GROUP BY on explicit columns.
   e. Apply the LIMIT from the original QUERY SPECIFICATION; add LIMIT 100 if absent.
@@ -54,6 +57,27 @@ Business logic, tables, filters, and metric definitions must stay identical. App
      Never fabricate reference codes that do not appear in QUERY INTENT or SCHEMA REFERENCE."""
 from app.services.agents.sql_validator_logic import validate_sql
 from app.services.agents.state import AnalyticsState
+
+
+_SYNTAX_SIGNALS = (
+    "interval", "dateadd", "date_add", "boolean", "cast", "union all", "union", "order by",
+    "syntax error", "parse error", "unexpected token",
+)
+_STRUCTURE_SIGNALS = (
+    "not exported by upstream", "ambiguous", "42702", "does not exist in table",
+    "column reference", "not in scope", "cte", "undefined column",
+)
+
+
+def _classify_error(error_msg: str) -> str:
+    lower = error_msg.lower()
+    for sig in _STRUCTURE_SIGNALS:
+        if sig in lower:
+            return "structure"
+    for sig in _SYNTAX_SIGNALS:
+        if sig in lower:
+            return "syntax"
+    return "general"
 
 
 def _format_sql(sql: str) -> str:
@@ -181,7 +205,27 @@ async def attempt_repair(
         for kw in ("timeout", "canceling", "statement timeout", "query_timeout")
     ) else ""
 
+    error_type = _classify_error(error_msg)
+
     def _build_prompt(attempts_detail: str) -> list:
+        if error_type == "syntax":
+            return REPAIR_SYNTAX_PROMPT.format_messages(
+                error_message=error_msg,
+                original_sql=first_sql,
+                prior_attempts_detail=attempts_detail,
+                schema_reference=schema_reference,
+                reasoning_directive=REASONING_DIRECTIVE_REPAIR,
+            )
+        if error_type == "structure":
+            return REPAIR_STRUCTURE_PROMPT.format_messages(
+                error_message=error_msg,
+                original_sql=first_sql,
+                prior_attempts_detail=attempts_detail,
+                candidate_paths_section=candidate_paths_section,
+                schema_reference=schema_reference,
+                semantic_ir_text=semantic_ir_text,
+                reasoning_directive=REASONING_DIRECTIVE_REPAIR,
+            )
         return REPAIR_PROMPT.format_messages(
             question=state.get("effective_question") or state.get("question", ""),
             entity_tokens_section=entity_tokens_section,
@@ -443,3 +487,64 @@ def _build_schema_reference_for_repair(sc: dict, sql: str = "") -> str:
             lines.append(f"  ... (+{len(cols) - 5} more columns in {fqn})")
 
     return "\n".join(lines)
+
+
+async def _attempt_performance_repair(
+    state: AnalyticsState,
+    sql_list: list[str],
+    config: RunnableConfig,
+) -> dict | None:
+    """Rewrite SQL for Redshift performance using EXPLAIN flags.
+
+    Returns {"sql_list": [repaired, ...]} on success, None on failure.
+    Never increments repair_count — uses a separate performance_repair_attempted gate.
+    """
+    from app.services.agents.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
+    from app.services.agents.prompts import REPAIR_PERFORMANCE_PROMPT
+
+    first_sql = sql_list[0] if sql_list else ""
+    if not first_sql:
+        return None
+
+    explain_flags = state.get("explain_flags") or []
+    explain_output = state.get("explain_output") or ""
+    if not explain_flags:
+        return None
+
+    logger.info(
+        "repair | performance repair START | flags={} | thread={}",
+        explain_flags, state["thread_id"],
+    )
+    try:
+        prompt = REPAIR_PERFORMANCE_PROMPT.format_messages(
+            explain_flags=explain_flags,
+            explain_output=explain_output[:3000],
+            original_sql=first_sql,
+        )
+        llm = get_llm("default")
+
+        @llm_breaker
+        async def _call(p=prompt):
+            from app.core.retry import retry_async
+            return await retry_async(
+                lambda: llm.ainvoke(p, config=config),
+                service="bedrock-perf-repair",
+                max_attempts=2,
+                backoff_base=3.0,
+            )
+
+        response = await _call()
+        repaired = _format_sql(parse_tag(response.content or "", "sql") or "")
+        if not repaired:
+            logger.warning("repair | performance repair produced no SQL | thread={}", state["thread_id"])
+            return None
+        is_valid, _ = validate_sql(repaired)
+        if not is_valid:
+            logger.warning("repair | performance repair produced invalid SQL | thread={}", state["thread_id"])
+            return None
+        logger.info("repair | performance repair OK | thread={}", state["thread_id"])
+        return {"sql_list": [repaired, *sql_list[1:]]}
+    except Exception as e:
+        logger.warning("repair | performance repair failed | thread={} | error={}", state["thread_id"], e)
+        return None

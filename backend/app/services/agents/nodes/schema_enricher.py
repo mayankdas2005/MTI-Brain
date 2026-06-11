@@ -150,6 +150,42 @@ def _collect_tier2_pairs(
     return pairs
 
 
+def _bfs_transitive_join(
+    adj: dict,
+    src: str,
+    dst: str,
+    max_hops: int = 4,
+) -> dict | None:
+    """BFS through resolved anchor join graph to find a transitive path.
+
+    Returns {join_clauses, path_tables, hop_count, source} or None if unreachable.
+    Only traverses edges already present in adj — no additional queries.
+    Pure Python: uses collections.deque, no regex.
+    """
+    from collections import deque as _deque
+    if src not in adj:
+        return None
+    queue = _deque([(src, [src], [])])
+    while queue:
+        current, visited_tables, acc_clauses = queue.popleft()
+        if len(visited_tables) > max_hops + 1:
+            continue
+        for neighbor, edge in (adj.get(current) or {}).items():
+            if neighbor in visited_tables:
+                continue
+            new_clauses = acc_clauses + edge["join_clauses"]
+            new_tables  = visited_tables + [neighbor]
+            if neighbor == dst:
+                return {
+                    "join_clauses": new_clauses,
+                    "path_tables":  new_tables,
+                    "hop_count":    len(new_clauses),
+                    "source":       "derived_transitive",
+                }
+            queue.append((neighbor, new_tables, new_clauses))
+    return None
+
+
 async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict:
     anchor_tables = state.get("anchor_tables_resolved") or []
     semantic_context = state.get("semantic_context") or {}
@@ -196,19 +232,53 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         except Exception as e:
             logger.warning("schema_enricher | anchor join paths lookup failed | error={}", e)
 
-    # Value-overlap fallback for anchor pairs with no explicit JoinPath in Neo4j.
-    # Discovers join conditions from actual column value overlap — handles tables
-    # where FK edges aren't yet modeled in the knowledge graph.
-    # Stored under candidate_overlap_joins (NOT anchor_join_paths) so structural
-    # JoinPath entries always win and heuristic currency joins can't override them.
+    # Three-tier join resolution for anchor pairs not covered by explicit JoinPath in Neo4j:
+    #   Tier 1 (heuristic):   value-overlap from Redshift DISTINCT probes → candidate_overlap_joins
+    #   Tier 2 (structural):  BFS through already-resolved anchor edges → anchor_join_paths
+    #   Tier 3 (structural):  Neo4j shortestPath through non-anchor intermediate tables → anchor_join_paths
+    #
+    # Structural paths (Tiers 2+3) go to anchor_join_paths so ir_builder picks them up.
+    # Heuristic value-overlap goes to candidate_overlap_joins only (display fallback).
+    # Tier 2+3 run for ALL pairs not yet in anchor_join_paths, even if value_overlap found
+    # a heuristic match, because candidate_overlap_joins is not consumed by ir_builder.
     candidate_overlap_joins: list[dict] = []
     if len(anchor_tables) >= 2:
-        resolved_pairs: set[tuple] = set()
+        # structural_pairs: pairs with confirmed structural join (feeds ir_builder join chain).
+        # Only mark as structural when actual join clauses exist — a JoinPath node with empty
+        # join_clauses must NOT block Tier 2 BFS or Tier 3 shortestPath (H2 fix).
+        structural_pairs: set[tuple] = set()
         for p in anchor_join_paths:
-            resolved_pairs.add((p["from_fqn"], p["to_fqn"]))
-            resolved_pairs.add((p["to_fqn"], p["from_fqn"]))
+            _f2, _t2 = p.get("from_fqn"), p.get("to_fqn")
+            if not (_f2 and _t2):
+                continue
+            _cl2 = list(p.get("join_clauses") or [])
+            if not _cl2 and p.get("from_col") and p.get("to_col"):
+                _cl2 = [f"{_f2}.{p['from_col']} = {_t2}.{p['to_col']}"]
+            if _cl2:
+                structural_pairs.add((_f2, _t2))
+                structural_pairs.add((_t2, _f2))
+
+        # resolved_pairs: structural + heuristic (avoids redundant value_overlap calls)
+        resolved_pairs: set[tuple] = set(structural_pairs)
+
+        # Build BFS adjacency from anchor_join_paths (both directions)
+        _adj: dict[str, dict] = {}
+        for _p in anchor_join_paths:
+            _f, _t = _p.get("from_fqn"), _p.get("to_fqn")
+            _cl = list(_p.get("join_clauses") or [])
+            if not _cl and _p.get("from_col") and _p.get("to_col") and _f and _t:
+                _cl = [f"{_f}.{_p['from_col']} = {_t}.{_p['to_col']}"]
+            _pt = list(_p.get("path_tables") or ([_f, _t] if _f and _t else []))
+            if _f and _t and _cl:
+                _adj.setdefault(_f, {})[_t] = {"join_clauses": _cl, "path_tables": _pt}
+                _adj.setdefault(_t, {})[_f] = {
+                    "join_clauses": list(reversed(_cl)),
+                    "path_tables":  list(reversed(_pt)),
+                }
+
         for i, fqn_a in enumerate(anchor_tables):
             for fqn_b in anchor_tables[i + 1:]:
+                # Tier 1 (heuristic): value-overlap — only when no join found yet at all
                 if (fqn_a, fqn_b) not in resolved_pairs:
                     try:
                         overlap = await asyncio.to_thread(
@@ -230,16 +300,70 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
                             })
                             resolved_pairs.add((fqn_a, fqn_b))
                             resolved_pairs.add((fqn_b, fqn_a))
-                        else:
-                            logger.warning(
-                                "schema_enricher | unresolved_pair | {}<->{} | no join in graph or value_overlap",
-                                fqn_a, fqn_b,
-                            )
                     except Exception as e:
                         logger.warning(
                             "schema_enricher | value_overlap_join failed | {}<->{} | error={}",
                             fqn_a, fqn_b, e,
                         )
+
+                # Tier 2 (structural BFS): derive path through already-resolved anchor edges.
+                # Runs for ALL pairs not yet in anchor_join_paths — value_overlap result irrelevant
+                # because candidate_overlap_joins is not consumed by ir_builder.
+                if (fqn_a, fqn_b) not in structural_pairs:
+                    transitive = _bfs_transitive_join(_adj, fqn_a, fqn_b)
+                    if transitive:
+                        logger.info(
+                            "schema_enricher | transitive_join | {}<->{} | via={} | hops={}",
+                            fqn_a, fqn_b, transitive["path_tables"], transitive["hop_count"],
+                        )
+                        new_path = {"from_fqn": fqn_a, "to_fqn": fqn_b, **transitive}
+                        anchor_join_paths.append(new_path)
+                        structural_pairs.add((fqn_a, fqn_b))
+                        structural_pairs.add((fqn_b, fqn_a))
+                        _adj.setdefault(fqn_a, {})[fqn_b] = {
+                            "join_clauses": transitive["join_clauses"],
+                            "path_tables":  transitive["path_tables"],
+                        }
+                        _adj.setdefault(fqn_b, {})[fqn_a] = {
+                            "join_clauses": list(reversed(transitive["join_clauses"])),
+                            "path_tables":  list(reversed(transitive["path_tables"])),
+                        }
+                    else:
+                        # Tier 3 (structural Neo4j shortestPath): last resort through non-anchor tables
+                        try:
+                            graph_path = await asyncio.to_thread(
+                                neo4j_client.find_join_via_graph_traversal, fqn_a, fqn_b
+                            )
+                            if graph_path and graph_path.get("join_clauses"):
+                                logger.info(
+                                    "schema_enricher | graph_traversal_join | {}<->{} | path={} | hops={}",
+                                    fqn_a, fqn_b, graph_path["path_tables"], graph_path.get("hop_count"),
+                                )
+                                anchor_join_paths.append(graph_path)
+                                structural_pairs.add((fqn_a, fqn_b))
+                                structural_pairs.add((fqn_b, fqn_a))
+                                _adj.setdefault(fqn_a, {})[fqn_b] = {
+                                    "join_clauses": graph_path["join_clauses"],
+                                    "path_tables":  graph_path["path_tables"],
+                                }
+                                _adj.setdefault(fqn_b, {})[fqn_a] = {
+                                    "join_clauses": list(reversed(graph_path["join_clauses"])),
+                                    "path_tables":  list(reversed(graph_path["path_tables"])),
+                                }
+                            else:
+                                logger.warning(
+                                    "schema_enricher | unresolved_pair | {}<->{} | exhausted all tiers",
+                                    fqn_a, fqn_b,
+                                )
+                        except Exception as _e:
+                            logger.warning(
+                                "schema_enricher | graph_traversal_join failed | {}<->{} | error={}",
+                                fqn_a, fqn_b, _e,
+                            )
+                            logger.warning(
+                                "schema_enricher | unresolved_pair | {}<->{} | no structural path found",
+                                fqn_a, fqn_b,
+                            )
 
     # For backward compat: join_paths for tier-2 bridge extraction uses anchor_join_paths
     join_paths = anchor_join_paths
@@ -309,6 +433,27 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         # Build filter_values for anchor cols (same as column_loader does for context_fetcher cols)
         if "filter_values" not in col:
             col["filter_values"] = column_loader.get_filter_values(col)
+
+    # ── DISTKEY annotation (L2) — fetch per anchor table, annotate column metadata ─
+    # Helps sql_generator prefer join columns that are DISTKEYs (avoids DS_DIST_BOTH).
+    # Fails silently when pg_table_def is unavailable (Redshift Serverless).
+    try:
+        from app.services.agents.redshift_client import fetch_table_distkeys as _fetch_distkeys
+        _distkey_maps: dict[str, dict[str, bool]] = {}
+        for _t_fqn in anchor_tables:
+            _parts = _t_fqn.split(".", 1)
+            if len(_parts) == 2:
+                _dk_map = await _fetch_distkeys(_parts[0], _parts[1])
+                if _dk_map:
+                    _distkey_maps[_t_fqn] = _dk_map
+        if _distkey_maps:
+            for col in anchor_cols:
+                _fqn = col.get("table_fqn", "")
+                _col_name = col.get("name", "")
+                if _fqn in _distkey_maps and _distkey_maps[_fqn].get(_col_name):
+                    col["is_distkey"] = True
+    except Exception as _dk_err:
+        logger.debug("schema_enricher | distkey annotation failed | error={}", _dk_err)
 
     # ── Apply 25-col cap per anchor table (specialists view) ──────────────────
     # Full anchor_cols go into _column_lookup (sql_generator supplement).
@@ -381,10 +526,10 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
             term = row.get("term") or ""
             if term:
                 concept_mappings[term] = {
-                    "definition": row.get("definition") or "",
-                    "computation": row.get("computation") or row.get("sql_expression") or "",
+                    "definition": row.get("description") or "",
                     "table_fqn": row.get("table_fqn") or "",
                     "term_type": row.get("term_type") or "",
+                    "term_category": row.get("term_category") or "",
                 }
         if concept_mappings:
             logger.info("schema_enricher | concept_mappings | count={} | terms={}", len(concept_mappings), list(concept_mappings.keys())[:5])

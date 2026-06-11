@@ -12,8 +12,6 @@ All other agents see the directive as an authoritative spec — they do not re-d
 
 from __future__ import annotations
 
-import re
-
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -161,6 +159,37 @@ def _build_confirmed_join_paths_section(anchor_join_paths: list[dict] | None) ->
     return "\n".join(lines)
 
 
+_CTE_PREFIXES = (
+    "from ", "join ", "select ", "with ", "union ", "insert ", "update ", "delete ",
+    "join_path:", "reads_from:", "exports:", "snapshot_dates", "forecast_base", "prior_year",
+    "opening_balance", "liquidity_", "combined_forecast", "breaches_only",
+)
+
+
+def _strip_cte_lines(text: str) -> str:
+    """Remove lines that indicate the LLM generated a full SQL/CTE structure.
+
+    directive_writer should only emit COMPUTATION/TIME_FILTER/SCHEMA_GAP/DUAL_GRAIN lines.
+    Lines starting SQL keywords or CTE names are scope creep — they conflict with
+    ir_builder's pre_loaded_joins when both reach sql_generator simultaneously.
+    Pure string check, no regex.
+    """
+    kept: list[str] = []
+    for line in text.splitlines():
+        lower = line.strip().lower()
+        if any(lower.startswith(pfx) for pfx in _CTE_PREFIXES):
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept)
+    if len(cleaned) < len(text) - 20:
+        from app.core.logger import logger as _log
+        _log.warning(
+            "directive_writer | cte_scope_creep_stripped | removed={} chars",
+            len(text) - len(cleaned),
+        )
+    return cleaned
+
+
 async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("directive_writer START | thread={}", state.get("thread_id", ""))
 
@@ -173,8 +202,10 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
     filters = resolved_intent.get("filters") or []
     dimensions = resolved_intent.get("dimensions") or []
     result_shape = resolved_intent.get("result_shape", "table")
-    query_intent = resolved_intent.get("intent") or ""
     query_complexity = resolved_intent.get("complexity") or "simple"
+    # Prefer intake-time query_intent typed lines over late-bound resolved_intent.intent
+    _qi_lines = state.get("query_intent") or []
+    query_intent = "\n".join(_qi_lines) if _qi_lines else (resolved_intent.get("intent") or "")
 
     # Get timeframe + time_filter_col — prefer resolved_intent (set by intent_assembler),
     # fall back to specialist_outputs for the non-assembler path.
@@ -234,29 +265,52 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         raw = response.content if isinstance(response.content, str) else ""
     except Exception as e:
         logger.error("directive_writer | LLM failed | thread={} | error={}", state.get("thread_id"), e)
-        return {"intent_directive": "", "intent_directive_instructions": "", "intent_directive_context": ""}
+        return {
+            "intent_directive": "DIRECTIVE_UNAVAILABLE: LLM call failed — sql_generator: use schema context and filter directive only",
+            "intent_directive_instructions": "",
+            "intent_directive_context": "",
+        }
 
     # Parse directive tags
     directive_raw = parse_tag(raw, "directive") or raw
     instructions_text = parse_tag(directive_raw, "instructions") or ""
     context_text = parse_tag(directive_raw, "context") or ""
 
+    # Strip CTE scope creep from instructions: directive_writer's job is COMPUTATION/TIME_FILTER
+    # lines only. Any line that starts a FROM/JOIN/SELECT/WITH/UNION structure means the model
+    # generated a full SQL blueprint that conflicts with ir_builder's pre_loaded_joins.
+    # Remove such lines so sql_generator receives a clean directive, not a competing SQL schema.
+    instructions_text = _strip_cte_lines(instructions_text)
+
+    # M17: enforce exactly ONE TIME_FILTER line — multiple would give CTE planner two date columns
+    _tf_lines = [l for l in instructions_text.splitlines() if l.strip().upper().startswith("TIME_FILTER:")]
+    if len(_tf_lines) > 1:
+        logger.warning(
+            "directive_writer | multiple TIME_FILTER lines={} | keeping first | thread={}",
+            len(_tf_lines), state.get("thread_id"),
+        )
+        first_seen = False
+        clean_lines = []
+        for l in instructions_text.splitlines():
+            if l.strip().upper().startswith("TIME_FILTER:"):
+                if not first_seen:
+                    clean_lines.append(l)
+                    first_seen = True
+            else:
+                clean_lines.append(l)
+        instructions_text = "\n".join(clean_lines)
+
     # Log TIME_FILTER emission — authoritative column emitted to directive
     time_filter_emitted = None
-    join_paths_emitted = 0
-    for line in directive_raw.splitlines():
+    for line in instructions_text.splitlines():
         stripped = line.strip()
         if stripped.upper().startswith("TIME_FILTER:") and time_filter_emitted is None:
             time_filter_emitted = stripped
-        if "JOIN_PATH:" in stripped.upper():
-            join_paths_emitted += 1
 
     if time_filter_emitted:
         logger.info("directive_writer | time_filter_emitted | {}", time_filter_emitted)
     else:
         logger.warning("directive_writer | TIME_FILTER missing from directive | thread={}", state.get("thread_id"))
-
-    logger.info("directive_writer | join_paths_emitted | count={}", join_paths_emitted)
     logger.info(
         "directive_writer DONE | thread={} | has_instructions={} | has_context={}",
         state.get("thread_id"), bool(instructions_text.strip()), bool(context_text.strip()),

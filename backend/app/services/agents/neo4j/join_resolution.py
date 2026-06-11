@@ -183,6 +183,45 @@ def get_joinpath_joins(candidate_fqns: list[str]) -> list[dict]:
 
 
 
+@neo4j_breaker
+def find_join_via_graph_traversal(from_fqn: str, to_fqn: str) -> dict | None:
+    """Last-resort fallback: shortest undirected JOINS_TO* path through intermediate tables.
+
+    Used when no direct JOINS_TO edge or pre-computed JoinPath covers this pair.
+    Traverses up to 4 hops in either direction. Returns join_clauses + path_tables
+    (including any intermediate bridge tables), or None if no path exists.
+    """
+    query = """
+    MATCH path = shortestPath((t1:Table)-[:JOINS_TO*1..4]-(t2:Table))
+    WHERE t1.fqn = $from AND t2.fqn = $to
+    WITH nodes(path) AS ns, relationships(path) AS rs
+    RETURN
+      [n IN ns | n.fqn] AS path_tables,
+      [i IN range(0, size(rs)-1) |
+        startNode(rs[i]).fqn + '.' + rs[i].from_col + ' = ' +
+        endNode(rs[i]).fqn   + '.' + rs[i].to_col
+      ] AS join_clauses,
+      size(rs) AS hop_count
+    LIMIT 1
+    """
+    t0 = time.monotonic()
+    result = _neo4j_run_single(query, {"from": from_fqn, "to": to_fqn})
+    logger.debug(
+        "neo4j | fn=find_join_via_graph_traversal | from={} to={} | ms={:.0f} | found={}",
+        from_fqn, to_fqn, (time.monotonic() - t0) * 1000, result is not None,
+    )
+    if not result:
+        return None
+    return {
+        "from_fqn":     from_fqn,
+        "to_fqn":       to_fqn,
+        "join_clauses": list(result.get("join_clauses") or []),
+        "path_tables":  list(result.get("path_tables") or []),
+        "hop_count":    result.get("hop_count", 1),
+        "source":       "graph_traversal",
+    }
+
+
 def get_all_join_paths_for_tables(fqns: list[str]) -> list[dict]:
     """All confirmed join paths between tables in fqns — direct JOINS_TO + pre-computed JoinPaths.
 

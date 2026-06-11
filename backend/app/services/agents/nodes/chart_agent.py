@@ -703,6 +703,8 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
     chart_type = _apply_guardrails(chart_type, all_columns, col_type_map, n_rows)
     # Data-aware sanitizer: requires inspecting actual values (negative pie theta, etc.)
     chart_type = _sanitize_chart_type(chart_type, all_columns, all_rows, col_type_map)
+    # Multi-currency override: strip $ from format and set currency as color series
+    labels = _apply_multi_currency_override(labels, all_columns, all_rows, chart_type)
 
     logger.info("chart_agent | selected type={} | thread={} | rows={}", chart_type, state["thread_id"], len(all_rows))
 
@@ -900,6 +902,29 @@ def _validate_spec(spec: dict, chart_type: str) -> bool:
 
 
 _WATERFALL_MAX_ROWS = 20   # waterfall is meaningless beyond this — window accumulates all rows
+
+def _apply_multi_currency_override(
+    labels: dict,
+    columns: list[str],
+    rows: list[list],
+    chart_type: str,
+) -> dict:
+    """When currency_code column has > 1 distinct value: remove $ from format and use currency as color."""
+    currency_col = next((c for c in columns if c.lower() in ("currency_code", "currency")), None)
+    if not currency_col:
+        return labels
+    idx = columns.index(currency_col)
+    distinct = {str(r[idx]) for r in rows if idx < len(r) and r[idx] is not None}
+    if len(distinct) <= 1:
+        return labels
+    patched = dict(labels)
+    fmt = patched.get("y_value_format") or ",.0f"
+    if "$" in fmt:
+        patched["y_value_format"] = fmt.replace("$", "").strip()
+    if chart_type in ("multi_line", "grouped_bar", "line", "bar") and not patched.get("color_column"):
+        patched["color_column"] = currency_col
+    return patched
+
 
 def _apply_guardrails(chart_type: str, columns: list[str], col_type_map: dict, n_rows: int = 0) -> str:
     """Minimal structural guardrails — only overrides structurally impossible chart types."""

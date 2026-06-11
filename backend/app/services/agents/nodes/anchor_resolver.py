@@ -98,6 +98,7 @@ def _inject_signal_tables(
     valid_tables: set,
     complexity: str = "simple",
     anchor_join_paths: list | None = None,
+    domain_cap_override: int | None = None,
 ) -> list:
     """Deterministically add high-confidence signal tables after LLM selection.
 
@@ -121,7 +122,7 @@ def _inject_signal_tables(
     caps = _COMPLEXITY_CAPS.get(complexity, _COMPLEXITY_CAPS["simple"])
     bt_cap     = caps["bt"]
     intent_cap = caps["intent"]
-    domain_cap = caps["domain"]
+    domain_cap = domain_cap_override if domain_cap_override is not None else caps["domain"]
 
     # Build joinable set: tables with JOINS_TO edge to any LLM-selected anchor
     try:
@@ -368,10 +369,20 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
 
     logger.info("anchor_resolver | llm_selected | tables={} | complexity={}", valid_anchors, complexity)
 
+    # K2: for multi-domain queries (≥3 DOMAIN lines), expand domain_cap to cover all named domains
+    _domain_lines = [l for l in (state.get("query_intent") or []) if l.startswith("DOMAIN:")]
+    _domain_cap_override = min(len(_domain_lines), 6) if len(_domain_lines) >= 3 else None
+    if _domain_cap_override:
+        logger.info(
+            "anchor_resolver | multi_domain_cap | domain_lines={} | domain_cap={}",
+            len(_domain_lines), _domain_cap_override,
+        )
+
     # Deterministic injection with JOINS_TO connectivity filter + per-signal-type caps
     valid_anchors = _inject_signal_tables(
         valid_anchors, semantic_context, valid_tables, complexity,
         anchor_join_paths=state.get("anchor_join_paths") or [],
+        domain_cap_override=_domain_cap_override,
     )
 
     logger.info(

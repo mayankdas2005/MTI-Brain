@@ -10,6 +10,131 @@ The tiered resolution pipeline:
 from __future__ import annotations
 
 
+def _extract_segments(value: str) -> list[str]:
+    """Split a DB code into meaningful tokens — no regex, plain string ops.
+
+    Splits on explicit separators used in DB codes (_  -  .  /  space), then
+    does a CamelCase char-scan pass.  Keeps tokens ≥ 3 chars, non-purely-numeric,
+    deduplicated (uppercase).
+
+    Examples:
+      "GR_AE_OPERATING_1" → ["OPERATING"]          (GR, AE < 3 chars; 1 is digit)
+      "CashInflows"        → ["CASH", "INFLOWS"]
+      "fx-rate-daily"      → ["RATE", "DAILY"]      (fx < 3 chars)
+    """
+    separators = ('_', '-', '.', '/', ' ')
+    parts = [value]
+    for sep in separators:
+        new_parts: list[str] = []
+        for p in parts:
+            new_parts.extend(p.split(sep))
+        parts = new_parts
+
+    tokens: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        current = [part[0]]
+        for c in part[1:]:
+            if c.isupper() and current and not current[-1].isupper():
+                tokens.append(''.join(current))
+                current = [c]
+            else:
+                current.append(c)
+        if current:
+            tokens.append(''.join(current))
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in tokens:
+        tu = t.upper()
+        if len(t) >= 3 and not t.isdigit() and tu not in seen:
+            seen.add(tu)
+            result.append(tu)
+    return result
+
+
+def resolve_to_patterns(
+    user_value: str,
+    filter_values: list[str],
+    value_aliases: dict[str, str] | None,
+) -> tuple[list[str], float]:
+    """Resolve a user string to one or more match patterns with a confidence score.
+
+    Returns (patterns, score):
+      score == 100, len == 1  → exact alias/vocabulary match; caller uses operator '='
+      score < 100             → fuzzy/substring patterns; caller uses operator 'ILIKE' (→ ~*)
+      empty list              → no match found
+
+    Tiers (in order):
+      1. Alias exact (100)   — human label → DB code via value_aliases
+      2. Exact vocab (100)   — case-insensitive equality against filter_values
+      3. Substring (65)      — user keyword embedded inside a DB code → ~* 'KEYWORD'
+      4. Segment fuzzy (≥80) — WRatio(user_value, segment) from _extract_segments pool
+      5. Full-code WRatio (70-84) — fallback on raw codes
+    """
+    user_lower = user_value.lower().strip()
+
+    if isinstance(value_aliases, dict):
+        for alias, canonical in value_aliases.items():
+            if canonical.lower() == user_lower:
+                return [alias], 100.0
+            if alias.lower() == user_lower:
+                return [alias], 100.0
+
+    for v in (filter_values or []):
+        if str(v).lower() == user_lower:
+            return [str(v)], 100.0
+
+    if any(user_lower in str(v).lower() for v in (filter_values or [])):
+        return [user_value.upper()], 65.0
+
+    if not filter_values or len(filter_values) > 500:
+        return [], 0.0
+
+    try:
+        from rapidfuzz import fuzz, utils
+
+        seen_segs: set[str] = set()
+        segment_pool: list[str] = []
+        for fv in filter_values:
+            for seg in _extract_segments(str(fv)):
+                if seg not in seen_segs:
+                    seen_segs.add(seg)
+                    segment_pool.append(seg)
+
+        if segment_pool:
+            matched: list[tuple[str, float]] = []
+            for seg in segment_pool:
+                score = fuzz.WRatio(user_value, seg, processor=utils.default_process)
+                if score >= 80:
+                    matched.append((seg, score))
+
+            if matched:
+                matched.sort(key=lambda x: -x[1])
+                patterns = [m[0] for m in matched]
+                deduped: list[str] = []
+                for p in patterns:
+                    if not any(p.lower() in q.lower() and p != q for q in patterns):
+                        deduped.append(p)
+                return deduped, matched[0][1]
+    except ImportError:
+        pass
+
+    try:
+        from rapidfuzz import fuzz, process, utils
+        hits = process.extract(
+            user_value, filter_values,
+            scorer=fuzz.WRatio, processor=utils.default_process, limit=3,
+        )
+        if hits and 70 <= hits[0][1] < 85:
+            return [hits[0][0]], hits[0][1]
+    except ImportError:
+        pass
+
+    return [], 0.0
+
+
 def resolve_tier1_combined(
     user_value: str,
     filter_values: list[str],
