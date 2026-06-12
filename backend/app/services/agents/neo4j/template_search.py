@@ -181,7 +181,7 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
                   AND duration.between(ap.last_seen, datetime()).days < 30
                 THEN 1.1 ELSE 1.0 END
          AS boosted_score
-    RETURN ap.id AS id, ap.error_type AS error_type, ap.error_summary AS error_summary,
+    RETURN ap.id AS id, ap.error_type AS error_type, ap.error_detail AS error_summary,
            ap.failing_element AS failing_element, ap.complexity AS complexity,
            ap.occurrence_count AS occurrence_count,
            boosted_score AS score

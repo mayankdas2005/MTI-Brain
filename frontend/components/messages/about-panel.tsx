@@ -162,10 +162,11 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 <KV
                   label="Intent"
                   value={m.intent}
+                  wrap
                 />
               )}
               {m?.resolved_filters && (
-                <KV label="Filters" value={m.resolved_filters} />
+                <KV label="Filters" value={m.resolved_filters} wrap />
               )}
             </Section>
           )}
@@ -528,11 +529,27 @@ function KV({
   label,
   value,
   mono,
+  wrap,
 }: {
   label: string;
   value: ReactNode;
   mono?: boolean;
+  wrap?: boolean;
 }) {
+  if (wrap) {
+    return (
+      <div className="py-1 text-[11px]">
+        <span className="block text-muted-foreground/80 mb-0.5">{label}</span>
+        <span
+          className={`block text-foreground/90 leading-relaxed break-words ${
+            mono ? 'font-mono tabular-nums' : ''
+          }`}
+        >
+          {value}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="flex items-baseline justify-between gap-3 py-0.5 text-[11px]">
       <span className="text-muted-foreground/80 shrink-0">{label}</span>

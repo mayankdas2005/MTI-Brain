@@ -484,7 +484,7 @@ export function ChatComposer() {
         paddingBottom: 'max(1rem, env(safe-area-inset-bottom), var(--vv-bottom-inset, 0px))',
       }}
     >
-      <div className="max-w-3xl lg:max-w-[900px] mx-auto relative">
+      <div className="max-w-3xl lg:max-w-[900px] xl:max-w-[1100px] 2xl:max-w-[1200px] mx-auto relative">
         {atOpen && (
           <PlaybookPopover
             queries={atMatches}

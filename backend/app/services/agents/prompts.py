@@ -607,6 +607,8 @@ ANTI-PATTERNS (do not repeat these):
 
 {performance_directive}
 
+{explain_section}
+
 ---
 
 RULES:
@@ -2308,12 +2310,17 @@ Available tables (⚑ markers = high-confidence match — these tables MUST be s
 Business terms (if [tables: ...] listed, those tables MUST be in anchor_tables):
 {business_terms_section}
 
+Entity value matches (strongest signal — these tables MUST be selected):
+{entity_hints_section}
+
 Example intent patterns:
 {intents_section}
 
 ---
 
 User question: {question}
+
+{query_intent_section}
 
 Rules:
 - Minimum 2 tables. For multi-domain queries (≥3 DOMAIN lines in the question, e.g. liquidity + debt + FX): 1 table per named domain — no fixed maximum; incomplete domain coverage is worse than a larger anchor set. (See MULTI-DOMAIN exception below.)
@@ -2735,6 +2742,12 @@ Scan every value. A value is implausible when:
 
 Future-dated records (maturity dates, forecast periods, scheduled payments) are normal in treasury — do NOT flag them.
 A date like 2026-04-01 when today is 2026-06-05 is simply a past date — it is NOT a concern.
+
+- DO NOT flag negative balance values — negative balances are completely normal in accounting
+  (liabilities, credit accounts, overdraft accounts, intercompany netting, reversed sign conventions).
+  Only flag balances that are impossibly large in magnitude (> $1 trillion absolute value).
+- DO NOT flag results where ALL values share the same sign — this is a sign convention, not a data error.
+  Mixed-sign results with unexpected negatives may warrant a flag only if the context rules it out.
 
 Rules:
 - If NO implausible values: output triggered=false, reason=null

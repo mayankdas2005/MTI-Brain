@@ -311,6 +311,13 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         logger.info("directive_writer | time_filter_emitted | {}", time_filter_emitted)
     else:
         logger.warning("directive_writer | TIME_FILTER missing from directive | thread={}", state.get("thread_id"))
+        if time_filter_col and time_filter_col != "not specified":
+            injected = f"TIME_FILTER: {time_filter_col}"
+            instructions_text = (injected + "\n" + instructions_text).strip()
+            logger.info(
+                "directive_writer | TIME_FILTER injected (LLM missed it) | col={} | thread={}",
+                time_filter_col, state.get("thread_id"),
+            )
     logger.info(
         "directive_writer DONE | thread={} | has_instructions={} | has_context={}",
         state.get("thread_id"), bool(instructions_text.strip()), bool(context_text.strip()),

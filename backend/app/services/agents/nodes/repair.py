@@ -80,6 +80,64 @@ def _classify_error(error_msg: str) -> str:
     return "general"
 
 
+def _extract_root_cost(text: str) -> float:
+    """Extract the upper bound cost estimate from the first EXPLAIN cost= line. Pure string split."""
+    for line in text.split("\n"):
+        if "cost=" in line:
+            after_cost = line.split("cost=", 1)[1]
+            range_part = after_cost.split(" ")[0]
+            upper = range_part.split("..")[-1]
+            try:
+                return float(upper)
+            except ValueError:
+                continue
+    return 0.0
+
+
+def _parse_explain_flags(text: str, cost_threshold: float = 10_000_000) -> list[str]:
+    """Parse Redshift EXPLAIN output for performance anti-patterns. Pure string search, no regex."""
+    flags: list[str] = []
+    for line in text.split("\n"):
+        # Heavy redistribution — both tables shuffled (worst case, DISTKEY mismatch)
+        if "DS_DIST_BOTH" in line and "DIST_BOTH" not in flags:
+            flags.append("DIST_BOTH")
+        # Broadcast inner — entire inner table sent to every node
+        if "DS_BCAST_INNER" in line and "CROSS_JOIN_BROADCAST" not in flags:
+            flags.append("CROSS_JOIN_BROADCAST")
+        # One-sided outer redistribution
+        if "DS_DIST_OUTER" in line and "DIST_OUTER" not in flags:
+            flags.append("DIST_OUTER")
+        # One-sided inner redistribution (moderate — OK if inner is small)
+        if "DS_DIST_INNER" in line and "DIST_INNER" not in flags:
+            flags.append("DIST_INNER")
+        # All-diststyle redistributions (moderate)
+        if "DS_DIST_ALL_INNER" in line and "DIST_ALL_INNER" not in flags:
+            flags.append("DIST_ALL_INNER")
+        if "DS_DIST_ALL_OUTER" in line and "DIST_ALL_OUTER" not in flags:
+            flags.append("DIST_ALL_OUTER")
+        # Internal planning anomaly
+        if "DS_DIST_ERR" in line and "DIST_ERR" not in flags:
+            flags.append("DIST_ERR")
+        # Nested loop warning string (appended by Redshift planner)
+        if "Nested Loop Join in the query plan" in line and "CARTESIAN_RISK" not in flags:
+            flags.append("CARTESIAN_RISK")
+        # Nested loop as a plan node type (different EXPLAIN format, same issue)
+        if "->  Nested Loop" in line and "NESTED_LOOP" not in flags:
+            flags.append("NESTED_LOOP")
+        # Disk spill — sort/hash ran out of memory
+        if "External Sort" in line and "DISK_SPILL" not in flags:
+            flags.append("DISK_SPILL")
+        # Large intermediate materialization
+        if "->  Materialize" in line and "MATERIALIZE" not in flags:
+            flags.append("MATERIALIZE")
+    # Large table scan — separate pass since it needs cost extraction
+    for line in text.split("\n"):
+        if "Seq Scan on" in line and "cost=" in line and "LARGE_TABLE_SCAN" not in flags:
+            if _extract_root_cost(line) > cost_threshold:
+                flags.append("LARGE_TABLE_SCAN")
+    return flags
+
+
 def _format_sql(sql: str) -> str:
     if not sql.strip():
         return sql
@@ -205,7 +263,83 @@ async def attempt_repair(
         for kw in ("timeout", "canceling", "statement timeout", "query_timeout")
     ) else ""
 
+    # P1: classify error FIRST — EXPLAIN is skipped for syntax/structure errors where it
+    # would fail identically to execution (column/syntax validation runs at plan time).
+    # Only "general" (execution) errors — timeouts, cartesian joins, 0 rows — benefit from EXPLAIN.
     error_type = _classify_error(error_msg)
+
+    # Run EXPLAIN on the failing SQL — fires only here (after first execution failure),
+    # not pre-emptively in sql_validator on every query.
+    _explain_flags: list[str] = []
+    if error_type == "general":
+        try:
+            from app.services.agents.redshift_client import run_explain as _run_explain
+            _explain_lines = await _run_explain(first_sql)
+            _explain_text = "\n".join(_explain_lines)
+            _explain_flags = _parse_explain_flags(_explain_text)
+            if _explain_flags:
+                logger.info("repair | explain_flags={} | thread={}", _explain_flags, state["thread_id"])
+        except Exception as _ex:
+            logger.debug("repair | explain failed (non-blocking) | error={}", _ex)
+
+    if _explain_flags:
+        _exp_lines = [f"REDSHIFT EXPLAIN FLAGS (from failed query analysis): {', '.join(str(f) for f in _explain_flags)}"]
+
+        # Timeout signature: large table scan + broadcast/nested loop = entity filter not pre-applied
+        if any(f in _explain_flags for f in ("CROSS_JOIN_BROADCAST", "CARTESIAN_RISK", "NESTED_LOOP")) \
+                and "LARGE_TABLE_SCAN" in _explain_flags:
+            _exp_lines.append(
+                "  → TIMEOUT PATTERN: large fact table (~hundreds of thousands of rows) scanned "
+                "THEN broadcast to every node for a nested loop join. The entity filter was applied "
+                "AFTER the full scan. Rewrite: (1) matching_entity CTE resolves entity filters first "
+                "(returns ~1-10 rows), (2) fact_window CTE joins ON matching_entity + 365-day date "
+                "pre-filter (narrows to hundreds), (3) bounds CTE computes MAX(date) from fact_window, "
+                "(4) base_data applies exact date range."
+            )
+        elif any(f in _explain_flags for f in ("CROSS_JOIN_BROADCAST", "CARTESIAN_RISK", "NESTED_LOOP")):
+            _exp_lines.append(
+                "  → Near-cartesian join detected. Apply entity filters BEFORE joining the large "
+                "fact table — use a filtering CTE (matching_entity) first, then join on the result."
+            )
+
+        if any(f in _explain_flags for f in ("DIST_BOTH", "DS_DIST_ALL_NONE")):
+            _exp_lines.append(
+                "  → DS_DIST_BOTH: join columns are not Redshift DISTKEYs — rows are redistributed "
+                "across nodes (expensive but not a data correctness issue). Pre-aggregate or filter "
+                "one side of the join to reduce redistributed row count."
+            )
+
+        if "DIST_OUTER" in _explain_flags:
+            _exp_lines.append(
+                "  → DS_DIST_OUTER: outer table redistributed. Pre-filter it to a smaller result "
+                "set before the join to reduce shuffled rows."
+            )
+
+        if "DISK_SPILL" in _explain_flags:
+            _exp_lines.append(
+                "  → DISK_SPILL: sort/hash ran out of memory and spilled to disk — very slow. "
+                "Add a pre-aggregation CTE to reduce row count before the expensive sort. "
+                "Replace SELECT DISTINCT with GROUP BY on explicit columns."
+            )
+
+        if "LARGE_TABLE_SCAN" in _explain_flags and not any(
+            f in _explain_flags for f in ("CROSS_JOIN_BROADCAST", "CARTESIAN_RISK", "NESTED_LOOP")
+        ):
+            _exp_lines.append(
+                "  → LARGE_TABLE_SCAN: fact table scanned without entity filter pushdown. "
+                "Move entity/reference table filters into an early CTE that runs BEFORE the "
+                "fact table join."
+            )
+
+        if "MATERIALIZE" in _explain_flags:
+            _exp_lines.append(
+                "  → MATERIALIZE: large intermediate dataset held in memory. "
+                "Pre-filter the materialized subquery with date + entity conditions."
+            )
+
+        explain_section = "\n".join(_exp_lines)
+    else:
+        explain_section = ""
 
     def _build_prompt(attempts_detail: str) -> list:
         if error_type == "syntax":
@@ -238,6 +372,7 @@ async def attempt_repair(
             directive_section=directive_section,
             feedback_section=feedback_section,
             performance_directive=_perf_directive,
+            explain_section=explain_section,
             anti_patterns=anti_patterns,
             candidate_paths_section=candidate_paths_section,
             reasoning_directive=REASONING_DIRECTIVE_REPAIR,

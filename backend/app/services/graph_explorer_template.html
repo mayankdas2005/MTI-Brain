@@ -11,49 +11,86 @@
   <script src="https://unpkg.com/vis-network@9.1.2/dist/vis-network.min.js"></script>
   <link href="https://unpkg.com/vis-network@9.1.2/dist/vis-network.min.css" rel="stylesheet" />
   <style>
-    html, body { height: 100%; margin: 0; padding: 0; font-family: 'Alliance No.1', sans-serif; }
-    #mynetwork { width: 100%; height: 100%; }
+    /* ── Theme tokens ── */
+    :root {
+      --ge-bg:            #ffffff;
+      --ge-fg:            #0f1b2d;
+      --ge-fg-heading:    #111827;
+      --ge-fg-body:       #374151;
+      --ge-fg-muted:      #9ca3af;
+      --ge-border:        #e5e7eb;
+      --ge-border-subtle: #f3f4f6;
+      --ge-surface:       #f9fafb;
+      --ge-surface-2:     #f3f4f6;
+      --ge-primary-soft:  #7c3aed;
+      --ge-input-border:  #d1d5db;
+      --ge-copy-hover:    #e5e7eb;
+      --ge-copy-hover-fg: #374151;
+      --ge-panel-shadow:  rgba(0,0,0,0.08);
+      --ge-ctx-shadow:    rgba(0,0,0,0.13);
+    }
+    html.dark {
+      --ge-bg:            #1c1f23;
+      --ge-fg:            #e4e8ee;
+      --ge-fg-heading:    #e4e8ee;
+      --ge-fg-body:       #c9d4e0;
+      --ge-fg-muted:      #8a9bb0;
+      --ge-border:        #333c47;
+      --ge-border-subtle: #2d3540;
+      --ge-surface:       #272c33;
+      --ge-surface-2:     #2c323b;
+      --ge-primary-soft:  #a78bfa;
+      --ge-input-border:  #445060;
+      --ge-copy-hover:    #333c47;
+      --ge-copy-hover-fg: #e4e8ee;
+      --ge-panel-shadow:  rgba(0,0,0,0.35);
+      --ge-ctx-shadow:    rgba(0,0,0,0.5);
+    }
+
+    html, body { height: 100%; margin: 0; padding: 0; font-family: 'Alliance No.1', sans-serif; background: var(--ge-bg); color: var(--ge-fg); }
+    #mynetwork { width: 100%; height: 100%; background: var(--ge-bg); }
 
     /* ── Toolbar ── */
     #toolbar {
       display: flex; align-items: center; gap: 8px;
-      padding: 8px 14px; background: #fff;
-      border-bottom: 1px solid #e5e7eb; flex-shrink: 0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      padding: 8px 14px; background: var(--ge-bg);
+      border-bottom: 1px solid var(--ge-border); flex-shrink: 0;
+      box-shadow: 0 1px 3px var(--ge-panel-shadow);
     }
     .toolbar-btn {
       display: inline-flex; align-items: center; gap: 5px;
       padding: 5px 11px; border-radius: 6px;
-      border: 1px solid #d1d5db; background: #fff;
-      font-size: 12px; font-weight: 600; color: #374151;
+      border: 1px solid var(--ge-input-border); background: var(--ge-bg);
+      font-size: 12px; font-weight: 600; color: var(--ge-fg-body);
       cursor: pointer; white-space: nowrap;
-      transition: background 0.12s, border-color 0.12s;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
     }
-    .toolbar-btn:hover { background: #f9fafb; border-color: #9ca3af; }
-    .toolbar-btn:active { background: #f3f4f6; }
+    .toolbar-btn:hover { background: var(--ge-surface); border-color: var(--ge-fg-muted); }
+    .toolbar-btn:active { background: var(--ge-surface-2); }
     .toolbar-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .toolbar-btn.active { background: var(--ge-surface-2); border-color: var(--ge-primary-soft); color: var(--ge-primary-soft); }
     #search-box {
       display: flex; align-items: center; gap: 6px;
-      background: #f9fafb; border: 1px solid #d1d5db;
+      background: var(--ge-surface); border: 1px solid var(--ge-input-border);
       border-radius: 6px; padding: 4px 10px;
     }
     #search-input {
       background: transparent; border: none; outline: none;
-      font-size: 12px; color: #374151; width: 160px;
+      font-size: 12px; color: var(--ge-fg-body); width: 160px;
     }
-    #search-input::placeholder { color: #9ca3af; }
+    #search-input::placeholder { color: var(--ge-fg-muted); }
     #search-clear {
       display: none; background: none; border: none;
-      cursor: pointer; color: #9ca3af; font-size: 14px;
+      cursor: pointer; color: var(--ge-fg-muted); font-size: 14px;
       padding: 0; line-height: 1;
     }
 
     /* ── Panel collapse ── */
     #panel-inner {
       position: absolute; top: 0; right: 0; bottom: 0;
-      width: 480px; background: #fff;
-      border-left: 1px solid #e5e7eb;
-      box-shadow: -4px 0 16px rgba(0,0,0,0.08);
+      width: 480px; background: var(--ge-bg);
+      border-left: 1px solid var(--ge-border);
+      box-shadow: -4px 0 16px var(--ge-panel-shadow);
       overflow-y: auto; overflow-x: hidden;
       padding: 16px; z-index: 10;
       transition: transform 0.26s ease, opacity 0.2s ease;
@@ -98,31 +135,31 @@
     .prop-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     .prop-table thead th {
       text-align: left; font-size: 11px; font-weight: 700;
-      color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em;
-      padding: 0 8px 8px; border-bottom: 1px solid #e5e7eb;
+      color: var(--ge-fg-muted); text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 0 8px 8px; border-bottom: 1px solid var(--ge-border);
     }
     .prop-table thead th:last-child { width: 28px; }
-    .prop-table tbody tr { border-bottom: 1px solid #f3f4f6; }
+    .prop-table tbody tr { border-bottom: 1px solid var(--ge-border-subtle); }
     .prop-table tbody tr:last-child { border-bottom: none; }
-    .prop-table tbody tr:hover { background: #f9fafb; }
+    .prop-table tbody tr:hover { background: var(--ge-surface); }
     .prop-table td { padding: 10px 8px; vertical-align: top; font-size: 13px; }
-    .prop-key { font-weight: 700; color: #111827; width: 160px; min-width: 160px; word-break: break-word; overflow-wrap: anywhere; }
-    .prop-value { color: #374151; word-break: break-word; overflow-wrap: anywhere; line-height: 1.5; min-width: 0; }
+    .prop-key { font-weight: 700; color: var(--ge-fg-heading); width: 160px; min-width: 160px; word-break: break-word; overflow-wrap: anywhere; }
+    .prop-value { color: var(--ge-fg-body); word-break: break-word; overflow-wrap: anywhere; line-height: 1.5; min-width: 0; }
     .show-all-btn {
       display: inline; margin-left: 4px; padding: 0;
       background: none; border: none; cursor: pointer;
-      color: #7c3aed; font-size: 12px; font-weight: 600; line-height: 1;
+      color: var(--ge-primary-soft); font-size: 12px; font-weight: 600; line-height: 1;
     }
     .show-all-btn:hover { text-decoration: underline; }
     .prop-copy-td { width: 28px; text-align: right; }
     .copy-btn {
       display: inline-flex; align-items: center; justify-content: center;
       opacity: 0; cursor: pointer; width: 22px; height: 22px;
-      border-radius: 4px; background: none; border: none; color: #9ca3af;
+      border-radius: 4px; background: none; border: none; color: var(--ge-fg-muted);
       transition: opacity 0.1s, background 0.1s; flex-shrink: 0;
     }
     .prop-table tbody tr:hover .copy-btn { opacity: 0.6; }
-    .copy-btn:hover { opacity: 1 !important; background: #e5e7eb; color: #374151; }
+    .copy-btn:hover { opacity: 1 !important; background: var(--ge-copy-hover); color: var(--ge-copy-hover-fg); }
 
     /* ── Detail panel badges ── */
     .detail-node-badge {
@@ -138,18 +175,18 @@
     /* ── Panel header ── */
     .panel-header {
       display: flex; justify-content: space-between; align-items: center;
-      padding-bottom: 12px; border-bottom: 1px solid #e5e7eb; margin-bottom: 16px;
+      padding-bottom: 12px; border-bottom: 1px solid var(--ge-border); margin-bottom: 16px;
     }
-    .panel-title { font-size: 14px; font-weight: 700; color: #111827; }
+    .panel-title { font-size: 14px; font-weight: 700; color: var(--ge-fg-heading); }
     .icon-btn {
       display: inline-flex; align-items: center; justify-content: center;
       width: 28px; height: 28px; border-radius: 4px; border: none;
-      background: none; color: #9ca3af; cursor: pointer;
+      background: none; color: var(--ge-fg-muted); cursor: pointer;
     }
-    .icon-btn:hover { background: #f3f4f6; color: #374151; }
+    .icon-btn:hover { background: var(--ge-surface-2); color: var(--ge-fg-body); }
     .ov-section-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-    .ov-section-title { font-size: 13px; font-weight: 700; color: #374151; }
-    .ov-section-count { color: #9ca3af; font-weight: 400; }
+    .ov-section-title { font-size: 13px; font-weight: 700; color: var(--ge-fg-body); }
+    .ov-section-count { color: var(--ge-fg-muted); font-weight: 400; }
 
     /* ── Layout button spinner ── */
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -159,7 +196,8 @@
     #graph-status {
       position: absolute; bottom: 10px; left: 50%;
       transform: translateX(-50%);
-      background: rgba(15,23,42,0.1); color: rgba(34,34,34,0.7);
+      background: var(--ge-surface); color: var(--ge-fg-muted);
+      border: 1px solid var(--ge-border);
       font-size: 11px; font-weight: 500;
       padding: 5px 14px; border-radius: 999px;
       pointer-events: none; z-index: 10;
@@ -170,21 +208,21 @@
     /* ── Right-click context menu ── */
     #ctx-menu {
       display: none; position: fixed; z-index: 2000;
-      background: #fff; border: 1px solid #e5e7eb;
-      border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.13);
+      background: var(--ge-bg); border: 1px solid var(--ge-border);
+      border-radius: 8px; box-shadow: 0 4px 24px var(--ge-ctx-shadow);
       min-width: 230px; overflow: hidden; padding: 4px 0;
     }
     .ctx-item {
       padding: 9px 16px; font-size: 13px; cursor: pointer;
-      display: flex; align-items: flex-start; gap: 11px; color: #374151;
+      display: flex; align-items: flex-start; gap: 11px; color: var(--ge-fg-body);
       user-select: none;
     }
-    .ctx-item:hover:not(.ctx-disabled) { background: #f3f4f6; }
+    .ctx-item:hover:not(.ctx-disabled) { background: var(--ge-surface-2); }
     .ctx-item.ctx-disabled { opacity: 0.38; pointer-events: none; }
-    .ctx-icon { width: 16px; height: 16px; flex-shrink: 0; color: #6b7280; margin-top: 1px; }
+    .ctx-icon { width: 16px; height: 16px; flex-shrink: 0; color: var(--ge-fg-muted); margin-top: 1px; }
     .ctx-label { font-weight: 600; line-height: 1.3; }
-    .ctx-sub { font-size: 11px; color: #9ca3af; font-weight: 400; margin-top: 1px; }
-    .ctx-sep { border: none; border-top: 1px solid #f3f4f6; margin: 3px 0; }
+    .ctx-sub { font-size: 11px; color: var(--ge-fg-muted); font-weight: 400; margin-top: 1px; }
+    .ctx-sep { border: none; border-top: 1px solid var(--ge-border-subtle); margin: 3px 0; }
   </style>
 </head>
 <body style="display:flex;flex-direction:column;height:100vh;overflow:hidden;">
@@ -217,15 +255,36 @@
       Auto Layout
     </button>
 
+    <!-- Theme toggle -->
+    <button class="toolbar-btn" id="theme-btn" title="Toggle light / dark theme">
+      <svg id="theme-icon-sun" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="5"/>
+        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+      </svg>
+      <svg id="theme-icon-moon" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" style="display:none">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+      <span id="theme-label">Dark</span>
+    </button>
+
+    <!-- Edges toggle -->
+    <button class="toolbar-btn" id="edges-btn" title="Show / hide all edges">
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+        <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
+      </svg>
+      <span id="edges-label">Hide relationships</span>
+    </button>
+
     <div style="flex:1;"></div>
-    <span style="font-size:12px;font-weight:700;color:#222;letter-spacing:0.04em;">MTI Brain · Graph Explorer</span>
+    <span style="font-size:12px;font-weight:700;color:var(--ge-fg);letter-spacing:0.04em;">MTI Brain · Graph Explorer</span>
   </div>
 
   <!-- ── Main area ── -->
   <div style="display:flex;flex:1;overflow:hidden;position:relative;">
 
     <!-- Graph canvas -->
-    <div id="mynetwork" style="position:absolute;inset:0;background:#fff;"></div>
+    <div id="mynetwork" style="position:absolute;inset:0;"></div>
     <div id="graph-status"></div>
 
     <!-- Floating panel toggle button -->
@@ -378,8 +437,6 @@
             neo4jId:    record.r.identity,
             arrows:     { to: { enabled: true, scaleFactor: 0.7 } },
             color:      { color: '#b0b8c4', highlight: '#57C7E3', hover: '#7a8898' },
-            // align:'top' = label rotates PARALLEL to the edge direction
-            font:       { align: 'top', size: 10, color: '#6b7280', strokeWidth: 3, strokeColor: '#ffffff' },
             smooth:     { enabled: true, type: 'dynamic', roundness: 0.5 }
           });
         }
@@ -396,7 +453,7 @@
     const nodeById  = new Map(allNodes.map(n => [n.id, n]));
 
     const visibleNodeIds = new Set(allNodes.map(n => n.id));
-    const visibleEdgeIds = new Set();
+    const visibleEdgeIds = new Set(allEdges.map(e => e.id));
 
     // True only when the node has BOTH a visible edge (been touched) AND a hidden edge (more to explore).
     // On initial load (no edges visible) every node is clean \u2014 rings appear contextually as you explore.
@@ -504,23 +561,23 @@
       const primaryLabel = (node.labels && node.labels[0]) || 'Node';
       const color = getLabelColor(primaryLabel);
       let html = `<span class="detail-node-badge" style="background:${color};">${escHtml(primaryLabel)}</span>
-        <div style="font-size:14px;font-weight:700;color:#111827;margin-bottom:10px;">${escHtml(node.label || '')}</div>
-        <hr style="border:none;border-top:1px solid #e5e7eb;margin-bottom:12px;"/>
-        <div style="font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">All Relationships (${rels.length})</div>`;
+        <div style="font-size:14px;font-weight:700;color:var(--ge-fg-heading);margin-bottom:10px;">${escHtml(node.label || '')}</div>
+        <hr style="border:none;border-top:1px solid var(--ge-border);margin-bottom:12px;"/>
+        <div style="font-size:11px;font-weight:700;color:var(--ge-fg-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">All Relationships (${rels.length})</div>`;
       if (!rels.length) {
-        html += `<div style="color:#9ca3af;font-size:13px;padding:8px 0;">No relationships found.</div>`;
+        html += `<div style="color:var(--ge-fg-muted);font-size:13px;padding:8px 0;">No relationships found.</div>`;
       } else {
         rels.forEach(({ dir, type, otherId, visible }) => {
           const other = nodeById.get(otherId);
           const otherName = other ? (other.label || String(otherId)) : String(otherId);
-          const arrowOut = `<svg width="12" height="12" fill="none" stroke="#6b7280" stroke-width="2.5" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
-          const arrowIn  = `<svg width="12" height="12" fill="none" stroke="#6b7280" stroke-width="2.5" viewBox="0 0 24 24"><path d="M19 12H5M11 6L5 12l6 6"/></svg>`;
-          const hiddenBadge = visible ? '' : `<span style="font-size:10px;background:#f3f4f6;color:#9ca3af;border-radius:3px;padding:1px 5px;margin-left:4px;">hidden</span>`;
-          html += `<div style="padding:8px 0;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          const arrowOut = `<svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
+          const arrowIn  = `<svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M19 12H5M11 6L5 12l6 6"/></svg>`;
+          const hiddenBadge = visible ? '' : `<span style="font-size:10px;background:var(--ge-border-subtle);color:var(--ge-fg-muted);border-radius:3px;padding:1px 5px;margin-left:4px;">hidden</span>`;
+          html += `<div style="padding:8px 0;border-bottom:1px solid var(--ge-border-subtle);display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--ge-fg-muted);">
             ${dir === 'out' ? arrowOut : arrowIn}
-            <span style="display:inline-flex;align-items:center;padding:2px 12px;background:#d1d5db;font-size:10px;font-weight:700;color:#374151;
+            <span style="display:inline-flex;align-items:center;padding:2px 12px;background:var(--ge-surface-2);font-size:10px;font-weight:700;color:var(--ge-fg-body);
               clip-path:polygon(8px 0%,calc(100% - 8px) 0%,100% 50%,calc(100% - 8px) 100%,8px 100%,0% 50%);">${escHtml(type)}</span>
-            <span style="font-size:12px;color:#374151;">${escHtml(otherName)}${hiddenBadge}</span>
+            <span style="font-size:12px;color:var(--ge-fg-body);">${escHtml(otherName)}${hiddenBadge}</span>
           </div>`;
         });
       }
@@ -531,9 +588,9 @@
       setPanelOpen(true);
     }
 
-    // Initial state: all nodes visible, no edges — expand nodes to reveal connections
+    // Initial state: all nodes and all edges visible
     const nodesDS = new vis.DataSet(allNodes.map(withExpansionStyle));
-    const edgesDS = new vis.DataSet([]);
+    const edgesDS = new vis.DataSet(allEdges);
 
     // ── vis.js options ───────────────────────────────────────────────
     const visOptions = {
@@ -553,7 +610,8 @@
       interaction: { hover: true, tooltipDelay: 200, navigationButtons: true, keyboard: true, selectConnectedEdges: false, hoverConnectedEdges: false },
       edges: {
         smooth:  { enabled: true, type: 'dynamic', roundness: 0.5 },
-        font:    { align: 'top', size: 10, color: '#6b7280', strokeWidth: 3, strokeColor: '#ffffff' },
+        // align:'top' = label rotates PARALLEL to the edge; color/stroke driven by getVisThemeOptions()
+        font:    { align: 'top', size: 10, color: '#6b7280', strokeWidth: 4, strokeColor: '#ffffff' },
         arrows:  { to: { enabled: true, scaleFactor: 0.7 } },
         color:   { color: '#b0b8c4', highlight: '#57C7E3', hover: '#7a8898' }
       },
@@ -568,11 +626,50 @@
     const container = document.getElementById('mynetwork');
     const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, visOptions);
 
-    // Stop simulation after initial stabilization; vis.js auto-resumes on drag
-    network.once('stabilizationIterationsDone', () => {
-      network.stopSimulation();
-      network.fit({ animation: { duration: 600, easingFunction: 'easeOutQuad' } });
-    });
+    // Runs on page load (automatic) and when the Auto Layout button is clicked.
+    function runAutoLayout() {
+      const btn  = document.getElementById('layout-btn');
+      const icon = document.getElementById('layout-icon');
+      btn.disabled = true;
+      icon.classList.add('spinning');
+
+      const allIds = nodesDS.getIds();
+      const spread = Math.max(600, allIds.length * 60);
+      nodesDS.update(allIds.map(id => ({
+        id,
+        x: (Math.random() - 0.5) * spread,
+        y: (Math.random() - 0.5) * spread,
+        fixed: false
+      })));
+
+      network.setOptions({
+        physics: {
+          enabled: true,
+          solver: 'forceAtlas2Based',
+          forceAtlas2Based: {
+            gravitationalConstant: -80,
+            centralGravity: 0.008,
+            springLength: 140,
+            springConstant: 0.08,
+            damping: 0.45,
+            avoidOverlap: 1
+          },
+          stabilization: { enabled: true, updateInterval: 30 }
+        }
+      });
+
+      network.once('stabilizationIterationsDone', () => {
+        network.stopSimulation();
+        network.fit({ animation: { duration: 500, easingFunction: 'easeOutQuad' } });
+        btn.disabled = false;
+        icon.classList.remove('spinning');
+      });
+
+      network.stabilize(500);
+    }
+
+    // Auto-run layout on initial load
+    runAutoLayout();
 
     // ── Panel refs ───────────────────────────────────────────────────
     const overviewContent = document.getElementById('overviewContent');
@@ -671,7 +768,7 @@
         <div class="ov-section-row">
           <span class="ov-section-title">Nodes <span class="ov-section-count">(${totalNodes})</span></span>
           <button class="icon-btn" data-action="sort-overview" title="Toggle sort order"
-            style="width:auto;padding:0 7px;gap:4px;display:inline-flex;align-items:center;font-size:11px;font-weight:600;color:#6b7280;border:1px solid #e5e7eb;border-radius:5px;height:22px;">
+            style="width:auto;padding:0 7px;gap:4px;display:inline-flex;align-items:center;font-size:11px;font-weight:600;color:var(--ge-fg-muted);border:1px solid var(--ge-border);border-radius:5px;height:22px;">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/>
             </svg>
@@ -716,14 +813,14 @@
         const color = getLabelColor(primaryLabel);
         detailBody.innerHTML =
           `<span class="detail-node-badge" style="background:${color};">${escHtml(primaryLabel)}</span>` +
-          `<hr style="border:none;border-top:1px solid #e5e7eb;margin-bottom:12px;"/>` +
+          `<hr style="border:none;border-top:1px solid var(--ge-border);margin-bottom:12px;"/>` +
           buildPropsTable(data.neo4jId, data.properties || {});
       } else {
         detailTitle.textContent = 'Relationship details';
         const relType = data.type || data.label || 'RELATIONSHIP';
         detailBody.innerHTML =
           `<span class="detail-rel-badge">${escHtml(relType)}</span>` +
-          `<hr style="border:none;border-top:1px solid #e5e7eb;margin-bottom:12px;"/>` +
+          `<hr style="border:none;border-top:1px solid var(--ge-border);margin-bottom:12px;"/>` +
           buildPropsTable(data.neo4jId, data.properties || {});
       }
     }
@@ -839,51 +936,7 @@
 
     // ── Auto Layout (scatter → physics stabilization) ─────────────────
     document.getElementById('layout-btn').addEventListener('click', () => {
-      const btn  = document.getElementById('layout-btn');
-      const icon = document.getElementById('layout-icon');
-      btn.disabled = true;
-      icon.classList.add('spinning');
-
-      // Step 1: unpin any manually-dragged nodes and scatter all positions.
-      // Nodes at physics equilibrium have zero net force — startSimulation() on a
-      // stable graph does nothing. Scattering breaks the equilibrium so physics
-      // can find a genuinely new layout.
-      const allIds = nodesDS.getIds();
-      const spread = Math.max(600, allIds.length * 60);
-      nodesDS.update(allIds.map(id => ({
-        id,
-        x: (Math.random() - 0.5) * spread,
-        y: (Math.random() - 0.5) * spread,
-        fixed: false
-      })));
-
-      // Step 2: set physics params, then explicitly call stabilize().
-      // setOptions alone does not fire stabilizationIterationsDone —
-      // only network.stabilize() triggers that event.
-      network.setOptions({
-        physics: {
-          enabled: true,
-          solver: 'forceAtlas2Based',
-          forceAtlas2Based: {
-            gravitationalConstant: -80,
-            centralGravity: 0.008,
-            springLength: 140,
-            springConstant: 0.08,
-            damping: 0.45,
-            avoidOverlap: 1
-          },
-          stabilization: { enabled: true, updateInterval: 30 }
-        }
-      });
-
-      network.once('stabilizationIterationsDone', () => {
-        network.stopSimulation();
-        network.fit({ animation: { duration: 500, easingFunction: 'easeOutQuad' } });
-        btn.disabled = false;
-        icon.classList.remove('spinning');
-      });
-
-      network.stabilize(500);
+      runAutoLayout();
     });
 
     // ── Init ─────────────────────────────────────────────────────────
@@ -948,6 +1001,82 @@
     document.addEventListener('click', e => { if (!ctxMenu.contains(e.target)) hideCtxMenu(); });
     document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtxMenu(); });
     document.addEventListener('contextmenu', e => e.preventDefault());
+
+    // ── Theme toggle ─────────────────────────────────────────────────
+    const themeBtn      = document.getElementById('theme-btn');
+    const themeIconSun  = document.getElementById('theme-icon-sun');
+    const themeIconMoon = document.getElementById('theme-icon-moon');
+    const themeLabel    = document.getElementById('theme-label');
+
+    function getVisThemeOptions() {
+      const dark = document.documentElement.classList.contains('dark');
+      return {
+        nodes: { font: { color: dark ? 'rgba(255,255,255,0.82)' : 'rgba(0,0,0,0.82)' } },
+        edges: {
+          color: {
+            color:     dark ? '#445060' : '#b0b8c4',
+            highlight: dark ? '#4ea6e0' : '#57C7E3',
+            hover:     dark ? '#556070' : '#7a8898'
+          },
+          font: {
+            color:       dark ? '#c9d4e0' : '#6b7280',
+            strokeWidth: dark ? 0        : 4,
+            strokeColor: dark ? 'transparent' : '#ffffff'
+          }
+        }
+      };
+    }
+
+    function applyTheme(dark) {
+      if (dark) {
+        document.documentElement.classList.add('dark');
+        themeIconSun.style.display  = 'none';
+        themeIconMoon.style.display = '';
+        themeLabel.textContent      = 'Light';
+      } else {
+        document.documentElement.classList.remove('dark');
+        themeIconSun.style.display  = '';
+        themeIconMoon.style.display = 'none';
+        themeLabel.textContent      = 'Dark';
+      }
+      network.setOptions(getVisThemeOptions());
+      try { localStorage.setItem('ge-theme', dark ? 'dark' : 'light'); } catch {}
+    }
+
+    themeBtn.addEventListener('click', () => {
+      applyTheme(!document.documentElement.classList.contains('dark'));
+    });
+
+    // Restore saved theme preference
+    try {
+      if (localStorage.getItem('ge-theme') === 'dark') applyTheme(true);
+    } catch {}
+
+    // ── Edges toggle ─────────────────────────────────────────────────
+    const edgesBtn   = document.getElementById('edges-btn');
+    const edgesLabel = document.getElementById('edges-label');
+    let edgesVisible = true;
+
+    edgesBtn.addEventListener('click', () => {
+      edgesVisible = !edgesVisible;
+      if (edgesVisible) {
+        // Restore all edges that aren't already on canvas
+        const currentIds = new Set(edgesDS.getIds());
+        const toAdd = allEdges.filter(e => !currentIds.has(e.id));
+        if (toAdd.length) edgesDS.add(toAdd);
+        allEdges.forEach(e => visibleEdgeIds.add(e.id));
+        edgesLabel.textContent = 'Hide relationships';
+        edgesBtn.classList.remove('active');
+        runAutoLayout();
+      } else {
+        edgesDS.remove(edgesDS.getIds());
+        visibleEdgeIds.clear();
+        edgesLabel.textContent = 'Show relationships';
+        edgesBtn.classList.add('active');
+      }
+      refreshExpansionStyles();
+      updateStatus();
+    });
   </script>
 </body>
 </html>

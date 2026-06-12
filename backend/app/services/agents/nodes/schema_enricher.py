@@ -365,6 +365,97 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
                                 fqn_a, fqn_b,
                             )
 
+    # ── N1: Null-join-key table pruning ──────────────────────────────────────────
+    # For character/text join columns, if the semantic model sampler found zero distinct
+    # values AND zero sample values, no non-null rows were found → JOINs produce 0 rows.
+    # has_data and null_frac are unreliable signals (semantic model generation bug can set
+    # has_data=False on columns that have real data). Pure string ops, no regex.
+
+    def _col_has_joinable_data(c: dict) -> bool:
+        dtype = (c.get("data_type") or "").lower()
+        name  = (c.get("name") or "").lower()
+        is_string_col = "char" in dtype or "text" in dtype
+        if not is_string_col:
+            return True
+        if "uuid" in name:
+            return True
+        distinct = c.get("distinct_values") or []
+        sample   = c.get("sample_values") or []
+        return bool(distinct) or bool(sample)
+
+    _col_data_map: dict[tuple, bool] = {
+        (c.get("table_fqn") or "", c.get("name") or ""): _col_has_joinable_data(c)
+        for c in anchor_cols
+        if c.get("table_fqn") and c.get("name")
+    }
+    _null_join_tables: set[str] = set()
+    for _jp in anchor_join_paths:
+        for _clause in (_jp.get("join_clauses") or []):
+            for _side in _clause.split("="):
+                _side_stripped = _side.strip()
+                _jparts = _side_stripped.split(".")
+                if len(_jparts) == 3:
+                    _jfqn = _jparts[0] + "." + _jparts[1]
+                    _jcol = _jparts[2]
+                    if _jfqn in anchor_set and not _col_data_map.get((_jfqn, _jcol), True):
+                        _null_join_tables.add(_jfqn)
+
+    if _null_join_tables and (len(anchor_tables) - len(_null_join_tables)) >= 1:
+        logger.warning(
+            "schema_enricher | null_join_pruning | removing={} | join column has no sampled data | thread={}",
+            sorted(_null_join_tables), state["thread_id"],
+        )
+        anchor_tables = [t for t in anchor_tables if t not in _null_join_tables]
+        anchor_set = set(anchor_tables)
+        anchor_cols = [c for c in anchor_cols if c.get("table_fqn") not in _null_join_tables]
+        anchor_join_paths = [
+            p for p in anchor_join_paths
+            if p.get("from_fqn") not in _null_join_tables
+            and p.get("to_fqn") not in _null_join_tables
+        ]
+
+    # ── N1-ext: Null-join-key pruning for bridge (intermediate) table join columns ──
+    # Multi-hop paths from G1 BFS/graph traversal include bridge tables not in anchor_set.
+    # If a bridge join column has no sampled data, the entire path produces 0 rows.
+    # Prune the path entry (not the anchor table) when a null bridge join column is found.
+    _bridge_fqns: set[str] = set()
+    for _jp in anchor_join_paths:
+        for _pt in (_jp.get("path_tables") or []):
+            if _pt and _pt not in anchor_set:
+                _bridge_fqns.add(_pt)
+
+    if _bridge_fqns:
+        try:
+            _bridge_cols = await asyncio.to_thread(
+                neo4j_client.get_columns_for_tables, sorted(_bridge_fqns)
+            )
+            for _bc in (_bridge_cols or []):
+                _bfqn = _bc.get("table_fqn") or ""
+                _bname = _bc.get("name") or ""
+                if _bfqn and _bname:
+                    _col_data_map[(_bfqn, _bname)] = _col_has_joinable_data(_bc)
+        except Exception as _be:
+            logger.debug("schema_enricher | bridge_col_load_failed | error={}", _be)
+
+    _null_bridge_path_indices: set[int] = set()
+    for _i, _jp in enumerate(anchor_join_paths):
+        for _clause in (_jp.get("join_clauses") or []):
+            for _side in _clause.split("="):
+                _side_stripped = _side.strip()
+                _jparts = _side_stripped.split(".")
+                if len(_jparts) == 3:
+                    _jfqn = _jparts[0] + "." + _jparts[1]
+                    _jcol = _jparts[2]
+                    if _jfqn in _bridge_fqns and not _col_data_map.get((_jfqn, _jcol), True):
+                        _null_bridge_path_indices.add(_i)
+                        logger.warning(
+                            "schema_enricher | null_bridge_join_pruning | path_idx={} | bridge={} | col={} | thread={}",
+                            _i, _jfqn, _jcol, state["thread_id"],
+                        )
+
+    if _null_bridge_path_indices:
+        anchor_join_paths = [p for i, p in enumerate(anchor_join_paths) if i not in _null_bridge_path_indices]
+
     # For backward compat: join_paths for tier-2 bridge extraction uses anchor_join_paths
     join_paths = anchor_join_paths
 
@@ -554,6 +645,7 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         "enriched_schema": enriched_schema,
         "semantic_context": updated_ctx,
         "anchor_join_paths": anchor_join_paths,
+        "anchor_tables_resolved": anchor_tables,
         "candidate_overlap_joins": candidate_overlap_joins,
         "concept_mappings": concept_mappings or None,
     }

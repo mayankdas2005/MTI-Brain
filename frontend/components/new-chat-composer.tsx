@@ -259,7 +259,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
 
   return (
     <div className={centered ? '' : 'px-4 pb-4 pt-2'}>
-      <div className={centered ? 'w-full' : 'max-w-3xl lg:max-w-[900px] mx-auto'}>
+      <div className={centered ? 'w-full' : 'max-w-3xl lg:max-w-[900px] xl:max-w-[1100px] 2xl:max-w-[1200px] mx-auto'}>
         <div className="relative">
           {/* Slash command popover */}
           {slashOpen && (

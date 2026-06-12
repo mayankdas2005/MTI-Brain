@@ -182,16 +182,44 @@ async def write_anti_pattern(
 
 
 def _extract_join_outline(sql: str) -> str:
-    """Extract the JOIN clauses from the first CTE so future queries know the join keys."""
+    """Extract meaningful JOIN clauses using sqlglot AST.
+
+    Captures all joins that have an ON clause — both base tables (lpp.xxx) and named CTEs.
+    Skips CROSS JOINs without ON (utility CTEs like snapshot_dates).
+    Deduplicates by join target so the same CTE joined in weekly+monthly CTEs appears once.
+    """
     if not sql:
         return ""
-    joins = re.findall(
-        r"(?:INNER\s+JOIN|LEFT\s+JOIN|JOIN)\s+(lpp\.\w+)\s+ON\s+([^\n]+)",
-        sql, re.IGNORECASE,
-    )
-    if not joins:
+    try:
+        import sqlglot
+        from sqlglot import exp as _exp
+        parsed = sqlglot.parse_one(sql, dialect="redshift", error_level=sqlglot.ErrorLevel.IGNORE)
+        if not parsed:
+            return ""
+        results = []
+        seen: set[str] = set()
+        for join in parsed.find_all(_exp.Join):
+            on_node = join.args.get("on")
+            if not on_node:
+                continue  # skip CROSS JOINs (no ON clause = utility CTE like snapshot_dates)
+            table_node = join.this.find(_exp.Table)
+            if not table_node:
+                continue
+            db = table_node.db or ""
+            name = table_node.name or ""
+            if not name:
+                continue
+            fqn = f"{db}.{name}" if db else name
+            if fqn in seen:
+                continue  # same CTE joined in weekly + monthly CTEs — count once
+            seen.add(fqn)
+            on_str = on_node.sql(dialect="redshift")[:80]
+            results.append(f"JOIN {fqn} ON {on_str}")
+            if len(results) >= 6:
+                break
+        return " | ".join(results)
+    except Exception:
         return ""
-    return " | ".join(f"JOIN {tbl} ON {clause.strip()[:80]}" for tbl, clause in joins[:4])
 
 
 def _extract_filter_summary(ir: SemanticIR) -> str:

@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Download, ClipboardCopy,
+  Download, ClipboardCopy, RotateCcw,
   TrendingUp, Activity, Layers,
   BarChart2, BarChart3, PieChart,
   Table2, ScatterChart,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useTheme } from 'next-themes';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { CHART_PALETTE } from '@/components/charts/theme';
 
 // ─── Chart type switcher metadata ─────────────────────────────────────────────
@@ -429,7 +430,7 @@ function RangeSlider({ total, startLabel, endLabel, onCommit }: {
 
 // ─── Vega Visualization wrapper ────────────────────────────────────────────────
 
-type ChartActions = { copy: () => Promise<void>; download: () => Promise<void> };
+type ChartActions = { copy: () => Promise<void>; download: () => Promise<void>; reset: () => void };
 
 function VegaVisualization({ rawSpec, conversationId, onActionsReady }: {
   rawSpec: Record<string, unknown>;
@@ -442,6 +443,36 @@ function VegaVisualization({ rawSpec, conversationId, onActionsReady }: {
   const viewRef      = useRef<VegaView | null>(null);
   const heightRef    = useRef<number | null>(null);
   const [dataSlice, setDataSlice] = useState<Record<string, unknown>[] | null>(null);
+  const [containerWidth, setContainerWidth] = useState<number | null>(null);
+  const [resetCounter, setResetCounter] = useState(0);
+
+  const handleReset = useCallback(() => {
+    heightRef.current = null;
+    setResetCounter(c => c + 1);
+  }, []);
+
+  // Track container width so the embed effect re-runs (and Vega re-measures width:'container')
+  // whenever the viewport changes. Only update state when the width actually changes to avoid
+  // spurious re-embeds on vertical-only resizes.
+  useEffect(() => {
+    const measure = () => {
+      const outer = containerRef.current?.parentElement;
+      if (!outer) return;
+      const w = outer.getBoundingClientRect().width;
+      if (w > 0) setContainerWidth(prev => (prev !== w ? w : prev));
+    };
+    measure();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(measure, 150);
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => { setDataSlice(null); heightRef.current = null; }, [rawSpec]);
 
@@ -490,10 +521,10 @@ function VegaVisualization({ rawSpec, conversationId, onActionsReady }: {
     }
   }, []);
 
-  // Expose copy/download to parent toolbar as soon as handlers are stable
+  // Expose copy/download/reset to parent toolbar as soon as handlers are stable
   useEffect(() => {
-    onActionsReady?.({ copy: handleCopy, download: handleDownload });
-  }, [onActionsReady, handleCopy, handleDownload]);
+    onActionsReady?.({ copy: handleCopy, download: handleDownload, reset: handleReset });
+  }, [onActionsReady, handleCopy, handleDownload, handleReset]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -533,23 +564,7 @@ function VegaVisualization({ rawSpec, conversationId, onActionsReady }: {
       mounted = false;
       if (localView) { localView.finalize(); viewRef.current = null; }
     };
-  }, [embedSpec]);
-
-  // Scroll over the chart to resize its height — calls Vega view API directly to avoid re-embedding
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const handler = (e: WheelEvent) => {
-      const view = viewRef.current;
-      if (!view) return;
-      e.preventDefault();
-      const next = Math.max(150, Math.min(900, (heightRef.current ?? 350) - Math.sign(e.deltaY) * 30));
-      heightRef.current = next;
-      view.height(next).run();
-    };
-    el.addEventListener('wheel', handler, { passive: false });
-    return () => el.removeEventListener('wheel', handler);
-  }, []);
+  }, [embedSpec, containerWidth, resetCounter]);
 
   const startLabel = sliderInfo.uniqueXValues.length
     ? String(sliderInfo.uniqueXValues[0] ?? '') : '';
@@ -780,7 +795,6 @@ function ChartTypeSwitcher({ types, activeType, onSelect }: {
           <button
             key={t}
             onClick={() => onSelect(t)}
-            title={label}
             className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors border ${
               isActive
                 ? 'bg-foreground/10 border-border text-foreground'
@@ -816,20 +830,39 @@ function ChartToolbar({ types, activeType, onSelect, actions }: {
       </div>
       {hasActions && (
         <div className="flex gap-1 shrink-0">
-          <button
-            onClick={() => actions.copy()}
-            title="Copy chart"
-            className="p-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
-          >
-            <ClipboardCopy className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => actions.download()}
-            title="Download chart"
-            className="p-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
-          >
-            <Download className="w-3.5 h-3.5" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => actions.reset()}
+                className="p-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Reset chart</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => actions.copy()}
+                className="p-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+              >
+                <ClipboardCopy className="w-3.5 h-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Copy chart</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => actions.download()}
+                className="p-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Download chart</TooltipContent>
+          </Tooltip>
         </div>
       )}
     </div>

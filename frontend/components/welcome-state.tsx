@@ -70,7 +70,7 @@ const TAGLINES_EVENING: string[] = [
   'The day\u2019s almost done. Finish strong',
   'Tying up loose ends',
   'Leave nothing unexamined',
-  'The best close-of-day is an informed one',
+  'The best close of day is an informed one',
   'Tomorrow starts with what you know tonight',
   'Finish the day on your terms',
   'One question can change tomorrow\u2019s outcome',
@@ -306,7 +306,7 @@ export function WelcomeState({ onSuggestion }: WelcomeStateProps = {}) {
                   </div>
                   {pinnedMetrics.length > 3 && (
                     <p className="text-[11px] text-muted-foreground/60 text-center mt-2">
-                      +{pinnedMetrics.length - 3} more - unpin some to see them here
+                      +{pinnedMetrics.length - 3} more &mdash; unpin some to see them here
                     </p>
                   )}
                 </>

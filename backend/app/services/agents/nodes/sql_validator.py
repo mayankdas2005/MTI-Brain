@@ -165,35 +165,51 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
                             fqn, col, null_frac, state["thread_id"],
                         )
 
+        # Gate C: P4 static anti-pattern detection — pure string checks, no regex
+        for sql in fixed_sql_list:
+            sql_upper = sql.upper()
+
+            # OR in a JOIN ON clause — can cause near-cartesian product
+            if " OR " in sql_upper and " JOIN " in sql_upper and " ON " in sql_upper:
+                # Crude check: OR appears somewhere after an ON keyword inside a JOIN context
+                on_idx = sql_upper.find(" ON ")
+                while on_idx != -1:
+                    next_join = sql_upper.find(" JOIN ", on_idx)
+                    next_where = sql_upper.find(" WHERE ", on_idx)
+                    clause_end = min(
+                        x for x in [next_join, next_where, len(sql_upper)] if x > on_idx
+                    )
+                    on_clause = sql_upper[on_idx:clause_end]
+                    if " OR " in on_clause and "or_join_condition" not in new_flags:
+                        new_flags.append("or_join_condition")
+                        logger.debug("sql_validator | flag=or_join_condition | thread={}", state["thread_id"])
+                        break
+                    on_idx = sql_upper.find(" ON ", on_idx + 4)
+
+            # Explicit CROSS JOIN not followed by a scalar subquery
+            if "CROSS JOIN" in sql_upper and "or_join_condition" not in new_flags:
+                cross_idx = sql_upper.find("CROSS JOIN")
+                after = sql_upper[cross_idx + 10:cross_idx + 30].lstrip()
+                if not after.startswith("(SELECT") and "explicit_cross_join" not in new_flags:
+                    new_flags.append("explicit_cross_join")
+                    logger.debug("sql_validator | flag=explicit_cross_join | thread={}", state["thread_id"])
+
+            # SELECT DISTINCT in outermost query — often inefficient for large fact tables
+            if "SELECT DISTINCT" in sql_upper and "distinct_overuse" not in new_flags:
+                new_flags.append("distinct_overuse")
+                logger.debug("sql_validator | flag=distinct_overuse | thread={}", state["thread_id"])
+
+            # Function-wrapped filter column — prevents index/pushdown (e.g. DATE(col), LOWER(col))
+            _func_patterns = ("DATE(", "LOWER(", "UPPER(", "TRUNC(", "TO_CHAR(")
+            if any(p in sql_upper for p in _func_patterns) and " WHERE " in sql_upper:
+                where_idx = sql_upper.rfind(" WHERE ")
+                where_clause = sql_upper[where_idx:]
+                if any(p in where_clause for p in _func_patterns) and "function_filter_wrap" not in new_flags:
+                    new_flags.append("function_filter_wrap")
+                    logger.debug("sql_validator | flag=function_filter_wrap | thread={}", state["thread_id"])
+
         if new_flags != list(state.get("reliability_flags") or []):
             result["reliability_flags"] = new_flags
-
-        # Phase 2: EXPLAIN — only runs when all static gates pass
-        from app.services.agents.redshift_client import run_explain as _run_explain
-        from app.core.config import settings as _settings
-        _cost_threshold = float(
-            getattr(getattr(_settings, "sql_validator", None), "explain_cost_threshold", None) or 10_000_000
-        )
-        _sql_to_explain = fixed_sql_list[0] if fixed_sql_list else ""
-        if _sql_to_explain:
-            _explain_lines = await _run_explain(_sql_to_explain)
-            _explain_text = "\n".join(_explain_lines)
-            _explain_cost = _extract_root_cost(_explain_text)
-            _explain_flags = _parse_explain_flags(_explain_text, _cost_threshold)
-            if _explain_flags:
-                logger.warning(
-                    "sql_validator | EXPLAIN flags={} | cost={:.0f} | thread={}",
-                    _explain_flags, _explain_cost, state["thread_id"],
-                )
-            else:
-                logger.info(
-                    "sql_validator | EXPLAIN clean | cost={:.0f} | thread={}",
-                    _explain_cost, state["thread_id"],
-                )
-            result["explain_cost"] = _explain_cost
-            result["explain_flags"] = _explain_flags
-            result["explain_output"] = _explain_text
-            result["needs_performance_repair"] = bool(_explain_flags)
 
         return result
 

@@ -204,9 +204,6 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     asyncio.create_task(write_audit_log(state, sql_list[0] if sql_list else "", total_rows, "success"))
 
-    # L3: SVL post-execution stats — disk spill detection (requires pg_catalog access)
-    asyncio.create_task(_log_svl_stats(state["thread_id"]))
-
     logger.info(
         "executor DONE | thread={} | total_rows={} | columns={} | no_data=False | flags={} | passing to synthesis",
         state["thread_id"], total_rows, all_columns, reliability_flags,
@@ -472,35 +469,6 @@ def _strip_all_where_filters(sql: str) -> str | None:
         return stmt.sql(dialect="redshift", pretty=True)
     except Exception:
         return None
-
-
-async def _log_svl_stats(thread_id: str) -> None:
-    """Fetch SVL post-execution stats and log disk spill to Langfuse.
-
-    Runs as a fire-and-forget task — never raises, never affects query result.
-    svl_query_summary requires pg_catalog access; silently skipped on Serverless.
-    """
-    try:
-        from app.services.agents.redshift_client import execute_query
-        _, qid_rows = await execute_query("SELECT pg_last_query_id()", thread_id=thread_id)
-        query_id = qid_rows[0][0] if qid_rows else None
-        if not query_id:
-            return
-        _, svl_rows = await execute_query(
-            "SELECT MAX(elapsed) AS max_elapsed, BOOL_OR(is_diskbased) AS disk_spill "
-            "FROM svl_query_summary WHERE query = %s",
-            [query_id],
-            thread_id=thread_id,
-        )
-        if svl_rows and svl_rows[0]:
-            elapsed_ms = svl_rows[0][0]
-            disk_spill = svl_rows[0][1]
-            logger.info(
-                "executor | svl | thread={} | query_id={} | elapsed_ms={} | disk_spill={}",
-                thread_id, query_id, elapsed_ms, disk_spill,
-            )
-    except Exception as e:
-        logger.debug("executor | svl stats unavailable | thread={} | error={}", thread_id, e)
 
 
 def _drop_col_predicates(node, col_name: str):

@@ -99,6 +99,12 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
             measures_summary = f"Already selected as measures: {', '.join(measure_names)}"
             break
 
+    # N4: prefer LLM-cleaned explicit_entities from anchor_resolver's query_plan over raw
+    # entity_tokens (which may include measure names like 'closing balance').
+    _query_plan = state.get("query_plan") or {}
+    _explicit = _query_plan.get("explicit_entities") or []
+    _effective_entity_tokens = _explicit if _explicit else (state.get("entity_tokens") or [])
+
     prompt = DIMENSION_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -108,7 +114,7 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         measures_summary=measures_summary,
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
-        entity_tokens_section=_build_entity_tokens_section(state.get("entity_tokens") or []),
+        entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
     )
 
     from app.services.agents.bedrock import get_llm

@@ -469,11 +469,12 @@ def _load_join_paths(
     unresolved_pairs: list[dict] = []
 
     # Tier A: anchor_join_paths from state (Neo4j ground truth — highest confidence)
-    # Value: (join_clauses_list, path_tables_list) — all hops stored, not just first
-    state_join_lookup: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+    # Value: (path_id, join_clauses_list, path_tables_list) — all hops stored, not just first
+    state_join_lookup: dict[tuple[str, str], tuple[str | None, list[str], list[str]]] = {}
     for path in (anchor_join_paths or []):
         from_fqn    = path.get("from_fqn")
         to_fqn      = path.get("to_fqn")
+        path_id     = path.get("id") or None
         clauses     = path.get("join_clauses") or []
         path_tables = path.get("path_tables") or []
 
@@ -483,8 +484,8 @@ def _load_join_paths(
             path_tables = [from_fqn, to_fqn]
 
         if from_fqn and to_fqn and clauses:
-            state_join_lookup[(from_fqn, to_fqn)] = (list(clauses), list(path_tables))
-            state_join_lookup[(to_fqn, from_fqn)] = (list(reversed(clauses)), list(reversed(path_tables)))
+            state_join_lookup[(from_fqn, to_fqn)] = (path_id, list(clauses), list(path_tables))
+            state_join_lookup[(to_fqn, from_fqn)] = (path_id, list(reversed(clauses)), list(reversed(path_tables)))
 
     # Tier B: JOIN_PATH lines from intent_directive (fallback for unresolved pairs)
     _intent_joins: dict[tuple[str, str], str] = {}
@@ -498,12 +499,16 @@ def _load_join_paths(
                     _intent_joins[(_f, _t)] = _clause
                     _intent_joins[(_t, _f)] = _clause
 
+    collected_join_path_ids: list[str] = []
+
     for i in range(len(anchor_tables) - 1):
         from_table = anchor_tables[i]
         to_table   = anchor_tables[i + 1]
 
         if (from_table, to_table) in state_join_lookup:
-            path_clauses, hop_tables = state_join_lookup[(from_table, to_table)]
+            path_id, path_clauses, hop_tables = state_join_lookup[(from_table, to_table)]
+            if path_id and path_id not in collected_join_path_ids:
+                collected_join_path_ids.append(path_id)
             all_join_clauses.extend(path_clauses)
             join_types.extend(["JOIN"] * len(path_clauses))
             for tbl in hop_tables:
@@ -535,7 +540,7 @@ def _load_join_paths(
             all_join_clauses.append(None)
             join_types.append("JOIN")
 
-    return [], all_join_clauses, all_path_tables, join_types, [], unresolved_pairs
+    return collected_join_path_ids, all_join_clauses, all_path_tables, join_types, [], unresolved_pairs
 
 
 def _qualify_join_clause(clause: str, left_table: str, right_table: str) -> str:

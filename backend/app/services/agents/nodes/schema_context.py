@@ -239,7 +239,7 @@ async def fetch_anti_patterns(state: AnalyticsState) -> str:
         embedding = await _get_embedding(state["question"])
         patterns = neo4j_client.search_anti_patterns(embedding)
         if not patterns:
-            logger.info("schema_context | anti_patterns | MISS (no matches above threshold) | thread={}", state.get("thread_id"))
+            logger.info("schema_context | anti_patterns | MISS (threshold=0.65) | thread={}", state.get("thread_id"))
             return "(none)"
         if state.get("semantic_context") is not None:
             state["semantic_context"]["anti_patterns"] = patterns
@@ -269,7 +269,7 @@ async def fetch_query_patterns(state: AnalyticsState) -> tuple[list, bool, str |
         embedding = await _get_embedding(state["question"])
         patterns = neo4j_client.search_query_patterns(embedding)
         if not patterns:
-            logger.info("schema_context | query_patterns | MISS (no matches above threshold) | thread={}", state.get("thread_id"))
+            logger.info("schema_context | query_patterns | MISS (threshold=0.65) | thread={}", state.get("thread_id"))
             return [], False, None
         if state.get("semantic_context") is not None:
             state["semantic_context"]["query_patterns"] = patterns

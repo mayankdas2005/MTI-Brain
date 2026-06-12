@@ -70,12 +70,6 @@ class AnalyticsState(TypedDict):
 
     early_filter_spec: dict | None          # L4: entity-first CTE blueprint for deep-join queries (join_depth > 2)
 
-    # ── SQL performance (EXPLAIN phase in sql_validator) ─────────────────────
-    explain_cost: float                  # root cost estimate from EXPLAIN
-    explain_flags: list[str]             # CROSS_JOIN_BROADCAST | DIST_BOTH | DIST_OUTER | CARTESIAN_RISK | LARGE_TABLE_SCAN
-    explain_output: str                  # raw EXPLAIN text (passed to REPAIR_PERFORMANCE_PROMPT)
-    needs_performance_repair: bool       # True when explain_flags is non-empty
-    performance_repair_attempted: bool   # prevents re-entry into performance repair
 
     # ── Execution ────────────────────────────────────────────────────────────
     result_list: list[dict]               # raw query results per sub-query

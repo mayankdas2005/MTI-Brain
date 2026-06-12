@@ -123,8 +123,8 @@ async def generate_sql_llm(
         query_patterns, pattern_matched, pattern_name = await fetch_query_patterns(state)
         state["_anti_patterns"] = anti_patterns
         state["_query_patterns"] = query_patterns
-        state["_pattern_matched"] = pattern_matched
-        state["_pattern_name"] = pattern_name
+        state["pattern_matched"] = pattern_matched
+        state["pattern_name"] = pattern_name
 
     logger.info(
         "sql_generator | context_injection | anti_patterns={} | query_pattern={} | thread={}",

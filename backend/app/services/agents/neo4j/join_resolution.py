@@ -166,6 +166,7 @@ def get_joinpath_joins(candidate_fqns: list[str]) -> list[dict]:
          ) AS best_path
     WHERE best_path IS NOT NULL
     RETURN from_fqn, to_fqn,
+           best_path.id            AS id,
            best_path.join_clauses  AS join_clauses,
            best_path.path_tables   AS path_tables,
            best_path.hop_count     AS hop_count,

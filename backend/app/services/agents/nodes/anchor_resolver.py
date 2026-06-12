@@ -268,12 +268,21 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
                 f"Include them as anchor tables unless the user instruction explicitly asks to change them.]"
             )
 
+    _query_intent_lines = state.get("query_intent") or []
+    query_intent_section = (
+        "CONFIRMED INTENT FROM INTAKE ANALYSIS:\n"
+        + "\n".join(f"  {l}" for l in _query_intent_lines)
+        if _query_intent_lines else ""
+    )
+
     anchor_prompt = ANCHOR_RESOLVER_PROMPT.format_messages(
         question=question,
         tables_section=_build_tables_section(semantic_context),
         business_terms_section=_build_terms_section(semantic_context),
+        entity_hints_section=_build_entity_hints_section(semantic_context),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         intents_section=_build_intents_section(semantic_context),
+        query_intent_section=query_intent_section,
     )
 
     from app.services.agents.prompts import QUERY_PLANNER_PROMPT

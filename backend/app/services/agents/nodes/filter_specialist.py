@@ -143,6 +143,12 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
     else:
         intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
 
+    # N4: prefer LLM-cleaned explicit_entities from anchor_resolver's query_plan over raw
+    # entity_tokens (which may include measure names like 'closing balance').
+    _query_plan = state.get("query_plan") or {}
+    _explicit = _query_plan.get("explicit_entities") or []
+    _effective_entity_tokens = _explicit if _explicit else entity_tokens
+
     prompt = FILTER_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -152,7 +158,7 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
         entity_hints_section=_build_entity_hints_section(entity_hints),
-        entity_tokens_section=_build_entity_tokens_section(entity_tokens),
+        entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
     )
 
     from app.services.agents.bedrock import get_llm

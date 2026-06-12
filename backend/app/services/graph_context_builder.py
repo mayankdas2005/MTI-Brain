@@ -197,7 +197,10 @@ async def generate_and_store(
     all_tables = list(dict.fromkeys(path_tables + anchor_tables))
 
     if not all_tables:
-        raise ValueError(f"No anchor/path tables in graph_context for conversation_id={conversation_id}")
+        logger.warning(
+            "graph_context_builder | no_anchor_tables | conv={} | building partial graph from metadata only",
+            conversation_id,
+        )
 
     used_columns: list[dict] = snapshot.get("used_columns") or []
     join_clauses: list[str]  = snapshot.get("join_clauses") or []

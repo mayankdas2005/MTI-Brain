@@ -3,7 +3,7 @@
 import { Message, StreamingStep, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, Pencil, X, Check, Code2, TableIcon, Info, MoreHorizontal, Pin, LayoutDashboard, Loader2, Network } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, ChevronDown, Pencil, X, Check, Code2, TableIcon, Info, MoreHorizontal, Pin, LayoutDashboard, Loader2, Network } from 'lucide-react';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import {
   Dialog,
@@ -711,10 +711,10 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                           ? <Loader2 className="w-4 h-4 animate-spin" />
                           : <Network className="w-4 h-4" />
                         }
-                        {gcStatus === 'ready'                     ? 'View Graph'        :
-                         gcStatus === 'pending' && !gcTimedOut    ? 'Generating…'       :
-                         gcStatus === 'failed'  || gcTimedOut     ? 'Rebuild'           :
-                                                                    'Graph Context'}
+                        {gcStatus === 'ready'                     ? 'View Graph Context'    :
+                         gcStatus === 'pending' && !gcTimedOut    ? 'Generating…'           :
+                         gcStatus === 'failed'  || gcTimedOut     ? 'Rebuild Graph Context' :
+                                                                    'Build Graph Context'}
                       </DropdownMenuItem>
                     ) : (
                       <Tooltip>
@@ -722,7 +722,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                           <div className="cursor-not-allowed">
                             <DropdownMenuItem disabled className="gap-2 pointer-events-none">
                               <Network className="w-4 h-4" />
-                              Graph Context
+                              Build Graph Context
                             </DropdownMenuItem>
                           </div>
                         </TooltipTrigger>
@@ -971,7 +971,7 @@ function ReasoningPanel({
             }}
           >
             {hasSteps ? (
-              <PipelineTimeline steps={steps!} />
+              <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} />
             ) : legacyReasoning ? (
               <ReasoningContent
                 ref={reasoningRef}
@@ -988,7 +988,23 @@ function ReasoningPanel({
 
 // ─── Vertical step timeline ───
 
-function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
+function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[]; isStreaming?: boolean }) {
+  // Tracks which completed step indices the user has manually expanded.
+  // Active steps are always shown; all collapse automatically when streaming ends.
+  const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    if (!isStreaming) setExpandedSteps(new Set());
+  }, [isStreaming]);
+
+  const toggleStep = useCallback((idx: number) => {
+    setExpandedSteps(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }, []);
+
   return (
     <div className="px-4 pb-3 pt-1 border-t border-border/40">
       {steps.map((step, i) => {
@@ -1012,9 +1028,13 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
             ? 'live'
             : '';
 
+        // Expandable = a completed (or error) step that has reasoning text the user can drill into.
+        const isExpandable = (isDone || isError) && !!cleanedReasoning;
+        const isExpanded = isActive || expandedSteps.has(i);
+
         return (
           <div key={step.node + i} className="relative pl-6 pt-2.5">
-            {/* Connector line - drawn from the dot to the next step */}
+            {/* Connector line */}
             {!isLast && (
               <span className="absolute left-[7px] top-[1.3rem] w-px bg-border" style={{ bottom: '-0.625rem' }} />
             )}
@@ -1036,8 +1056,11 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
               {isError && <X className="w-2 h-2 text-destructive" strokeWidth={3} />}
             </span>
 
-            {/* Step label + duration */}
-            <div className="flex items-center justify-between gap-3">
+            {/* Step label + duration + optional expand chevron */}
+            <div
+              className={`flex items-center justify-between gap-3 ${isExpandable ? 'cursor-pointer select-none' : ''}`}
+              onClick={isExpandable ? () => toggleStep(i) : undefined}
+            >
               <span
                 className={`text-xs leading-none ${
                   isActive
@@ -1051,22 +1074,28 @@ function PipelineTimeline({ steps }: { steps: StreamingStep[] }) {
               >
                 {step.message || step.node}
               </span>
-              {showDuration && (
-                <span
-                  className={`text-[10px] tabular-nums shrink-0 ${
-                    isActive ? 'text-primary' : isError ? 'text-destructive/70' : 'text-foreground/45'
-                  }`}
-                >
-                  {showDuration}
-                </span>
-              )}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {showDuration && (
+                  <span
+                    className={`text-[10px] tabular-nums ${
+                      isActive ? 'text-primary' : isError ? 'text-destructive/70' : 'text-foreground/45'
+                    }`}
+                  >
+                    {showDuration}
+                  </span>
+                )}
+                {isExpandable && (
+                  <ChevronDown
+                    className={`w-3 h-3 text-foreground/40 transition-transform duration-150 ${
+                      expandedSteps.has(i) ? 'rotate-180' : ''
+                    }`}
+                  />
+                )}
+              </div>
             </div>
 
-            {/* Per-step reasoning. When the step is active we mount the
-                streaming cursor inside the deepest last-leaf so the user
-                sees a live breathing caret at the end of the streaming
-                reasoning text. */}
-            {cleanedReasoning && (
+            {/* Per-step reasoning — always visible for active step; collapsed by default for completed steps */}
+            {cleanedReasoning && isExpanded && (
               <StepReasoning text={cleanedReasoning} active={isActive} />
             )}
           </div>
