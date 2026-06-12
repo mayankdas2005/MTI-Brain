@@ -2,24 +2,30 @@
 
 from __future__ import annotations
 
+import re as _re
 import time
 
 from app.core.circuit_breaker import neo4j_breaker
 from app.core.logger import logger
 from .client import _neo4j_run
 
+_LUCENE_SPECIAL = _re.compile(r'[+\-!&|(){}\[\]^"~*?:\\/,;.]')
+
 
 def _fuzzy_fts(text: str, min_len: int = 3) -> str:
     """Append Lucene edit-distance-1 (~) to each token >= min_len chars.
 
-    Turns "jpmorgen closing balanc" into "jpmorgen~ closing~ balanc~" so
-    Lucene's FTS index tolerates single-char typos. Skips tokens that already
-    end with ~ and short tokens (articles, prepositions) to avoid false matches.
+    Strips Lucene special characters (`:`, `~`, `,`, `.`, etc.) from each
+    token before appending `~` so raw user input like "health: liquidity,"
+    doesn't produce a ParseException in the Neo4j FTS index.
     """
-    return " ".join(
-        t + "~" if len(t) >= min_len and not t.endswith("~") else t
-        for t in text.split()
-    )
+    tokens = []
+    for raw in text.split():
+        t = _LUCENE_SPECIAL.sub("", raw)
+        if not t:
+            continue
+        tokens.append(t + "~" if len(t) >= min_len else t)
+    return " ".join(tokens) if tokens else text
 
 # Shared RETURN clause for table properties — used by all table search functions.
 # No numeric scores exposed — use matched_via for path attribution.
