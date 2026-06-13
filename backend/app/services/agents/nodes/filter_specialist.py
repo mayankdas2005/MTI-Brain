@@ -149,6 +149,16 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
     _explicit = _query_plan.get("explicit_entities") or []
     _effective_entity_tokens = _explicit if _explicit else entity_tokens
 
+    _cond_lines = [l for l in query_intent_lines if l.startswith("CONDITION:")]
+    _condition_lines_section = "\n".join(_cond_lines) if _cond_lines else "(none)"
+
+    # X5: temporal anchor constraint — force time_filter_col to come from the fact table
+    _temporal_anchor = (_query_plan.get("temporal_anchor_fqn") or "").strip()
+    temporal_anchor_section = (
+        f"TIME FILTER CONSTRAINT: time_filter_col MUST be from table {_temporal_anchor}.\n"
+        f"Only select time_filter_col from a different table if {_temporal_anchor} has NO [time-filter eligible] columns."
+    ) if _temporal_anchor else ""
+
     prompt = FILTER_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -159,6 +169,8 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
         entity_hints_section=_build_entity_hints_section(entity_hints),
         entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
+        condition_lines_section=_condition_lines_section,
+        temporal_anchor_section=temporal_anchor_section,
     )
 
     from app.services.agents.bedrock import get_llm

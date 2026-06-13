@@ -16,6 +16,7 @@ import type {
   MessageMetadata,
   PipelineStep,
   TokenUsage,
+  ContextSummary,
 } from '../types/api';
 
 // ─── Local Message type (superset of MessageOut for streaming state) ───
@@ -1151,6 +1152,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
                 langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
                 intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
+                context_summary: (data.context_summary as ContextSummary | undefined) ?? m.metadata_?.context_summary,
               },
             };
           }
@@ -1519,6 +1521,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
                 langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
                 intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
+                context_summary: (data.context_summary as ContextSummary | undefined) ?? m.metadata_?.context_summary,
               },
             };
           }
@@ -1828,6 +1831,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
               langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
               intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
+              context_summary: (data.context_summary as ContextSummary | undefined) ?? m.metadata_?.context_summary,
             },
           };
           if (m.id === userMsgId) return { ...m, conversation_id: convId };

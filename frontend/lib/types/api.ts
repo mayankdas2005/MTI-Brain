@@ -36,6 +36,22 @@ export interface TokenUsage {
   cache_creation_tokens: number;
 }
 
+export interface ContextSummaryFact {
+  table: string;
+  text: string;
+}
+
+export interface ContextSummary {
+  constraint_facts: ContextSummaryFact[];
+  constraint_trigger_line: string | null;
+  memory_items: string[];
+  is_refinement: boolean;
+  is_followup: boolean;
+  prior_question_preview: string | null;
+  business_terms: string[];
+  decision_type: string;
+}
+
 export interface MessageMetadata {
   sql?: string;
   intent?: string;
@@ -76,6 +92,7 @@ export interface MessageMetadata {
     label: 'High' | 'Medium' | 'Low';
     explanation: string;
   };
+  context_summary?: ContextSummary;
 }
 
 // ─── Response Types ───

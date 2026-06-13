@@ -211,6 +211,39 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
         if new_flags != list(state.get("reliability_flags") or []):
             result["reliability_flags"] = new_flags
 
+        # Z3: decision-type pattern checks — non-blocking warnings for semantic correctness.
+        # Guards against SQL that executes but doesn't implement the required decision logic.
+        _decision_type = state.get("decision_type") or "lookup"
+        _pattern_warnings: list[str] = []
+        for _sql in fixed_sql_list:
+            _sql_up = _sql.upper()
+            if _decision_type == "breach_detection":
+                if "SUM(" not in _sql_up or " OVER " not in _sql_up:
+                    _pattern_warnings.append(
+                        "breach_detection: no window function (SUM...OVER) — running total may be missing"
+                    )
+                if "BREACH" not in _sql_up and "FLAG" not in _sql_up and "CASE WHEN" not in _sql_up:
+                    _pattern_warnings.append(
+                        "breach_detection: no CASE WHEN flag expression — threshold comparison may be missing"
+                    )
+            elif _decision_type == "comparison":
+                if "LAG(" not in _sql_up and "DATEADD" not in _sql_up and "BASELINE" not in _sql_up:
+                    _pattern_warnings.append(
+                        "comparison: no LAG(), DATEADD(), or baseline CTE — delta computation may be missing"
+                    )
+            elif _decision_type == "trend_analysis":
+                if "LAG(" not in _sql_up:
+                    _pattern_warnings.append(
+                        "trend_analysis: no LAG() — period-over-period change computation may be missing"
+                    )
+            break  # check first SQL only
+        if _pattern_warnings:
+            result["sql_pattern_warnings"] = _pattern_warnings
+            logger.warning(
+                "sql_validator | pattern_warnings | {} | thread={}",
+                _pattern_warnings, state.get("thread_id"),
+            )
+
         return result
 
     combined_error = "; ".join(errors)

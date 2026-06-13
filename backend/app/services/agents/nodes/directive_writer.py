@@ -75,6 +75,24 @@ def _format_dimensions(dimensions: list[dict]) -> str:
     )
 
 
+def _concept_before_vs(line: str) -> str:
+    """Text before ' vs ' or ' against ' in a COMPARISON line — pure string, no regex."""
+    body = line.split(":", 1)[1].strip() if ":" in line else line
+    for sep in (" vs ", " against ", " versus "):
+        if sep in body.lower():
+            idx = body.lower().index(sep)
+            return body[:idx].strip()
+    parts = [p for p in body.split() if len(p) >= 3]
+    return " ".join(parts[:3])
+
+
+def _first_noun_phrase(line: str) -> str:
+    """First 3 meaningful words after the line prefix — pure string, no regex."""
+    body = line.split(":", 1)[1].strip() if ":" in line else line
+    parts = [p for p in body.split() if len(p) >= 3]
+    return " ".join(parts[:3])
+
+
 
 def _build_query_plan_section(query_plan: dict | None, timeframe: str | None) -> str:
     if not query_plan:
@@ -169,7 +187,7 @@ _CTE_PREFIXES = (
 def _strip_cte_lines(text: str) -> str:
     """Remove lines that indicate the LLM generated a full SQL/CTE structure.
 
-    directive_writer should only emit COMPUTATION/TIME_FILTER/SCHEMA_GAP/DUAL_GRAIN lines.
+    directive_writer should only emit COMPUTATION/TIME_FILTER/SCHEMA_GAP/MULTI_GRAIN lines.
     Lines starting SQL keywords or CTE names are scope creep — they conflict with
     ir_builder's pre_loaded_joins when both reach sql_generator simultaneously.
     Pure string check, no regex.
@@ -318,6 +336,86 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
                 "directive_writer | TIME_FILTER injected (LLM missed it) | col={} | thread={}",
                 time_filter_col, state.get("thread_id"),
             )
+    # X2+Y1+Y2: Decision-completion computations
+    # Prepend COMPUTATION[TYPE] lines so sql_generator knows WHAT to compute and HOW.
+    # Y1: use actual threshold value from threshold_specs (no placeholder when value is known)
+    # Y2: COMPUTATION type tags guide sql_generator's CTE placement
+    _decision_type = state.get("decision_type") or "lookup"
+    _primary_alias = (measures[0].get("alias") or "primary_measure") if measures else "primary_measure"
+    _threshold_specs = resolved_intent.get("threshold_specs") or []
+    _is_multi_grain = len(temporal_grains) >= 2
+
+    _decision_computations: list[str] = []
+
+    if _decision_type == "breach_detection" and measures:
+        if _threshold_specs:
+            _ts = _threshold_specs[0]
+            _t_val = _ts.get("value")
+            _t_op = _ts.get("operator", "<")
+            if _t_val is not None:
+                _breach_expr = f"CASE WHEN running_{_primary_alias} {_t_op} {_t_val} THEN 'BREACH' ELSE 'OK' END"
+            else:
+                _breach_expr = f"CASE WHEN running_{_primary_alias} < threshold_value THEN 'BREACH' ELSE 'OK' END"
+        else:
+            _breach_expr = f"CASE WHEN running_{_primary_alias} < threshold_value THEN 'BREACH' ELSE 'OK' END"
+        _decision_computations = [
+            f"COMPUTATION[WINDOW]: running_{_primary_alias} = SUM({_primary_alias}) OVER (ORDER BY time_filter_col ROWS UNBOUNDED PRECEDING)",
+            f"COMPUTATION[FLAG]: threshold_breach_flag = {_breach_expr}",
+        ]
+
+    elif _decision_type == "comparison" and measures:
+        _decision_computations = [
+            f"COMPUTATION[DELTA]: delta_{_primary_alias} = actual_{_primary_alias} - baseline_{_primary_alias}",
+            f"COMPUTATION[DELTA]: delta_pct = CASE WHEN baseline_{_primary_alias} <> 0 THEN (actual_{_primary_alias} - baseline_{_primary_alias}) / ABS(baseline_{_primary_alias}) * 100.0 ELSE NULL END",
+        ]
+
+    elif _decision_type == "trend_analysis" and measures:
+        _decision_computations = [
+            f"COMPUTATION[WINDOW]: period_change_{_primary_alias} = {_primary_alias} - LAG({_primary_alias}) OVER (ORDER BY time_filter_col)",
+            f"COMPUTATION[WINDOW]: period_change_pct = CASE WHEN LAG({_primary_alias}) OVER (ORDER BY time_filter_col) <> 0 THEN ({_primary_alias} - LAG({_primary_alias}) OVER (ORDER BY time_filter_col)) / ABS(LAG({_primary_alias}) OVER (ORDER BY time_filter_col)) * 100.0 ELSE NULL END",
+        ]
+
+    if _is_multi_grain and not any("MULTI_GRAIN" in l for l in instructions_text.splitlines()):
+        _grain_str = "+".join(temporal_grains)
+        _decision_computations.append(f"MULTI_GRAIN: {_grain_str}")
+
+    if _decision_computations:
+        instructions_text = "\n".join(_decision_computations) + "\n" + instructions_text
+        logger.info(
+            "directive_writer | X2_decision_computations | decision_type={} | lines={} | thread={}",
+            _decision_type, len(_decision_computations), state.get("thread_id"),
+        )
+
+    # W4: COMPARISON lines → SCHEMA_GAP_CONCEPT for baseline/benchmark CTE
+    # W4: SCENARIO lines → SCENARIO_ASSUMPTION using primary measure alias (not question-text column name)
+    _qi_lines = state.get("query_intent") or []
+    _extra_lines: list[str] = []
+
+    for _ql in _qi_lines:
+        if _ql.startswith("COMPARISON:"):
+            _concept = _concept_before_vs(_ql)
+            if _concept:
+                _slug = _concept.lower().replace(" ", "_")
+                _extra_lines.append(
+                    f"SCHEMA_GAP_CONCEPT: {_slug}_baseline — {_concept} baseline/benchmark needed for comparison; "
+                    f"sql_generator: add parallel CTE using DATEADD(year,-1,...) on same time_filter_col or join to benchmark table"
+                )
+        elif _ql.startswith("SCENARIO:"):
+            _concept = _first_noun_phrase(_ql)
+            if _concept:
+                _primary_alias = (measures[0].get("alias") or "primary_measure") if measures else "primary_measure"
+                _extra_lines.append(
+                    f"SCENARIO_ASSUMPTION: stressed_{_primary_alias} = {_primary_alias} * stress_factor — "
+                    f"apply {_concept} factor in base CTE before aggregation"
+                )
+
+    if _extra_lines:
+        instructions_text = (instructions_text + "\n" + "\n".join(_extra_lines)).strip()
+        logger.info(
+            "directive_writer | W4_injected | lines={} | thread={}",
+            len(_extra_lines), state.get("thread_id"),
+        )
+
     logger.info(
         "directive_writer DONE | thread={} | has_instructions={} | has_context={}",
         state.get("thread_id"), bool(instructions_text.strip()), bool(context_text.strip()),

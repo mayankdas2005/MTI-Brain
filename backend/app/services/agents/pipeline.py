@@ -48,6 +48,7 @@ _STATE_KEYS = {
     "low_confidence_filters", "zero_row_probe_result", "zero_row_rewrite_count",
     "data_quality_flag", "data_quality_reason",
     "answer", "chart_spec", "chart_type", "alternative_chart_specs", "follow_ups", "error", "stopped", "prior_sql",
+    "context_summary",
 }
 
 
@@ -607,6 +608,7 @@ async def stream_pipeline(
                     "token_usage":       aggregate_token_usage(_token_records) if _token_records else {},
                     "graph_context":     _graph_context,
                     "pattern_id":        _pattern_id,
+                    "context_summary":   state.get("context_summary"),
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

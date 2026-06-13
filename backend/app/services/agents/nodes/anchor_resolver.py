@@ -235,7 +235,7 @@ def _inject_signal_tables(
             "anchor_resolver | signal_injection | bt={} intent={} domain={} entity={} | total={}",
             bt_added, intent_added, domain_added, ent_added, result,
         )
-    return result
+    return result, joinable_fqns
 
 
 def _build_intents_section(semantic_context: dict) -> str:
@@ -246,6 +246,22 @@ def _build_intents_section(semantic_context: dict) -> str:
         f"  {i.get('name', '')}: {(i.get('description') or '')[:100]}"
         for i in intents
     )
+
+
+def _build_policy_facts_section(semantic_context: dict) -> str:
+    facts = (semantic_context.get("policy_facts") or [])[:5]
+    if not facts:
+        return "(none)"
+    lines = []
+    for f in facts:
+        label = f.get("label") or f.get("type") or "Policy"
+        value = str(f.get("value") or "")[:100]
+        status = f.get("status") or ""
+        line = f"  {label}: {value}"
+        if status:
+            line += f"  [status: {status}]"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict:
@@ -280,6 +296,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         tables_section=_build_tables_section(semantic_context),
         business_terms_section=_build_terms_section(semantic_context),
         entity_hints_section=_build_entity_hints_section(semantic_context),
+        policy_facts_section=_build_policy_facts_section(semantic_context),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         intents_section=_build_intents_section(semantic_context),
         query_intent_section=query_intent_section,
@@ -388,15 +405,105 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         )
 
     # Deterministic injection with JOINS_TO connectivity filter + per-signal-type caps
-    valid_anchors = _inject_signal_tables(
+    valid_anchors, _joinable_fqns = _inject_signal_tables(
         valid_anchors, semantic_context, valid_tables, complexity,
         anchor_join_paths=state.get("anchor_join_paths") or [],
         domain_cap_override=_domain_cap_override,
     )
 
+    # Signal 7: policy/limit tables from CONDITION-line tribal retrieval — mandatory, no joinability cap
+    _policy_fqns = semantic_context.get("policy_table_fqns") or []
+    if _policy_fqns:
+        _sig7_set = set(valid_anchors)
+        for _pfqn in _policy_fqns:
+            if _pfqn and _pfqn not in _sig7_set:
+                valid_anchors.append(_pfqn)
+                _sig7_set.add(_pfqn)
+        logger.info(
+            "anchor_resolver | signal7_policy_mandated | fqns={} | thread={}",
+            _policy_fqns, state["thread_id"],
+        )
+
+    # Signal 8: cross-domain bridge tables from W2 bridge_lookup — suggested, cap 2
+    _bridge_fqns = semantic_context.get("bridge_table_fqns") or []
+    if _bridge_fqns:
+        _sig8_set = set(valid_anchors)
+        _bridge_cap = 2
+        _bridge_added = 0
+        for _bfqn in _bridge_fqns:
+            if _bridge_added >= _bridge_cap:
+                break
+            if _bfqn and _bfqn not in _sig8_set:
+                valid_anchors.append(_bfqn)
+                _sig8_set.add(_bfqn)
+                _bridge_added += 1
+                logger.info(
+                    "anchor_resolver | signal8_bridge_suggested | fqn={} | thread={}",
+                    _bfqn, state["thread_id"],
+                )
+
+    # X1+Z1: Temporal anchor derivation — prefer "fact" table with date + numeric columns
+    _NUMERIC_DTYPES = frozenset({
+        "numeric", "decimal", "integer", "bigint", "double precision",
+        "real", "float", "money", "number", "int", "int2", "int4", "int8",
+    })
+    _PREFERRED_ANCHOR_TYPES = frozenset({"fact"})
+    _temporal_anchor: str | None = None
+    _fallback_anchor: str | None = None
+
+    _all_cols = semantic_context.get("columns") or []
+    _tbl_types = semantic_context.get("table_types") or {}
+
+    for _t in valid_anchors:
+        _t_type = _tbl_types.get(_t, "fact")
+        _t_cols = [c for c in _all_cols if c.get("table_fqn") == _t]
+        _has_date = any(
+            "date" in (c.get("data_type") or "").lower()
+            or "timestamp" in (c.get("data_type") or "").lower()
+            for c in _t_cols
+        )
+        _has_measure = any((c.get("data_type") or "").lower() in _NUMERIC_DTYPES for c in _t_cols)
+        if _has_date and _has_measure:
+            if _t_type in _PREFERRED_ANCHOR_TYPES:
+                _temporal_anchor = _t
+                break
+            elif _fallback_anchor is None:
+                _fallback_anchor = _t
+
+    if not _temporal_anchor:
+        _temporal_anchor = _fallback_anchor
+
+    if _temporal_anchor:
+        query_plan["temporal_anchor_fqn"] = _temporal_anchor
+        logger.info("anchor_resolver | temporal_anchor={} | type={} | thread={}",
+                    _temporal_anchor, _tbl_types.get(_temporal_anchor, "fact"), state["thread_id"])
+
+    # X4: Disconnected table pruning — drop non-mandatory anchors with no join path to any other anchor
+    _mandatory_fqns = set(semantic_context.get("policy_table_fqns") or [])
+    _disconnected: list[str] = []
+    _primary = _temporal_anchor or (valid_anchors[0] if valid_anchors else None)
+
+    if len(valid_anchors) > 1:
+        for _t in valid_anchors:
+            if _t == _primary:
+                continue
+            if _t in _mandatory_fqns:
+                continue
+            if _t not in _joinable_fqns:
+                _disconnected.append(_t)
+                logger.warning(
+                    "anchor_resolver | disconnected_dropped | {} | no join path to anchors | thread={}",
+                    _t, state["thread_id"],
+                )
+
+    if _disconnected:
+        _disconnected_set = set(_disconnected)
+        valid_anchors = [t for t in valid_anchors if t not in _disconnected_set]
+
     logger.info(
-        "anchor_resolver DONE | thread={} | complexity={} | llm_cap={} | anchor_tables={} | result_shape={} | intent={}",
+        "anchor_resolver DONE | thread={} | complexity={} | llm_cap={} | anchor_tables={} | result_shape={} | intent={} | temporal_anchor={}",
         state["thread_id"], complexity, llm_cap, valid_anchors, result_shape, intent_summary[:60],
+        query_plan.get("temporal_anchor_fqn"),
     )
 
     # Store in resolved_intent stub so query_compiler can read result_shape

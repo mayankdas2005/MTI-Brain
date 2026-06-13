@@ -26,6 +26,30 @@ from app.services.agents.state import AnalyticsState
 from . import helpers, table_discovery, column_loader, cross_domain
 
 
+_CANONICAL_DOMAINS_CTX = {
+    "cash_and_liquidity": ["cash", "liquidity", "balance", "sweep", "intercompany"],
+    "benchmarking": ["benchmark", "sofr", "sonia", "rate index", "interest rate"],
+    "debt_and_capital": ["debt", "credit", "facility", "borrowing", "capital"],
+    "fx_and_hedging": ["fx", "foreign exchange", "hedge", "forward", "derivative"],
+    "forecasting": ["forecast", "projection", "variance"],
+    "fraud": ["fraud", "risk score", "chargeback"],
+    "erp_reconciliation": ["reconciliation", "gl", "general ledger", "close"],
+    "investments": ["investment", "portfolio", "deposit", "bond"],
+    "reference": ["currency", "counterparty", "master data"],
+    "knowledge_graph": ["institutional", "tribal", "sme"],
+}
+
+
+def _normalize_domain_name(raw: str) -> str:
+    raw_lower = raw.lower().strip()
+    if raw_lower in _CANONICAL_DOMAINS_CTX:
+        return raw_lower
+    for canonical, keywords in _CANONICAL_DOMAINS_CTX.items():
+        if any(kw in raw_lower for kw in keywords):
+            return canonical
+    return raw_lower
+
+
 async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict:
     entity_tokens = state.get("entity_tokens") or None
     # search_variants are corrected/expanded entity tokens from intake_classifier (abbrev expansions,
@@ -95,7 +119,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         # Extracts DOMAIN lines from query_intent and runs a targeted BELONGS_TO Cypher query.
         # Guarantees domain coverage even when vector search misses a domain's primary tables.
         _canonical_domains = [
-            l.split(":", 1)[1].strip()
+            _normalize_domain_name(l.split(":", 1)[1].strip())
             for l in (state.get("query_intent") or [])
             if l.startswith("DOMAIN:")
         ]
@@ -116,12 +140,81 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             except Exception as _e:
                 logger.warning("context_fetcher | canonical_domain_lookup failed | error={}", _e)
 
-        # ── Groups A + B run in parallel ───────────────────────────────────────
-        # Group A: independent of table results — templates, terms, intents, memory
-        # Group B: depends on tables — cross-domain, join-critical cols, column loading
-        (group_a, group_b) = await asyncio.gather(
+        # ── W2: Universal query_intent line-type routing ────────────────────────
+        # Scans typed lines from intake_classifier for additional retrieval signals.
+        # CONDITION (limit words) / CONTEXT (enterprise words) → tribal policy lookup
+        # DOMAIN ≥ 3 → cross-domain bridge table lookup
+        _qi_lines = state.get("query_intent") or []
+        _should_tribal = False
+        _limit_words = frozenset({"below", "above", "minimum", "maximum", "threshold",
+                                  "limit", "cap", "floor", "ceiling"})
+        _enterprise_words = frozenset({"enterprise", "policy", "commitment", "board",
+                                       "cfo", "obligation", "prior"})
+        _tribal_kws: list[str] = []
+
+        for _ln in _qi_lines:
+            if _ln.startswith("CONDITION:"):
+                _c = _concept_before_operator(_ln)
+                if _c:
+                    _tribal_kws.append(_c + " policy threshold")
+                if any(w in _ln.lower() for w in _limit_words):
+                    _should_tribal = True
+            elif _ln.startswith("SCENARIO:"):
+                _c = _first_noun_phrase(_ln)
+                if _c:
+                    _tribal_kws.append(_c + " scenario")
+            elif _ln.startswith("COMPARISON:"):
+                _c = _concept_before_vs(_ln)
+                if _c:
+                    _tribal_kws.append(_c + " baseline benchmark")
+            elif _ln.startswith("CONTEXT:"):
+                if any(w in _ln.lower() for w in _enterprise_words):
+                    _should_tribal = True
+                    _tribal_kws.extend(["policy limit", "enterprise context"])
+
+        _has_multi_domain = state.get("has_multi_domain", False)
+
+        async def _tribal_lookup() -> list[dict]:
+            if not _should_tribal:
+                return []
+            from app.services.agents.nodes.tribal_retrieval import _run_cypher as _tribal_cypher
+            kw1 = _tribal_kws[0] if _tribal_kws else "limit"
+            kw2 = _tribal_kws[1] if len(_tribal_kws) > 1 else "policy"
+            try:
+                result = await asyncio.to_thread(_tribal_cypher, kw1, kw2)
+                logger.info(
+                    "context_fetcher | tribal_retrieval | kw1={} kw2={} | found={} | thread={}",
+                    kw1, kw2, len(result), state["thread_id"],
+                )
+                return result
+            except Exception as _te:
+                logger.warning("context_fetcher | tribal_retrieval failed | error={}", _te)
+                return []
+
+        async def _bridge_lookup() -> list[str]:
+            if not _has_multi_domain or not _canonical_domains:
+                return []
+            try:
+                _brows = await asyncio.to_thread(
+                    neo4j_client.get_cross_domain_bridges, _canonical_domains
+                )
+                _bfqns = [r["fqn"] for r in _brows if r.get("fqn")]
+                if _bfqns:
+                    logger.info(
+                        "context_fetcher | bridge_lookup | domains={} | bridges={} | thread={}",
+                        _canonical_domains, _bfqns, state["thread_id"],
+                    )
+                return _bfqns
+            except Exception as _be:
+                logger.warning("context_fetcher | bridge_lookup failed | error={}", _be)
+                return []
+
+        # ── Groups A + B + tribal + bridges all in parallel ─────────────────────
+        (group_a, group_b, _policy_facts, _bridge_fqns) = await asyncio.gather(
             _fetch_group_a(embedding, search_query, state["user_id"]),
             _fetch_group_b(tables, embedding, search_query, entity_tokens=search_variants),
+            _tribal_lookup(),
+            _bridge_lookup(),
         )
 
         templates_merged, business_terms, intents, memory_context = group_a
@@ -143,6 +236,12 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         columns_trimmed   = helpers.trim_objects(display_columns, join_critical_cols=join_crit_cols)
 
         # ── Assemble SemanticContext ───────────────────────────────────────────
+        # Z1: table_type bias for temporal anchor selection in anchor_resolver
+        _table_types = {
+            t["fqn"]: (t.get("table_type") or t.get("typical_join_role") or "fact")
+            for t in tables_trimmed if t.get("fqn")
+        }
+
         semantic_context = {
             "templates":             templates_trimmed,
             "tables":                tables_trimmed,
@@ -163,6 +262,13 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             "consensus_table_fqns":  consensus_table_fqns,
             "entity_pinned_fqns":    set(entity_pinned_fqns),
             "entity_col_tables":     list(entity_col_tables),
+            # W2: policy/limit facts from CONDITION/CONTEXT line triggered tribal lookup
+            "policy_facts":          _policy_facts,
+            "policy_table_fqns":     [r.get("source_table_fqn") for r in _policy_facts if r.get("source_table_fqn")],
+            # W2: bridge tables connecting 2+ domains (Signal 8 for anchor_resolver)
+            "bridge_table_fqns":     _bridge_fqns,
+            # Z1: table_type from Neo4j for temporal anchor bias (fact > dimension/reference/bridge)
+            "table_types":           _table_types,
         }
 
         tables_found  = [t["fqn"] for t in tables_trimmed if t.get("fqn")]
@@ -178,7 +284,48 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             is_cross_domain, hub_info.get("hub_table_fqn") if hub_info else "none",
             sorted(entity_pinned_fqns), sorted(entity_col_tables),
         )
-        return {"semantic_context": semantic_context, "effective_question": effective_question, "error": None}
+
+        # ── T3/T5: Context summary for UI transparency panel ──────────────────
+        _memory_items: list[str] = []
+        if isinstance(memory_context, dict):
+            for _m in (memory_context.get("memories") or []):
+                _t = (_m.get("content") or _m.get("text") or "")[:120]
+                if _t:
+                    _memory_items.append(_t)
+        elif isinstance(memory_context, list):
+            for _m in memory_context:
+                _t = (_m.get("content") or _m.get("text") or "")[:120]
+                if _t:
+                    _memory_items.append(_t)
+
+        _trigger_line: str | None = next(
+            (ln for ln in _qi_lines if ln.startswith(("CONDITION:", "CONTEXT:")) and _should_tribal),
+            None,
+        )
+
+        context_summary = {
+            "constraint_facts": [
+                {
+                    "table": r.get("source_table_fqn", ""),
+                    "text": (r.get("fact") or r.get("text") or r.get("content") or "")[:160],
+                }
+                for r in _policy_facts if r.get("source_table_fqn")
+            ],
+            "constraint_trigger_line": _trigger_line,
+            "memory_items": _memory_items[:5],
+            "is_refinement": bool(state.get("is_refinement", False)),
+            "is_followup": is_followup,
+            "prior_question_preview": (state.get("prior_question") or "")[:100] if state.get("is_refinement") else None,
+            "business_terms": [b.get("term") for b in business_terms if b.get("term")][:6],
+            "decision_type": state.get("decision_type") or "lookup",
+        }
+
+        return {
+            "semantic_context": semantic_context,
+            "effective_question": effective_question,
+            "context_summary": context_summary,
+            "error": None,
+        }
 
     except Exception as e:
         logger.error("context_fetcher FAILED | thread={} | error={}", state["thread_id"], e)
@@ -295,3 +442,35 @@ async def _fetch_group_b(
     )
 
     return tables, hub_info, is_cross_domain, join_crit_cols, display_columns, col_lookup, entity_hints, entity_col_tables
+
+
+# ── W2 pure-string helpers (no re import) ─────────────────────────────────────
+
+def _concept_before_operator(line: str) -> str:
+    """Extract concept from CONDITION line — text before the first operator or numeric."""
+    body = line.split(":", 1)[1].strip() if ":" in line else line
+    for prefix in ("Highlight (flag)", "Highlight", "Filter —", "Filter:", "Flag"):
+        if body.lower().startswith(prefix.lower()):
+            body = body[len(prefix):].strip()
+    for op in (" < ", " > ", " = ", "$", "<", ">"):
+        if op in body:
+            body = body[:body.index(op)]
+    parts = [p for p in body.replace("_", " ").split() if len(p) >= 3]
+    return " ".join(parts[-3:]) if parts else ""
+
+
+def _first_noun_phrase(line: str) -> str:
+    """First 3 meaningful words after the label prefix."""
+    body = line.split(":", 1)[1].strip() if ":" in line else line
+    parts = [p for p in body.split() if len(p) >= 3]
+    return " ".join(parts[:3])
+
+
+def _concept_before_vs(line: str) -> str:
+    """Text before ' vs ' or ' against ' in a COMPARISON line."""
+    body = line.split(":", 1)[1].strip() if ":" in line else line
+    for sep in (" vs ", " against ", " versus "):
+        if sep in body.lower():
+            idx = body.lower().index(sep)
+            return body[:idx].strip()
+    return _first_noun_phrase(line)

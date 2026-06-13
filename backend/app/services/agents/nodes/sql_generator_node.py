@@ -44,7 +44,22 @@ async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
     first_sql = next((s for s in sql_list if s), None)
     logger.info("sql_generator DONE | thread={} | sql_len={}", state["thread_id"], len(first_sql or ""))
 
-    result: dict = {"sql_list": sql_list, "semantic_context": semantic_context}
+    # Y3: sql_computation_summary — tell synthesis which decision computations are in the SQL
+    _implemented: list[str] = []
+    if first_sql:
+        _sql_upper = first_sql.upper()
+        if "THRESHOLD_BREACH_FLAG" in _sql_upper or ("BREACH" in _sql_upper and "CASE WHEN" in _sql_upper):
+            _implemented.append("threshold_breach_flag")
+        if "RUNNING_" in _sql_upper and " OVER " in _sql_upper:
+            _implemented.append("running_total")
+        if "DELTA_" in _sql_upper:
+            _implemented.append("delta")
+        if "PERIOD_CHANGE_" in _sql_upper:
+            _implemented.append("period_change")
+        if "YOY" in _sql_upper or "DATEADD(YEAR" in _sql_upper or "DATEADD(YEAR," in _sql_upper:
+            _implemented.append("yoy_baseline")
+
+    result: dict = {"sql_list": sql_list, "semantic_context": semantic_context, "sql_computation_summary": _implemented}
     if first_sql:
         result["prior_sql"] = first_sql
     return result

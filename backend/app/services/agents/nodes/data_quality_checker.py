@@ -43,9 +43,17 @@ async def data_quality_checker(state: AnalyticsState, config: RunnableConfig) ->
     import datetime
     today = (state.get("current_date") or datetime.date.today().isoformat())
 
+    # X6+Q4: pass decision_type so DQC applies context-aware rules
+    _decision_type = state.get("decision_type") or "lookup"
+    decision_type_section = f"decision_type = \"{_decision_type}\""
+
     data_profile = _build_data_profile(all_columns, all_rows, query_summary)
 
-    prompt_text = DATA_QUALITY_CHECKER_PROMPT.format(today=today, data_profile=data_profile)
+    prompt_text = DATA_QUALITY_CHECKER_PROMPT.format(
+        today=today,
+        data_profile=data_profile,
+        decision_type_section=decision_type_section,
+    )
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

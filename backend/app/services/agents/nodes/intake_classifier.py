@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import parse_tag
-from app.services.agents.prompts import INTAKE_CLASSIFY_PROMPT
+from app.services.agents.prompts import INTAKE_CLASSIFY_PROMPT, INTAKE_INTENT_PROMPT, INTAKE_SEARCH_PROMPT
 from app.services.agents.state import AnalyticsState
 
 
@@ -187,36 +187,76 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
         )
         return {"question_type": quick_result, "specialist_outputs": [{"__reset__": True}]}
 
-    # Layer 2: LLM classifier with domain/intent context from Neo4j
+    # Layer 2: P1 — 3 focused LLM calls instead of 1 monolithic call
     ctx = _get_classifier_context()
     conversation_context = _format_conversation(
         state.get("messages", []), state.get("summary") or ""
     )
 
-    prompt = INTAKE_CLASSIFY_PROMPT.format_messages(
+    # Call A: classification + decision_type (fast — Haiku, ~150 token prompt)
+    prompt_a = INTAKE_CLASSIFY_PROMPT.format_messages(
         question=question,
         conversation_context=conversation_context,
         domain_list=ctx["domain_list"],
-        intent_list=ctx["intent_list"],
-        prior_was_analytics="YES" if prior_analytics else "NO",
+    )
+    raw_a = await _call_llm(prompt_a, config)
+    question_type, is_followup, complexity, decision_type, has_reconciliation = _parse_classify(raw_a)
+
+    if question_type == "general_chat":
+        logger.info(
+            "intake_classifier DONE | thread={} | type=general_chat | fast_exit",
+            state["thread_id"],
+        )
+        return {
+            "question_type": "general_chat",
+            "is_followup": is_followup,
+            "complexity": complexity,
+            "decision_type": decision_type,
+            "has_reconciliation": has_reconciliation,
+            "has_multi_domain": False,
+            "entity_tokens": None,
+            "search_terms": None,
+            "search_variants": None,
+            "query_intent": None,
+            "specialist_outputs": [{"__reset__": True}],
+        }
+
+    # Calls B + C in parallel (both only needed for analytics)
+    prompt_b = INTAKE_INTENT_PROMPT.format_messages(
+        question=question,
+        decision_type=decision_type,
+    )
+    prompt_c = INTAKE_SEARCH_PROMPT.format_messages(
+        question=question,
+        complexity=complexity,
+    )
+    raw_b, raw_c = await asyncio.gather(
+        _call_llm(prompt_b, config),
+        _call_llm(prompt_c, config),
     )
 
-    result = await _call_llm(prompt, config)
-    question_type, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent = _parse_intake(result)
+    query_intent = _parse_intent(raw_b)
+    entity_tokens, search_terms, search_variants = _parse_search(raw_c)
+
+    # Derive has_multi_domain deterministically from DOMAIN line count (not LLM output)
+    has_multi_domain = len([l for l in query_intent if l.startswith("DOMAIN:")]) >= 3
 
     # Combine current search_terms with prior turn's terms for follow-up queries
     prior_search_terms = list(state.get("search_terms") or [])
     combined_search_terms = _combine_search_terms(search_terms, prior_search_terms, is_followup)
 
     logger.info(
-        "intake_classifier DONE | thread={} | type={} | is_followup={} | complexity={} | entity_tokens={} | search_terms={} | combined={} | prior_analytics={} | query_intent_lines={} | query_intent={}",
-        state["thread_id"], question_type, is_followup, complexity, entity_tokens,
-        search_terms, combined_search_terms, prior_analytics, len(query_intent), query_intent,
+        "intake_classifier DONE | thread={} | type={} | is_followup={} | complexity={} | decision_type={} | has_reconciliation={} | has_multi_domain={} | entity_tokens={} | search_terms={} | combined={} | prior_analytics={} | query_intent={}",
+        state["thread_id"], question_type, is_followup, complexity, decision_type, has_reconciliation, has_multi_domain,
+        entity_tokens, search_terms, combined_search_terms, prior_analytics, query_intent,
     )
     return {
         "question_type": question_type,
         "is_followup": is_followup,
         "complexity": complexity,
+        "decision_type": decision_type,
+        "has_reconciliation": has_reconciliation,
+        "has_multi_domain": has_multi_domain,
         "entity_tokens": entity_tokens or None,
         "search_terms": combined_search_terms or None,
         "search_variants": search_variants or entity_tokens or None,
@@ -245,8 +285,34 @@ async def _call_llm(prompt, config: RunnableConfig) -> str:
     return response.content or ""
 
 
-def _parse_intake(raw: str) -> tuple[str, bool, str, list[str], list[str], list[str], list[str]]:
-    """Parse LLM output — returns (question_type, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent)."""
+_VALID_DECISION_TYPES = frozenset({"lookup", "breach_detection", "trend_analysis", "comparison", "judgment", "multi_domain"})
+
+_CANONICAL_DOMAINS = {
+    "cash_and_liquidity": ["cash", "liquidity", "balance", "sweep", "intercompany"],
+    "benchmarking": ["benchmark", "sofr", "sonia", "rate index", "interest rate"],
+    "debt_and_capital": ["debt", "credit", "facility", "borrowing", "capital"],
+    "fx_and_hedging": ["fx", "foreign exchange", "hedge", "forward", "derivative"],
+    "forecasting": ["forecast", "projection", "variance"],
+    "fraud": ["fraud", "risk score", "chargeback"],
+    "erp_reconciliation": ["reconciliation", "gl", "general ledger", "close"],
+    "investments": ["investment", "portfolio", "deposit", "bond"],
+    "reference": ["currency", "counterparty", "master data"],
+    "knowledge_graph": ["institutional", "tribal", "sme"],
+}
+
+
+def _normalize_domain_name(raw: str) -> str:
+    raw_lower = raw.lower().strip()
+    if raw_lower in _CANONICAL_DOMAINS:
+        return raw_lower
+    for canonical, keywords in _CANONICAL_DOMAINS.items():
+        if any(kw in raw_lower for kw in keywords):
+            return canonical
+    return raw_lower
+
+
+def _parse_intake(raw: str) -> tuple[str, bool, str, list[str], list[str], list[str], list[str], str, bool]:
+    """Legacy single-call parser — kept for backward compat with any callers."""
     from json_repair import loads as json_loads
     try:
         output = parse_tag(raw, "output") or raw.strip()
@@ -258,20 +324,91 @@ def _parse_intake(raw: str) -> tuple[str, bool, str, list[str], list[str], list[
         complexity      = data.get("complexity", "simple")
         if complexity not in ("simple", "complex", "advanced"):
             complexity = "simple"
+        decision_type = data.get("decision_type", "lookup")
+        if decision_type not in _VALID_DECISION_TYPES:
+            decision_type = "lookup"
+        has_reconciliation = bool(data.get("has_reconciliation", False))
         entity_tokens   = [str(e) for e in (data.get("entity_tokens") or []) if e][:8]
         search_terms    = [str(t) for t in (data.get("search_terms") or []) if t][:6]
         search_variants = [str(v) for v in (data.get("search_variants") or []) if v][:8]
-        # query_intent: typed line list — validate each entry is a non-empty string starting with a known label
         _VALID_LABELS = ("GOAL:", "TIME:", "COMPARISON:", "DOMAIN:", "CONDITION:", "SCENARIO:", "CONTEXT:", "OUTPUT:")
         raw_intent = data.get("query_intent") or []
-        query_intent = [
-            str(line).strip()
-            for line in raw_intent
-            if str(line).strip() and any(str(line).strip().startswith(lbl) for lbl in _VALID_LABELS)
-        ][:12]
-        return qtype, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent
+        query_intent = []
+        for line in raw_intent:
+            line_s = str(line).strip()
+            if not line_s or not any(line_s.startswith(lbl) for lbl in _VALID_LABELS):
+                continue
+            if line_s.startswith("DOMAIN:"):
+                raw_domain = line_s[len("DOMAIN:"):].strip()
+                normalized = _normalize_domain_name(raw_domain)
+                line_s = f"DOMAIN: {normalized}"
+            query_intent.append(line_s)
+            if len(query_intent) >= 12:
+                break
+        return qtype, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent, decision_type, has_reconciliation
     except Exception:
-        return "analytics", False, "simple", [], [], [], []  # Layer 3 fallback
+        return "analytics", False, "simple", [], [], [], [], "lookup", False
+
+
+def _parse_classify(raw: str) -> tuple[str, bool, str, str, bool]:
+    """Parse Call A output: (question_type, is_followup, complexity, decision_type, has_reconciliation)."""
+    from json_repair import loads as json_loads
+    try:
+        output = parse_tag(raw, "output") or raw.strip()
+        data = json_loads(output)
+        qtype = data.get("type", "analytics")
+        if qtype not in ("general_chat", "analytics"):
+            qtype = "analytics"
+        is_followup = bool(data.get("is_followup", False))
+        complexity = data.get("complexity", "simple")
+        if complexity not in ("simple", "complex", "advanced"):
+            complexity = "simple"
+        decision_type = data.get("decision_type", "lookup")
+        if decision_type not in _VALID_DECISION_TYPES:
+            decision_type = "lookup"
+        has_reconciliation = bool(data.get("has_reconciliation", False))
+        return qtype, is_followup, complexity, decision_type, has_reconciliation
+    except Exception:
+        return "analytics", False, "simple", "lookup", False
+
+
+def _parse_intent(raw: str) -> list[str]:
+    """Parse Call B output: query_intent list of typed lines."""
+    from json_repair import loads as json_loads
+    _VALID_LABELS = ("GOAL:", "TIME:", "COMPARISON:", "DOMAIN:", "CONDITION:", "SCENARIO:", "CONTEXT:", "OUTPUT:")
+    try:
+        output = parse_tag(raw, "output") or raw.strip()
+        data = json_loads(output)
+        raw_intent = data.get("query_intent") or []
+        query_intent: list[str] = []
+        for line in raw_intent:
+            line_s = str(line).strip()
+            if not line_s or not any(line_s.startswith(lbl) for lbl in _VALID_LABELS):
+                continue
+            if line_s.startswith("DOMAIN:"):
+                raw_domain = line_s[len("DOMAIN:"):].strip()
+                normalized = _normalize_domain_name(raw_domain)
+                line_s = f"DOMAIN: {normalized}"
+            query_intent.append(line_s)
+            if len(query_intent) >= 12:
+                break
+        return query_intent
+    except Exception:
+        return []
+
+
+def _parse_search(raw: str) -> tuple[list[str], list[str], list[str]]:
+    """Parse Call C output: (entity_tokens, search_terms, search_variants)."""
+    from json_repair import loads as json_loads
+    try:
+        output = parse_tag(raw, "output") or raw.strip()
+        data = json_loads(output)
+        entity_tokens   = [str(e) for e in (data.get("entity_tokens") or []) if e][:8]
+        search_terms    = [str(t) for t in (data.get("search_terms") or []) if t][:6]
+        search_variants = [str(v) for v in (data.get("search_variants") or []) if v][:8]
+        return entity_tokens, search_terms, search_variants
+    except Exception:
+        return [], [], []
 
 
 def _combine_search_terms(

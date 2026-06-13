@@ -15,7 +15,6 @@ from app.services.agents import neo4j_client
 from app.services.agents.helpers import parse_tag
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_REPAIR,
-    REPAIR_PROMPT,
     REPAIR_SYNTAX_PROMPT,
     REPAIR_STRUCTURE_PROMPT,
 )
@@ -363,21 +362,13 @@ async def attempt_repair(
                 semantic_ir_text=semantic_ir_text,
                 reasoning_directive=REASONING_DIRECTIVE_REPAIR,
             )
-        return REPAIR_PROMPT.format_messages(
-            question=state.get("effective_question") or state.get("question", ""),
-            entity_tokens_section=entity_tokens_section,
-            time_col_highlight_section=time_col_highlight_section,
-            semantic_ir_text=semantic_ir_text,
-            schema_reference=schema_reference,
-            original_sql=osql,
+        return REPAIR_STRUCTURE_PROMPT.format_messages(
             error_message=emsg,
+            original_sql=osql,
             prior_attempts_detail=attempts_detail,
-            directive_section=directive_section,
-            feedback_section=feedback_section,
-            performance_directive=_perf_directive,
-            explain_section=explain_section,
-            anti_patterns=anti_patterns,
             candidate_paths_section=candidate_paths_section,
+            schema_reference=schema_reference,
+            semantic_ir_text=semantic_ir_text,
             reasoning_directive=REASONING_DIRECTIVE_REPAIR,
         )
 
@@ -469,10 +460,14 @@ async def attempt_repair(
         new_history_entry["sql_fingerprint"] = None
         new_history_entry["sql_fragment"] = first_sql[:500]
 
+    # Z4: write repair_mode to state so synthesis/audit can reference the class of repair applied
+    _repair_mode = "syntax" if error_type == "syntax" else "structural"
+
     return {
         "sql_list": new_sql_list,
         "repair_count": repair_count + 1,
         "repair_history": repair_history + [new_history_entry],
+        "repair_mode": _repair_mode,
         "error": None,
     }
 

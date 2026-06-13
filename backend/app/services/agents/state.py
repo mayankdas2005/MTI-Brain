@@ -37,6 +37,9 @@ class AnalyticsState(TypedDict):
     question_type: str                    # general_chat | analytics
     is_followup: bool                     # True when question semantically continues a prior analytics answer
     complexity: str | None               # simple | complex | advanced — set by intake_classifier LLM
+    decision_type: str                    # lookup | breach_detection | trend_analysis | comparison | judgment | multi_domain
+    has_reconciliation: bool             # cross-source matching pattern (FULL OUTER JOIN + discrepancy detection)
+    has_multi_domain: bool               # DOMAIN lines ≥ 3 OR explicit multi-domain scope
     entity_tokens: list[str] | None       # proper nouns / named entities extracted by intake_classifier LLM (e.g. ["JPMorgan", "operating account"])
     needs_clarification: bool
     clarification_count: int              # max 2 per turn
@@ -116,3 +119,18 @@ class AnalyticsState(TypedDict):
     prior_question: str | None          # original question text looked up from DB; used by context_fetcher to find the right tables for refinements
     prior_sql_tables: list[str]         # schema.table FQNs parsed from prior_sql (e.g. ["lpp.counterparty_exposure"])
     is_refinement: bool                 # True for user-initiated refinements (prior_sql from frontend, not is_retry)
+
+    # ── Decision-frame / computation tracking ─────────────────────────────────
+    sql_computation_summary: list       # Y3: COMPUTATION directives implemented in final SQL (e.g. ["threshold_breach_flag", "running_total"])
+    sql_pattern_warnings: list          # Z3: decision-type pattern warnings from sql_validator (warnings, not errors)
+    repair_mode: str | None             # Z4: "syntax" | "structural" — classified by repair.py from execution_error
+
+    # ── Dashboard metadata ────────────────────────────────────────────────────
+    panel_metadata: dict | None         # D-series: decision_type + threshold_specs + temporal_grains + domain_lines; stored in panel config for dashboard_builder
+
+    # ── Full exploration graph (transparency) ────────────────────────────────
+    full_candidate_graph: dict | None   # G1: all tables/paths context_fetcher fetched before selection (candidate, constraint, semantic_match)
+
+    # ── Agent reasoning log (transparency) ───────────────────────────────────
+    node_reasoning_log: list            # T1: [{node, reasoning}] — extracted <reasoning> tags from LLM outputs
+    context_summary: dict | None        # T3: context_fetcher summary (constraint_facts_count, query_patterns_count, etc.)

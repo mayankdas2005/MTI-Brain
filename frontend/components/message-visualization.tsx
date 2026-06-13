@@ -75,6 +75,8 @@ function getVegaThemeConfig(isDark: boolean): Record<string, unknown> {
     },
     legend: { labelColor, titleColor: labelColor, labelFont: font, titleFont: font, labelFontSize: 11 },
     title:  { color: labelColor, font, fontSize: 13, fontWeight: 500 },
+    axisY:    { grid: false, gridOpacity: 0 },
+    axisLeft: { grid: false, gridOpacity: 0 },
     bar:    { strokeWidth: 0 },
     arc:    { strokeWidth: 0 },
     area:   { strokeWidth: 0 },
@@ -281,6 +283,56 @@ function normalizeTooltipEncoding(spec: Record<string, unknown>): Record<string,
   return { ...spec, encoding: { ...enc, tooltip: items } };
 }
 
+// ─── Universal K/M/B/T number formatting ──────────────────────────────────────
+// Applies smartNum (registered below in VegaVisualization) to every quantitative
+// axis and tooltip so large numbers always render as 50K / 1.2M / 6.5B / 1T.
+// Runs after normalizeTooltipEncoding so the explicit tooltip array already exists.
+
+function applySmartNumberFormatting(spec: Record<string, unknown>): Record<string, unknown> {
+  if (Array.isArray(spec.layer)) {
+    const newLayers = (spec.layer as Record<string, unknown>[]).map(applySmartNumberFormatting);
+    const layerChanged = newLayers.some((l, i) => l !== (spec.layer as Record<string, unknown>[])[i]);
+    if (layerChanged) spec = { ...spec, layer: newLayers };
+  }
+
+  const enc = spec.encoding as Record<string, unknown> | undefined;
+  if (!enc) return spec;
+
+  let changed = false;
+  const newEnc = { ...enc };
+
+  for (const channel of ['x', 'y'] as const) {
+    const def = enc[channel] as Record<string, unknown> | undefined;
+    if (!def || typeof def !== 'object') continue;
+    if (def.type !== 'quantitative') continue;
+    if (def.axis === false || def.axis === null) continue;
+
+    const axis = (def.axis as Record<string, unknown>) ?? {};
+    // Strip old format/labelExpr so they don't conflict; preserve everything else
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { format: _f, labelExpr: _l, ...restAxis } = axis;
+    newEnc[channel] = { ...def, axis: { ...restAxis, labelExpr: "smartNum(datum.value, '')" } };
+    changed = true;
+  }
+
+  const tooltipEnc = enc.tooltip;
+  if (Array.isArray(tooltipEnc)) {
+    const newTooltip = (tooltipEnc as Record<string, unknown>[]).map(item => {
+      if (!item || typeof item !== 'object') return item;
+      const t = item as Record<string, unknown>;
+      if (t.type !== 'quantitative') return t;
+      if (t.formatType) return t; // already handled
+      return { ...t, formatType: 'smartNum', format: '' };
+    });
+    if (newTooltip.some((t, i) => t !== (tooltipEnc as unknown[])[i])) {
+      newEnc.tooltip = newTooltip;
+      changed = true;
+    }
+  }
+
+  return changed ? { ...spec, encoding: newEnc } : spec;
+}
+
 const ARC_MARKS = new Set(['arc']);
 
 function addZoomParams(spec: Record<string, unknown>): Record<string, unknown> {
@@ -483,7 +535,7 @@ function VegaVisualization({ rawSpec, conversationId, onActionsReady }: {
 
   const embedSpec = useMemo(() => {
     const theme = getVegaThemeConfig(isDark);
-    const spec  = normalizeTooltipEncoding(addZoomParams(humanizeEncoding({ ...rawSpec, config: theme })));
+    const spec  = applySmartNumberFormatting(normalizeTooltipEncoding(addZoomParams(humanizeEncoding({ ...rawSpec, config: theme }))));
     return dataSlice ? { ...spec, data: { values: dataSlice } } : spec;
   }, [rawSpec, isDark, dataSlice]);
 

@@ -688,6 +688,32 @@ def _postprocess_spec(
     return spec
 
 
+def _inject_threshold_layer(spec: dict, threshold_val: float) -> dict:
+    """Wrap a flat Vega-Lite spec in a layered spec with a dashed threshold reference line.
+
+    Moves top-level keys ($schema, width, height, background, title, data) to root.
+    Original mark+encoding become layer[0]; the threshold rule mark becomes layer[1].
+    """
+    _TOP_KEYS = {"$schema", "width", "height", "background", "title", "data", "resolve", "config"}
+    root: dict = {}
+    data_layer: dict = {}
+    for key, val in spec.items():
+        if key in _TOP_KEYS:
+            root[key] = val
+        else:
+            data_layer[key] = val
+    threshold_layer = {
+        "mark": {"type": "rule", "strokeDash": [4, 4], "color": "#e63946", "strokeWidth": 2},
+        "encoding": {
+            "y": {"datum": threshold_val, "type": "quantitative"},
+            "tooltip": [{"value": f"Min threshold: {threshold_val:,.0f}"}],
+        },
+    }
+    root["layer"] = [data_layer, threshold_layer]
+    root.setdefault("resolve", {"scale": {"y": "shared"}})
+    return root
+
+
 async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
     query_summary = state.get("query_summary") or {}
     result_list = state.get("result_list") or []
@@ -742,6 +768,29 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
         all_columns, all_rows, query_summary, state, config, intent, persona
     )
 
+    # Y4: decision_type override — applied before guardrails so guardrails can validate the forced type
+    _decision_type = state.get("decision_type") or "lookup"
+    _threshold_val_y4: float | None = None
+
+    if _decision_type == "breach_detection":
+        chart_type = "line"
+        _running_cols = [c for c in all_columns if c.lower().startswith("running_")]
+        if _running_cols:
+            labels = {**labels, "y_column": _running_cols[0]}
+        for _ts in ((state.get("resolved_intent") or {}).get("threshold_specs") or []):
+            if _ts.get("value") is not None:
+                try:
+                    _threshold_val_y4 = float(_ts["value"])
+                except (TypeError, ValueError):
+                    pass
+                break
+    elif _decision_type == "comparison":
+        if chart_type not in ("grouped_bar", "dual_axis", "waterfall", "stacked_bar"):
+            chart_type = "grouped_bar"
+    elif _decision_type == "trend_analysis":
+        if chart_type not in ("line", "area", "multi_line", "stacked_area"):
+            chart_type = "line"
+
     # Safety guardrails: structural impossibilities (no date col for time series, unknown type)
     chart_type = _apply_guardrails(chart_type, all_columns, col_type_map, n_rows)
     # Data-aware sanitizer: requires inspecting actual values (negative pie theta, etc.)
@@ -767,6 +816,14 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
             chart_type, state["thread_id"],
         )
         return {"chart_spec": None, "chart_type": None, "alternative_chart_specs": []}
+
+    # Y4: inject threshold reference line after validation (keeps _validate_spec unchanged)
+    if _decision_type == "breach_detection" and _threshold_val_y4 is not None:
+        spec = _inject_threshold_layer(spec, _threshold_val_y4)
+        logger.info(
+            "chart_agent | threshold_layer injected | threshold={} | thread={}",
+            _threshold_val_y4, state["thread_id"],
+        )
 
     raw_alternatives = labels.get("alternative_types") or []
     alternative_specs = _build_alternative_specs(raw_alternatives, chart_type, all_columns, all_rows, labels, col_type_map, query_summary=query_summary)

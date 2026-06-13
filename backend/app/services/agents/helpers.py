@@ -444,7 +444,7 @@ def build_directive_section(state: dict) -> str:
             "\n"
             "TIME_FILTER UNIQUENESS: If EXECUTE INSTRUCTIONS contains multiple TIME_FILTER lines, use\n"
             "  the FIRST one only. A second TIME_FILTER is a planner error — do not create a second\n"
-            "  date range filter from it. DUAL_GRAIN lines handle multi-grain sub-partitioning, not\n"
+            "  date range filter from it. MULTI_GRAIN lines handle multi-grain sub-partitioning, not\n"
             "  a second outer date window."
         )
     return "\n\n".join(parts) if parts else ""

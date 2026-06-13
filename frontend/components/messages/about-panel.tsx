@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, type ComponentType, type ReactNode } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Info,
   Copy,
@@ -14,6 +16,7 @@ import {
   ScrollText,
   ExternalLink,
   ShieldCheck,
+  Layers,
 } from 'lucide-react';
 import {
   Sheet,
@@ -34,6 +37,14 @@ import { formatRelativeTime } from '@/lib/utils/relative-time';
 import { useNow } from '@/lib/hooks/use-now';
 import type { Message } from '@/lib/store/threads';
 
+
+function MarkdownText({ children }: { children: string }) {
+  return (
+    <div className="text-sm text-foreground/90 leading-relaxed prose prose-base dark:prose-invert max-w-none [&_strong]:font-semibold [&_em]:italic [&_ul]:list-disc [&_ul]:pl-4 [&_li]:my-1">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+    </div>
+  );
+}
 
 interface AboutPanelProps {
   open: boolean;
@@ -70,14 +81,14 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-full sm:max-w-md p-0 flex flex-col gap-0"
+        className="w-full sm:max-w-lg p-0 flex flex-col gap-0"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <SheetHeader className="px-5 py-4 border-b border-border gap-1">
-          <SheetTitle className="text-sm font-semibold tracking-tight">
+          <SheetTitle className="text-base font-semibold tracking-tight">
             About this answer
           </SheetTitle>
-          <SheetDescription className="text-xs">
+          <SheetDescription className="text-sm">
             Provenance, execution, and timing.
           </SheetDescription>
         </SheetHeader>
@@ -143,7 +154,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                     className="inline-flex items-center gap-1 text-primary hover:underline"
                   >
                     View in Langfuse
-                    <ExternalLink className="w-3 h-3" />
+                    <ExternalLink className="w-4 h-4" />
                   </a>
                 }
               />
@@ -154,19 +165,52 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
           {(question || m?.intent || m?.resolved_filters) && (
             <Section title="Interpretation" icon={Target}>
               {question && (
-                <div className="text-[12px] text-foreground/90 leading-relaxed mb-2.5 pl-2 border-l-2 border-border italic">
+                <div className="text-sm text-foreground/90 leading-relaxed mb-2.5 pl-2 border-l-2 border-border italic">
                   {question}
                 </div>
               )}
               {m?.intent && (
                 <KV
                   label="Intent"
-                  value={m.intent}
+                  value={<MarkdownText>{m.intent}</MarkdownText>}
                   wrap
                 />
               )}
               {m?.resolved_filters && (
                 <KV label="Filters" value={m.resolved_filters} wrap />
+              )}
+            </Section>
+          )}
+
+          {/* Context — shows retrieved constraint facts, memory, business terms */}
+          {m?.context_summary && (
+            <Section title="Context" icon={Layers}>
+              {m.context_summary.decision_type && m.context_summary.decision_type !== 'lookup' && (
+                <KV label="Decision type" value={m.context_summary.decision_type} mono />
+              )}
+              {m.context_summary.constraint_facts.map((f, i) => (
+                <div key={i} className="py-0.5">
+                  {i === 0 && (
+                    <span className="text-xs text-muted-foreground/80 block mb-0.5">Constraint</span>
+                  )}
+                  <span className="font-mono text-xs text-foreground/85">{f.table}</span>
+                  {f.text && <MarkdownText>{f.text}</MarkdownText>}
+                </div>
+              ))}
+              {m.context_summary.constraint_trigger_line && (
+                <KV label="Trigger" value={m.context_summary.constraint_trigger_line} wrap />
+              )}
+              {m.context_summary.memory_items.length > 0 && (
+                <KV label="Memory applied" value={String(m.context_summary.memory_items.length)} mono />
+              )}
+              {m.context_summary.memory_items.map((item, i) => (
+                <MarkdownText key={i}>{item}</MarkdownText>
+              ))}
+              {m.context_summary.business_terms.length > 0 && (
+                <KV label="Business terms" value={m.context_summary.business_terms.join(', ')} wrap />
+              )}
+              {m.context_summary.is_refinement && m.context_summary.prior_question_preview && (
+                <KV label="Refining" value={`"${m.context_summary.prior_question_preview}…"`} wrap />
               )}
             </Section>
           )}
@@ -184,7 +228,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
               {m?.source_tables?.map((tbl) => (
                 <div
                   key={tbl}
-                  className="font-mono text-[11px] text-foreground/85 py-0.5 break-all leading-relaxed border-b border-border/40 last:border-0"
+                  className="font-mono text-sm text-foreground/85 py-1 break-all leading-relaxed border-b border-border/40 last:border-0"
                 >
                   {tbl}
                 </div>
@@ -242,9 +286,9 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                   </span>
                 }
               />
-              <p className="mt-2 text-[11px] text-muted-foreground/80 leading-relaxed">
-                {confidence.explanation}
-              </p>
+              <div className="mt-2">
+                <MarkdownText>{confidence.explanation}</MarkdownText>
+              </div>
             </Section>
           ) : null;
           })()}
@@ -314,31 +358,31 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
               <Collapsible title="Pipeline" icon={ListOrdered}>
                 {/* Column headers — only when cost data is present */}
                 {hasCost && (
-                  <div className="flex items-center gap-1 pb-1 mb-1 border-b border-border/60 text-[10px] font-medium text-muted-foreground/50 uppercase tracking-wide">
+                  <div className="flex items-center gap-1 pb-1 mb-1 border-b border-border/60 text-xs font-medium text-muted-foreground/50 uppercase tracking-wide">
                     <span className="flex-1">Step</span>
                     <span className="w-14 text-right">Cost</span>
                     <span className="w-12 text-right">Time</span>
                   </div>
                 )}
 
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   {m!.pipeline_steps!.map((step, i) => {
                     const dim = step.status === 'skipped';
                     const cost = stepCosts[i];
                     return (
-                      <div key={`${step.node}-${i}`} className="flex items-center gap-1 py-0.5 text-[11px]">
+                      <div key={`${step.node}-${i}`} className="flex items-center gap-2 py-1 text-sm">
                         <span className={`flex-1 truncate ${dim ? 'text-muted-foreground/50 line-through' : 'text-foreground/85'}`}>
                           {step.message || step.node}
                         </span>
                         {hasCost && (
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <span className="w-14 text-right font-mono tabular-nums text-foreground/70 text-[10px] cursor-default">
+                              <span className="w-14 text-right font-mono tabular-nums text-foreground/70 text-xs cursor-default">
                                 {cost ? `$${cost.cost_usd.toFixed(4)}` : '—'}
                               </span>
                             </TooltipTrigger>
                             {cost && (
-                              <TooltipContent side="left" className="text-[10px] min-w-[160px]">
+                              <TooltipContent side="left" className="text-xs min-w-[160px]">
                                 <div className="space-y-1.5">
                                   <div className="flex justify-between gap-4 font-medium">
                                     <span>Input</span>
@@ -369,7 +413,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                             )}
                           </Tooltip>
                         )}
-                        <span className="w-12 text-right font-mono tabular-nums text-muted-foreground/70 text-[10px] shrink-0">
+                        <span className="w-12 text-right font-mono tabular-nums text-muted-foreground/70 text-xs shrink-0">
                           {step.duration_ms != null ? `${(step.duration_ms / 1000).toFixed(2)}s` : '-'}
                         </span>
                       </div>
@@ -380,7 +424,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 {/* Totals footer */}
                 {totalCost != null && (
                   <div className="pt-1.5 mt-1 border-t border-border/60 space-y-0.5">
-                    <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                    <div className="flex items-center gap-1 text-xs text-muted-foreground/70">
                       <span className="flex-1">Total tokens</span>
                       <span className="font-mono tabular-nums">
                         {m!.token_usage!.total_tokens.toLocaleString()}
@@ -389,9 +433,9 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                         </span>
                       </span>
                     </div>
-                    <div className="flex items-center gap-1 text-[11px] font-medium">
+                    <div className="flex items-center gap-1 text-sm font-medium">
                       <span className="flex-1 text-foreground/60">Total cost</span>
-                      <span className="font-mono tabular-nums text-primary text-[10px]">
+                      <span className="font-mono tabular-nums text-primary text-xs">
                         ${totalCost.toFixed(4)}
                       </span>
                     </div>
@@ -400,7 +444,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
 
                 {/* Cache hint */}
                 {((m?.token_usage?.cache_read_tokens ?? 0) > 0 || (m?.token_usage?.cache_creation_tokens ?? 0) > 0) && (
-                  <div className="mt-1 flex gap-3 text-[10px] text-muted-foreground/50">
+                  <div className="mt-1 flex gap-3 text-xs text-muted-foreground/50">
                     {(m!.token_usage!.cache_read_tokens > 0) && (
                       <span>Cache read: {m!.token_usage!.cache_read_tokens.toLocaleString()}</span>
                     )}
@@ -455,8 +499,8 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 </button>
               }
             >
-              <div className="text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto">
-                {message.reasoning}
+              <div className="rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto overflow-x-hidden">
+                <MarkdownText>{message.reasoning!}</MarkdownText>
               </div>
             </Collapsible>
           )}
@@ -476,10 +520,10 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="px-5 py-3.5 border-b border-border last:border-b-0">
-      <div className="flex items-center gap-1.5 mb-2">
-        {Icon && <Icon className="w-3 h-3 text-muted-foreground/70" />}
-        <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+    <section className="px-5 py-4 border-b border-border last:border-b-0">
+      <div className="flex items-center gap-2 mb-3">
+        {Icon && <Icon className="w-4 h-4 text-muted-foreground/70" />}
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {title}
         </h3>
       </div>
@@ -502,25 +546,25 @@ function Collapsible({
   const [open, setOpen] = useState(false);
   return (
     <section className="border-b border-border last:border-b-0">
-      <div className="flex items-center px-5 py-3.5">
+      <div className="flex items-center px-5 py-4">
         <button
           onClick={() => setOpen((o) => !o)}
           className="flex items-center gap-1.5 flex-1 text-left"
           aria-expanded={open}
         >
           {open ? (
-            <ChevronDown className="w-3 h-3 text-muted-foreground/70" />
+            <ChevronDown className="w-4 h-4 text-muted-foreground/70" />
           ) : (
-            <ChevronRight className="w-3 h-3 text-muted-foreground/70" />
+            <ChevronRight className="w-4 h-4 text-muted-foreground/70" />
           )}
-          {Icon && <Icon className="w-3 h-3 text-muted-foreground/70" />}
-          <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {Icon && <Icon className="w-4 h-4 text-muted-foreground/70" />}
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             {title}
           </h3>
         </button>
         {actions && <div className="ml-2">{actions}</div>}
       </div>
-      {open && <div className="px-5 pb-3.5">{children}</div>}
+      {open && <div className="px-5 pb-4">{children}</div>}
     </section>
   );
 }
@@ -538,8 +582,8 @@ function KV({
 }) {
   if (wrap) {
     return (
-      <div className="py-1 text-[11px]">
-        <span className="block text-muted-foreground/80 mb-0.5">{label}</span>
+      <div className="py-1.5 text-sm">
+        <span className="block text-muted-foreground/80 mb-1 font-medium">{label}</span>
         <span
           className={`block text-foreground/90 leading-relaxed break-words ${
             mono ? 'font-mono tabular-nums' : ''
@@ -551,7 +595,7 @@ function KV({
     );
   }
   return (
-    <div className="flex items-baseline justify-between gap-3 py-0.5 text-[11px]">
+    <div className="flex items-baseline justify-between gap-3 py-1 text-sm">
       <span className="text-muted-foreground/80 shrink-0">{label}</span>
       <span
         className={`text-foreground/90 text-right break-all ${
@@ -574,14 +618,14 @@ function CopyableId({ id, onCopy }: { id: string; onCopy: () => void }) {
       <TooltipTrigger asChild>
         <button
           onClick={onCopy}
-          className="font-mono text-[11px] hover:text-foreground transition-colors inline-flex items-center gap-1"
+          className="font-mono text-sm hover:text-foreground transition-colors inline-flex items-center gap-1"
         >
           {display}
-          <Copy className="w-2.5 h-2.5 opacity-60" />
+          <Copy className="w-3.5 h-3.5 opacity-60" />
         </button>
       </TooltipTrigger>
       <TooltipContent side="left">
-        <span className="font-mono text-[10px]">{id}</span>
+        <span className="font-mono text-xs">{id}</span>
       </TooltipContent>
     </Tooltip>
   );

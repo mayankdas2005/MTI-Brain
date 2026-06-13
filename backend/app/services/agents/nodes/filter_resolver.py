@@ -121,9 +121,20 @@ async def filter_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
 _NUMERIC_DTYPES = frozenset({
     "int", "integer", "bigint", "smallint", "tinyint", "byteint",
     "float", "float4", "float8", "real", "double", "double precision",
-    "decimal", "numeric",
+    "decimal", "numeric", "money",
 })
-_NUMERIC_PREFIXES = ("int", "float", "decimal", "numeric", "double")
+_NUMERIC_PREFIXES = ("int", "float", "decimal", "numeric", "double", "money")
+
+
+def _is_numeric_literal(raw: str) -> bool:
+    """Return True if raw is a pure numeric string (integer or decimal, optional sign/commas/$)."""
+    try:
+        import re as _re
+        cleaned = _re.sub(r"[$,\s]", "", str(raw).strip())
+        float(cleaned)
+        return bool(cleaned)
+    except (TypeError, ValueError):
+        return False
 
 
 async def _resolve_filter(
@@ -193,6 +204,12 @@ async def _resolve_filter(
             f.table_fqn, f.column_name, f.raw_user_value, bool_val,
         )
         return [f.model_copy(update={"value": bool_val, "is_raw_sql": True, "resolved": True})], False
+
+    # Z2: numeric literal bypass — skip ALL fuzzy matching when the raw value is a pure number.
+    # Catches threshold values (e.g. "200000000") on columns with non-standard dtype strings
+    # ("money", "number", "amount") that aren't in _NUMERIC_DTYPES but hold numeric data.
+    if _is_numeric_literal(str(f.raw_user_value)):
+        return [f.model_copy(update={"resolved": True})], False
 
     # Numeric path — value is already a literal; pass through with existing operator
     if data_type in _NUMERIC_DTYPES or any(data_type.startswith(p) for p in _NUMERIC_PREFIXES):

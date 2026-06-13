@@ -78,22 +78,16 @@ REASONING_DIRECTIVE_REPAIR = (
 # ─── Node 0: Intake Classifier ───────────────────────────────────────────────
 
 INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
-    """You classify financial analytics questions and extract entity tokens for graph search.
+    """You classify financial analytics questions.
 
-SYSTEM SCOPE — this assistant queries organizational financial data in these domains:
-  {domain_list}
+DOMAINS: {domain_list}
 
 CLASSIFY as "analytics" when the question asks for SPECIFIC ORGANIZATIONAL DATA — accounts, balances,
 transactions, exposures, payments, entities, forecasts, rates.
-CLASSIFY as "general_chat" when the question is a DEFINITION, EXPLANATION, or CAPABILITY QUESTION
-answerable without any database query.
+CLASSIFY as "general_chat" for DEFINITIONS, EXPLANATIONS, or CAPABILITY QUESTIONS answerable without a DB query.
 
-FOLLOW-UP DETECTION: If this question continues or refers to a prior analytics answer in the
-conversation — whether through referential words, topic continuation, or implicit context — set
-is_followup=true. Consider the full semantic meaning, not just surface keywords.
-
-TIEBREAKER: When ambiguous → "analytics". A failed query returns "no data found"; a misclassified
-data question silently disappears.
+FOLLOW-UP: set is_followup=true when this question semantically continues a prior analytics answer.
+TIEBREAKER: ambiguous → "analytics".
 
 Conversation context:
 {conversation_context}
@@ -105,70 +99,95 @@ User question: "{question}"
   "type": "analytics" | "general_chat",
   "is_followup": false,
   "complexity": "simple" | "complex" | "advanced",
-  "entity_tokens": ["named entities, qualifiers, instrument types, currency codes that appear as DB values — max 8"],
-  "search_terms": ["2-4 word phrases for table/column discovery — 3 for simple, up to 6 for complex/advanced"],
-  "search_variants": ["corrected or expanded forms of entity_tokens — max 8"],
-  "query_intent": ["GOAL: ...", "TIME: ...", "CONDITION: ...", "OUTPUT: ..."]
+  "decision_type": "lookup" | "breach_detection" | "trend_analysis" | "comparison" | "judgment" | "multi_domain",
+  "has_reconciliation": false
 }}
 </output>
 
-RULES:
-entity_tokens: named counterparties, qualifiers (operating, closing, custody), instrument types (ACH, wire, FX),
-  currency codes, named thresholds. Exclude verbs and stopwords. Max 8.
-search_terms: 3 for simple/kpi; up to 6 for complex/multi-domain/forecast. Cover different aspects:
-  entity+qualifier, measure/concept, domain terms, policy/threshold if present.
-search_variants: expand abbreviations (FX → "foreign exchange"), fix typos. Mirror entity_tokens if no expansion.
-complexity: "simple" = single metric, one table likely. "complex" = multi-domain or multi-join.
-  "advanced" = forecast, multi-horizon, derived computations, policy checks.
-is_followup: true when question semantically continues a prior analytics answer — even without explicit
-  referential words ("What about the FX exposure?" after a treasury briefing is a follow-up).
-query_intent: JSON array of typed lines describing WHAT the user wants to ACCOMPLISH.
-  Each line starts with one of: GOAL | TIME | COMPARISON | DOMAIN | CONDITION | SCENARIO | CONTEXT | OUTPUT
-  GOAL (required, 1 line): primary objective — what the user wants to produce or decide.
-  TIME: one line per distinct time reference. Include direction + duration + grain.
-    "TIME: Last 30 days, daily granularity"
-    "TIME: 4-week forward projection at weekly granularity"
-    TWO TIME lines for two-horizon queries — never collapse into one.
-  COMPARISON: what is compared vs what, and how.
-    "COMPARISON: Actual inflows vs forecast, by entity, 30-day window"
-    "COMPARISON: Seasonality from same calendar period last year"
-  DOMAIN: one line per domain for multi-domain synthesis. "DOMAIN: liquidity", "DOMAIN: FX exposure"
-  CONDITION: threshold, flag, or row filter — include value, operator, and type keyword.
-    type = Highlight when user says "flag/highlight/identify which/show which" (CASE WHEN — all rows kept)
-    type = Filter when user says "only/excluding/restrict to/where X is Y" (WHERE — rows removed)
-    "CONDITION: Highlight (flag — all rows visible) any week where projected liquidity < $200M"
-    "CONDITION: Filter — only accounts with balance > $1M"
-    "CONDITION: Highlight disbursements deviating > 3 standard deviations from vendor baseline"
-  SCENARIO: hypothetical assumption for stress tests — NOT a data filter.
-    "SCENARIO: Assume 20% drop in daily receipts for 30-day window"
-  CONTEXT: prior state, external reference data, or enterprise policy context needed.
-    "CONTEXT: Follow-up to prior treasury analysis — enterprise policy context needed"
-    "CONTEXT: External peer data needed — Walmart, Target, Home Depot, Kroger"
-  OUTPUT (required, 1 line): how the result will be used; what must be prominent.
-    "OUTPUT: Single KPI value for baseline"
-    "OUTPUT: Operational risk forecast — breach weeks must be prominent"
-  query_intent is ALWAYS fresh — never copied from a prior turn, even for follow-up queries.
-  For general_chat type: query_intent = []
+decision_type (pick ONE):
+  "lookup"           — retrieve a specific value, list, or count
+  "breach_detection" — compare against a threshold ("flag weeks below $200M")
+  "trend_analysis"   — how something changed over time (≥2 TIME periods)
+  "comparison"       — A vs B (actual vs forecast, YoY, vs peers)
+  "judgment"         — requires enterprise context to answer ("does this require action")
+  "multi_domain"     — briefing/scorecard across 3+ distinct domains
 
-DEMO QUERY EXAMPLES:
+has_reconciliation: true only for "reconcile X against Y / match X to Y / find discrepancies".
+complexity: "simple"=single metric; "complex"=multi-domain/multi-join; "advanced"=forecast/multi-horizon/derived.
 
-Q1 — "What is our total liquidity available today?"
-<output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["liquidity", "today"], "search_terms": ["total liquidity available", "cash balance position", "available funds"], "search_variants": ["liquidity", "available cash", "liquid assets", "cash position"], "query_intent": ["GOAL: Establish current total liquidity as a single baseline number", "TIME: Today — point-in-time, not a range", "OUTPUT: Single KPI value"]}}</output>
+EXAMPLES:
+"What is our total liquidity today?" → {{"type":"analytics","is_followup":false,"complexity":"simple","decision_type":"lookup","has_reconciliation":false}}
+"Build a 4-week cash forecast and flag weeks below $200M threshold." → {{"type":"analytics","is_followup":false,"complexity":"advanced","decision_type":"breach_detection","has_reconciliation":false}}
+"CFO briefing on liquidity, debt, FX and key risks." → {{"type":"analytics","is_followup":false,"complexity":"complex","decision_type":"multi_domain","has_reconciliation":false}}
+"What is SOFR?" → {{"type":"general_chat","is_followup":false,"complexity":"simple","decision_type":"lookup","has_reconciliation":false}}"""
+)
 
-Q2 — "Build a 4-week and 3-month cash forecast using historical inflows and outflows. Factor in seasonality from the same period last year, and highlight any week where projected liquidity falls below our $200M minimum threshold."
-<output>{{"type": "analytics", "is_followup": false, "complexity": "advanced", "entity_tokens": ["cash forecast", "inflows", "outflows", "seasonality", "$200M", "threshold"], "search_terms": ["cash flow forecast inflows outflows", "liquidity threshold minimum", "seasonality historical cash", "cash forecast projection", "minimum liquidity threshold breach", "weekly monthly cash flow"], "search_variants": ["cash forecast", "cash flow projection", "inflows", "receipts", "outflows", "disbursements", "liquidity threshold", "minimum balance"], "query_intent": ["GOAL: Build dual-horizon cash forecast for operational risk decision-making", "TIME: 4-week forward projection at weekly granularity", "TIME: 3-month forward projection at monthly granularity", "COMPARISON: Seasonality from same calendar period last year", "CONDITION: Highlight (flag — all rows visible) any week where projected running liquidity < $200M", "OUTPUT: Operational risk forecast — breach weeks must be prominent"]}}</output>
 
-Q3 — "Give me a one-page CFO briefing on treasury health: liquidity, debt, FX, interest rate exposure, and key risks."
-<output>{{"type": "analytics", "is_followup": false, "complexity": "complex", "entity_tokens": ["treasury health", "liquidity", "debt", "FX", "interest rate", "exposure", "risks"], "search_terms": ["treasury health liquidity position", "debt interest rate exposure", "FX foreign exchange risk", "treasury risk key metrics", "CFO briefing treasury", "liquidity debt FX summary"], "search_variants": ["treasury health", "treasury position", "FX", "foreign exchange", "interest rate", "rate exposure", "debt obligations", "key risks"], "query_intent": ["GOAL: Synthesize treasury health across domains into a one-page executive artifact", "DOMAIN: liquidity position", "DOMAIN: debt profile", "DOMAIN: FX exposure", "DOMAIN: interest rate exposure", "DOMAIN: key risks", "OUTPUT: CFO-ready briefing — domain summaries, not a single metric"]}}</output>
+INTAKE_INTENT_PROMPT = ChatPromptTemplate.from_template(
+    """You extract structured query intent lines from a financial analytics question.
+Your ONLY output is a JSON array of typed intent lines.
 
-Q4 — "Does this treasury position require action before the CFO briefing?" (follow-up to Q3)
-<output>{{"type": "analytics", "is_followup": true, "complexity": "complex", "entity_tokens": ["treasury position", "action", "CFO briefing"], "search_terms": ["treasury action required policy", "CFO briefing threshold", "treasury risk action"], "search_variants": ["treasury position", "action required", "CFO briefing", "policy threshold"], "query_intent": ["GOAL: Assess whether current treasury position requires action before the CFO briefing", "CONTEXT: Follow-up to prior treasury analysis — enterprise policy and commitment context needed", "OUTPUT: Decision recommendation (yes/no) with rationale — not a data summary"]}}</output>
+DOMAIN taxonomy — use ONLY these canonical names in DOMAIN lines:
+  cash_and_liquidity  — bank positions, closing balances, cash flows, sweeps, intercompany funding
+  benchmarking        — benchmark rates (SOFR/SONIA/ESTR), peer company comparisons
+  debt_and_capital    — credit facilities, drawdowns, interest accruals, credit ratings
+  fx_and_hedging      — FX exposure, forward contracts, derivative MTM, hedge accounting
+  forecasting         — cash flow forecasts, forecast vs actual variance, forecast snapshots
+  fraud               — fraud detection events, risk scores, confirmed losses
+  erp_reconciliation  — bank-to-GL reconciliation, GL account balances, month-end close
+  investments         — investment portfolio, money market, deposits, bonds
+  reference           — currencies, counterparties, cash flow classifications, master data
+  knowledge_graph     — institutional knowledge, SME feedback (rarely needed)
 
-Other examples:
-<output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["JPMorgan", "operating", "balance"], "search_terms": ["JPMorgan operating account", "closing balance", "cash balance bank"], "search_variants": ["JPMorgan", "JP Morgan", "operating"], "query_intent": ["GOAL: Retrieve closing balance for JPMorgan operating account", "TIME: Last 7 days", "OUTPUT: Daily balance trend"]}}</output>
-<output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["ACH"], "search_terms": ["ACH receipts payment", "ACH volume", "payment receipts"], "search_variants": ["ACH", "automated clearing house"], "query_intent": ["GOAL: Total ACH receipts for the period", "TIME: Yesterday — point-in-time", "OUTPUT: Single total value"]}}</output>
-<output>{{"type": "analytics", "is_followup": false, "complexity": "complex", "entity_tokens": ["FX", "hedges"], "search_terms": ["FX hedge notional", "foreign exchange exposure", "derivative hedge", "FX hedge position"], "search_variants": ["FX", "foreign exchange", "hedge", "FX hedge"], "query_intent": ["GOAL: Report total notional of outstanding FX hedges by currency", "DOMAIN: FX hedging", "OUTPUT: Summary table by currency pair"]}}</output>
-<output>{{"type": "general_chat", "is_followup": false, "complexity": "simple", "entity_tokens": [], "search_terms": [], "search_variants": [], "query_intent": []}}</output>"""
+decision_type = "{decision_type}" — use this to guide CONDITION/COMPARISON lines:
+  breach_detection → emit CONDITION with operator + numeric threshold value
+  comparison       → emit COMPARISON with explicit baseline (YoY, forecast vs actual, peer)
+  trend_analysis   → emit ≥2 TIME lines (each time horizon on its own line)
+  judgment         → emit CONTEXT line mentioning enterprise context needed
+
+Question: "{question}"
+
+INTENT LINE TYPES:
+  GOAL (required, 1 line): primary objective — what to produce or decide
+  TIME: one line per distinct time reference (direction + duration + grain). NEVER collapse two horizons.
+  DOMAIN: canonical name only. One line per domain. Emit for multi-domain questions.
+  COMPARISON: A vs B structure with explicit baseline
+  CONDITION: threshold or flag — include value, operator, type (Highlight/Filter)
+    Highlight = CASE WHEN (all rows kept, flag column added)
+    Filter    = WHERE clause (rows removed)
+  SCENARIO: hypothetical assumption for stress tests
+  CONTEXT: enterprise context or external data needed
+  OUTPUT (required, 1 line): how result will be used; what must be prominent
+
+<output>
+{{"query_intent": ["GOAL: ...", "TIME: ...", "OUTPUT: ..."]}}
+</output>
+
+Max 12 lines. Always include GOAL and OUTPUT. query_intent = [] for general_chat.
+DOMAIN lines: canonical names only — never invent ("FX hedging" → "fx_and_hedging")."""
+)
+
+
+INTAKE_SEARCH_PROMPT = ChatPromptTemplate.from_template(
+    """You extract knowledge-graph search tokens from a financial analytics question.
+Your ONLY output is entity_tokens, search_terms, and search_variants.
+
+Question: "{question}"
+Complexity: {complexity}
+
+<output>
+{{
+  "entity_tokens": ["named counterparties, qualifiers, instrument types, currency codes, thresholds — max 8"],
+  "search_terms": ["2-4 word phrases for table/column discovery — 3 for simple, up to 6 for complex/advanced"],
+  "search_variants": ["expanded or corrected forms of entity_tokens — max 8"]
+}}
+</output>
+
+entity_tokens: named entities that appear as DB values (banks, currencies, codes, qualifiers like "operating").
+  Exclude verbs and generic stopwords. Max 8.
+search_terms: cover different lookup angles — entity+qualifier, measure/concept, domain terms, policy/threshold.
+  3 terms for simple; up to 6 for complex/advanced.
+search_variants: expand abbreviations (FX → "foreign exchange"), fix typos. Mirror entity_tokens if no expansion needed."""
 )
 
 # ─── Node G: General Chat ────────────────────────────────────────────────────
@@ -555,6 +574,9 @@ One sentence: which numbered entry matches (by direct match or meaning label) an
 )
 
 # ─── Repair Node ──────────────────────────────────────────────────────────────
+# DEPRECATED: REPAIR_PROMPT is no longer called directly.
+# repair.py routes to REPAIR_SYNTAX_PROMPT, REPAIR_STRUCTURE_PROMPT, or REPAIR_PERFORMANCE_PROMPT
+# based on _classify_error(). Keep for backward compatibility only.
 
 REPAIR_PROMPT = ChatPromptTemplate.from_template(
     """You are fixing broken Amazon Redshift SQL. Redshift is NOT PostgreSQL.
@@ -941,28 +963,9 @@ COLUMN FORWARDING RULES:
     PREFERRED: Compute the date expression in an upstream CTE as a named alias; reference that alias
     in both GROUP BY and ORDER BY — eliminates all expression-mismatch risk.
 
-DEAD CTE AND TABLE PROHIBITION — CRITICAL:
-  Plan ONLY the CTEs whose exports chain directly back to FINAL SELECT.
-  Step 1 of reasoning starts with the FINAL SELECT columns. Step 2 traces backward.
-  ANY CTE whose columns do not appear in FINAL SELECT (directly or via intermediate CTEs) MUST
-  NOT be included. No bridge CTEs, no "context" CTEs, no "might be useful" CTEs.
-  A CTE that only feeds a LEFT JOIN whose columns never reach FINAL SELECT is a dead CTE.
-  ✗ WRONG: plan a bank_fee_bridge CTE if no column from bank_fee appears in FINAL SELECT
-  ✗ WRONG: plan a company_bridge CTE "for context" when the question is about payment exceptions
-  ✓ RIGHT: only plan CTEs whose exports are traceable, alias by alias, to a FINAL SELECT column
-
-  DEAD TABLE IN JOIN/EXISTS — EQUALLY PROHIBITED:
-  Never add a table to reads_from or plan an EXISTS subquery for a table unless:
-    (a) At least one column from that table appears in this CTE's exports (reaches FINAL SELECT), OR
-    (b) The table is a confirmed bridge in JOIN_CHAIN from the SCHEMA DIRECTIVE, OR
-    (c) The table provides a WHERE filter column on the primary fact table AND has a confirmed join key.
-  Tables listed as UNRESOLVED_PAIRS in the SCHEMA DIRECTIVE have NO confirmed join path.
-  NEVER include them in any CTE — not as a JOIN, not as EXISTS, not as a subquery.
-  An EXISTS subquery with a NULL or absent join column silently returns FALSE for every row → zero results.
-  ✗ WRONG: reads_from: fva, lpp.bank_account, lpp.cash_flow, lpp.forecast_cash_flow
-           (only fva columns reach FINAL SELECT; the other three are dead joins)
-  ✓ RIGHT: reads_from: lpp.forecast_vs_actual AS fva
-           (all FINAL SELECT columns come from fva; other tables omitted)
+DEAD CTE AND TABLE PROHIBITION: only plan CTEs whose exports chain directly back to FINAL SELECT — trace backward from FINAL SELECT. Any CTE, JOIN, or EXISTS for a table whose columns do not reach FINAL SELECT is dead — omit it entirely.
+  Tables in UNRESOLVED_PAIRS have NO confirmed join path — never include them in reads_from, JOIN, or EXISTS.
+  (Detailed trace procedure: see Steps 1-3 of reasoning below.)
 
 JOIN CARDINALITY — NO CARTESIAN PRODUCTS:
   ✗ NEVER plan a JOIN with ON 1=1 or with no join condition — this is a Cartesian product.
@@ -992,7 +995,20 @@ JOIN KEY VALIDATION:
     -- ⚠ NO VALUE OVERLAP  → join returns 0 rows; do NOT plan column forwarding through this join
     (no comment)            → unconfirmed; treat with caution
 
-DUAL-GRAIN PATTERN — apply ONLY when EXECUTE INSTRUCTIONS contains a DUAL_GRAIN line (e.g. DUAL_GRAIN: week+month):
+COMPUTATION TYPE TAGS — how to implement each tag emitted by directive_writer:
+  COMPUTATION[WINDOW]: col = expr OVER (ORDER BY ...)
+    → add as a window function expression in the OUTER SELECT over the base aggregation CTE,
+      NOT inside the base CTE GROUP BY. The base CTE exports the aggregated alias first;
+      the outer SELECT wraps it with the OVER clause.
+  COMPUTATION[FLAG]:   col = CASE WHEN ... THEN ... END
+    → add as a CASE WHEN expression in the outer SELECT (same level as COMPUTATION[WINDOW]).
+  COMPUTATION[DELTA]:  col = actual_alias - baseline_alias
+    → add in a final SELECT that JOINs the main CTE to the baseline/YoY CTE.
+      Requires two parallel CTEs (main + baseline) — see SCHEMA_GAP_CONCEPT for baseline definition.
+  COMPUTATION (no tag or standard): col = expression
+    → standard derived column expression in the base aggregation CTE.
+
+MULTI-GRAIN PATTERN — apply ONLY when EXECUTE INSTRUCTIONS contains a MULTI_GRAIN line (e.g. MULTI_GRAIN: week+month):
   Produce two parallel aggregation CTEs with IDENTICAL export schemas, one per grain:
     CTE <base>_weekly:  GROUP BY DATE_TRUNC('week',  <date_col>)  — exports grain = 'weekly'
     CTE <base>_monthly: GROUP BY DATE_TRUNC('month', <date_col>)  — exports grain = 'monthly'
@@ -1005,7 +1021,7 @@ DUAL-GRAIN PATTERN — apply ONLY when EXECUTE INSTRUCTIONS contains a DUAL_GRAI
   FINAL SELECT: UNION ALL of both grain CTEs. ORDER BY forecast_period, grain.
   NEVER collapse both grains into a single CTE with a label column — that produces wrong cumulative
   windows and makes the two horizons indistinguishable in the output.
-  Do NOT apply this pattern when DUAL_GRAIN is absent from the directive.
+  Do NOT apply this pattern when MULTI_GRAIN is absent from the directive.
 
 {anti_pattern_section}
 {query_pattern_section}
@@ -1019,11 +1035,7 @@ Step 4 — Name each CTE with a clear purpose label (e.g. recent_transactions, l
 Step 5 — Forwarding audit: for each CTE, verify every alias it references exists in its upstream exports. If a required column is missing from an upstream export, add it now — not in the SQL.
 Step 6 — Aggregation placement: which CTE does the GROUP BY + aggregate? Mark it aggregates: yes. All raw columns needed for GROUP BY must be in the base CTE's exports.
 Step 7 — WHERE slot: mark the CTE where QUERY SPECIFICATION filters logically apply (usually the aggregating CTE or the final join CTE).
-Step 8 — DATE RANGE FILTERS: for any date range filter you include in a where_slot (including those
-         from COMPUTED_FILTER directives), note the OR MAX branch. Every date range filter on a
-         time-series column MUST have both branches:
-           col >= DATEADD(day,-60,CURRENT_DATE) OR col >= DATEADD(day,-60,(SELECT MAX(col) FROM tbl))
-         Add both branches explicitly in your where_slot annotations.
+Step 8 — DATE RANGE FILTERS: note the OR MAX branch in where_slot annotations for every date range filter — the sql_generator applies the exact DATEADD syntax.
 Step 9 — LOOKUP CTE CHECK: For any CTE that maps one key to another (a dimension lookup — company_ref → business_unit, code → label, vendor_ref → vendor_name), verify it has NO where_slot time filter. Lookup CTEs must span full history. A time-filtered lookup silently NULLs out entities not active in the query window.
 </reasoning>
 
@@ -1142,11 +1154,6 @@ RULES:
     ✗ WRONG: LEFT JOIN webhook_event_filtered AS wef ON 1 = 1
     EXCEPTION — single-row scalar CTEs: CROSS JOIN is permitted ONLY when the joined CTE contains
     exactly one row (a snapshot_dates CTE built entirely from scalar subqueries with no FROM clause).
-1f. DEAD CTE PROHIBITION: Do NOT write a CTE whose columns never appear in the final SELECT
-    (directly or forwarded through intermediate CTEs). Every CTE must have at least one export
-    column that chains to the final SELECT. Bridge CTEs that only feed other bridge CTEs that
-    feed a LEFT JOIN whose columns are unused are dead CTEs — omit them entirely.
-    Before writing any CTE, verify: "does at least one column from this CTE appear in SELECT?"
 1g. SNAPSHOT_DATES CTE — stale-data anchors ONLY via direct subqueries:
     When collecting MAX(<date_col>) values from multiple tables for stale-data OR MAX fallback,
     use scalar subqueries — NEVER a multi-table CROSS JOIN with WHERE 1=0:
@@ -1226,46 +1233,7 @@ RULES:
    - ✓ BEST:   Pre-compute the date expression as an alias in a base CTE; reference the alias in
      both GROUP BY and ORDER BY — this eliminates all expression-mismatch risk.
 5. If QUERY SPECIFICATION shows "flat lookup" → omit GROUP BY and HAVING entirely.
-6. DOWNSTREAM CTE COLUMN REFERENCES — CRITICAL:
-   A downstream CTE can only reference columns by the ALIAS defined in the upstream CTE.
-   It MUST NOT use schema.table.column notation for any table that is not in its own FROM or JOIN.
-
-   BASE CTE MUST FORWARD ALL NEEDED COLUMNS:
-   The first (base) CTE must SELECT every column that any downstream CTE will use —
-   this includes ALL measure columns (to be aggregated later), ALL dimension columns (GROUP BY),
-   and any display/filter columns. Do NOT select only dimension columns in base_data and
-   then expect to AVG a raw table column in the next CTE.
-
-   WRONG (will fail validation):
-     base_data AS (SELECT lpp.bank_account.code AS account_code FROM lpp.bank_statement_balance JOIN lpp.bank_account ...)
-     aggregated AS (SELECT account_code, AVG(lpp.bank_statement_balance.amount) AS float  ← ILLEGAL: amount not selected in base_data, table not joined here
-                    FROM base_data GROUP BY account_code)
-
-   CORRECT:
-     base_data AS (SELECT lpp.bank_account.code AS account_code, lpp.bank_statement_balance.amount AS amount FROM lpp.bank_statement_balance JOIN lpp.bank_account ...)
-     aggregated AS (SELECT account_code, AVG(amount) AS float  ← CORRECT: uses alias forwarded from base_data
-                    FROM base_data GROUP BY account_code)
-
-   If you need a column from a specific table in a downstream CTE, you MUST add that table's JOIN
-   to that downstream CTE — or reference it by alias from an upstream CTE that already joined it.
-
-   CTE SCOPE ISOLATION — ALIAS MUST BE IN THIS CTE'S FROM:
-   'alias' is only valid inside a CTE if that alias appears in THIS CTE's own FROM or JOIN.
-   An alias used in an upstream CTE's FROM is NOT in scope for downstream CTEs.
-   ✗ WRONG: base_data AS (SELECT cb.balance FROM lpp.cash_balance cb ...)
-            cte_liquidity AS (SELECT cb.currency_code FROM base_data)
-            ← 'cb' is not in cte_liquidity's FROM — it belongs to base_data only
-   ✓ RIGHT:  base_data AS (SELECT cb.balance, cb.currency_code AS currency_code FROM lpp.cash_balance cb ...)
-             cte_liquidity AS (SELECT currency_code FROM base_data)
-             ← uses bare alias exported from base_data; no alias prefix needed or allowed
-
-   FINAL SELECT RULE — same constraint applies:
-   The final SELECT (after all CTEs) can only reference columns that are in the SELECT list of
-   the CTE(s) named in its FROM clause. If the last CTE exports {{id, total_amount}}, the final
-   SELECT CANNOT use bare `rate` or any other column not in that list.
-
-   WRONG:  final SELECT reads FROM aggregated → writes SELECT id, rate    ← rate not in aggregated
-   CORRECT: aggregated SELECTs `id, total_amount, rate` → final writes SELECT id, total_amount, rate
+6. DOWNSTREAM CTE COLUMN REFERENCES: downstream CTEs may only reference aliases defined in the upstream CTE's SELECT list — never use schema.table.column notation for a table not in the current CTE's own FROM or JOIN. The CTE contract (Rule 15) lists the required exports for each CTE.
 7. For any extra table not in PRE-COMPUTED JOINS: find its ON clause in ADDITIONAL JOINS in
    SCHEMA REFERENCE. Its columns appear in either PRIMARY COLUMNS or SECONDARY COLUMNS — use
    only columns listed there. SECONDARY COLUMNS may only appear in JOIN ON clauses or simple SELECT
@@ -1302,18 +1270,8 @@ RULES:
     WRONG (CTE ON clause):   ON ip.company_ref = company_ref
     CORRECT (CTE ON clause): ON ip.company_ref = cr_valid.company_ref
     If the CTE CONTRACT has a `join_on:` line, copy it verbatim — it already carries correct aliases.
-15. CTE CONTRACT (if the section appears above): three binding constraints.
-    A. NAME LOCK — use the exact CTE names from the contract. Do not rename, merge, split, or add CTEs.
-       The validator checks CTE names against the contract. A renamed CTE is a validation failure.
-    B. EXPORT CONTRACT — each CTE's SELECT must contain every alias listed in its exports block.
-       A downstream CTE or FINAL SELECT that references an alias NOT in the upstream exports block
-       will fail validation. Before writing each CTE, re-read the upstream CTE's exports and confirm
-       every column you need is listed there.
-    C. SOURCE CONSTRAINT — a CTE reading from an upstream CTE cannot use schema.table.column
-       notation for any table not in its own reads_from. Use only the upstream export aliases.
-    EXCEPTION (column missing from exports): if the contract's exports block is missing a column
-    you need, note it in <reasoning> and add that column to the upstream CTE's SELECT — this is
-    a contract gap, not a reason to deviate on CTE names or structure.
+15. CTE CONTRACT: follow CTE contract names exactly — do not rename, merge, split, or add CTEs. Each CTE's SELECT must contain every alias in its exports block.
+    EXCEPTION: if a needed column is missing from exports, add it to the upstream CTE's SELECT and note in <reasoning> — never deviate on CTE names.
 17. DATE_TRUNC OUTPUT FORMAT: when DIMENSIONS shows a date column with alias "period_<grain>",
     format the DATE_TRUNC result for clean human-readable output based on the grain:
       day     → DATE_TRUNC('day',     col)::DATE                     → YYYY-MM-DD
@@ -1584,35 +1542,7 @@ Examples of what NOT to write: IHB_USD_INVESTMENT, total_idle_cash_balance, lpp.
 
 ---
 
-CONSULTING STANDARD — MANDATORY. These answers are read by C-suite executives and must meet
-the standard of Bain, McKinsey, and BCG deliverables. Quality is enforced by three gates.
-Before writing each section, check these gates in <reasoning> and mark each ✓ or ✗. Rewrite
-any section that fails before finalizing.
-
-GATE 1 — PYRAMID PRINCIPLE: Every section must open with the business implication, not the data.
-  ✗ DESCRIPTIVE (FAIL): "GR_FR tax payments total $924,760 due 2026-06-29."
-  ✓ IMPLICATION-FIRST (PASS): "GR_FR faces its highest near-term liquidity pressure: a $924,760
-    tax obligation due 2026-06-29 cannot be deferred without penalty."
-  Test before writing: can the reader understand WHY this matters before they see the number?
-  If not, rewrite the opening sentence to lead with the consequence.
-
-GATE 2 — RECOMMENDATION SPECIFICITY: Every recommendation must contain all four elements or must
-not be written at all: (a) imperative action verb, (b) named functional owner, (c) hard deadline,
-(d) quantified expected outcome. Followed by: "If deferred: [specific cost, regulatory deadline,
-or risk event that worsens]."
-  ✗ VAGUE (FAIL): "Review the liquidity position across entities."
-  ✓ SPECIFIC (PASS): "Confirm whether the $200M threshold applies at consolidated group level or
-    per entity — Group Treasury Finance, by end of this week. If deferred: every subsequent
-    funding decision is made against an unvalidated baseline, risking either a false alarm or
-    a missed crisis."
-
-GATE 3 — SCENARIO GROUNDING: Every branch of Scenario Analysis must cite a specific number from
-PRE-EXTRACTED INSIGHTS. If the data does not support a quantified scenario, omit that branch —
-speculation without a number is not analysis.
-  ✗ SPECULATIVE (FAIL): "If liquidity improves, the business will be better positioned."
-  ✓ GROUNDED (PASS): "If consolidation scope is confirmed as incomplete: the $200M threshold
-    may already be met once group-level balances are included — the 2026-06-29 trough of
-    $180,964 becomes irrelevant and no liquidity action is required."
+{consulting_gates_section}
 
 ---
 
@@ -1635,31 +1565,7 @@ Then open the next conversation: 3 follow-up questions that let the user go deep
 
 ---
 
-DEPTH CALIBRATION — match answer depth to data richness:
-
-  SINGLE VALUE (1 row, 1 number — e.g. "total cash balance = $X"):
-    Write: answer sentence + 1-2 implications + 1 action or next question.
-    Do NOT force 3 bullets, scenario analysis, or a Watch List from a single number.
-    Example: **Total Cash Balance stands at $X as of [date].** [1-line implication.]
-             [1 action or caveat if warranted.] [What to ask next.]
-
-  SIMPLE LOOKUP (2-10 rows, factual — e.g. "show me account X"):
-    Write: brief table (analyst) or 2-3 key facts (other personas) + 1 action if warranted.
-    Skip sections that would have nothing grounded to say.
-
-  RICH DATASET (10+ rows, multiple dimensions — e.g. "inactive accounts by entity"):
-    Use the full persona structure. All sections apply.
-
-  NO DATA RETURNED:
-    Explain why in plain business terms. Suggest what to change (time range, filters, entity).
-    No fake structure. No empty sections.
-
-  RULE: A section with fewer than 2 grounded, non-repetitive points must be dropped entirely.
-  A tight 2-section answer is better than a padded 4-section answer with thin content.
-  CEILING: ≥2 grounded findings required to write any section — EXCEPT Verdict and Decision.
-  FLOOR: Verdict and Decision always appear. For single_value or few-finding responses,
-  derive from the single most material finding — one finding is sufficient for these two sections.
-  All other sections (Scenario Analysis, Risk & Exposure, Strategic Finding, etc.) require ≥2 findings.
+{depth_calibration_section}
 
 ---
 
@@ -1705,6 +1611,10 @@ LANGUAGE RULES:
 {tribal_facts_section}
 
 {low_confidence_section}
+
+{decision_frame_section}
+
+{sql_computation_section}
 
 {query_intent_section}
 
@@ -2353,6 +2263,9 @@ Business terms (if [tables: ...] listed, those tables MUST be in anchor_tables):
 Entity value matches (strongest signal — these tables MUST be selected):
 {entity_hints_section}
 
+Policy/Limit context from CONDITION-line retrieval (MUST include source tables — they encode the decision constraint):
+{policy_facts_section}
+
 Example intent patterns:
 {intents_section}
 
@@ -2488,6 +2401,12 @@ Intent summary: {intent_summary}
 {entity_hints_section}
 {entity_tokens_section}
 
+CONDITION lines from intake (each tells you: Highlight vs Filter + threshold value):
+{condition_lines_section}
+Parse each: "Highlight (flag)" → threshold_spec (all rows visible); "Filter —" → filter (WHERE excludes rows).
+The exact numeric value after the operator is the threshold — do NOT re-interpret it.
+
+{temporal_anchor_section}
 TIME RULES:
   time_filter_col: MUST be a column labeled [time-filter eligible] in the filterable columns list above.
     The [time-filter eligible] label means data_type is date, timestamp, or timestamptz.
@@ -2499,17 +2418,17 @@ TIME RULES:
            this_month, last_month, this_quarter, last_quarter, this_year, last_year, ytd
   Forward: next_7_days, next_30_days, next_4_weeks, next_90_days, next_3_months,
            next_quarter, next_12_months, next_year
-  Dual horizon (EC10 rule): when 2+ TIME lines appear in USER'S STATED GOAL above:
+  DUAL HORIZON: when 2+ TIME lines appear in USER'S STATED GOAL above:
     timeframe = the BROADEST horizon (largest window) — e.g. next_3_months for "4-week and 3-month".
     temporal_grains = ALL distinct grains across ALL TIME lines — set INDEPENDENTLY of timeframe.
     Example: TIME: 4-week weekly + TIME: 3-month monthly → timeframe=next_3_months, temporal_grains=["week","month"]
   temporal_grains: [] unless user asks for time BREAKDOWN; list all grains for multi-horizon queries.
 
-SCENARIO lines in USER'S STATED GOAL (EC5 rule): SCENARIO lines are NOT filters.
+SCENARIO lines in USER'S STATED GOAL: SCENARIO lines are NOT filters.
   Do NOT emit any filter, threshold_spec, or time constraint for SCENARIO lines.
   Ignore them completely — directive_writer handles SCENARIO lines.
 
-CONDITION lines from USER'S STATED GOAL (EC3 rule):
+CONDITION lines from USER'S STATED GOAL:
   If CONDITION line contains "Highlight"/"flag"/"all rows visible": emit as threshold_specs[] ONLY.
     Do NOT emit as a filter (WHERE clause). All rows remain visible.
   If CONDITION line contains "Filter"/"only"/"excluding": emit as filters[].
@@ -2623,23 +2542,23 @@ Assembled intent:
 - complexity: {query_complexity}
 
 QUERY_INTENT HANDLING RULES (apply to each typed line in query_intent above):
-  CONDITION line with "Highlight"/"flag"/"all rows visible" (EC3):
+  CONDITION line with "Highlight"/"flag"/"all rows visible":
     → Do NOT emit COMPUTED_COLUMN or COMPUTED_FILTER. filter_specialist already wrote
       threshold_specs for this. Emitting it again creates two competing threshold expressions.
-  CONDITION line with "Filter"/"only"/"excluding" (EC3):
+  CONDITION line with "Filter"/"only"/"excluding":
     → This is a WHERE filter. filter_resolver owns entity value filters. Only emit
       COMPUTED_FILTER if the predicate requires a derived SQL expression (e.g. WHERE headroom < 0).
-  COMPARISON line (EC4):
+  COMPARISON line:
     → Emit SCHEMA_GAP_CONCEPT only (note that baseline data is needed).
     → NEVER emit a second TIME_FILTER. One TIME_FILTER per directive — two = broken SQL.
     → Correct form: SCHEMA_GAP_CONCEPT: yoy_baseline — prior-year window needed;
       sql_generator: add parallel CTE using DATEADD(year,-1,...) on the same time_filter_col.
-  SCENARIO line (EC5):
+  SCENARIO line:
     → Emit SCENARIO_ASSUMPTION using the measure alias from the MEASURES section above.
     → NEVER hardcode a column name from the question text — use the alias name.
     → Form: SCENARIO_ASSUMPTION: stressed_inflows = SUM({{alias_of_inflow_measure}} * factor)
     → If no matching measure alias exists: emit SCHEMA_GAP_CONCEPT describing the factor.
-  OUTPUT line (EC9):
+  OUTPUT line:
     → OUTPUT lines are narrative framing for synthesis only. Produce NO SQL from them.
     → "Prominent" / "must be visible" = synthesis instruction, not ORDER BY, HAVING, or LIMIT.
   GOAL / CONTEXT lines: framing only — produce no directive from them.
@@ -2688,7 +2607,7 @@ Decide which directive lines to emit:
      Use SCHEMA_GAP_JOIN (two tables, no FK), SCHEMA_GAP_TABLE (table missing), SCHEMA_GAP_CONCEPT (concept unknown).
      Do NOT emit SCHEMA_GAP_TABLE for bridge/lookup tables that exist in CONFIRMED JOIN PATHS.
   5. CONFIDENCE: 0.90+ all columns confirmed; 0.70-0.89 approximations; 0.50-0.69 key columns missing.
-  6. DUAL_GRAIN: Only emit when temporal_grains has 2+ entries.
+  6. MULTI_GRAIN: Only emit when temporal_grains has 2+ entries.
 </reasoning>
 
 Write the directive using these EXACT machine-readable prefixes (one per line):
@@ -2698,7 +2617,7 @@ Write the directive using these EXACT machine-readable prefixes (one per line):
   CONFIDENCE_NOTE: 0.XX  (<one sentence reason>)   (when schema coverage is incomplete)
   COMPUTATION: col_alias = expression              (when a derived column must be computed in a CTE)
   COMPUTED_FILTER: WHERE expression                (when a filter requires a CTE computation)
-  DUAL_GRAIN: <fine_grain>+<coarse_grain>          (ONLY when temporal_grains has 2+ entries — signals two-CTE + UNION structure)
+  MULTI_GRAIN: <fine_grain>+<coarse_grain>          (ONLY when temporal_grains has 2+ entries — signals two-CTE + UNION structure)
 
 Rules:
 - SCHEMA_GAP: write one line per gap using EXACTLY one of these three typed prefixes:
@@ -2726,11 +2645,11 @@ Rules:
   "this month", "next 30 days"), you MUST emit TIME_FILTER. Pick the best date column from the anchor schema
   — prefer event dates (detected_at, transaction_date, event_date, created_at) over freshness dates
   (rollup_date, updated_at, loaded_at, last_modified). A missing time filter on an explicit time request is a directive failure.
-- DUAL_GRAIN: emit exactly one line when temporal_grains lists 2+ grains (e.g. ["week", "month"] → DUAL_GRAIN: week+month).
+- MULTI_GRAIN: emit exactly one line when temporal_grains lists 2+ grains (e.g. ["week", "month"] → MULTI_GRAIN: week+month).
   The fine grain (first entry) is the shorter window; the coarse grain (second entry) is the longer window.
   The horizon boundary label MUST use the MAX-date anchor from a snapshot CTE, NOT CURRENT_DATE, so stale data
   gets correctly labeled (e.g. CASE WHEN period <= DATEADD(day,28,max_date) THEN 'week_view' ELSE 'month_view' END).
-  Do NOT emit DUAL_GRAIN for single-grain queries even if multiple COMPUTATION lines exist.
+  Do NOT emit MULTI_GRAIN for single-grain queries even if multiple COMPUTATION lines exist.
 
 SELF-CHECK before emitting the directive:
 1. TIME ANCHOR: If TEMPORAL COLUMNS is present in SCHEMA DIRECTIVE, pick the column that is the logical time anchor for your computation (on-time rate → due_date; invoice volume → issue_date; payment cleared → execution_date). State your choice as TIME_FILTER: table.column. NEVER silently follow a default when your computation proves a different column is correct.
@@ -2743,7 +2662,7 @@ SELF-CHECK before emitting the directive:
 <instructions>
 COMPUTATION lines here (if any)
 COMPUTED_FILTER lines here (if any)
-DUAL_GRAIN line here (if temporal_grains has 2+ entries)
+MULTI_GRAIN line here (if temporal_grains has 2+ entries)
 </instructions>
 <context>
 JOIN_PATH lines (if any, e.g. JOIN_PATH: lpp.a.col = lpp.b.col)
@@ -2764,6 +2683,7 @@ You are a data quality scanner. Your ONLY job is to check if any value in the qu
 is implausible for a treasury/payments/banking system. You do NOT write narratives or analysis.
 
 Today's date: {today}
+{decision_type_section}
 
 QUERY RESULTS:
 {data_profile}
@@ -2782,6 +2702,16 @@ Scan every value. A value is implausible when:
 
 Future-dated records (maturity dates, forecast periods, scheduled payments) are normal in treasury — do NOT flag them.
 A date like 2026-04-01 when today is 2026-06-05 is simply a past date — it is NOT a concern.
+
+DECISION-TYPE RULES (apply before standard checks — see decision_type_section above):
+When decision_type = "breach_detection":
+  DO NOT flag 'BREACH', non-zero flag values, or non-null indicator columns — these ARE the answer.
+  DO flag: threshold comparison column is NULL for ALL rows (breach undetermined).
+When decision_type = "comparison":
+  DO NOT flag negative delta values — negative deltas show which side is lower (expected).
+  DO flag: baseline column is NULL for ALL rows (comparison impossible).
+When decision_type = "judgment":
+  DO NOT flag values within normal operational ranges — judgment requires enterprise context.
 
 - DO NOT flag negative balance values — negative balances are completely normal in accounting
   (liabilities, credit accounts, overdraft accounts, intercompany netting, reversed sign conventions).
