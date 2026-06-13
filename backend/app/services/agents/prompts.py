@@ -631,6 +631,13 @@ RULES:
    and risk introducing new column forwarding errors in unrelated CTEs.
 
    Other broken CTE structure:
+     - ALIAS-NOT-IN-FROM ERROR — "CTE 'X' uses 'alias.col' but 'alias' is not in this CTE's FROM clause":
+       Each CTE is an isolated scope — an alias from an upstream CTE's FROM is NOT visible here.
+       Fix A (preferred): (1) Find the CTE that has 'alias' in its FROM. (2) Add 'col' to that CTE's
+       SELECT list if not already there. (3) In CTE X: replace 'alias.col' with bare 'col' (it is now
+       exported by the upstream CTE and accessible without any alias qualifier).
+       Fix B (only when 'alias' must be joined into CTE X): add the source table as a JOIN in CTE X
+       with a confirmed ON clause from CANDIDATE JOIN PATHS or SCHEMA REFERENCE.
      - Qualified column reference in wrong CTE scope: e.g. `AVG(fx_rate.rate)` inside a CTE
        that reads FROM an upstream CTE. Fix A: strip the qualifier and add `rate` to the
        upstream CTE's SELECT. Fix B: move the lpp.fx_rate JOIN into this CTE.
@@ -776,6 +783,20 @@ JOIN COLUMN ERROR — column does not exist in table:
         2. If not found: check PRIMARY COLUMNS in SCHEMA REFERENCE.
         3. Use only columns explicitly listed there.
 
+ALIAS-NOT-IN-FROM ERROR — "CTE 'X' uses 'alias.col' but 'alias' is not in this CTE's FROM clause":
+  Context: CTE X references a column as alias.col but 'alias' is a table alias from an UPSTREAM CTE's
+           FROM — not this CTE's own FROM/JOIN. Each CTE is an isolated scope.
+  Fix A (preferred — minimal change):
+    1. Find the CTE in the SQL that has 'alias' in its FROM/JOIN (the CTE that "owns" alias).
+    2. Check whether that owning CTE already exports 'col' in its SELECT list. If not, add 'col' to it.
+    3. In CTE X: replace 'alias.col' with bare 'col' — upstream now exports it, X reads it without qualifier.
+       Example: base_data exports currency_code → cte_liquidity uses bare currency_code (not cb.currency_code).
+  Fix B (use ONLY when alias must be available in CTE X with a confirmed join):
+    1. Add JOIN <source_table> AS alias ON <join_key> to CTE X's FROM clause.
+    2. The join key must come from SCHEMA DIRECTIVE JOIN_CHAIN or CANDIDATE JOIN PATHS.
+    3. Never add tables without a confirmed ON clause.
+  Never: rename CTEs, change aggregation logic, change filter values, or add tables not in JOIN_CHAIN.
+
 Do NOT change query semantics, CTE names, aggregation logic, or filter values.
 Filter values are already-resolved DB codes — never substitute them.
 
@@ -899,6 +920,15 @@ COLUMN FORWARDING RULES:
   - SHARED COLUMN NAMES: If two sources in reads_from both export a column with the same name
     (e.g. both export `company_ref`), the join_on MUST qualify both sides with their respective
     aliases so the sql_generator can write an unambiguous ON clause.
+  - CTE SCOPE BOUNDARY: each CTE is an isolated scope. 'alias' is only valid inside a CTE if
+    that alias appears in THIS CTE's own reads_from. An alias from an upstream CTE's FROM is NOT
+    in scope here — you cannot write alias.col for a table alias that belongs to a parent CTE.
+    If you need a base-table column in a downstream CTE:
+      Option A (preferred): add the column to the upstream CTE's exports — downstream uses bare alias.
+      Option B: add the base table to the downstream CTE's reads_from with a confirmed join clause.
+    ✗ WRONG: cte_liquidity reads_from: base_data  → exports: cb.currency_code   (cb not in reads_from)
+    ✓ RIGHT:  base_data      exports: currency_code (source: cb.currency_code)
+              cte_liquidity  reads_from: base_data  → exports: currency_code (source: currency_code)
   - REDSHIFT ALIAS RULE: a SELECT alias defined in CTE N cannot be used in another expression
     in the SAME CTE N SELECT. If column B depends on alias A, put them in separate CTEs.
   - DERIVED EXPRESSIONS (DATE_TRUNC, CAST, arithmetic): define in the earliest CTE that has the
@@ -1218,6 +1248,16 @@ RULES:
 
    If you need a column from a specific table in a downstream CTE, you MUST add that table's JOIN
    to that downstream CTE — or reference it by alias from an upstream CTE that already joined it.
+
+   CTE SCOPE ISOLATION — ALIAS MUST BE IN THIS CTE'S FROM:
+   'alias' is only valid inside a CTE if that alias appears in THIS CTE's own FROM or JOIN.
+   An alias used in an upstream CTE's FROM is NOT in scope for downstream CTEs.
+   ✗ WRONG: base_data AS (SELECT cb.balance FROM lpp.cash_balance cb ...)
+            cte_liquidity AS (SELECT cb.currency_code FROM base_data)
+            ← 'cb' is not in cte_liquidity's FROM — it belongs to base_data only
+   ✓ RIGHT:  base_data AS (SELECT cb.balance, cb.currency_code AS currency_code FROM lpp.cash_balance cb ...)
+             cte_liquidity AS (SELECT currency_code FROM base_data)
+             ← uses bare alias exported from base_data; no alias prefix needed or allowed
 
    FINAL SELECT RULE — same constraint applies:
    The final SELECT (after all CTEs) can only reference columns that are in the SELECT list of

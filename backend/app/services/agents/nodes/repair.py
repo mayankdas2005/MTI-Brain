@@ -341,19 +341,22 @@ async def attempt_repair(
     else:
         explain_section = ""
 
-    def _build_prompt(attempts_detail: str) -> list:
-        if error_type == "syntax":
+    def _build_prompt(attempts_detail: str, override_err_type: str | None = None, override_err_msg: str | None = None, override_sql: str | None = None) -> list:
+        etype = override_err_type or error_type
+        emsg  = override_err_msg  or error_msg
+        osql  = override_sql      or first_sql
+        if etype == "syntax":
             return REPAIR_SYNTAX_PROMPT.format_messages(
-                error_message=error_msg,
-                original_sql=first_sql,
+                error_message=emsg,
+                original_sql=osql,
                 prior_attempts_detail=attempts_detail,
                 schema_reference=schema_reference,
                 reasoning_directive=REASONING_DIRECTIVE_REPAIR,
             )
-        if error_type == "structure":
+        if etype == "structure":
             return REPAIR_STRUCTURE_PROMPT.format_messages(
-                error_message=error_msg,
-                original_sql=first_sql,
+                error_message=emsg,
+                original_sql=osql,
                 prior_attempts_detail=attempts_detail,
                 candidate_paths_section=candidate_paths_section,
                 schema_reference=schema_reference,
@@ -366,8 +369,8 @@ async def attempt_repair(
             time_col_highlight_section=time_col_highlight_section,
             semantic_ir_text=semantic_ir_text,
             schema_reference=schema_reference,
-            original_sql=first_sql,
-            error_message=error_msg,
+            original_sql=osql,
+            error_message=emsg,
             prior_attempts_detail=attempts_detail,
             directive_section=directive_section,
             feedback_section=feedback_section,
@@ -384,6 +387,9 @@ async def attempt_repair(
     val_error = ""
     for _try in range(2):
         attempts_detail = prior_attempts_detail
+        _override_etype: str | None = None
+        _override_emsg:  str | None = None
+        _override_sql:   str | None = None
         if _try == 1:
             attempts_detail += (
                 f"\n\nFIRST REPAIR ATTEMPT produced SQL that failed pre-execution static validation:\n"
@@ -391,8 +397,20 @@ async def attempt_repair(
                 f"  Failing SQL preview:\n{repaired_sql[:500]}\n"
                 f"Fix the validation error specifically — do NOT repeat the same structural approach."
             )
+            # Re-classify: if the first repair introduced a structure error, use REPAIR_STRUCTURE_PROMPT
+            # with the validation error as the primary error and the repaired SQL as the target.
+            if val_error and error_type != "structure":
+                _reclassified = _classify_error(val_error)
+                if _reclassified == "structure":
+                    _override_etype = "structure"
+                    _override_emsg  = val_error
+                    _override_sql   = repaired_sql
+                    logger.info(
+                        "repair | reclassifying try=2 as structure | original_type={} | val_error={} | thread={}",
+                        error_type, val_error[:100], state["thread_id"],
+                    )
 
-        prompt = _build_prompt(attempts_detail)
+        prompt = _build_prompt(attempts_detail, _override_etype, _override_emsg, _override_sql)
 
         @llm_breaker
         async def _call(p=prompt):

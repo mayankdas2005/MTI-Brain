@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Download, ClipboardCopy, RotateCcw,
-  TrendingUp, Activity, Layers,
+  TrendingUp, Layers,
   BarChart2, BarChart3, PieChart,
   Table2, ScatterChart,
 } from 'lucide-react';
@@ -16,7 +16,6 @@ import { CHART_PALETTE } from '@/components/charts/theme';
 
 const CHART_ICONS: Record<string, React.ElementType> = {
   line:         TrendingUp,
-  area:         Activity,
   multi_line:   TrendingUp,
   stacked_area: Layers,
   bar:          BarChart2,
@@ -31,7 +30,7 @@ const CHART_ICONS: Record<string, React.ElementType> = {
 };
 
 const CHART_LABELS: Record<string, string> = {
-  line: 'Line', area: 'Area', multi_line: 'Multi-line',
+  line: 'Line', multi_line: 'Multi-line',
   stacked_area: 'Stacked area', bar: 'Bar',
   stacked_bar: 'Stacked bar', grouped_bar: 'Grouped bar',
   pie: 'Pie', donut: 'Donut', scatter: 'Scatter',
@@ -723,11 +722,15 @@ function buildSpecForType(
       };
     }
 
-    // ── Line / Area ───────────────────────────────────────────────────────────
+    // ── Line ─────────────────────────────────────────────────────────────────
     case 'line':
-    case 'area':
       return {
         ...base, mark: altType,
+        encoding: { x: outX, y: outY, ...(colEnc ? { color: colEnc } : {}) },
+      };
+    case 'area':
+      return {
+        ...base, mark: 'line',
         encoding: { x: outX, y: outY, ...(colEnc ? { color: colEnc } : {}) },
       };
 
@@ -890,7 +893,7 @@ function detectPrimaryType(
     return 'bar';
   }
   if (mark === 'point') return 'scatter';
-  if (mark === 'area') return enc?.color ? 'stacked_area' : 'area';
+  if (mark === 'area') return enc?.color ? 'stacked_area' : 'line';
   if (mark === 'line') return enc?.color ? 'multi_line' : 'line';
   return mark;
 }
@@ -910,12 +913,20 @@ export function MessageVisualization({
 
   type AltSpec = { chart_type: string; spec: Record<string, unknown> };
   const allTypes = useMemo<AltSpec[]>(() => {
-    const primary: AltSpec[] = primaryType ? [{ chart_type: primaryType, spec: chartSpec ?? {} }] : [];
+    const _primarySpec = (() => {
+      if (!chartSpec) return {};
+      const m = typeof chartSpec.mark === 'string' ? chartSpec.mark
+              : (chartSpec.mark as Record<string, unknown>)?.type;
+      if (m === 'area') return { ...chartSpec, mark: { type: 'line', point: true } };
+      return chartSpec;
+    })();
+    const primary: AltSpec[] = primaryType ? [{ chart_type: primaryType, spec: _primarySpec }] : [];
     const seen = new Set(primaryType ? [primaryType] : []);
     const alts = alternativeChartSpecs as AltSpec[] | string[] | undefined;
     for (const a of alts ?? []) {
       // Support both new full-spec format and legacy type-name strings
       const type = typeof a === 'string' ? a : a.chart_type;
+      if (type === 'area') continue;
       const spec = typeof a === 'string' ? (chartSpec ? buildSpecForType(chartSpec, a) ?? {} : {}) : a.spec;
       if (type && !seen.has(type)) {
         seen.add(type);

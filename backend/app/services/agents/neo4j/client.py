@@ -22,6 +22,7 @@ def init_neo4j() -> None:
             connection_acquisition_timeout=settings.NEO4J_ACQUISITION_TIMEOUT,
             max_connection_lifetime=300,
             keep_alive=True,
+            notifications_disabled_categories=frozenset({"UNRECOGNIZED"}),
         )
         _driver.verify_connectivity()
         with _driver.session(database=settings.NEO4J_DB) as _s:

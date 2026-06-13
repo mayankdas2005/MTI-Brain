@@ -505,6 +505,49 @@ def _fix_large_number_axes(
                 ch.setdefault("scale", {})["domainMax"] = p99 * 1.1
                 ch["scale"]["clamp"] = True
 
+    # Patch color channel (heatmap) — applies labelExpr to legend, not axis
+    _col_ch = encoding.get("color") if isinstance(encoding, dict) else None
+    if isinstance(_col_ch, dict) and _col_ch.get("type") == "quantitative":
+        _col_field = _col_ch.get("field")
+        _col_max = (_col_max_abs(rows, columns.index(_col_field))
+                    if isinstance(_col_field, str) and _col_field in columns
+                    else global_numeric_max or None)
+        if _col_max and _col_max >= 1_000_000:
+            _col_fmt = (labels.get("value_format") or "")
+            _col_csym = _extract_currency_symbol(_col_fmt)
+            _col_legend = _col_ch.get("legend")
+            if not isinstance(_col_legend, dict):
+                _col_legend = {}
+                _col_ch["legend"] = _col_legend
+            _col_legend.pop("format", None)
+            _col_legend["labelExpr"] = _build_label_expr(_col_csym)
+
+    # Patch layered specs (dual_axis uses spec["layer"][i]["encoding"])
+    for _layer in (spec.get("layer") or []):
+        if not isinstance(_layer, dict):
+            continue
+        _lenc = _layer.get("encoding")
+        if not isinstance(_lenc, dict):
+            continue
+        for _ch_name in ("y", "x"):
+            _lch = _lenc.get(_ch_name)
+            if not isinstance(_lch, dict) or _lch.get("type") != "quantitative":
+                continue
+            _fmt = (labels.get(f"{_ch_name}_value_format") or labels.get("value_format") or "")
+            _csym = _extract_currency_symbol(_fmt)
+            _nondollar = bool(_csym and _csym != "$")
+            _field = _lch.get("field")
+            _mval = (_col_max_abs(rows, columns.index(_field)) if isinstance(_field, str) and _field in columns
+                     else global_numeric_max or None)
+            if not _nondollar and (_mval is None or _mval < 1_000_000):
+                continue
+            _lax = _lch.get("axis")
+            if not isinstance(_lax, dict):
+                _lax = {}
+                _lch["axis"] = _lax
+            _lax.pop("format", None)
+            _lax["labelExpr"] = _build_label_expr(_csym)
+
     return spec
 
 
@@ -821,6 +864,12 @@ def _sanitize_chart_type(
     Called AFTER _apply_guardrails. Catches cases the structural guardrail can't
     detect without looking at the data (e.g. negative values in pie/donut).
     """
+    if chart_type == "bubble":
+        n_num = sum(1 for c in columns if col_type_map.get(c) == "numeric")
+        if n_num < 2:
+            logger.warning("chart_agent | bubble→scatter (< 2 numeric cols)")
+            return "scatter"
+
     if chart_type in ("pie", "donut"):
         for i, c in enumerate(columns):
             if col_type_map.get(c) == "numeric":
@@ -1208,7 +1257,7 @@ def _fallback_chart_type(columns: list[str], rows: list[list], intent: str, pers
     if n_rows <= 5 and n_numeric == len(columns):
         return "kpi_card"
     if n_date >= 1:
-        return "area" if persona in ("executive", "director") else "line"
+        return "line"
     if n_string == 1 and n_numeric == 1:
         return "bar" if n_rows > 5 else ("donut" if persona in ("executive", "director") else "pie")
     return "bar"
@@ -1594,23 +1643,26 @@ def _build_vega_lite_spec(
     if chart_type == "bubble":
         x_col    = (_xh if _xh and ctm.get(_xh) == "numeric" else None) or (numeric_cols[0] if numeric_cols else columns[0])
         y_col    = (_yh if _yh and ctm.get(_yh) == "numeric" and _yh != x_col else None) or (numeric_cols[1] if len(numeric_cols) >= 2 else x_col)
-        size_col = (_sh if _sh and ctm.get(_sh) == "numeric" and _sh not in (x_col, y_col) else None) or (numeric_cols[2] if len(numeric_cols) >= 3 else y_col)
+        size_col = (_sh if _sh and ctm.get(_sh) == "numeric" and _sh not in (x_col, y_col) else None) \
+                   or next((c for c in numeric_cols if c != x_col and c != y_col), None)
         cat_col  = (_ch if _ch and _ch not in (x_col, y_col, size_col) and ctm.get(_ch) == "string"
                     else None) or (string_cols[0] if string_cols else None)
         safe_x_fmt = _safe_value_format(x_val_fmt, rows, columns.index(x_col) if x_col in columns else -1)
         safe_y_fmt = _safe_value_format(y_val_fmt, rows, columns.index(y_col) if y_col in columns else -1)
         enc = {
-            "x":    {"field": x_col,    "type": "quantitative", "axis": {"title": x_title or x_col, "format": safe_x_fmt}},
-            "y":    {"field": y_col,    "type": "quantitative", "axis": {"title": y_title or y_col, "format": safe_y_fmt}},
-            "size": {"field": size_col, "type": "quantitative"},
+            "x": {"field": x_col, "type": "quantitative", "axis": {"title": x_title or x_col, "format": safe_x_fmt}},
+            "y": {"field": y_col, "type": "quantitative", "axis": {"title": y_title or y_col, "format": safe_y_fmt}},
         }
+        if size_col:
+            enc["size"] = {"field": size_col, "type": "quantitative"}
         if cat_col:
             enc["color"] = {"field": cat_col, "type": "nominal"}
         enc["tooltip"] = [
             {"field": x_col, "type": "quantitative", "format": safe_x_fmt},
             {"field": y_col, "type": "quantitative", "format": safe_y_fmt},
-            {"field": size_col, "type": "quantitative"},
         ]
+        if size_col:
+            enc["tooltip"].append({"field": size_col, "type": "quantitative"})
         if cat_col:
             enc["tooltip"].append({"field": cat_col, "type": "nominal"})
         spec = {**base, "mark": {"type": "point", "filled": True, "opacity": 0.7},
@@ -1705,6 +1757,28 @@ def _build_vega_lite_spec(
             },
             "config": _BASE_CONFIG,
         }
+        # Waterfall-specific axis patch: cumulative sum (_wf_sum) can exceed
+        # global_numeric_max (which is max of individual values). Compute the
+        # actual cumulative max and apply K/M/B formatting if >= 1M.
+        try:
+            _wf_y_idx = 1  # wf_rows is always [x_val, y_val] after pre-aggregation
+            _running, _wf_cum_max = 0.0, 0.0
+            for _r in wf_rows:
+                try:
+                    _running += float(_r[_wf_y_idx]) if _r[_wf_y_idx] is not None else 0.0
+                    _wf_cum_max = max(_wf_cum_max, abs(_running))
+                except (TypeError, ValueError):
+                    pass
+            if _wf_cum_max >= 1_000_000:
+                _wf_csym = _extract_currency_symbol(safe_fmt)
+                _wf_ax = spec["encoding"]["y"].get("axis")
+                if not isinstance(_wf_ax, dict):
+                    _wf_ax = {}
+                    spec["encoding"]["y"]["axis"] = _wf_ax
+                _wf_ax.pop("format", None)
+                _wf_ax["labelExpr"] = _build_label_expr(_wf_csym)
+        except Exception:
+            pass
         return spec
 
     # ── Dual axis (layered: primary line + secondary line on right y-axis) ─────
@@ -1716,6 +1790,7 @@ def _build_vega_lite_spec(
         y1_col = (_yh if _yh and ctm.get(_yh) == "numeric" else None) or (numeric_cols[0] if numeric_cols else columns[-1])
         y2_col = numeric_cols[1] if len(numeric_cols) > 1 else y1_col
         y1_fmt = _safe_value_format(val_fmt, rows, columns.index(y1_col) if y1_col in columns else -1)
+        y2_fmt = _safe_value_format(val_fmt, rows, columns.index(y2_col) if y2_col in columns else -1)
         spec = {
             **base,
             "layer": [
@@ -1739,7 +1814,7 @@ def _build_vega_lite_spec(
                     "encoding": {
                         "x": {"field": x_col, "type": x_type},
                         "y": {"field": y2_col, "type": "quantitative",
-                              "axis": {"title": y2_col, "orient": "right", "titleColor": "#f58518"}},
+                              "axis": {"title": y2_col, "format": y2_fmt, "orient": "right", "titleColor": "#f58518"}},
                         "tooltip": [
                             {"field": x_col, "type": x_type, **({"timeUnit": "yearmonthdate", "format": "%b %d, %Y"} if x_type == "temporal" else {})},
                             {"field": y2_col, "type": "quantitative"},
