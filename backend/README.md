@@ -93,13 +93,16 @@ backend/
 │       │   │   ├── intake_classifier.py  # Node 0: route general vs analytics
 │       │   │   ├── general_chat.py       # Node G: non-analytics conversational response
 │       │   │   ├── context_fetcher.py    # Node 1a: Neo4j table/column discovery (delegates to context/)
+│       │   │   ├── tribal_retrieval.py   # Node 1a-T: deep analysis only — fetch tribal graph facts (Policy/Limit/Decision)
 │       │   │   ├── anchor_resolver.py    # Node 1b: Haiku — select 2-4 anchor tables
+│       │   │   ├── query_planner.py      # Node 1b-P: Haiku — structured output contract (columns, groupings, time, entities)
 │       │   │   ├── schema_enricher.py    # Node 1c: deterministic — load full columns for anchor tables
 │       │   │   ├── measure_specialist.py # Node 1e-A: Haiku — extract measures (parallel)
 │       │   │   ├── filter_specialist.py  # Node 1e-B: Haiku — extract filters (parallel)
 │       │   │   ├── dimension_specialist.py # Node 1e-C: Haiku — extract dimensions (parallel)
 │       │   │   ├── intent_assembler.py   # Node 1f: deterministic merge, defer=True
 │       │   │   ├── directive_writer.py   # Node 1g: Sonnet — write intent directive
+│       │   │   ├── schema_gap_resolver.py # Node 1h: deterministic — resolve SCHEMA_GAP_* lines, fetch missing Neo4j schema
 │       │   │   ├── intent_resolver.py    # Node 1b (legacy fallback): Sonnet full-intent extraction
 │       │   │   ├── query_compiler.py     # Node 2: build SemanticIR from resolved intent
 │       │   │   ├── filter_resolver.py    # Node F: 6-tier filter value resolution
@@ -509,9 +512,11 @@ The pipeline is a LangGraph DAG compiled at startup (`app/services/agents/graph.
 
 ### Architecture
 
-The pipeline uses a single-responsibility architecture. Context enrichment is split into a two-pass design: `context_fetcher` performs broad table discovery from Neo4j, then `anchor_resolver` (Haiku) selects 2–4 anchor tables, and `schema_enricher` loads complete columns only for those anchor tables. This eliminates token-cap truncation that occurred in the prior design when columns from all candidate tables competed for a global cap.
+The authoritative DAG is in [`assets/analytics_graph.mmd`](../assets/analytics_graph.mmd) — regenerate with `python scripts/render_graph.py`.
 
-The intent extraction stage fans out to three parallel specialists — `measure_specialist`, `filter_specialist`, and `dimension_specialist` — each a focused Haiku call that sees only the column subset relevant to its role. `intent_assembler` (defer=True) waits for all three to complete before merging their outputs. `directive_writer` (Sonnet) then writes a structured computation/schema directive that drives SQL generation.
+The pipeline uses a single-responsibility architecture. Context enrichment spans three nodes: `context_fetcher` performs broad Neo4j table discovery, `tribal_retrieval` (deep analysis only) fetches policy/limit/decision facts from the tribal knowledge graph, and `anchor_resolver` (Haiku) selects 2–4 anchor tables. `query_planner` (Haiku) then extracts a structured output contract (expected columns, groupings, time period, explicit entities) before `schema_enricher` loads complete columns only for the anchor tables. This sequence eliminates token-cap truncation that occurred when columns from all candidates competed for a global cap.
+
+The intent extraction stage fans out to three parallel specialists — `measure_specialist`, `filter_specialist`, and `dimension_specialist` — each a focused Haiku call that sees only the column subset relevant to its role. `intent_assembler` (defer=True) waits for all three to complete before merging their outputs. `directive_writer` (Sonnet) then writes a structured computation/schema directive. `schema_gap_resolver` (deterministic) parses any `SCHEMA_GAP_*` lines from that directive and fetches missing columns and join paths from Neo4j before handing off to `query_compiler`.
 
 A legacy `intent_resolver` path (Sonnet, single combined call) remains as a fallback when `anchor_resolver` or `intent_assembler` fails.
 
@@ -565,13 +570,16 @@ START
 | `intake_classifier` | Haiku (+ rule pre-filter) | Route question: `general_chat` or `analytics`; 3-layer classification (rule → Haiku → fallback) |
 | `general_chat` | Haiku | Answer non-analytics questions conversationally |
 | `context_fetcher` | Deterministic | 8-path Neo4j table search + column prioritization + cross-domain hub cascade |
+| `tribal_retrieval` | Deterministic | Deep analysis only: fetch Policy/Limit/Decision/Commitment/Watchlist facts from Neo4j tribal graph; non-fatal |
 | `anchor_resolver` | Haiku | Select 2–4 anchor tables from Phase 1 candidates; determine result shape |
+| `query_planner` | Haiku | Extract structured output contract (expected columns, groupings, time period, entities) before schema enrichment; graceful-degrades to `None` on failure |
 | `schema_enricher` | Deterministic | Load complete columns for anchor tables from Neo4j; merge into semantic_context |
 | `measure_specialist` | Haiku | Extract measures from measurable columns only (parallel branch) |
 | `filter_specialist` | Haiku | Extract filter specs from filterable columns with sample values (parallel branch) |
 | `dimension_specialist` | Haiku | Extract dimensions from groupable columns (parallel branch) |
 | `intent_assembler` | Deterministic (defer=True) | Merge outputs from all 3 specialists; fall back to intent_resolver on failure |
 | `directive_writer` | Sonnet | Write computation/CTE/schema-gap directive for query_compiler and sql_generator |
+| `schema_gap_resolver` | Deterministic | Parse `SCHEMA_GAP_*` directive lines; load missing columns/join paths from Neo4j so sql_generator has complete schema coverage |
 | `intent_resolver` | Sonnet | Legacy: single-call full-intent extraction (fallback path and recompile path) |
 | `query_compiler` | Deterministic | Build SemanticIR from resolved intent; validate columns against Neo4j; route to filter_resolver if needed |
 | `filter_resolver` | Haiku (Tier 5) + Deterministic (Tiers 1–4) | 6-tier filter value resolution (exact match → fuzzy → Redshift probe → Haiku → clarification) |

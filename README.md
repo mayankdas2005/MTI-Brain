@@ -103,6 +103,8 @@ mti-brain/
 │
 ├── semantic_model_generator/  # Redshift schema → RDF → Neo4j knowledge graph pipeline
 ├── langfuse/            # Self-hosted LLM observability (traces, token usage, latency)
+├── learning/            # Experimental resources (Neo4j agent-memory patterns, pipeline diagram)
+├── assets/              # Static assets — Mermaid source + PNG of the LangGraph pipeline DAG
 └── database/            # PostgreSQL 18 + PgBouncer + redis/redis-stack:7.4.0-v8 + Neo4j (see database/README.md)
     ├── docker-compose.yml  # Full data layer stack (publishes db_net)
     ├── docker_volume/      # Persistent data (git-ignored)

@@ -15,6 +15,8 @@ AI analytics platform that lets users query business data via natural language. 
 | `langfuse/` | Self-hosted LLM observability (traces, token usage, latency) |
 | `semantic_model_generator/` | One-shot pipeline: Redshift schema → RDF → Neo4j knowledge graph |
 | `deploy/` | AWS CodeDeploy lifecycle hook scripts |
+| `learning/` | Experimental resources — Neo4j agent-memory patterns, pipeline diagrams |
+| `assets/` | Static assets — Mermaid source and PNG of the LangGraph pipeline DAG |
 
 ---
 
@@ -154,9 +156,11 @@ backend/app/services/agents/
 
 ### Backend: pipeline nodes (`nodes/`)
 
-The pipeline flows: `intake → context_fetcher → anchor_resolver → schema_enricher → intent_dispatcher` (fan-out via Send API) `→ [measure_specialist | filter_specialist | dimension_specialist]` (parallel Haiku) `→ intent_assembler → directive_writer → query_compiler → filter_resolver → sql_generator → sql_validator → executor → data_quality_checker → synthesis → chart_agent`
+The authoritative DAG diagram is in [`assets/analytics_graph.mmd`](assets/analytics_graph.mmd) (Mermaid source) and [`assets/analytics_graph.png`](assets/analytics_graph.png) (rendered).
 
-Fallback: `intent_assembler` can route back to `intent_resolver` for error recovery.
+The pipeline flows: `intake → context_fetcher → tribal_retrieval → anchor_resolver → query_planner → schema_enricher` (fan-out via Send API) `→ [measure_specialist | filter_specialist | dimension_specialist]` (parallel Haiku) `→ intent_assembler → directive_writer → schema_gap_resolver → query_compiler → [filter_resolver →] sql_generator → sql_validator → executor → data_quality_checker → synthesis → chart_agent`
+
+Fallback: `intent_assembler` can route back to `intent_resolver` for error recovery. `executor` can route to `repair` (SQL fix) or `intent_resolver` (full recompile) on failure.
 
 | Node file | Role |
 |-----------|------|
@@ -180,6 +184,9 @@ Fallback: `intent_assembler` can route back to `intent_resolver` for error recov
 | `synthesis.py` | Synthesize narrative response |
 | `chart_agent.py` | Generate chart spec |
 | `general_chat.py` | Non-analytics conversational responses |
+| `tribal_retrieval.py` | Deep analysis only: fetch policy/limit/decision facts from Neo4j tribal graph (Policy, Limit, Decision, Commitment, Watchlist nodes); non-fatal |
+| `query_planner.py` | Haiku: extract structured output contract (expected columns, groupings, time period, explicit entities) before schema enrichment; graceful-degrades to `None` on failure |
+| `schema_gap_resolver.py` | Deterministic: parse `SCHEMA_GAP_*` directive lines; load missing columns and join paths from Neo4j so `sql_generator` has complete schema coverage |
 | `compress.py` | Compress conversation history |
 | `error_response.py` | Format error responses |
 | `clarification.py` | Request user clarification |
