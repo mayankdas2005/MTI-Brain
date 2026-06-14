@@ -29,7 +29,7 @@ async def clarification(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     prompt = CLARIFICATION_PROMPT.format_messages(
         question=state["question"],
-        persona=state.get("persona", "executive"),
+        persona=state.get("persona", "analyst"),
         clarification_reason=reason,
         conversation_section=conversation_section,
     )

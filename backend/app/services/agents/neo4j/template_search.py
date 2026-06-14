@@ -374,32 +374,3 @@ def get_tables_for_canonical_domains(domain_names: list[str]) -> list[dict]:
         domain_names, (time.monotonic() - t0) * 1000, len(results),
     )
     return [dict(r) for r in results if r.get("fqn")]
-
-
-@neo4j_breaker
-def get_cross_domain_bridges(domain_names: list[str]) -> list[dict]:
-    """Find tables with JOINS_TO edges connecting tables from 2+ of the named domains.
-
-    Used for multi-domain queries to discover bridge tables that can join across domain
-    boundaries. Returns [{fqn, description, bridge_domains}] sorted by domain coverage.
-    """
-    if not domain_names or len(domain_names) < 2:
-        return []
-    query = """
-    MATCH (bridge:Table)-[:JOINS_TO]-(t:Table)-[:BELONGS_TO]->(d:Domain)
-    WHERE d.name IN $domain_names
-    WITH bridge, collect(DISTINCT d.name) AS bridge_domains
-    WHERE size(bridge_domains) >= 2
-    RETURN bridge.fqn AS fqn,
-           coalesce(bridge.description, '') AS description,
-           bridge_domains
-    ORDER BY size(bridge_domains) DESC
-    LIMIT 6
-    """
-    t0 = time.monotonic()
-    results = _neo4j_run(query, {"domain_names": domain_names})
-    logger.debug(
-        "neo4j | fn=get_cross_domain_bridges | domains={} | ms={:.0f} | hits={}",
-        domain_names, (time.monotonic() - t0) * 1000, len(results),
-    )
-    return [dict(r) for r in results if r.get("fqn")]

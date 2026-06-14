@@ -9,19 +9,19 @@ from app.core.circuit_breaker import neo4j_breaker
 from app.core.logger import logger
 from .client import _neo4j_run
 
-_LUCENE_SPECIAL = _re.compile(r'[+\-!&|(){}\[\]^"~*?:\\/,;.]')
+_LUCENE_SAFE = _re.compile(r'[^\w\s]', _re.UNICODE)
 
 
 def _fuzzy_fts(text: str, min_len: int = 3) -> str:
     """Append Lucene edit-distance-1 (~) to each token >= min_len chars.
 
-    Strips Lucene special characters (`:`, `~`, `,`, `.`, etc.) from each
-    token before appending `~` so raw user input like "health: liquidity,"
-    doesn't produce a ParseException in the Neo4j FTS index.
+    Strips any non-word, non-whitespace Unicode character (em-dashes, curly
+    quotes, math operators, etc.) so user input of any form doesn't produce a
+    ParseException in the Neo4j FTS index.
     """
     tokens = []
     for raw in text.split():
-        t = _LUCENE_SPECIAL.sub("", raw)
+        t = _LUCENE_SAFE.sub("", raw)
         if not t:
             continue
         tokens.append(t + "~" if len(t) >= min_len else t)

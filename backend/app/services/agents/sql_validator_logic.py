@@ -233,7 +233,7 @@ def _check_cte_column_forwarding(parsed) -> tuple[bool, str]:
                     )
 
     # Pass 3 — validate the outermost SELECT (final query after all CTEs)
-    # Pattern: WITH agg AS (SELECT id, total ...) SELECT id, rate FROM agg  ← 'rate' not in agg
+    # Pattern: WITH agg AS (SELECT id, total ...) SELECT id, rate FROM agg  -- 'rate' not in agg
     outer_select = parsed
     if isinstance(outer_select, exp.Select):
         outer_upstream: set[str] = set()

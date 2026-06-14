@@ -126,6 +126,170 @@ def _repair_html(html: str) -> str:
     return html
 
 
+def _parse_dashboard_number(text: str) -> float | None:
+    """Parse a formatted dashboard number into a float.
+
+    Handles: $10.22B, $768.1M, ($3.67B), −$1.56B, +$9.45B, $1,234.56,
+    80%, 22×, plain numbers.  Returns None for non-numeric text.
+    """
+    s = text.strip()
+    if not s or s == "—":
+        return None
+
+    # Strip multiplier/unit suffixes we don't handle
+    if s.endswith("×"):
+        return None
+
+    neg = False
+    # Parenthesized negatives: ($3.67B)
+    if s.startswith("(") and s.endswith(")"):
+        s = s[1:-1]
+        neg = True
+
+    # Leading sign
+    if s.startswith("−") or s.startswith("-"):
+        s = s[1:]
+        neg = True
+    elif s.startswith("+"):
+        s = s[1:]
+
+    # Strip currency symbol
+    s = s.lstrip("$").strip()
+
+    # Percentage
+    if s.endswith("%"):
+        try:
+            return float(s[:-1].replace(",", "")) / 100.0
+        except ValueError:
+            return None
+
+    # Magnitude suffixes
+    multiplier = 1.0
+    if s.upper().endswith("B"):
+        multiplier = 1e9
+        s = s[:-1]
+    elif s.upper().endswith("M"):
+        multiplier = 1e6
+        s = s[:-1]
+    elif s.upper().endswith("K"):
+        multiplier = 1e3
+        s = s[:-1]
+
+    s = s.replace(",", "").strip()
+    if not s:
+        return None
+
+    try:
+        val = float(s) * multiplier
+        return -val if neg else val
+    except ValueError:
+        return None
+
+
+def _build_source_value_set(
+    columns: list[str], rows: list[list],
+) -> set[float]:
+    """Collect all numeric values from source data + per-column aggregates.
+
+    Returns a set of floats for tolerance-based lookup.
+    """
+    values: set[float] = set()
+    col_numerics: dict[int, list[float]] = {}
+
+    for row in rows:
+        for ci, val in enumerate(row):
+            if val is None:
+                continue
+            try:
+                f = float(val)
+                values.add(f)
+                col_numerics.setdefault(ci, []).append(f)
+            except (TypeError, ValueError):
+                pass
+
+    # Per-column aggregates
+    for ci, nums in col_numerics.items():
+        if nums:
+            values.add(sum(nums))
+            values.add(min(nums))
+            values.add(max(nums))
+            values.add(sum(nums) / len(nums))
+            values.add(float(len(nums)))
+
+    return values
+
+
+def _value_matches(parsed: float, source_set: set[float]) -> bool:
+    """Check if a parsed value approximately matches any source value."""
+    if parsed == 0:
+        return 0.0 in source_set
+    for sv in source_set:
+        if sv == 0:
+            continue
+        if abs(parsed - sv) / max(abs(sv), 1.0) < 0.02:
+            return True
+    return False
+
+
+def _verify_table_values(
+    html: str, columns: list[str], rows: list[list],
+) -> tuple[str, dict]:
+    """Cross-check numeric values in HTML tables against source data.
+
+    Returns (possibly-modified html, stats dict).
+    """
+    source_set = _build_source_value_set(columns, rows)
+    soup = BeautifulSoup(html, "html5lib")
+
+    verified = 0
+    unverified = 0
+
+    for table in soup.find_all("table"):
+        for section in (table.find("tbody"), table.find("tfoot")):
+            if not section:
+                continue
+            for td in section.find_all("td"):
+                text = td.get_text(strip=True)
+                parsed = _parse_dashboard_number(text)
+                if parsed is None:
+                    continue
+                if _value_matches(parsed, source_set):
+                    verified += 1
+                else:
+                    unverified += 1
+
+    total = verified + unverified
+    stats = {"verified": verified, "unverified": unverified, "total": total}
+
+    if total == 0:
+        stats["rate"] = 1.0
+        return html, stats
+
+    rate = verified / total
+    stats["rate"] = round(rate, 3)
+
+    # Find <main> to inject badge before </main>
+    main_tag = soup.find("main")
+    if main_tag:
+        from bs4 import NavigableString, Tag
+        badge_tag = soup.new_tag("p")
+        badge_tag["class"] = ["data-source"]
+        if rate >= 0.7:
+            badge_tag.string = f"\u2713 {verified} of {total} numeric values verified against source data"
+        else:
+            badge_tag = soup.new_tag("div")
+            badge_tag["class"] = ["callout", "warn"]
+            badge_tag.string = (
+                f"\u26a0 {unverified} of {total} numeric values could not be verified "
+                f"against source data. Review critical figures independently."
+            )
+        main_tag.append(badge_tag)
+        # Re-extract <main> as string
+        return str(main_tag), stats
+
+    return html, stats
+
+
 def _inject_into_template(body_html: str, conversation_id: uuid.UUID | None = None) -> str:
     from datetime import date as _date
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -220,8 +384,8 @@ async def generate_and_store(
     columns: list | None = meta.get("columns")
     rows: list | None    = meta.get("rows")
     row_count: int | None = meta.get("row_count")
-    chart_spec = meta.get("chart_spec")
     intent     = meta.get("intent")
+    query_intent: list = meta.get("query_intent") or []
     follow_ups = meta.get("follow_ups")
 
     # New truncation / true-stats metadata (added by pipeline.py + chat.py)
@@ -274,8 +438,8 @@ async def generate_and_store(
         columns=columns,
         rows=sampled_rows,
         row_count=row_count or (len(rows) if rows else None),
-        chart_spec=chart_spec,
         intent=intent,
+        query_intent=query_intent,
         follow_ups=follow_ups,
         col_stats=col_stats or None,
         was_truncated=was_truncated,
@@ -337,6 +501,15 @@ async def generate_and_store(
     body_html = _extract_main(raw_html)
     body_html = _repair_html(body_html)
     logger.info(f"[dashboard] STEP 4 — extracted body | length={len(body_html)} chars | starts_with_main={'<main' in body_html[:20]}")
+
+    # ── 4b. Verify table values against source data ──
+    if columns and rows:
+        body_html, verify_stats = _verify_table_values(body_html, columns, rows)
+        logger.info(
+            f"[dashboard] STEP 4b — verification | "
+            f"verified={verify_stats['verified']} unverified={verify_stats['unverified']} "
+            f"total={verify_stats['total']} rate={verify_stats.get('rate', 'n/a')}"
+        )
 
     # ── 5. Inject into template ──
     logger.info(f"[dashboard] STEP 5 — injecting into HTML template")

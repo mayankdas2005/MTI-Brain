@@ -167,7 +167,7 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
             raw_clauses = mj.get("join_clauses") or []
             valid_clauses = [c for c in raw_clauses if not _has_uuid_in_join_clause(c)]
             if not valid_clauses and raw_clauses:
-                logger.debug("schema_context | skip UUID multihop join | {} → {}", f_fqn, t_fqn)
+                logger.debug("schema_context | skip UUID multihop join | {} -> {}", f_fqn, t_fqn)
                 continue
             available_joins.append({
                 "from": f_fqn,

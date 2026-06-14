@@ -19,6 +19,7 @@ from app.services.agents.nodes.ir_builder import build_semantic_ir
 from app.services.agents.ir import validation as ir_val
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
+from app.services.agents.helpers import merge_neo4j_raw_graph
 
 # Split only on unambiguous list separators — NOT 'and'/'or' which are ambiguous
 # ("USD and CAD" vs "$100M or more"). Preserves dates, FX pairs (USD/EUR), codes.
@@ -86,7 +87,7 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
         lines.append(f"MEASURES: {', '.join(m_strs)}")
     if ir.dimensions:
         d_strs = [
-            d.column_name + (f" → {d.alias}" if d.alias and d.alias != d.column_name else "")
+            d.column_name + (f" -> {d.alias}" if d.alias and d.alias != d.column_name else "")
             for d in ir.dimensions
         ]
         lines.append(f"DIMENSIONS: {', '.join(d_strs)}")
@@ -149,7 +150,7 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
         lines.append(
             "INVALID COLUMNS — these do NOT exist on the tables above; "
             "do NOT use them under any name or on any other table:\n"
-            + "\n".join(f"  ✗ {c}" for c in invalid)
+            + "\n".join(f"  INVALID: {c}" for c in invalid)
         )
 
     # TEMPORAL COLUMNS: when multiple date columns exist on the primary anchor table,
@@ -244,7 +245,7 @@ async def _handle_single(
     thread_id = str(state["thread_id"])
 
     try:
-        ir = await build_semantic_ir(resolved, semantic_context, state)
+        ir, _rescued_raw_paths = await build_semantic_ir(resolved, semantic_context, state)
     except Exception as e:
         logger.error("query_compiler | IR build failed | thread={} | error={}", thread_id, e)
         return {
@@ -252,6 +253,12 @@ async def _handle_single(
             "needs_clarification": True,
             "clarification_reason": "I couldn't map your question to the data model.",
         }
+
+    _neo4j_raw_graph = merge_neo4j_raw_graph(
+        state.get("neo4j_raw_graph") or {},
+        _rescued_raw_paths,
+        [],
+    ) if _rescued_raw_paths else (state.get("neo4j_raw_graph") or {"nodes": [], "edges": []})
 
     # Split comma/semicolon/pipe-separated filter values into individual FilterSpecs.
     ir = _split_multi_value_filters(ir)
@@ -332,6 +339,7 @@ async def _handle_single(
             "filter_resolution_needed": True,
             "filter_directive": filter_directive,
             "schema_directive": schema_directive,
+            "neo4j_raw_graph": _neo4j_raw_graph,
             **({"early_filter_spec": early_filter_spec} if early_filter_spec else {}),
         }
 
@@ -341,5 +349,6 @@ async def _handle_single(
         "filter_resolution_needed": False,
         "filter_directive": filter_directive,
         "schema_directive": schema_directive,
+        "neo4j_raw_graph": _neo4j_raw_graph,
         **({"early_filter_spec": early_filter_spec} if early_filter_spec else {}),
     }

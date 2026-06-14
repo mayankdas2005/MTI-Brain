@@ -15,7 +15,7 @@ import json
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.helpers import _build_entity_tokens_section
+from app.services.agents.helpers import _build_entity_tokens_section, build_mission_context, merge_neo4j_raw_graph
 from app.services.agents.prompts import ANCHOR_RESOLVER_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -46,7 +46,7 @@ def _build_tables_section(semantic_context: dict) -> str:
         if domain:
             line += f"  domain={domain}"
         if fqn in bt_fqns:
-            line += "  [⚑ business-term — known alias for a user-mentioned concept — MUST select]"
+            line += "  [business-term — known alias for a user-mentioned concept — MUST select]"
         elif fqn in intent_fqns:
             line += "  [~ intent-related — linked to matched query intent — consider selecting]"
         elif fqn in domain_fqns:
@@ -102,7 +102,7 @@ def _inject_signal_tables(
 ) -> list:
     """Deterministically add high-confidence signal tables after LLM selection.
 
-    Signal priority (highest → lowest confidence):
+    Signal priority (highest to lowest confidence):
       Signal 2: BusinessTerm.related_table_fqns — concept explicitly mapped to table (Neo4j ground truth)
       Signal 3: intent_table_fqns — table RELEVANT_TO a matched intent (Neo4j ground truth)
       Signal 4: domain_table_fqns — table BELONGS_TO a matched domain (Neo4j ground truth)
@@ -125,12 +125,15 @@ def _inject_signal_tables(
     domain_cap = domain_cap_override if domain_cap_override is not None else caps["domain"]
 
     # Build joinable set: tables with JOINS_TO edge to any LLM-selected anchor
+    _raw_join_edges: list[dict] = []
     try:
         direct_joins = neo4j_client.get_direct_joins(list(valid_anchors))
         joinable_fqns: set = {r["to_fqn"] for r in direct_joins} | {r["from_fqn"] for r in direct_joins}
+        _raw_join_edges.extend({"_type": "JOINS_TO", "source": "anchor_resolver", **r} for r in direct_joins)
         if complexity == "advanced":
             second_hop = neo4j_client.get_direct_joins(list(joinable_fqns))
             joinable_fqns |= {r["to_fqn"] for r in second_hop} | {r["from_fqn"] for r in second_hop}
+            _raw_join_edges.extend({"_type": "JOINS_TO", "source": "anchor_resolver_2hop", **r} for r in second_hop)
         # Also treat any table that appears in loaded JoinPath nodes as joinable —
         # avoids a second Neo4j call and covers multi-hop paths without JOINS_TO edges.
         for path in (anchor_join_paths or []):
@@ -194,6 +197,9 @@ def _inject_signal_tables(
 
     result = valid_anchors + to_add
 
+    _raw_bridge_edges: list[dict] = []
+    _raw_community_nodes: list[dict] = []
+
     # Signal 5: Community BRIDGES_TO — cross-schema hub tables (no cap, mandatory)
     # Only runs when anchor tables span more than one community.
     try:
@@ -208,6 +214,15 @@ def _inject_signal_tables(
                 if hub_fqn and hub_fqn not in result and rel.get("join_safe", True):
                     result.append(hub_fqn)
                     logger.info("anchor_resolver | community_bridge_injected | {} between communities {}", hub_fqn, distinct_communities)
+                _raw_bridge_edges.append({
+                    "_type": "BRIDGES_TO",
+                    "from_community_id": b.get("from_id", ""),
+                    "to_community_id": b.get("to_id", ""),
+                    **rel,
+                })
+                for cid in (b.get("from_id"), b.get("to_id")):
+                    if cid:
+                        _raw_community_nodes.append({"_label": "Community", "id": cid})
     except Exception as e:
         logger.warning("anchor_resolver | community_bridge_fetch failed | {} — skipping", e)
 
@@ -235,7 +250,7 @@ def _inject_signal_tables(
             "anchor_resolver | signal_injection | bt={} intent={} domain={} entity={} | total={}",
             bt_added, intent_added, domain_added, ent_added, result,
         )
-    return result, joinable_fqns
+    return result, _raw_join_edges, _raw_bridge_edges, _raw_community_nodes
 
 
 def _build_intents_section(semantic_context: dict) -> str:
@@ -246,22 +261,6 @@ def _build_intents_section(semantic_context: dict) -> str:
         f"  {i.get('name', '')}: {(i.get('description') or '')[:100]}"
         for i in intents
     )
-
-
-def _build_policy_facts_section(semantic_context: dict) -> str:
-    facts = (semantic_context.get("policy_facts") or [])[:5]
-    if not facts:
-        return "(none)"
-    lines = []
-    for f in facts:
-        label = f.get("label") or f.get("type") or "Policy"
-        value = str(f.get("value") or "")[:100]
-        status = f.get("status") or ""
-        line = f"  {label}: {value}"
-        if status:
-            line += f"  [status: {status}]"
-        lines.append(line)
-    return "\n".join(lines)
 
 
 async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict:
@@ -296,11 +295,16 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         tables_section=_build_tables_section(semantic_context),
         business_terms_section=_build_terms_section(semantic_context),
         entity_hints_section=_build_entity_hints_section(semantic_context),
-        policy_facts_section=_build_policy_facts_section(semantic_context),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         intents_section=_build_intents_section(semantic_context),
         query_intent_section=query_intent_section,
     )
+    _mission = build_mission_context(
+        state,
+        role="Select the anchor tables from Neo4j candidates that are semantically central to this query",
+        feeds="schema_enricher (column loading for selected tables), all 3 specialists (entity context)",
+    )
+    anchor_prompt[0].content = _mission + "\n\n" + anchor_prompt[0].content
 
     from app.services.agents.prompts import QUERY_PLANNER_PROMPT
     available_tables_lines = [
@@ -384,8 +388,9 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     if invalid:
         logger.warning("anchor_resolver | invalid_tables_dropped | {} | thread={}", invalid, state["thread_id"])
 
-    # Complexity from the freshly parsed query_plan — controls table budgets
-    complexity = query_plan.get("complexity", "simple")
+    # Complexity: intake_classifier is authoritative (saw full question context);
+    # query_plan complexity is fallback when intake_classifier value is absent.
+    complexity = state.get("complexity") or query_plan.get("complexity") or "simple"
     if complexity not in _COMPLEXITY_CAPS:
         complexity = "simple"
     llm_cap = _COMPLEXITY_CAPS[complexity]["llm"]
@@ -405,105 +410,35 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         )
 
     # Deterministic injection with JOINS_TO connectivity filter + per-signal-type caps
-    valid_anchors, _joinable_fqns = _inject_signal_tables(
+    valid_anchors, _raw_join_edges, _raw_bridge_edges, _raw_community_nodes = _inject_signal_tables(
         valid_anchors, semantic_context, valid_tables, complexity,
         anchor_join_paths=state.get("anchor_join_paths") or [],
         domain_cap_override=_domain_cap_override,
     )
 
-    # Signal 7: policy/limit tables from CONDITION-line tribal retrieval — mandatory, no joinability cap
-    _policy_fqns = semantic_context.get("policy_table_fqns") or []
-    if _policy_fqns:
-        _sig7_set = set(valid_anchors)
-        for _pfqn in _policy_fqns:
-            if _pfqn and _pfqn not in _sig7_set:
-                valid_anchors.append(_pfqn)
-                _sig7_set.add(_pfqn)
-        logger.info(
-            "anchor_resolver | signal7_policy_mandated | fqns={} | thread={}",
-            _policy_fqns, state["thread_id"],
-        )
-
-    # Signal 8: cross-domain bridge tables from W2 bridge_lookup — suggested, cap 2
-    _bridge_fqns = semantic_context.get("bridge_table_fqns") or []
-    if _bridge_fqns:
-        _sig8_set = set(valid_anchors)
-        _bridge_cap = 2
-        _bridge_added = 0
-        for _bfqn in _bridge_fqns:
-            if _bridge_added >= _bridge_cap:
-                break
-            if _bfqn and _bfqn not in _sig8_set:
-                valid_anchors.append(_bfqn)
-                _sig8_set.add(_bfqn)
-                _bridge_added += 1
-                logger.info(
-                    "anchor_resolver | signal8_bridge_suggested | fqn={} | thread={}",
-                    _bfqn, state["thread_id"],
-                )
-
-    # X1+Z1: Temporal anchor derivation — prefer "fact" table with date + numeric columns
-    _NUMERIC_DTYPES = frozenset({
-        "numeric", "decimal", "integer", "bigint", "double precision",
-        "real", "float", "money", "number", "int", "int2", "int4", "int8",
-    })
-    _PREFERRED_ANCHOR_TYPES = frozenset({"fact"})
-    _temporal_anchor: str | None = None
-    _fallback_anchor: str | None = None
-
-    _all_cols = semantic_context.get("columns") or []
-    _tbl_types = semantic_context.get("table_types") or {}
-
-    for _t in valid_anchors:
-        _t_type = _tbl_types.get(_t, "fact")
-        _t_cols = [c for c in _all_cols if c.get("table_fqn") == _t]
-        _has_date = any(
-            "date" in (c.get("data_type") or "").lower()
-            or "timestamp" in (c.get("data_type") or "").lower()
-            for c in _t_cols
-        )
-        _has_measure = any((c.get("data_type") or "").lower() in _NUMERIC_DTYPES for c in _t_cols)
-        if _has_date and _has_measure:
-            if _t_type in _PREFERRED_ANCHOR_TYPES:
-                _temporal_anchor = _t
-                break
-            elif _fallback_anchor is None:
-                _fallback_anchor = _t
-
-    if not _temporal_anchor:
-        _temporal_anchor = _fallback_anchor
-
-    if _temporal_anchor:
-        query_plan["temporal_anchor_fqn"] = _temporal_anchor
-        logger.info("anchor_resolver | temporal_anchor={} | type={} | thread={}",
-                    _temporal_anchor, _tbl_types.get(_temporal_anchor, "fact"), state["thread_id"])
-
-    # X4: Disconnected table pruning — drop non-mandatory anchors with no join path to any other anchor
-    _mandatory_fqns = set(semantic_context.get("policy_table_fqns") or [])
-    _disconnected: list[str] = []
-    _primary = _temporal_anchor or (valid_anchors[0] if valid_anchors else None)
-
-    if len(valid_anchors) > 1:
-        for _t in valid_anchors:
-            if _t == _primary:
-                continue
-            if _t in _mandatory_fqns:
-                continue
-            if _t not in _joinable_fqns:
-                _disconnected.append(_t)
-                logger.warning(
-                    "anchor_resolver | disconnected_dropped | {} | no join path to anchors | thread={}",
-                    _t, state["thread_id"],
-                )
-
-    if _disconnected:
-        _disconnected_set = set(_disconnected)
-        valid_anchors = [t for t in valid_anchors if t not in _disconnected_set]
-
     logger.info(
-        "anchor_resolver DONE | thread={} | complexity={} | llm_cap={} | anchor_tables={} | result_shape={} | intent={} | temporal_anchor={}",
+        "anchor_resolver DONE | thread={} | complexity={} | llm_cap={} | anchor_tables={} | result_shape={} | intent={}",
         state["thread_id"], complexity, llm_cap, valid_anchors, result_shape, intent_summary[:60],
-        query_plan.get("temporal_anchor_fqn"),
+    )
+
+    # Accumulate STRUCTURALLY_SIMILAR edges for anchor tables (new query, read-only)
+    _raw_struct_edges: list[dict] = []
+    if valid_anchors:
+        try:
+            from app.services.agents import neo4j_client as _nc
+            _struct_rows = await asyncio.to_thread(
+                _nc.get_structurally_similar_tables, valid_anchors
+            )
+            _raw_struct_edges = [{"_type": "STRUCTURALLY_SIMILAR", **r} for r in (_struct_rows or [])]
+        except Exception as _se:
+            logger.debug("anchor_resolver | structurally_similar fetch skipped | error={}", _se)
+
+    # Merge all raw graph data from this node into state
+    _existing_raw = state.get("neo4j_raw_graph") or {}
+    neo4j_raw_graph = merge_neo4j_raw_graph(
+        _existing_raw,
+        _raw_community_nodes,
+        _raw_join_edges + _raw_bridge_edges + _raw_struct_edges,
     )
 
     # Store in resolved_intent stub so query_compiler can read result_shape
@@ -512,4 +447,5 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         "anchor_tables_resolved": valid_anchors,
         "query_plan": query_plan,
         "resolved_intent": {**existing_resolved, "result_shape": result_shape, "anchor_tables": valid_anchors},
+        "neo4j_raw_graph": neo4j_raw_graph,
     }

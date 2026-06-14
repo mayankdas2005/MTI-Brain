@@ -13,6 +13,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
+from app.services.agents.helpers import merge_neo4j_raw_graph
 from app.services.agents.nodes.sql_generator import generate_sql_llm
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
@@ -44,22 +45,30 @@ async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
     first_sql = next((s for s in sql_list if s), None)
     logger.info("sql_generator DONE | thread={} | sql_len={}", state["thread_id"], len(first_sql or ""))
 
-    # Y3: sql_computation_summary — tell synthesis which decision computations are in the SQL
-    _implemented: list[str] = []
-    if first_sql:
-        _sql_upper = first_sql.upper()
-        if "THRESHOLD_BREACH_FLAG" in _sql_upper or ("BREACH" in _sql_upper and "CASE WHEN" in _sql_upper):
-            _implemented.append("threshold_breach_flag")
-        if "RUNNING_" in _sql_upper and " OVER " in _sql_upper:
-            _implemented.append("running_total")
-        if "DELTA_" in _sql_upper:
-            _implemented.append("delta")
-        if "PERIOD_CHANGE_" in _sql_upper:
-            _implemented.append("period_change")
-        if "YOY" in _sql_upper or "DATEADD(YEAR" in _sql_upper or "DATEADD(YEAR," in _sql_upper:
-            _implemented.append("yoy_baseline")
+    _pattern_nodes: list[dict] = []
+    for _ap in (semantic_context.get("anti_patterns") or []):
+        if _ap.get("id") or _ap.get("error_type"):
+            _pattern_nodes.append({"_label": "AntiPattern", **_ap})
+    for _qp in (semantic_context.get("query_patterns") or []):
+        if _qp.get("id") or _qp.get("intent"):
+            _pattern_nodes.append({"_label": "QueryPattern", **_qp})
 
-    result: dict = {"sql_list": sql_list, "semantic_context": semantic_context, "sql_computation_summary": _implemented}
+    _neo4j_raw_graph = merge_neo4j_raw_graph(
+        state.get("neo4j_raw_graph") or {},
+        _pattern_nodes,
+        [],
+    ) if _pattern_nodes else None
+
+    result: dict = {"sql_list": sql_list, "semantic_context": semantic_context}
+    if _neo4j_raw_graph is not None:
+        result["neo4j_raw_graph"] = _neo4j_raw_graph
     if first_sql:
         result["prior_sql"] = first_sql
+    # Persist intra-turn caches so LangGraph keeps them across recompile invocations.
+    if state.get("_sql_schema_ctx_cache") is not None:
+        result["_sql_schema_ctx_cache"] = state["_sql_schema_ctx_cache"]
+    if state.get("_cached_anti_patterns") is not None:
+        result["_cached_anti_patterns"] = state["_cached_anti_patterns"]
+    if state.get("_cached_query_patterns") is not None:
+        result["_cached_query_patterns"] = state["_cached_query_patterns"]
     return result

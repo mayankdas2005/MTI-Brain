@@ -1,7 +1,7 @@
 """Filter value resolution logic — pure functions, no I/O.
 
 The tiered resolution pipeline:
-  Tier 1 Combined: aliases → exact match on filter_values → fuzzy (rapidfuzz WRatio)
+  Tier 1 Combined: aliases -> exact match on filter_values -> fuzzy (rapidfuzz WRatio)
   Tier 2: Redshift DISTINCT probe — only when filter_values is empty (not in this file)
   Tier 3: Temporal expression parsing
   Tier 5: LLM disambiguation (not in this file)
@@ -18,9 +18,9 @@ def _extract_segments(value: str) -> list[str]:
     deduplicated (uppercase).
 
     Examples:
-      "GR_AE_OPERATING_1" → ["OPERATING"]          (GR, AE < 3 chars; 1 is digit)
-      "CashInflows"        → ["CASH", "INFLOWS"]
-      "fx-rate-daily"      → ["RATE", "DAILY"]      (fx < 3 chars)
+      "GR_AE_OPERATING_1" -> ["OPERATING"]          (GR, AE < 3 chars; 1 is digit)
+      "CashInflows"        -> ["CASH", "INFLOWS"]
+      "fx-rate-daily"      -> ["RATE", "DAILY"]      (fx < 3 chars)
     """
     separators = ('_', '-', '.', '/', ' ')
     parts = [value]
@@ -62,14 +62,14 @@ def resolve_to_patterns(
     """Resolve a user string to one or more match patterns with a confidence score.
 
     Returns (patterns, score):
-      score == 100, len == 1  → exact alias/vocabulary match; caller uses operator '='
-      score < 100             → fuzzy/substring patterns; caller uses operator 'ILIKE' (→ ~*)
-      empty list              → no match found
+      score == 100, len == 1  -> exact alias/vocabulary match; caller uses operator '='
+      score < 100             -> fuzzy/substring patterns; caller uses operator 'ILIKE' (-> ~*)
+      empty list              -> no match found
 
     Tiers (in order):
-      1. Alias exact (100)   — human label → DB code via value_aliases
+      1. Alias exact (100)   — human label -> DB code via value_aliases
       2. Exact vocab (100)   — case-insensitive equality against filter_values
-      3. Substring (65)      — user keyword embedded inside a DB code → ~* 'KEYWORD'
+      3. Substring (65)      — user keyword embedded inside a DB code -> ~* 'KEYWORD'
       4. Segment fuzzy (≥80) — WRatio(user_value, segment) from _extract_segments pool
       5. Full-code WRatio (70-84) — fallback on raw codes
     """
@@ -140,25 +140,25 @@ def resolve_tier1_combined(
     filter_values: list[str],
     value_aliases: dict[str, str] | None,
 ) -> tuple[str | None, float, list[str]]:
-    """Single-pass: aliases → exact (case-insensitive) → fuzzy (rapidfuzz WRatio).
+    """Single-pass: aliases -> exact (case-insensitive) -> fuzzy (rapidfuzz WRatio).
 
     filter_values should be the Redshift-probed distinct values written by context_fetcher
     enrichment — NOT Neo4j's sample_values (which are partial and truncated).
 
     Returns (resolved_value, score, ambiguous_candidates).
-    - resolved_value + score >= 85 + empty candidates → confident match
-    - resolved_value + 70 <= score < 85 → low-confidence match
-    - None + candidates → ambiguous (multiple ≥85 matches)
-    - None + empty candidates → no match
+    - resolved_value + score >= 85 + empty candidates -> confident match
+    - resolved_value + 70 <= score < 85 -> low-confidence match
+    - None + candidates -> ambiguous (multiple ≥85 matches)
+    - None + empty candidates -> no match
     """
     user_lower = user_value.lower()
 
     if isinstance(value_aliases, dict):
         for alias, canonical in value_aliases.items():
-            # Reverse lookup: user said the human label → return the DB code
+            # Reverse lookup: user said the human label -> return the DB code
             if canonical.lower() == user_lower:
                 return alias, 100.0, []
-            # Forward lookup: user already said the DB code → return it (not the human name)
+            # Forward lookup: user already said the DB code -> return it (not the human name)
             if alias.lower() == user_lower:
                 return alias, 100.0, []
 
@@ -167,7 +167,7 @@ def resolve_tier1_combined(
             return v, 100.0, []
 
     # Substring check: user value appears literally inside a stored value.
-    # Catches short qualifiers embedded in compound codes (e.g. "operating" → "GR_US_INC_OPERATING_1").
+    # Catches short qualifiers embedded in compound codes (e.g. "operating" -> "GR_US_INC_OPERATING_1").
     # Return the user's keyword (uppercased) — NOT the specific matched code — so the SQL generator
     # emits ~* 'OPERATING' (matches all operating accounts) rather than ~* 'GR_AE_OPERATING_1'
     # (would match only that one code).  The ~* operator is case-insensitive so uppercase is fine.

@@ -25,6 +25,7 @@ from app.services.agents.node_names import (
     COMPRESS as N_COMPRESS,
     ERROR_RESPONSE as N_ERROR_RESPONSE,
     EXECUTOR as N_EXECUTOR,
+    LT_MEMORY_RETRIEVER as N_LT_MEMORY_RETRIEVER,
     SYNTHESIS as N_SYNTHESIS,
 )
 from app.services.agents.nodes.audit import write_query_pattern, write_schema_gaps
@@ -48,7 +49,6 @@ _STATE_KEYS = {
     "low_confidence_filters", "zero_row_probe_result", "zero_row_rewrite_count",
     "data_quality_flag", "data_quality_reason",
     "answer", "chart_spec", "chart_type", "alternative_chart_specs", "follow_ups", "error", "stopped", "prior_sql",
-    "context_summary",
 }
 
 
@@ -209,7 +209,7 @@ async def stream_pipeline(
         "messages": [],
         "user_id": user_id or "",
         "thread_id": thread_id,
-        "persona": persona or "executive",
+        "persona": persona or "analyst",
         "question": question,
         "question_type": "",
         "needs_clarification": False,
@@ -243,6 +243,8 @@ async def stream_pipeline(
         "chart_spec": None,
         "follow_ups": [],
         "feedback_context": feedback_context,
+        "lt_memory_context": "",
+        "preference_summary": None,
         "summary": "",
         "error": None,
         "execution_error": None,
@@ -298,7 +300,7 @@ async def stream_pipeline(
         run_id, thread_id,
         user_email or user_display_name or "unknown",
         user_id or "unknown",
-        persona or "executive",
+        persona or "analyst",
         max_rows,
         deep_analysis,
         question[:120],
@@ -424,6 +426,13 @@ async def stream_pipeline(
                 visit_before = _node_visit_count.get(node, 0)
                 if isinstance(output, dict):
                     state.update({k: v for k, v in output.items() if k in _STATE_KEYS})
+
+                # Emit a synthetic reasoning.delta for deterministic nodes that have a
+                # natural language label to show in the UI pipeline timeline.
+                if node == N_LT_MEMORY_RETRIEVER and isinstance(output, dict):
+                    _label = output.get("preference_label") or ""
+                    if _label:
+                        yield {"event": "reasoning.delta", "data": {"node": node, "text": _label}}
 
                 _node_visit_count[node] = visit_before + 1
                 visit_key  = f"{node}:{visit_before}"
@@ -607,8 +616,13 @@ async def stream_pipeline(
                     "reliability_flags": state.get("reliability_flags", []),
                     "token_usage":       aggregate_token_usage(_token_records) if _token_records else {},
                     "graph_context":     _graph_context,
+                    "neo4j_raw_graph":   state.get("neo4j_raw_graph") or {"nodes": [], "edges": []},
                     "pattern_id":        _pattern_id,
-                    "context_summary":   state.get("context_summary"),
+                    "query_intent":      state.get("query_intent") or [],
+                    "entity_tokens":     state.get("entity_tokens") or [],
+                    "search_terms":      state.get("search_terms") or [],
+                    "is_followup":       state.get("is_followup", False),
+                    "preference_summary": state.get("preference_summary"),
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):
@@ -616,29 +630,10 @@ async def stream_pipeline(
         except Exception as e:
             logger.warning("[{}] Client disconnect before done: {}", run_id, e)
 
-        memory_store = get_memory_store()
-        if (
-            not stopped
-            and memory_store is not None
-            and user_id
-            and state.get("answer")
-            and not state.get("no_data")
-            and not state.get("error")
-        ):
-            try:
-                from app.services.agents.memory.long_term import save_user_memory
-                ir_list = state.get("semantic_ir_list") or []
-                await save_user_memory(
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    question=question,
-                    answer_summary=(state.get("answer") or "")[:500],
-                    intent=ir_list[0].get("intent", "") if ir_list else "",
-                    row_count=0,
-                    sql=state.get("sql_list", [""])[0] if state.get("sql_list") else "",
-                )
-            except Exception as e:
-                logger.warning("[{}] Memory save failed (non-fatal): {}", run_id, e)
+        # LT memory save disabled — PostgresStore not stable; re-enable when store is confirmed healthy
+        # memory_store = get_memory_store()
+        # if not stopped and memory_store and user_id and state.get("answer") ...
+        pass
 
     except Exception as e:
         logger.error("[{}] Analytics pipeline error: {}", run_id, e)

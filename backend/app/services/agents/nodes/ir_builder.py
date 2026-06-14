@@ -89,7 +89,7 @@ def _type_aware_filter_spec(
     # Boolean: deterministic TRUE/FALSE — bypass vocab matching entirely
     if "bool" in data_type:
         bool_val = _resolve_boolean_value(raw_value)
-        logger.info("ir_builder | bool_filter | {}.{} | '{}' → {}", f["table_fqn"], col_name, raw_value, bool_val)
+        logger.info("ir_builder | bool_filter | {}.{} | '{}' -> {}", f["table_fqn"], col_name, raw_value, bool_val)
         return FilterSpec(
             table_fqn=f["table_fqn"],
             column_name=col_name,
@@ -116,7 +116,7 @@ def _type_aware_filter_spec(
     if is_numeric:
         clean = _normalize_numeric(raw_value)
         if clean:
-            logger.info("ir_builder | numeric_filter | {}.{} | '{}' → {}", f["table_fqn"], col_name, raw_value, clean)
+            logger.info("ir_builder | numeric_filter | {}.{} | '{}' -> {}", f["table_fqn"], col_name, raw_value, clean)
             return FilterSpec(
                 table_fqn=f["table_fqn"],
                 column_name=col_name,
@@ -141,7 +141,7 @@ def _normalize_fqn(fqn: str) -> str:
     parts = fqn.split(".")
     if len(parts) > 2:
         normalized = f"{parts[0]}.{parts[1]}"
-        logger.warning("ir_builder | 3-part FQN normalized | {} → {}", fqn, normalized)
+        logger.warning("ir_builder | 3-part FQN normalized | {} -> {}", fqn, normalized)
         return normalized
     return fqn
 
@@ -188,8 +188,8 @@ async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict 
         anchor_tables.insert(0, hub_fqn)
         logger.info("ir_builder | hub_injected | fqn={}", hub_fqn)
 
-    join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs = \
-        _load_join_paths(
+    join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs, _rescued_raw_paths = \
+        await _load_join_paths(
             anchor_tables,
             intent_directive=(state or {}).get("intent_directive") or "",
             anchor_join_paths=(state or {}).get("anchor_join_paths"),
@@ -354,7 +354,7 @@ async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict 
         temporal_grains,
         len(unresolved_pairs),
     )
-    return ir
+    return ir, _rescued_raw_paths
 
 
 def _coerce_list(value) -> list:
@@ -447,7 +447,50 @@ def _pick_valid_primary_path(paths: list[dict]) -> dict | None:
     return next(iter(paths), None)
 
 
-def _load_join_paths(
+async def _rescue_join_path(from_fqn: str, to_fqn: str) -> dict | None:
+    """Full join cascade for a pair absent from state and directive.
+
+    Tiers:
+      1-5. JOINS_TO -> Dijkstra -> Yen's k=2,3 (via load_best_join_path)
+      6.   Value overlap (distinct_value intersection)
+      7.   Graph traversal (shortestPath through JOINS_TO*)
+    """
+    import asyncio
+    from app.services.agents.neo4j.join_resolution import load_best_join_path, find_join_via_graph_traversal
+    from app.services.agents.neo4j.column_search import find_join_by_value_overlap
+
+    try:
+        path = await asyncio.to_thread(load_best_join_path, from_fqn, to_fqn)
+        if path:
+            return path
+    except Exception as exc:
+        logger.warning("ir_builder | cascade_load_best_join | {}<->{} | error={}", from_fqn, to_fqn, exc)
+
+    try:
+        overlaps = await asyncio.to_thread(find_join_by_value_overlap, from_fqn, to_fqn)
+        if overlaps:
+            best = overlaps[0]
+            clause = f"{from_fqn}.{best['from_col']} = {to_fqn}.{best['to_col']}"
+            logger.info(
+                "ir_builder | cascade_value_overlap | {}<->{} | clause={}",
+                from_fqn, to_fqn, clause,
+            )
+            return {"join_clauses": [clause], "path_tables": [from_fqn, to_fqn], "tier": "value_overlap"}
+    except Exception as exc:
+        logger.warning("ir_builder | cascade_value_overlap | {}<->{} | error={}", from_fqn, to_fqn, exc)
+
+    try:
+        path = await asyncio.to_thread(find_join_via_graph_traversal, from_fqn, to_fqn)
+        if path:
+            path["tier"] = "graph_traversal"
+            return path
+    except Exception as exc:
+        logger.warning("ir_builder | cascade_graph_traversal | {}<->{} | error={}", from_fqn, to_fqn, exc)
+
+    return None
+
+
+async def _load_join_paths(
     anchor_tables: list[str],
     intent_directive: str = "",
     anchor_join_paths: list[dict] | None = None,
@@ -456,7 +499,8 @@ def _load_join_paths(
 
     Tier A: use anchor_join_paths from state (set by schema_enricher).
     Tier B: parse JOIN_PATH lines from intent_directive (directive_writer relay, fallback only).
-    Pairs with no path in either source become unresolved_pairs.
+    Tier C: full Neo4j cascade (JOINS_TO -> Dijkstra -> Yen's -> value_overlap -> graph traversal).
+    Pairs surviving all tiers without a path become unresolved_pairs.
 
     Returns: (join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs)
     """
@@ -469,7 +513,6 @@ def _load_join_paths(
     unresolved_pairs: list[dict] = []
 
     # Tier A: anchor_join_paths from state (Neo4j ground truth — highest confidence)
-    # Value: (path_id, join_clauses_list, path_tables_list) — all hops stored, not just first
     state_join_lookup: dict[tuple[str, str], tuple[str | None, list[str], list[str]]] = {}
     for path in (anchor_join_paths or []):
         from_fqn    = path.get("from_fqn")
@@ -500,6 +543,7 @@ def _load_join_paths(
                     _intent_joins[(_t, _f)] = _clause
 
     collected_join_path_ids: list[str] = []
+    _rescued_raw_paths: list[dict] = []
 
     for i in range(len(anchor_tables) - 1):
         from_table = anchor_tables[i]
@@ -529,18 +573,42 @@ def _load_join_paths(
                 from_table, to_table, clause,
             )
         else:
-            logger.warning("ir_builder | unresolved_pair | from={} to={} | no join in state or directive", from_table, to_table)
-            unresolved_pairs.append({"from": from_table, "to": to_table, "reason": "no_join_found"})
-            # Keep path_tables and join_clauses index-aligned even for unresolved pairs.
-            # Without this placeholder, the NEXT resolved pair's clause ends up at the wrong
-            # index (i), causing sql_generator to emit an ON clause referencing a table not
-            # yet in the chain (the G2 alignment bug).
-            if to_table not in all_path_tables:
-                all_path_tables.append(to_table)
-            all_join_clauses.append(None)
-            join_types.append("JOIN")
+            # Tier C: full Neo4j cascade — JOINS_TO -> Dijkstra -> Yen's -> value_overlap -> graph traversal
+            rescued = await _rescue_join_path(from_table, to_table)
+            if rescued:
+                path_clauses = rescued.get("join_clauses") or []
+                hop_tables   = rescued.get("path_tables") or [from_table, to_table]
+                all_join_clauses.extend(path_clauses)
+                join_types.extend(["JOIN"] * len(path_clauses))
+                for tbl in hop_tables:
+                    if tbl not in all_path_tables:
+                        all_path_tables.append(tbl)
+                _rescued_raw_paths.append({
+                    "_label": "JoinPath",
+                    "from_fqn": from_table,
+                    "to_fqn": to_table,
+                    "join_clauses": path_clauses,
+                    "path_tables": hop_tables,
+                    "tier": rescued.get("tier", "cascade"),
+                    "source": "ir_builder_cascade",
+                })
+                logger.info(
+                    "ir_builder | join | {}<->{} | hops={} | clauses={} | via=cascade(tier={})",
+                    from_table, to_table, len(path_clauses), path_clauses, rescued.get("tier", "?"),
+                )
+            else:
+                logger.warning(
+                    "ir_builder | unresolved_pair | from={} to={} | exhausted all cascade tiers",
+                    from_table, to_table,
+                )
+                unresolved_pairs.append({"from": from_table, "to": to_table, "reason": "no_join_found"})
+                # Placeholder keeps path_tables/join_clauses index-aligned for the sql_generator.
+                if to_table not in all_path_tables:
+                    all_path_tables.append(to_table)
+                all_join_clauses.append(None)
+                join_types.append("JOIN")
 
-    return collected_join_path_ids, all_join_clauses, all_path_tables, join_types, [], unresolved_pairs
+    return collected_join_path_ids, all_join_clauses, all_path_tables, join_types, [], unresolved_pairs, _rescued_raw_paths
 
 
 def _qualify_join_clause(clause: str, left_table: str, right_table: str) -> str:
@@ -567,9 +635,9 @@ def _resolve_filter_values(
     """Normalize filter values against Redshift distinct values (filter_values).
 
     Returns (operator, resolved_values).
-    - ALL exact case-insensitive matches → ("IN", [...]) or ("=", [...]) for single
-    - ANY partial match → ("ILIKE_MULTI", ["%val1%", "%val2%", ...])
-    - No filter_values available → original operator + raw_values unchanged
+    - ALL exact case-insensitive matches -> ("IN", [...]) or ("=", [...]) for single
+    - ANY partial match -> ("ILIKE_MULTI", ["%val1%", "%val2%", ...])
+    - No filter_values available -> original operator + raw_values unchanged
     """
     cols = semantic_context.get("columns") or []
     col_meta = next(
@@ -598,29 +666,29 @@ def _resolve_filter_values(
     for raw in raw_values:
         raw_lower = str(raw).lower().strip()
 
-        # Alias reverse lookup: human label → DB code (runs even when filter_values is empty)
+        # Alias reverse lookup: human label -> DB code (runs even when filter_values is empty)
         if alias_map:
             # Handle raw "CODE -> Human Name" format — LLM sometimes outputs the full alias entry
             if " -> " in raw:
                 code_part = raw.split(" -> ")[0].strip()
                 matched_raw = next((k for k in alias_map if k.lower() == code_part.lower()), None)
                 if matched_raw:
-                    logger.info("ir_builder | filter alias_raw_fmt | {}.{} | {} → {}", table_fqn, column, raw, matched_raw)
+                    logger.info("ir_builder | filter alias_raw_fmt | {}.{} | {} -> {}", table_fqn, column, raw, matched_raw)
                     resolved.append(matched_raw)
                     modes.append("exact")
                     continue
 
-            # User said the human label (e.g., "Closing Balance") → return DB code ("CLOSING")
+            # User said the human label (e.g., "Closing Balance") -> return DB code ("CLOSING")
             db_code = next((k for k, v in alias_map.items() if v.lower() == raw_lower), None)
             if db_code:
-                logger.info("ir_builder | filter alias_reverse | {}.{} | {} → {}", table_fqn, column, raw, db_code)
+                logger.info("ir_builder | filter alias_reverse | {}.{} | {} -> {}", table_fqn, column, raw, db_code)
                 resolved.append(db_code)
                 modes.append("exact")
                 continue
-            # User said the DB code directly (e.g., "CLOSING") → keep as-is
+            # User said the DB code directly (e.g., "CLOSING") -> keep as-is
             matched_key = next((k for k in alias_map if k.lower() == raw_lower), None)
             if matched_key:
-                logger.info("ir_builder | filter alias_exact | {}.{} | {} → {}", table_fqn, column, raw, matched_key)
+                logger.info("ir_builder | filter alias_exact | {}.{} | {} -> {}", table_fqn, column, raw, matched_key)
                 resolved.append(matched_key)
                 modes.append("exact")
                 continue
@@ -632,7 +700,7 @@ def _resolve_filter_values(
 
         exact = next((fv for fv in filter_values if str(fv).lower() == raw_lower), None)
         if exact:
-            logger.info("ir_builder | filter exact | {}.{} | {} → {}", table_fqn, column, raw, exact)
+            logger.info("ir_builder | filter exact | {}.{} | {} -> {}", table_fqn, column, raw, exact)
             resolved.append(str(exact))
             modes.append("exact")
             continue
@@ -640,7 +708,7 @@ def _resolve_filter_values(
         partials = [fv for fv in filter_values if raw_lower in str(fv).lower()]
         if partials:
             logger.info(
-                "ir_builder | filter partial (ILIKE) | {}.{} | {} → candidates={}",
+                "ir_builder | filter partial (ILIKE) | {}.{} | {} -> candidates={}",
                 table_fqn, column, raw, partials[:3],
             )
             resolved.append(f"%{raw}%")

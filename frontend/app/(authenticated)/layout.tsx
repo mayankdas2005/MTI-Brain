@@ -191,6 +191,7 @@ export default function AuthenticatedLayout({
         void retryResponse(currentThreadId, lastAssistant.conversation_id);
       }
     },
+    'cmd-q': () => useUIStore.getState().startTourReplay(),
     'cmd-shift-c': () => {
       const msgs = useThreadStore.getState().currentMessages;
       const last = [...msgs].reverse().find((m) => m.role === 'assistant' && m.content);

@@ -54,6 +54,34 @@ def _translate_column(col: str) -> str:
     return col.replace("_", " ").title()
 
 
+def _format_numeric(val: Any) -> str:
+    """Format a numeric value to K/M/B/T shorthand."""
+    if val is None:
+        return "—"
+    try:
+        n = float(val)
+    except (TypeError, ValueError):
+        return str(val)
+    if n != n:  # NaN
+        return "—"
+    neg = n < 0
+    a = abs(n)
+    if a >= 1e12:
+        s = f"{a / 1e12:.2f}T"
+    elif a >= 1e9:
+        s = f"{a / 1e9:.2f}B"
+    elif a >= 1e6:
+        s = f"{a / 1e6:.2f}M"
+    elif a >= 1e3:
+        s = f"{a / 1e3:.2f}K"
+    else:
+        if isinstance(val, float) or (isinstance(val, str) and "." in str(val)):
+            s = f"{a:.2f}"
+        else:
+            s = f"{a:g}"
+    return f"-{s}" if neg else s
+
+
 def _select_columns(columns: list[str], rows: list[list[Any]]) -> list[int]:
     """Return column indices ordered by dashboard value, trimmed to char budget.
 
@@ -123,12 +151,8 @@ OUTPUT RULES
 • Never display the user question. Never write "User Query", "Input", "Markdown", "SPARQL", "SQL", or any raw technical content.
 • Never expose raw field/column names as visible labels — translate to executive language.
 • No markdown fences, no explanations, no follow-up questions.
-• Icon standard: use Lucide icons via <i data-lucide="..." class="..."></i> for .fl-ico, .alert-ico, .kicon, .insight-ico. Do not use emoji.
+• Icon standard: use Lucide icons via <i data-lucide="..." class="..."></i> for .fl-ico, .alert-ico, .insight-ico only. Do NOT use icons on KPI cards. Do not use emoji.
 • NEVER use inline style attributes (style="color:..." or style="width:...") on any element — use CSS classes only.
-
-• BAR CHART QUALITY GATE: Only render a bar chart when the value range > 15% of the max absolute value. If all values are within 15% of each other (bars would all be 85–100% wide), SKIP the bar chart entirely — render a compact day-over-day delta table with .var-pos/.var-neg instead. Never render a chart where every bar is visually identical.
-• NEGATIVE VALUE RULE: For negative-only datasets, use absolute values for bar width%. If ALL values are negative AND the range is < 15% of the max absolute value, skip the chart entirely — a table conveys more information.
-• BAR SORT RULE: Time-series bar charts MUST sort chronologically (oldest at top, newest at bottom). Comparison bar charts sort DESC by value.
 
 • EXECUTIVE SUMMARY IS MANDATORY: every dashboard MUST include an .exec-summary block immediately after .infobar (and after .alert-banner if present), before the KPI grid.
 
@@ -185,14 +209,23 @@ KPI CARDS  (only when ≥ 3 metrics are computable from data)
   RED FATIGUE RULE: maximum 3 KPI cards may use .kr. If more than 3 metrics are failing or critical,
   consolidate the excess into ONE .kcard.kr with .kcap = "Critical Issues" and .knum = the count ("5 Issues").
   Informational metrics (counts, currencies, date ranges, scope labels) MUST use .kb or .kn — NEVER .kr.
-  .kcard-header             — flex row at top of .kcard holding left group (.khead-main) and .kbadge (right)
-  .khead-main               — left group inside header containing .kicon + .kcap
-  .kicon                    — Lucide icon for KPI context, e.g. trend-up / trend-down / wallet
+  .kcard-header             — flex row at top of .kcard holding .kcap (left) and .kbadge (right)
   .kcap                     — card label (9.5px uppercase)
   .knum                     — large metric value
     .knum.kg / .knum.ka / .knum.kr — color the number
   .ktrend                   — small benchmark or context line below .knum
   .kbadge                   — optional top-right tag ("YTD", "30D")
+  Do NOT use Lucide icons on KPI cards — no .kicon, no <i> tags inside .kcard.
+
+  Example KPI card:
+    <div class="kcard kg">
+      <div class="kcard-header">
+        <div class="kcap">METRIC LABEL</div>
+        <span class="kbadge">YTD</span>
+      </div>
+      <div class="knum kg">$14.2M</div>
+      <div class="ktrend"><span class="up">↑ 3.2%</span> vs prior period</div>
+    </div>
 
 SECTIONS  (wrap each content block)
   .section                  — spacing wrapper for each block
@@ -206,27 +239,14 @@ TABLES
   .table-wrap               — scrollable container; wrap every <table> in this
   table                     — full-width, sticky thead auto-styled
   td.r                      — right-align numeric cells
-  td.mono                   — monospace for IDs, references, codes
   tfoot tr                  — bold totals row
   .tmore                    — overflow message: "+ N more not shown"
-  .row-flag                 — amber row background (variance / watch)
-  .row-breach               — red row background (critical)
-  .cell-hi                  — amber cell highlight
-  .cell-hi.breach           — red cell highlight
-  .var-pos / .var-neg       — green / red variance text
   COLUMN DEDUP RULE: Never include a column whose value is identical for every row
   (e.g., "Account" column when the section heading already names the account, or "Currency"
   when all rows are USD). Drop redundant constant-value columns.
-  ROW-BREACH DISCIPLINE: Only apply .row-breach to rows that genuinely breach a specific threshold —
-  the 1–3 worst outliers. If ALL rows would receive .row-breach, apply it to NONE.
-  Instead add a .callout.danger BEFORE the table: "All [N] records breach [condition]."
-
-STATUS PILLS  (.s + modifier)
-  Green:   .s.settled  .s.approved  .s.matched  .s.won  .s.active  .s.paid
-  Amber:   .s.pending  .s.authorized  .s.processing  .s.in-review
-  Red:     .s.declined  .s.disputed  .s.failed  .s.breach  .s.flagged  .s.blocked
-  Blue:    .s.captured  .s.completed
-  Purple:  .s.voided  .s.reversed  .s.refunded
+  CLEAN TABLE RULE: All table cell text must use default color — no colored text classes, no colored
+  backgrounds on rows or cells. No monospace styling. Tables are clean: dark header, white body,
+  default text color. For status values, use plain uppercase text — do not wrap in any styled element.
 
 RISK FLAGS  (only when hygiene conditions are triggered)
   .flags-list               — <ul> of risk flags
@@ -277,38 +297,17 @@ BENCHMARKS  (when domain thresholds apply)
     .bench-val.bad          — red value (below threshold / failure)
     Use these classes — NEVER use inline style="color:..." on .bench-val
   .bench-target             — benchmark/target line
-  .bench-bar > .bench-bar-fill  — progress bar (add .warn or .bad)
-    width% = round((current / threshold) × 100, 0) — cap at 100%
-    Only render .bench-bar when BOTH current AND threshold are known from data.
+  Benchmarks show metric label, value with color class, and target text only — no progress bars.
 
 TIMELINE CHIPS  (when ≥ 3 FUTURE dates/deadlines exist)
   .chips > .chip[.cw / .co] > .chip-dot    — date chips (.cw = amber warn, .co = red overdue)
   FORWARD-LOOKING ONLY: chips represent future deadlines and action dates. Never use historical
   data timestamps, observation dates, or reporting-period dates as chips — those belong in .infobar.
 
-BAR CHART — ONLY WHEN DATA HAS MEANINGFUL VISUAL SPREAD
-  Trigger: ≥ 2 entities comparable by a numeric metric, AND value range > 15% of max absolute value.
-  If the spread is ≤ 15% (bars would all be 85–100% wide), SKIP the bar chart.
-  Instead show a compact delta/change table: label | current | Δ change (.var-pos / .var-neg).
-  Structure:
-    <div class="bar-chart">
-      <div class="bar-row">
-        <span class="bar-label">Entity Name</span>
-        <div class="bar-track"><div class="bar-fill g" style="width:82%"></div></div>
-        <span class="bar-val">$8.2M</span>
-      </div>
-    </div>
-  Rules:
-  • width% = round((|value| / max_|value|) × 100, 1) — use absolute value for negative datasets
-  • .g = good/on-target · .a = approaching threshold · .r = breach/bottom · .b = informational/neutral
-  • Time-series: sort chronologically (oldest top, newest bottom)
-  • Comparison: sort DESC by absolute value; max 15 rows
-  • NEVER use inline style attributes other than the width% on bar-fill
-
 CALLOUT BOX  (contextual notes)
   .callout             — default (blue border)
   .callout.warn        — amber
-  .callout.danger      — red; use BEFORE a table when ALL rows would otherwise be .row-breach
+  .callout.danger      — red; use when a critical condition applies broadly
 
 INSIGHT BOX  (per-section "Key Finding" — use after each data section)
   .insight-box         — blue-accented box for the single most important takeaway from a section
@@ -330,8 +329,8 @@ BODY STRUCTURE — FOLLOW THIS ORDER
  4. ALERT BANNER              — if ≥ 1 high-severity flag; use .alert-banner.warn for data-quality-only issues
  5. EXECUTIVE SUMMARY         — ALWAYS (mandatory .exec-summary block, 2 sentences max)
  6. KPI GRID (.section > h2 + .kpi-grid) — if ≥ 3 metrics computable; max 3 .kr cards
- 7. PRIMARY TABLE + optional bar chart   — always when tabular data exists
- 8. SECONDARY TABLE + optional bar chart — if additional dimensions exist
+ 7. PRIMARY TABLE                        — always when tabular data exists
+ 8. SECONDARY TABLE                      — if additional dimensions exist
  9. RISK FLAGS                — if ≥ 2 hygiene conditions triggered
 10. ACTIONS                   — if any flags; max 3 items, then:
     <div class="callout">Further Considerations: [brief list]</div>
@@ -369,6 +368,10 @@ LABEL TRANSLATIONS (never use raw names):
   naccounts / num_accounts       → "No. of Accounts"
   total_balance / totalbalance   → "Total Balance"
   row_count / count              → "Records"
+
+NUMERIC SHORTHAND: All numeric values in the INPUT DATA are pre-formatted with shorthand suffixes.
+  K = thousands, M = millions, B = billions, T = trillions.
+  Preserve these suffixes exactly as given in tables and KPI cards — do not expand them back to raw numbers.
 
 TONE: Active voice. Present tense. Quantify impact in dollars when data allows.
 NEVER use: raw column names, "N/A" (use "—"), "User Query", "SQL", "SPARQL", "query", "API", "schema", "table", "column".
@@ -428,8 +431,10 @@ Pick 3–5 that are computable from the data. MAX 3 cards may use .kr.
 ══════════════════════════════════════
 FORMATTING STANDARDS
 ══════════════════════════════════════
+  Currency ≥$1T    →  $1.24T
   Currency ≥$1B    →  $1.24B
   Currency ≥$1M    →  $12.4M
+  Currency ≥$1K    →  $12.4K
   Currency else    →  $1,234.56
   Percentages      →  44.3%
   Counts           →  1,234 (comma thousands)
@@ -447,12 +452,12 @@ def build_input_markdown(
     columns: list[str] | None,
     rows: list[list[Any]] | None,
     row_count: int | None,
-    chart_spec: dict | None,
     intent: str | None,
     follow_ups: list[str] | None,
     col_stats: str | None = None,
     was_truncated: bool = False,
     true_total_rows: int | None = None,
+    query_intent: list[str] | None = None,
 ) -> str:
     """Format conversation context into INPUT MARKDOWN for the LLM.
 
@@ -479,6 +484,11 @@ def build_input_markdown(
     # ── Intent / domain ──
     if intent:
         parts.append(f"## DOMAIN / INTENT\n{intent.strip()}")
+
+    # ── Query intent (structured analytical contract from intake_classifier) ──
+    if query_intent:
+        lines = "\n".join(f"- {line}" for line in query_intent)
+        parts.append(f"## QUERY INTENT (analytical contract)\n{lines}")
 
     # ── Column statistics (from _build_data_summary) ──
     if col_stats:
@@ -510,7 +520,7 @@ def build_input_markdown(
         rows_written = 0
         for row in sampled_rows:
             line = "| " + " | ".join(
-                str(row[i]) if row[i] is not None else "—" for i in col_indices
+                _format_numeric(row[i]) if row[i] is not None else "—" for i in col_indices
             ) + " |\n"
             if chars + len(line) > _TABLE_CHAR_BUDGET:
                 break
@@ -525,24 +535,6 @@ def build_input_markdown(
 
     elif row_count is not None:
         parts.append(f"## DATA\nThe query returned {row_count} record(s). Use the ANALYSIS section to derive metrics.")
-
-    # ── Chart spec hint ──
-    if chart_spec:
-        chart_type = chart_spec.get("type", "")
-        x_col = chart_spec.get("x_col") or chart_spec.get("x", "")
-        y_col = chart_spec.get("y_col") or chart_spec.get("y", "")
-        title = chart_spec.get("title", "")
-        hint_parts = []
-        if chart_type:
-            hint_parts.append(f"type={chart_type}")
-        if x_col:
-            hint_parts.append(f"x-axis={x_col}")
-        if y_col:
-            hint_parts.append(f"y-axis={y_col}")
-        if title:
-            hint_parts.append(f'title="{title}"')
-        if hint_parts:
-            parts.append(f"## CHART HINT\n{', '.join(hint_parts)}")
 
     # ── AI Analysis ──
     if answer:

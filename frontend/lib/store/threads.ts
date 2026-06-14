@@ -16,7 +16,7 @@ import type {
   MessageMetadata,
   PipelineStep,
   TokenUsage,
-  ContextSummary,
+  PreferenceSummary,
 } from '../types/api';
 
 // ─── Local Message type (superset of MessageOut for streaming state) ───
@@ -33,6 +33,8 @@ export interface StreamingStep {
   duration_ms?: number | null;
   /** Reasoning text emitted while this step was active. */
   reasoning?: string;
+  /** @deprecated context_summary removed — preference_summary is on MessageMetadata */
+  context_summary?: never;
 }
 
 export interface Message {
@@ -1152,7 +1154,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
                 langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
                 intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
-                context_summary: (data.context_summary as ContextSummary | undefined) ?? m.metadata_?.context_summary,
+                preference_summary: (data.preference_summary as PreferenceSummary | undefined) ?? m.metadata_?.preference_summary,
               },
             };
           }
@@ -1521,7 +1523,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
                 langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
                 intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
-                context_summary: (data.context_summary as ContextSummary | undefined) ?? m.metadata_?.context_summary,
+                preference_summary: (data.preference_summary as PreferenceSummary | undefined) ?? m.metadata_?.preference_summary,
               },
             };
           }
@@ -1831,7 +1833,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
               langfuse_trace_id: (data.langfuse_trace_id as string | undefined) ?? m.metadata_?.langfuse_trace_id,
               langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
               intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
-              context_summary: (data.context_summary as ContextSummary | undefined) ?? m.metadata_?.context_summary,
+              preference_summary: (data.preference_summary as PreferenceSummary | undefined) ?? m.metadata_?.preference_summary,
             },
           };
           if (m.id === userMsgId) return { ...m, conversation_id: convId };

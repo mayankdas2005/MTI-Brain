@@ -67,7 +67,6 @@ from app.services.agents.neo4j import (
     get_all_domain_names,
     get_all_intent_names,
     get_tables_for_canonical_domains,
-    get_cross_domain_bridges,
     # write
     write_join_path,
     write_query_pattern,
@@ -107,7 +106,6 @@ __all__ = [
     "get_query_templates_by_ids", "get_query_patterns_by_ids",
     "get_anti_patterns_by_ids", "get_business_terms_by_terms", "get_business_terms_for_tables",
     "get_all_domain_names", "get_all_intent_names", "get_tables_for_canonical_domains",
-    "get_cross_domain_bridges",
     "write_join_path", "write_query_pattern", "write_anti_pattern",
     "update_pattern_feedback", "promote_pattern_to_template", "write_schema_gap",
 ]

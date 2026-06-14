@@ -12,9 +12,10 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents import neo4j_client
-from app.services.agents.helpers import parse_tag
+from app.services.agents.helpers import parse_tag, merge_neo4j_raw_graph
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_REPAIR,
+    REPAIR_PROMPT,
     REPAIR_SYNTAX_PROMPT,
     REPAIR_STRUCTURE_PROMPT,
 )
@@ -34,11 +35,11 @@ Business logic, tables, filters, and metric definitions must stay identical. App
       DIRECTIVE. These are entity_hint injections for unrelated tables.
   0e. TABLES: SCHEMA DIRECTIVE ANCHOR_TABLES is the closed set — no extra joins.
   0f. REDSHIFT DIALECT: INTERVAL with months/years is NOT supported. Fix any occurrence:
-      ✗ INTERVAL '1 year' / INTERVAL '3 months' / INTERVAL '4 weeks' / date + INTERVAL '...'
-      ✓ DATEADD(year,-1,date) / DATEADD(month,-3,date) / DATEADD(week,4,date)
+      WRONG: INTERVAL '1 year' / INTERVAL '3 months' / INTERVAL '4 weeks' / date + INTERVAL '...'
+      CORRECT: DATEADD(year,-1,date) / DATEADD(month,-3,date) / DATEADD(week,4,date)
 
   i. CONDITIONAL — If the error message mentions a subquery, EXISTS, or IN clause AND those
-     tables are not in the ANCHOR TABLES of QUERY INTENT → remove those subqueries as the first
+     tables are not in the ANCHOR TABLES of QUERY INTENT, remove those subqueries as the first
      action before any other performance fix. Otherwise skip Rule i and proceed to Rule c.
      When applicable: these are hallucinations that eliminate rows; removing them is correct.
   c. Drop SELECT * and unused CTE columns.
@@ -168,6 +169,7 @@ async def attempt_repair(
     logger.warning("repair | attempting repair | thread={} | repair_count={}", state["thread_id"], repair_count)
 
     anti_patterns = "(none)"
+    _repair_raw_anti_patterns: list[dict] = []
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
@@ -181,6 +183,8 @@ async def attempt_repair(
                     line += f" element={element} |"
                 line += f" {p.get('error_summary', '')}"
                 ap_lines.append(line)
+                if p.get("id") or p.get("error_type"):
+                    _repair_raw_anti_patterns.append({"_label": "AntiPattern", "_source": "repair", **p})
             anti_patterns = "\n".join(ap_lines)
     except Exception:
         pass
@@ -197,7 +201,7 @@ async def attempt_repair(
     invalid_cols = _extract_invalid_columns(error_msg)
     invalid_cols_section = (
         f"\nINVALID COLUMNS — these do NOT exist in Redshift, do not use them under any name:\n"
-        + "\n".join(f"  ✗ {c}" for c in invalid_cols)
+        + "\n".join(f"  INVALID: {c}" for c in invalid_cols)
         if invalid_cols else ""
     )
 
@@ -288,7 +292,7 @@ async def attempt_repair(
         if any(f in _explain_flags for f in ("CROSS_JOIN_BROADCAST", "CARTESIAN_RISK", "NESTED_LOOP")) \
                 and "LARGE_TABLE_SCAN" in _explain_flags:
             _exp_lines.append(
-                "  → TIMEOUT PATTERN: large fact table (~hundreds of thousands of rows) scanned "
+                "  ACTION - TIMEOUT PATTERN: large fact table (~hundreds of thousands of rows) scanned "
                 "THEN broadcast to every node for a nested loop join. The entity filter was applied "
                 "AFTER the full scan. Rewrite: (1) matching_entity CTE resolves entity filters first "
                 "(returns ~1-10 rows), (2) fact_window CTE joins ON matching_entity + 365-day date "
@@ -297,26 +301,26 @@ async def attempt_repair(
             )
         elif any(f in _explain_flags for f in ("CROSS_JOIN_BROADCAST", "CARTESIAN_RISK", "NESTED_LOOP")):
             _exp_lines.append(
-                "  → Near-cartesian join detected. Apply entity filters BEFORE joining the large "
+                "  ACTION - Near-cartesian join detected. Apply entity filters BEFORE joining the large "
                 "fact table — use a filtering CTE (matching_entity) first, then join on the result."
             )
 
         if any(f in _explain_flags for f in ("DIST_BOTH", "DS_DIST_ALL_NONE")):
             _exp_lines.append(
-                "  → DS_DIST_BOTH: join columns are not Redshift DISTKEYs — rows are redistributed "
+                "  NOTE - DS_DIST_BOTH: join columns are not Redshift DISTKEYs — rows are redistributed "
                 "across nodes (expensive but not a data correctness issue). Pre-aggregate or filter "
                 "one side of the join to reduce redistributed row count."
             )
 
         if "DIST_OUTER" in _explain_flags:
             _exp_lines.append(
-                "  → DS_DIST_OUTER: outer table redistributed. Pre-filter it to a smaller result "
+                "  NOTE - DS_DIST_OUTER: outer table redistributed. Pre-filter it to a smaller result "
                 "set before the join to reduce shuffled rows."
             )
 
         if "DISK_SPILL" in _explain_flags:
             _exp_lines.append(
-                "  → DISK_SPILL: sort/hash ran out of memory and spilled to disk — very slow. "
+                "  NOTE - DISK_SPILL: sort/hash ran out of memory and spilled to disk — very slow. "
                 "Add a pre-aggregation CTE to reduce row count before the expensive sort. "
                 "Replace SELECT DISTINCT with GROUP BY on explicit columns."
             )
@@ -325,14 +329,14 @@ async def attempt_repair(
             f in _explain_flags for f in ("CROSS_JOIN_BROADCAST", "CARTESIAN_RISK", "NESTED_LOOP")
         ):
             _exp_lines.append(
-                "  → LARGE_TABLE_SCAN: fact table scanned without entity filter pushdown. "
+                "  ACTION - LARGE_TABLE_SCAN: fact table scanned without entity filter pushdown. "
                 "Move entity/reference table filters into an early CTE that runs BEFORE the "
                 "fact table join."
             )
 
         if "MATERIALIZE" in _explain_flags:
             _exp_lines.append(
-                "  → MATERIALIZE: large intermediate dataset held in memory. "
+                "  NOTE - MATERIALIZE: large intermediate dataset held in memory. "
                 "Pre-filter the materialized subquery with date + entity conditions."
             )
 
@@ -362,13 +366,21 @@ async def attempt_repair(
                 semantic_ir_text=semantic_ir_text,
                 reasoning_directive=REASONING_DIRECTIVE_REPAIR,
             )
-        return REPAIR_STRUCTURE_PROMPT.format_messages(
-            error_message=emsg,
-            original_sql=osql,
-            prior_attempts_detail=attempts_detail,
-            candidate_paths_section=candidate_paths_section,
-            schema_reference=schema_reference,
+        return REPAIR_PROMPT.format_messages(
+            question=state.get("effective_question") or state.get("question", ""),
+            entity_tokens_section=entity_tokens_section,
+            time_col_highlight_section=time_col_highlight_section,
             semantic_ir_text=semantic_ir_text,
+            schema_reference=schema_reference,
+            original_sql=osql,
+            error_message=emsg,
+            prior_attempts_detail=attempts_detail,
+            directive_section=directive_section,
+            feedback_section=feedback_section,
+            performance_directive=_perf_directive,
+            explain_section=explain_section,
+            anti_patterns=anti_patterns,
+            candidate_paths_section=candidate_paths_section,
             reasoning_directive=REASONING_DIRECTIVE_REPAIR,
         )
 
@@ -460,16 +472,19 @@ async def attempt_repair(
         new_history_entry["sql_fingerprint"] = None
         new_history_entry["sql_fragment"] = first_sql[:500]
 
-    # Z4: write repair_mode to state so synthesis/audit can reference the class of repair applied
-    _repair_mode = "syntax" if error_type == "syntax" else "structural"
-
-    return {
+    _repair_result: dict = {
         "sql_list": new_sql_list,
         "repair_count": repair_count + 1,
         "repair_history": repair_history + [new_history_entry],
-        "repair_mode": _repair_mode,
         "error": None,
     }
+    if _repair_raw_anti_patterns:
+        _repair_result["neo4j_raw_graph"] = merge_neo4j_raw_graph(
+            state.get("neo4j_raw_graph") or {},
+            _repair_raw_anti_patterns,
+            [],
+        )
+    return _repair_result
 
 
 def _build_candidate_paths_section(ir_dict: dict) -> str:
@@ -490,7 +505,7 @@ def _build_candidate_paths_section(ir_dict: dict) -> str:
         hops = p.get("hop_count", 1)
         from_fqn = p.get("from_fqn", "")
         to_fqn = p.get("to_fqn", "")
-        lines.append(f"  [{tier}, {hops} hop] {from_fqn} → {to_fqn} | {clauses}")
+        lines.append(f"  [{tier}, {hops} hop] {from_fqn} -> {to_fqn} | {clauses}")
     return "\n".join(lines)
 
 
@@ -556,7 +571,7 @@ def _build_semantic_ir_text(ir_dict: dict) -> str:
             col = f"{f.get('table_fqn', '')}.{f.get('column_name', '')}"
             op = f.get("operator", "=")
             val = f.get("value", "")
-            filter_strs.append(f"{col} {op} '{val}'  ← DB CODE (use verbatim, do not change)")
+            filter_strs.append(f"{col} {op} '{val}'  -- DB CODE (use verbatim, do not change)")
         lines.append(f"Filters:    {', '.join(filter_strs)}")
 
     valid_joins = [c for c in join_clauses if c]
@@ -583,7 +598,7 @@ def _build_schema_reference_for_repair(sc: dict, sql: str = "") -> str:
         lines.append("ENTITY VALUE MATCHES (authoritative — these tokens matched schema vocabulary directly):")
         for eh in entity_hints[:5]:
             lines.append(
-                f"  '{eh.get('token')}' → {eh.get('table_fqn')}.{eh.get('column')}"
+                f"  '{eh.get('token')}' -> {eh.get('table_fqn')}.{eh.get('column')}"
                 f" (matched: {str(eh.get('matched_value', ''))[:80]})"
                 " — JOIN to this table and filter on this column"
             )

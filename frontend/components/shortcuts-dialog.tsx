@@ -33,6 +33,7 @@ const SHORTCUTS: Shortcut[] = [
   { variants: [`${mod} .`], label: 'Toggle sidebar', section: 'general' },
   { variants: [`${mod} ⇧ L`], label: 'Toggle theme', section: 'general' },
   { variants: [`${mod} /`, '?'], label: 'Keyboard shortcuts', section: 'general' },
+  { variants: [`${mod} Q`], label: 'Replay product tour', section: 'general' },
 
   // ─── In chats ───
   { variants: ['Enter'], label: 'Send message', section: 'chat' },

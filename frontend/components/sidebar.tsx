@@ -1028,9 +1028,12 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
                 )}
               </span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => startTourReplay()} className="gap-2">
-              <Sparkles className="w-4 h-4" />
-              Replay product tour
+            <DropdownMenuItem onClick={() => startTourReplay()} className="gap-2 justify-between">
+              <span className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4" />
+                Replay product tour
+              </span>
+              <span className="text-[10px] text-muted-foreground/50 font-mono tracking-tight">{modKey} Q</span>
             </DropdownMenuItem>
             {notifyPermission === 'default' && (
               <DropdownMenuItem

@@ -14,6 +14,7 @@ from app.core.logger import logger
 from app.services.agents.helpers import (
     _build_entity_tokens_section,
     build_joinable_table_graph_section,
+    build_mission_context,
     build_refinement_section,
 )
 from app.services.agents.prompts import DIMENSION_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
@@ -116,6 +117,12 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
         entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
     )
+    _mission = build_mission_context(
+        state,
+        role="Identify grouping dimensions and temporal grain(s) for the query",
+        feeds="intent_assembler → directive_writer (dimension_intent, temporal_grains)",
+    )
+    prompt[0].content = _mission + "\n\n" + prompt[0].content
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

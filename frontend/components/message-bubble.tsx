@@ -70,61 +70,6 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
-import type { ContextSummary } from '@/lib/types/api';
-
-function ContextUsedPanel({ summary }: { summary: ContextSummary }) {
-  return (
-    <Accordion type="single" collapsible className="mb-1">
-      <AccordionItem value="ctx" className="border-none">
-        <AccordionTrigger className="py-1 px-3 text-xs text-muted-foreground hover:no-underline gap-1.5 [&>svg]:h-3 [&>svg]:w-3">
-          Context used
-        </AccordionTrigger>
-        <AccordionContent className="px-3 pb-2 text-xs text-muted-foreground space-y-1">
-          {summary.decision_type && summary.decision_type !== 'lookup' && (
-            <div className="flex gap-1.5">
-              <span className="shrink-0">●</span>
-              <span>Decision type: <strong>{summary.decision_type}</strong></span>
-            </div>
-          )}
-          {summary.constraint_facts.map((f, i) => (
-            <div key={i} className="flex gap-1.5">
-              <span className="shrink-0">●</span>
-              <span>
-                Constraint: <span className="font-mono text-[10px]">{f.table}</span>
-                {f.text ? ` — ${f.text}` : ''}
-                {i === 0 && summary.constraint_trigger_line ? ` (${summary.constraint_trigger_line})` : ''}
-              </span>
-            </div>
-          ))}
-          {summary.memory_items.map((item, i) => (
-            <div key={i} className="flex gap-1.5">
-              <span className="shrink-0">●</span>
-              <span>Memory: {item}</span>
-            </div>
-          ))}
-          {summary.is_refinement && summary.prior_question_preview && (
-            <div className="flex gap-1.5">
-              <span className="shrink-0">●</span>
-              <span>Refining: &ldquo;{summary.prior_question_preview}&hellip;&rdquo;</span>
-            </div>
-          )}
-          {summary.is_followup && !summary.is_refinement && (
-            <div className="flex gap-1.5">
-              <span className="shrink-0">●</span>
-              <span>Follow-up on prior conversation context</span>
-            </div>
-          )}
-          {summary.business_terms.length > 0 && (
-            <div className="flex gap-1.5">
-              <span className="shrink-0">●</span>
-              <span>Business terms: {summary.business_terms.join(', ')}</span>
-            </div>
-          )}
-        </AccordionContent>
-      </AccordionItem>
-    </Accordion>
-  );
-}
 
 export interface VersionNav {
   current: number;
@@ -518,11 +463,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           message={message}
           reasoningRef={reasoningRef}
         />
-      )}
-
-      {/* Context Used Panel */}
-      {message.role === 'assistant' && message.metadata_?.context_summary && (
-        <ContextUsedPanel summary={message.metadata_.context_summary} />
       )}
 
       {/* SQL / Data toggle */}
@@ -1158,6 +1098,7 @@ function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[]; isSt
             {cleanedReasoning && isExpanded && (
               <StepReasoning text={cleanedReasoning} active={isActive} />
             )}
+
           </div>
         );
       })}

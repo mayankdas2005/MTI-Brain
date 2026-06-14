@@ -16,6 +16,7 @@ from app.services.agents.helpers import (
     _build_concept_mappings_section,
     _build_entity_tokens_section,
     build_joinable_table_graph_section,
+    build_mission_context,
     build_refinement_section,
 )
 from app.services.agents.prompts import MEASURE_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
@@ -100,6 +101,12 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
         concept_mappings_section=_build_concept_mappings_section(state.get("concept_mappings")),
         entity_tokens_section=_build_entity_tokens_section(state.get("entity_tokens") or []),
     )
+    _mission = build_mission_context(
+        state,
+        role="Identify all metrics and aggregation expressions the query requires from schema columns",
+        feeds="intent_assembler → directive_writer (measure_intent)",
+    )
+    prompt[0].content = _mission + "\n\n" + prompt[0].content
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

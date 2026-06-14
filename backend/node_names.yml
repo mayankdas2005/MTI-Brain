@@ -16,6 +16,11 @@
 # ─────────────────────────────────────────────────────────────────────────────────
 
 nodes:
+  - id: lt_memory_retriever
+    label: "Recalling your preferences"
+    tier: none
+    stream: null
+
   - id: intake_classifier
     label: "Reading your question"
     tier: fast

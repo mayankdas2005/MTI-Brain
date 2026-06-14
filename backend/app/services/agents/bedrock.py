@@ -1,9 +1,9 @@
 """AWS Bedrock LLM initialization for the MTI Brain pipeline.
 
 Provides three model tiers:
-  fast     → Haiku   (classify, step_reflector, ontology_lookup)
-  balanced → Sonnet  (sparql_gen, graph_reasoning, synthesis, plan, reflectors)
-  deep     → Opus    (L3 plan repairer, escalated SPARQL repair)
+  fast     -> Haiku   (classify, step_reflector, ontology_lookup)
+  balanced -> Sonnet  (sparql_gen, graph_reasoning, synthesis, plan, reflectors)
+  deep     -> Opus    (L3 plan repairer, escalated SPARQL repair)
 
 Call ``init_llms()`` once at startup, then ``get_llm(tier)`` from any node.
 """
@@ -66,9 +66,9 @@ def init_llms() -> None:
 
     logger.info(
         f"Bedrock LLMs ready | "
-        f"fast={'Haiku (' + _short(haiku_arn) + ')' if haiku_arn != sonnet_arn else 'FALLBACK→Sonnet (set AWS_BEDROCK_HAIKU_ARN)'} | "
+        f"fast={'Haiku (' + _short(haiku_arn) + ')' if haiku_arn != sonnet_arn else 'FALLBACK->Sonnet (set AWS_BEDROCK_HAIKU_ARN)'} | "
         f"balanced=Sonnet ({_short(sonnet_arn)}) | "
-        f"deep={'Opus (' + _short(opus_arn) + ')' if opus_arn != sonnet_arn else 'FALLBACK→Sonnet'}"
+        f"deep={'Opus (' + _short(opus_arn) + ')' if opus_arn != sonnet_arn else 'FALLBACK->Sonnet'}"
     )
 
 

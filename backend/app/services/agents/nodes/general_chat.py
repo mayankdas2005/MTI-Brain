@@ -4,7 +4,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.agents.helpers import build_mission_context, parse_tag
 from app.services.agents.prompts import GENERAL_CHAT_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -32,11 +32,17 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     prompt = GENERAL_CHAT_PROMPT.format_messages(
         question=state["question"],
-        persona=state.get("persona", "executive"),
+        persona=state.get("persona", "analyst"),
         conversation_section=conversation_section,
         memory_section=memory_section,
         feedback_section=feedback_section,
     )
+    _mission = build_mission_context(
+        state,
+        role="Answer a non-analytics question conversationally and helpfully",
+        feeds="user (direct visible answer)",
+    )
+    prompt[0].content = _mission + "\n\n" + prompt[0].content
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

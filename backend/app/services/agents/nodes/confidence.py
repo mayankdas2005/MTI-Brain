@@ -39,9 +39,9 @@ def _compute_score(state: dict) -> int:
     Two-layer model:
 
     Layer 1 — Planning confidence (schema coverage before execution):
-      If directive_writer emitted CONFIDENCE_NOTE → use it as base (already encodes
+      If directive_writer emitted CONFIDENCE_NOTE -> use it as base (already encodes
       schema gaps + feasibility). Skip the schema/join deductions — they're in the base.
-      If no CONFIDENCE_NOTE → base 75, then deduct schema gaps and unresolved joins.
+      If no CONFIDENCE_NOTE -> base 75, then deduct schema gaps and unresolved joins.
 
     Layer 2 — Execution confidence (applied on top regardless):
       Low-conf filter resolutions: -8 each (max -24)

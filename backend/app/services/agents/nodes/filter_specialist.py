@@ -18,6 +18,7 @@ from app.core.logger import logger
 from app.services.agents.helpers import (
     _build_entity_tokens_section,
     build_joinable_table_graph_section,
+    build_mission_context,
     build_refinement_section,
 )
 from app.services.agents.prompts import FILTER_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
@@ -117,7 +118,7 @@ def _build_entity_hints_section(entity_hints: list) -> str:
     ]
     for eh in entity_hints:
         lines.append(
-            f'  User said "{eh.get("token")}" → filter on {eh.get("table_fqn")}.{eh.get("column")}'
+            f'  User said "{eh.get("token")}" -- filter on {eh.get("table_fqn")}.{eh.get("column")}'
             f'   (set raw_user_value = "{eh.get("token")}")'
         )
     return "\n".join(lines)
@@ -149,16 +150,6 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
     _explicit = _query_plan.get("explicit_entities") or []
     _effective_entity_tokens = _explicit if _explicit else entity_tokens
 
-    _cond_lines = [l for l in query_intent_lines if l.startswith("CONDITION:")]
-    _condition_lines_section = "\n".join(_cond_lines) if _cond_lines else "(none)"
-
-    # X5: temporal anchor constraint — force time_filter_col to come from the fact table
-    _temporal_anchor = (_query_plan.get("temporal_anchor_fqn") or "").strip()
-    temporal_anchor_section = (
-        f"TIME FILTER CONSTRAINT: time_filter_col MUST be from table {_temporal_anchor}.\n"
-        f"Only select time_filter_col from a different table if {_temporal_anchor} has NO [time-filter eligible] columns."
-    ) if _temporal_anchor else ""
-
     prompt = FILTER_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -169,9 +160,13 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
         entity_hints_section=_build_entity_hints_section(entity_hints),
         entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
-        condition_lines_section=_condition_lines_section,
-        temporal_anchor_section=temporal_anchor_section,
     )
+    _mission = build_mission_context(
+        state,
+        role="Identify all filter conditions, their schema columns, and the single time-filter column",
+        feeds="intent_assembler → directive_writer (filter_intent, time_filter_col, temporal_grains)",
+    )
+    prompt[0].content = _mission + "\n\n" + prompt[0].content
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
@@ -216,7 +211,7 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
         "filter_directive_hint": parsed.get("filter_directive_hint", ""),
     }
     filter_detail = [
-        f"{f.get('column_name')} ({f.get('table_fqn')}) ← raw='{f.get('raw_user_value')}'"
+        f"{f.get('column_name')} ({f.get('table_fqn')}) raw='{f.get('raw_user_value')}'"
         for f in result["filters"]
     ]
     logger.info(

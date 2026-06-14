@@ -16,7 +16,9 @@ import {
   ScrollText,
   ExternalLink,
   ShieldCheck,
-  Layers,
+  Brain,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react';
 import {
   Sheet,
@@ -182,35 +184,123 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Section>
           )}
 
-          {/* Context — shows retrieved constraint facts, memory, business terms */}
-          {m?.context_summary && (
-            <Section title="Context" icon={Layers}>
-              {m.context_summary.decision_type && m.context_summary.decision_type !== 'lookup' && (
-                <KV label="Decision type" value={m.context_summary.decision_type} mono />
-              )}
-              {m.context_summary.constraint_facts.map((f, i) => (
-                <div key={i} className="py-0.5">
-                  {i === 0 && (
-                    <span className="text-xs text-muted-foreground/80 block mb-0.5">Constraint</span>
+          {/* Preferences — feedback and memory applied to this response */}
+          {m?.preference_summary && (
+            <Section title="Preferences Applied" icon={Brain}>
+              {/* Status banner */}
+              <div className={`mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-xs font-medium ${
+                m.preference_summary.feedback_applied
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50'
+                  : 'bg-muted/30 text-muted-foreground border border-border/50'
+              }`}>
+                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  m.preference_summary.feedback_applied ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+                }`} />
+                {m.preference_summary.feedback_applied
+                  ? 'Feedback preferences applied to this response'
+                  : 'No actionable preferences found — responded without feedback context'}
+              </div>
+
+              {/* Signal breakdown grid — only show columns that have data */}
+              {(m.preference_summary.thread_feedback_count > 0 ||
+                m.preference_summary.similar_feedback_count > 0 ||
+                m.preference_summary.long_term_memory_count > 0) && (
+                <div className={`grid gap-2 mb-3 ${[
+                  m.preference_summary.thread_feedback_count > 0,
+                  m.preference_summary.similar_feedback_count > 0,
+                  m.preference_summary.long_term_memory_count > 0,
+                ].filter(Boolean).length === 1 ? 'grid-cols-1' :
+                  [
+                    m.preference_summary.thread_feedback_count > 0,
+                    m.preference_summary.similar_feedback_count > 0,
+                    m.preference_summary.long_term_memory_count > 0,
+                  ].filter(Boolean).length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+                  {m.preference_summary.thread_feedback_count > 0 && (
+                    <div className="rounded-md border border-border/50 bg-muted/10 px-2.5 py-2 text-center">
+                      <div className="text-lg font-semibold tabular-nums text-foreground">
+                        {m.preference_summary.thread_feedback_count}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground/70 leading-tight mt-0.5">
+                        Conversation<br />ratings
+                      </div>
+                    </div>
                   )}
-                  <span className="font-mono text-xs text-foreground/85">{f.table}</span>
-                  {f.text && <MarkdownText>{f.text}</MarkdownText>}
+                  {m.preference_summary.similar_feedback_count > 0 && (
+                    <div className="rounded-md border border-border/50 bg-muted/10 px-2.5 py-2 text-center">
+                      <div className="text-lg font-semibold tabular-nums text-foreground">
+                        {m.preference_summary.similar_feedback_count}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground/70 leading-tight mt-0.5">
+                        Cross-session<br />matches
+                      </div>
+                    </div>
+                  )}
+                  {m.preference_summary.long_term_memory_count > 0 && (
+                    <div className="rounded-md border border-border/50 bg-muted/10 px-2.5 py-2 text-center">
+                      <div className="text-lg font-semibold tabular-nums text-foreground">
+                        {m.preference_summary.long_term_memory_count}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground/70 leading-tight mt-0.5">
+                        Memory<br />interactions
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
-              {m.context_summary.constraint_trigger_line && (
-                <KV label="Trigger" value={m.context_summary.constraint_trigger_line} wrap />
               )}
-              {m.context_summary.memory_items.length > 0 && (
-                <KV label="Memory applied" value={String(m.context_summary.memory_items.length)} mono />
-              )}
-              {m.context_summary.memory_items.map((item, i) => (
-                <MarkdownText key={i}>{item}</MarkdownText>
-              ))}
-              {m.context_summary.business_terms.length > 0 && (
-                <KV label="Business terms" value={m.context_summary.business_terms.join(', ')} wrap />
-              )}
-              {m.context_summary.is_refinement && m.context_summary.prior_question_preview && (
-                <KV label="Refining" value={`"${m.context_summary.prior_question_preview}…"`} wrap />
+
+              {/* Feedback signal details */}
+              {m.preference_summary.feedback_items.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-1">
+                    Feedback Signals
+                  </p>
+                  {m.preference_summary.feedback_items.map((item, i) => (
+                    <div
+                      key={i}
+                      className="rounded-md border border-border/40 bg-muted/10 overflow-hidden"
+                    >
+                      {/* Signal header */}
+                      <div className={`flex items-center gap-2 px-2.5 py-1.5 border-b border-border/30 ${
+                        item.liked
+                          ? 'bg-emerald-50/50 dark:bg-emerald-950/20'
+                          : 'bg-red-50/50 dark:bg-red-950/20'
+                      }`}>
+                        {item.liked ? (
+                          <ThumbsUp className="w-3 h-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        ) : (
+                          <ThumbsDown className="w-3 h-3 shrink-0 text-red-500 dark:text-red-400" />
+                        )}
+                        <span className={`text-[10px] font-semibold uppercase tracking-wide ${
+                          item.liked
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : 'text-red-600 dark:text-red-400'
+                        }`}>
+                          {item.liked ? 'Keep doing' : 'Avoid'}
+                        </span>
+                        <span className="ml-auto text-[10px] text-muted-foreground/50 font-medium">
+                          {item.source === 'similar' && item.similarity != null
+                            ? `cross-session · ${Math.round(item.similarity * 100)}% match`
+                            : 'this conversation'}
+                        </span>
+                      </div>
+                      {/* Signal body */}
+                      <div className="px-2.5 py-2 text-xs space-y-1">
+                        {item.comment ? (
+                          <p className="text-foreground/85 leading-relaxed">{item.comment}</p>
+                        ) : (
+                          <p className="text-muted-foreground/50 italic">
+                            {item.liked ? 'Thumbs up — no specific comment' : 'Thumbs down — no specific comment'}
+                          </p>
+                        )}
+                        {item.question_preview && (
+                          <p className="text-[10px] text-muted-foreground/50 truncate border-t border-border/30 pt-1 mt-1">
+                            On: &ldquo;{item.question_preview}&rdquo;
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </Section>
           )}

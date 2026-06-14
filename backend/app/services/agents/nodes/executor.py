@@ -424,8 +424,8 @@ def _check_reliability(ir: SemanticIR | None, rows: list, flags: list[str]) -> l
 def _build_zero_row_retry_sql(sql: str, ir: SemanticIR | None, probe_type: str) -> tuple[str | None, str]:
     """Return (relaxed_sql, reliability_flag) for the given probe_type.
 
-    time_filter  → strip only the time_filter column predicates (surgical)
-    filter_mismatch / filter_combo → strip all WHERE/HAVING (broad)
+    time_filter  -> strip only the time_filter column predicates (surgical)
+    filter_mismatch / filter_combo -> strip all WHERE/HAVING (broad)
     Falls back to broad strip if surgical strip fails or time_filter is not set.
     """
     if probe_type == "time_filter" and ir and ir.time_filter:

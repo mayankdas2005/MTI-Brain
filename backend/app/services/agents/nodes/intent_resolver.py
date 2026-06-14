@@ -8,7 +8,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.helpers import parse_tag
+from app.services.agents.helpers import build_mission_context, parse_tag
 from app.services.agents.prompts import INTENT_RESOLVE_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
@@ -17,6 +17,12 @@ async def intent_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     logger.info("intent_resolver START | thread={}", state["thread_id"])
 
     prompt = _build_prompt(state)
+    _mission = build_mission_context(
+        state,
+        role="Recover from failed intent assembly by re-inferring structured intent from scratch",
+        feeds="query_compiler → sql_generator (recovery path)",
+    )
+    prompt[0].content = _mission + "\n\n" + prompt[0].content
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
@@ -142,7 +148,7 @@ def _build_schema_candidates_text(semantic_context: dict) -> str:
         ]
         for eh in entity_hints[:5]:
             lines.append(
-                f"  '{eh.get('token')}' → {eh.get('table_fqn')}.{eh.get('column')}"
+                f"  '{eh.get('token')}' -> {eh.get('table_fqn')}.{eh.get('column')}"
                 f" (matched: {str(eh.get('matched_value', ''))[:80]})"
                 " — add as a WHERE filter on this column"
             )
@@ -226,7 +232,7 @@ def _build_schema_candidates_text(semantic_context: dict) -> str:
                 term       = bt.get("term", "")
                 definition = bt.get("definition", "") or bt.get("description", "")
                 if term:
-                    lines.append(f'  "{term}"  →  {definition}')
+                    lines.append(f'  "{term}": {definition}')
 
     # ── INTENT PATTERNS ───────────────────────────────────────────────────────
     if intents:
@@ -245,7 +251,7 @@ def _build_schema_candidates_text(semantic_context: dict) -> str:
     if templates:
         for t in templates:
             sql_pat = t.get("sql_pattern", "")
-            cte_s   = " → ".join((t.get("cte_steps") or [])[:5])
+            cte_s   = " -> ".join((t.get("cte_steps") or [])[:5])
             if sql_pat or cte_s:
                 lines.append(f"  pattern={sql_pat}   cte_steps: {cte_s[:120]}")
     else:
@@ -301,7 +307,7 @@ def _build_prompt(state: AnalyticsState) -> list:
 
     return INTENT_RESOLVE_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
-        persona=state.get("persona", "executive"),
+        persona=state.get("persona", "analyst"),
         feedback_context=state.get("feedback_context", ""),
         conversation_context=conversation_context,
         memory_context=semantic_context.get("memory_context", ""),

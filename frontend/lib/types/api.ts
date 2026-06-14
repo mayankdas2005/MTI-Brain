@@ -36,20 +36,21 @@ export interface TokenUsage {
   cache_creation_tokens: number;
 }
 
-export interface ContextSummaryFact {
-  table: string;
-  text: string;
+export interface PreferenceFeedbackItem {
+  liked: boolean;
+  comment: string | null;
+  source: 'thread' | 'similar';
+  question_preview: string;
+  similarity: number | null;
 }
 
-export interface ContextSummary {
-  constraint_facts: ContextSummaryFact[];
-  constraint_trigger_line: string | null;
-  memory_items: string[];
-  is_refinement: boolean;
-  is_followup: boolean;
-  prior_question_preview: string | null;
-  business_terms: string[];
-  decision_type: string;
+export interface PreferenceSummary {
+  long_term_memory_applied: boolean;
+  long_term_memory_count: number;
+  thread_feedback_count: number;
+  similar_feedback_count: number;
+  feedback_applied: boolean;
+  feedback_items: PreferenceFeedbackItem[];
 }
 
 export interface MessageMetadata {
@@ -92,7 +93,7 @@ export interface MessageMetadata {
     label: 'High' | 'Medium' | 'Low';
     explanation: string;
   };
-  context_summary?: ContextSummary;
+  preference_summary?: PreferenceSummary;
 }
 
 // ─── Response Types ───

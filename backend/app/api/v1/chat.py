@@ -149,15 +149,21 @@ def _build_sse_generator(
                 "langfuse_trace_id": save_data.get("langfuse_trace_id"),
                 "langfuse_trace_url": save_data.get("langfuse_trace_url"),
                 "graph_context": save_data.get("graph_context"),
+                "neo4j_raw_graph": save_data.get("neo4j_raw_graph"),
                 "confidence": save_data.get("confidence"),
                 "pattern_id": save_data.get("pattern_id"),
                 "tables_used": ",".join(save_data.get("tables_used") or []),
                 "intent": save_data.get("intent") or "",
                 "complexity": save_data.get("complexity") or "",
+                "query_intent": save_data.get("query_intent") or [],
+                "entity_tokens": save_data.get("entity_tokens") or [],
+                "search_terms": save_data.get("search_terms") or [],
+                "is_followup": save_data.get("is_followup", False),
                 "sample_rows": save_data.get("sample_rows", []),
                 "query_col_stats": save_data.get("query_col_stats", []),
                 "was_truncated": save_data.get("was_truncated", False),
                 "true_total_rows": save_data.get("true_total_rows"),
+                "preference_summary": save_data.get("preference_summary"),
             }),
         )
         _conf = save_data.get("confidence")
@@ -176,40 +182,10 @@ def _build_sse_generator(
 
     async def event_generator():
         from app.services.agents.pipeline import stream_pipeline
-        from app.services.chat.feedback import (
-            build_feedback_context,
-            find_similar_feedback,
-            find_thread_feedback,
-        )
 
         _stream_start = request_time or time.perf_counter()
         _cancel = cancel_event if cancel_event is not None else asyncio.Event()
         _active_streams[str(thread_id)] = _cancel
-
-        # ── Fetch feedback context (non-blocking, 1.5s timeout) ──────────────
-        feedback_context = ""
-        try:
-            from app.db import async_session_factory
-            async with async_session_factory() as _fb_db:
-                _tf, _sf = await asyncio.gather(
-                    asyncio.wait_for(
-                        find_thread_feedback(_fb_db, thread_id, limit=5), timeout=1.5
-                    ),
-                    asyncio.wait_for(
-                        find_similar_feedback(_fb_db, question, current_thread_id=thread_id, limit=5), timeout=1.5
-                    ),
-                    return_exceptions=True,
-                )
-                thread_fb = _tf if not isinstance(_tf, Exception) else []
-                similar_fb = _sf if not isinstance(_sf, Exception) else []
-                feedback_context = build_feedback_context(thread_fb, similar_fb)
-                if feedback_context:
-                    logger.info(
-                        f"[sse] feedback context injected for thread={thread_id}: "
-                        f"thread={len(thread_fb)} entries, similar={len(similar_fb)} entries"
-                    )
-        except Exception:
-            pass  # pipeline runs without feedback — never block on this
 
         try:
             _elapsed = int((time.perf_counter() - _stream_start) * 1000)
@@ -238,7 +214,6 @@ def _build_sse_generator(
                 max_rows=max_rows,
                 deep_analysis=deep_analysis,
                 cancel_event=_cancel,
-                feedback_context=feedback_context,
                 prior_sql=prior_sql,
                 prior_question=prior_question,
                 user_email=user_email,

@@ -33,6 +33,7 @@ from langchain_core.runnables import RunnableConfig
 from app.core.logger import logger
 from app.services.agents import neo4j_client
 from app.services.agents.context import column_loader
+from app.services.agents.helpers import merge_neo4j_raw_graph
 from app.services.agents.state import AnalyticsState
 
 
@@ -207,6 +208,24 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
 
     anchor_cols = [c for c in anchor_cols if not column_loader._is_uuid_col(c.get("name", ""))]
 
+    # Log per-table raw neo4j column counts immediately after load (before any selection/pruning)
+    _neo4j_counts = {}
+    for _c in anchor_cols:
+        _t = _c.get("table_fqn") or ""
+        _neo4j_counts[_t] = _neo4j_counts.get(_t, 0) + 1
+    for _t in anchor_tables:
+        _n = _neo4j_counts.get(_t, 0)
+        if _n == 0:
+            logger.warning(
+                "schema_enricher | neo4j_zero_columns | table={} | "
+                "no columns returned — HAS_COLUMN edge direction issue? "
+                "Run: MATCH (c:Column)-[r:HAS_COLUMN]->(t:Table {{fqn:'{}'}}) "
+                "CREATE (t)-[:HAS_COLUMN]->(c) DELETE r",
+                _t, _t,
+            )
+        else:
+            logger.info("schema_enricher | neo4j_col_count | table={} | count={}", _t, _n)
+
     if not anchor_cols:
         logger.warning("schema_enricher | no columns for anchor tables | thread={}", state["thread_id"])
         return {"enriched_schema": {}}
@@ -233,9 +252,9 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
             logger.warning("schema_enricher | anchor join paths lookup failed | error={}", e)
 
     # Three-tier join resolution for anchor pairs not covered by explicit JoinPath in Neo4j:
-    #   Tier 1 (heuristic):   value-overlap from Redshift DISTINCT probes → candidate_overlap_joins
-    #   Tier 2 (structural):  BFS through already-resolved anchor edges → anchor_join_paths
-    #   Tier 3 (structural):  Neo4j shortestPath through non-anchor intermediate tables → anchor_join_paths
+    #   Tier 1 (heuristic):   value-overlap from Redshift DISTINCT probes -> candidate_overlap_joins
+    #   Tier 2 (structural):  BFS through already-resolved anchor edges -> anchor_join_paths
+    #   Tier 3 (structural):  Neo4j shortestPath through non-anchor intermediate tables -> anchor_join_paths
     #
     # Structural paths (Tiers 2+3) go to anchor_join_paths so ir_builder picks them up.
     # Heuristic value-overlap goes to candidate_overlap_joins only (display fallback).
@@ -367,7 +386,7 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
 
     # ── N1: Null-join-key table pruning ──────────────────────────────────────────
     # For character/text join columns, if the semantic model sampler found zero distinct
-    # values AND zero sample values, no non-null rows were found → JOINs produce 0 rows.
+    # values AND zero sample values, no non-null rows were found -> JOINs produce 0 rows.
     # has_data and null_frac are unreliable signals (semantic model generation bug can set
     # has_data=False on columns that have real data). Pure string ops, no regex.
 
@@ -378,6 +397,11 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         if not is_string_col:
             return True
         if "uuid" in name:
+            return True
+        # has_data=True means the semantic model generator confirmed non-null rows exist
+        # (null_frac < 0.95 AND n_distinct != 0). Trust it even when distinct_values is
+        # empty — empty vocab means the column wasn't sampled, not that it has no data.
+        if c.get("has_data") is True:
             return True
         distinct = c.get("distinct_values") or []
         sample   = c.get("sample_values") or []
@@ -400,14 +424,16 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
                     if _jfqn in anchor_set and not _col_data_map.get((_jfqn, _jcol), True):
                         _null_join_tables.add(_jfqn)
 
-    if _null_join_tables and (len(anchor_tables) - len(_null_join_tables)) >= 1:
+    if _null_join_tables:
         logger.warning(
-            "schema_enricher | null_join_pruning | removing={} | join column has no sampled data | thread={}",
+            "schema_enricher | null_join_pruning | tables_with_empty_join_cols={} | "
+            "pruning only their join PATHS (tables remain as anchors) | thread={}",
             sorted(_null_join_tables), state["thread_id"],
         )
-        anchor_tables = [t for t in anchor_tables if t not in _null_join_tables]
-        anchor_set = set(anchor_tables)
-        anchor_cols = [c for c in anchor_cols if c.get("table_fqn") not in _null_join_tables]
+        # Prune only the join paths that use empty-column joins.
+        # Never remove anchor tables themselves — anchor_resolver selected them for
+        # semantic relevance; removing them causes cascading column-loading failures
+        # (specialists see no schema for those tables -> directive infers wrong columns).
         anchor_join_paths = [
             p for p in anchor_join_paths
             if p.get("from_fqn") not in _null_join_tables
@@ -424,12 +450,14 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
             if _pt and _pt not in anchor_set:
                 _bridge_fqns.add(_pt)
 
+    _bridge_neo4j_cols: list[dict] = []
     if _bridge_fqns:
         try:
             _bridge_cols = await asyncio.to_thread(
                 neo4j_client.get_columns_for_tables, sorted(_bridge_fqns)
             )
-            for _bc in (_bridge_cols or []):
+            _bridge_neo4j_cols = _bridge_cols or []
+            for _bc in _bridge_neo4j_cols:
                 _bfqn = _bc.get("table_fqn") or ""
                 _bname = _bc.get("name") or ""
                 if _bfqn and _bname:
@@ -456,6 +484,51 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
     if _null_bridge_path_indices:
         anchor_join_paths = [p for i, p in enumerate(anchor_join_paths) if i not in _null_bridge_path_indices]
 
+    # ── Rescue pruned pairs using value-overlap candidates ────────────────────
+    # After both pruning passes, some anchor table pairs may have lost ALL their
+    # join paths (formal paths had null columns; transitive paths used the same
+    # null column as a bridge hop). If a value_overlap candidate exists for that
+    # pair, promote it to anchor_join_paths so ir_builder can use it.
+    # "join column null" means the FORMAL path fails — the overlap column may be
+    # a perfectly valid alternative join key (e.g. currency_code = threshold_currency).
+    _surviving_pairs: set[tuple] = set()
+    for _p in anchor_join_paths:
+        _f, _t = _p.get("from_fqn"), _p.get("to_fqn")
+        if _f and _t:
+            _surviving_pairs.add((_f, _t))
+            _surviving_pairs.add((_t, _f))
+
+    _rescued = 0
+    for _cand in candidate_overlap_joins:
+        _cf, _ct = _cand.get("from_fqn"), _cand.get("to_fqn")
+        if not (_cf and _ct):
+            continue
+        if (_cf, _ct) in _surviving_pairs:
+            continue  # already has a path
+        if _cf not in anchor_set or _ct not in anchor_set:
+            continue  # only rescue anchor-to-anchor pairs
+        anchor_join_paths.append({
+            "from_fqn": _cf,
+            "to_fqn":   _ct,
+            "join_clauses": _cand.get("join_clauses") or [],
+            "path_tables": [_cf, _ct],
+            "source": "value_overlap_rescue",
+        })
+        _surviving_pairs.add((_cf, _ct))
+        _surviving_pairs.add((_ct, _cf))
+        _rescued += 1
+        logger.info(
+            "schema_enricher | value_overlap_rescue | {}<->{} | "
+            "promoted after formal paths pruned | clauses={}",
+            _cf, _ct, _cand.get("join_clauses"),
+        )
+
+    if _rescued:
+        logger.info(
+            "schema_enricher | rescued {} pairs via value_overlap after null-join pruning | thread={}",
+            _rescued, state["thread_id"],
+        )
+
     # For backward compat: join_paths for tier-2 bridge extraction uses anchor_join_paths
     join_paths = anchor_join_paths
 
@@ -479,6 +552,7 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         else:
             missing_pairs.append(pair)
 
+    _tier2_neo4j_fetched: list[dict] = []
     if missing_pairs:
         logger.warning(
             "schema_enricher | tier2 cols not in existing lookup | missing={} | "
@@ -501,6 +575,7 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
                     col_meta["_join_critical"] = True
                     col_meta["_tier2_join_only"] = True
                     tier2_cols.append(col_meta)
+                    _tier2_neo4j_fetched.append(col_meta)
                     logger.info(
                         "schema_enricher | tier2 fetched from neo4j | {}.{}", key[0], key[1]
                     )
@@ -579,6 +654,14 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         t_cols = [c for c in anchor_cols if c.get("table_fqn") == t]
         t_display = [c for c in anchor_display_cols if c.get("table_fqn") == t]
         logger.info("schema_enricher | anchor_col_cap | {} | all={} display={}", t, len(t_cols), len(t_display))
+        if len(t_cols) < 3:
+            logger.warning(
+                "schema_enricher | sparse_anchor_columns | table={} | cols={} | "
+                "Neo4j HAS_COLUMN edges may be stored in wrong direction — "
+                "run: MATCH (c:Column)-[r:HAS_COLUMN]->(t:Table) WHERE NOT (t)-[:HAS_COLUMN]->(c) "
+                "CREATE (t)-[:HAS_COLUMN]->(c) DELETE r RETURN count(*)",
+                t, [c.get("name") for c in t_cols],
+            )
 
     # ── semantic_context: merge all three tiers ───────────────────────────────
     # sql_generator reads this via schema_context.py.
@@ -641,6 +724,58 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         len({c.get("table_fqn") for c in fallback_cols}),
     )
 
+    # ── Accumulate raw Neo4j graph data for trust visualization ──────────────
+    _raw_nodes: list[dict] = []
+    _raw_edges: list[dict] = []
+
+    # Column nodes from anchor tables + HAS_COLUMN edges
+    for _c in anchor_cols:
+        if _c.get("table_fqn") and _c.get("name"):
+            _raw_nodes.append({"_label": "Column", **_c})
+            _raw_edges.append({"_type": "HAS_COLUMN", "table_fqn": _c["table_fqn"], "column_name": _c["name"]})
+
+    # Column nodes from bridge tables (N1-ext null pruning load)
+    for _c in _bridge_neo4j_cols:
+        if _c.get("table_fqn") and _c.get("name"):
+            _raw_nodes.append({"_label": "Column", **_c})
+
+    # Column nodes from tier2 Neo4j fallback fetch (outside GLOBAL_CAP)
+    for _c in _tier2_neo4j_fetched:
+        if _c.get("table_fqn") and _c.get("name"):
+            _raw_nodes.append({"_label": "Column", "_tier2_fallback": True, **_c})
+
+    # JoinPath nodes from anchor_join_paths
+    for _jp in anchor_join_paths:
+        _raw_nodes.append({"_label": "JoinPath", "source": _jp.get("source", "schema_enricher"), **_jp})
+
+    # JOINS_TO edges from value-overlap candidates
+    for _cand in candidate_overlap_joins:
+        _raw_edges.append({
+            "_type": "JOINS_TO", "source": "value_overlap",
+            "from_fqn": _cand.get("from_fqn", ""), "to_fqn": _cand.get("to_fqn", ""),
+            "from_col": "", "to_col": "",
+        })
+
+    # BusinessTerm nodes + REFERENCES_TABLE edges (from concept_mappings)
+    for _term, _meta in (concept_mappings or {}).items():
+        _raw_nodes.append({"_label": "BusinessTerm", "term": _term, **_meta})
+        _raw_edges.append({"_type": "REFERENCES_TABLE", "term": _term, "table_fqn": _meta.get("table_fqn", "")})
+
+    # SEMANTICALLY_SIMILAR edges (uses get_semantically_similar_columns, not previously called in pipeline)
+    _anchor_col_ids = [_c.get("id") for _c in anchor_cols if _c.get("id")]
+    if _anchor_col_ids:
+        try:
+            _sem_sim = await asyncio.to_thread(neo4j_client.get_semantically_similar_columns, _anchor_col_ids)
+            _raw_edges.extend({"_type": "SEMANTICALLY_SIMILAR", **r} for r in (_sem_sim or []))
+        except Exception as _sse:
+            logger.debug("schema_enricher | semantically_similar fetch skipped | error={}", _sse)
+
+    neo4j_raw_graph = merge_neo4j_raw_graph(
+        state.get("neo4j_raw_graph") or {},
+        _raw_nodes,
+        _raw_edges,
+    )
+
     return {
         "enriched_schema": enriched_schema,
         "semantic_context": updated_ctx,
@@ -648,4 +783,5 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         "anchor_tables_resolved": anchor_tables,
         "candidate_overlap_joins": candidate_overlap_joins,
         "concept_mappings": concept_mappings or None,
+        "neo4j_raw_graph": neo4j_raw_graph,
     }

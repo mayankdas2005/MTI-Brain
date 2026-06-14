@@ -6,6 +6,90 @@ import re
 from collections import Counter
 
 
+# ─── neo4j_raw_graph accumulation helper ─────────────────────────────────────
+
+def _raw_node_key(node: dict) -> str:
+    label = node.get("_label", "")
+    if label == "Table":
+        return f"Table:{node.get('fqn', '')}"
+    if label == "Column":
+        return f"Column:{node.get('table_fqn', '')}.{node.get('name', '')}"
+    if label == "BusinessTerm":
+        return f"BusinessTerm:{node.get('term', '')}"
+    if label == "Intent":
+        return f"Intent:{node.get('name', '')}"
+    if label == "QueryTemplate":
+        return f"QueryTemplate:{node.get('id', '')}"
+    if label == "QueryPattern":
+        return f"QueryPattern:{node.get('id', '')}"
+    if label == "AntiPattern":
+        return f"AntiPattern:{node.get('id', '')}"
+    if label == "JoinPath":
+        return f"JoinPath:{node.get('id') or node.get('from_fqn', '') + '→' + node.get('to_fqn', '')}"
+    if label == "Community":
+        return f"Community:{node.get('id', '')}"
+    if label == "Domain":
+        return f"Domain:{node.get('name', '')}"
+    return f"{label}:{id(node)}"
+
+
+def _raw_edge_key(edge: dict) -> str:
+    t = edge.get("_type", "")
+    if t == "JOINS_TO":
+        return f"JOINS_TO:{edge.get('from_fqn','')}:{edge.get('to_fqn','')}:{edge.get('from_col','')}:{edge.get('to_col','')}"
+    if t == "BRIDGES_TO":
+        return f"BRIDGES_TO:{edge.get('from_community_id','')}:{edge.get('to_community_id','')}"
+    if t == "HAS_COLUMN":
+        return f"HAS_COLUMN:{edge.get('table_fqn','')}:{edge.get('column_name','')}"
+    if t == "REFERENCES_TABLE":
+        return f"REFERENCES_TABLE:{edge.get('term','')}:{edge.get('table_fqn','')}"
+    if t == "RELEVANT_TO":
+        return f"RELEVANT_TO:{edge.get('table_fqn','')}:{edge.get('intent_name','')}"
+    if t == "CONTAINS_TABLE":
+        return f"CONTAINS_TABLE:{edge.get('community_id','')}:{edge.get('table_fqn','')}"
+    if t == "BELONGS_TO":
+        return f"BELONGS_TO:{edge.get('table_fqn','')}:{edge.get('domain_name','')}"
+    if t == "REQUIRES_TABLE":
+        return f"REQUIRES_TABLE:{edge.get('template_id','')}:{edge.get('table_fqn','')}"
+    if t == "SEMANTICALLY_SIMILAR":
+        a, b = edge.get("from_col_id", ""), edge.get("to_col_id", "")
+        return f"SEMANTICALLY_SIMILAR:{min(a,b)}:{max(a,b)}"
+    if t == "STRUCTURALLY_SIMILAR":
+        a, b = edge.get("from_fqn", ""), edge.get("to_fqn", "")
+        return f"STRUCTURALLY_SIMILAR:{min(a,b)}:{max(a,b)}"
+    return f"{t}:{edge}"
+
+
+def merge_neo4j_raw_graph(
+    existing: dict,
+    new_nodes: list[dict],
+    new_edges: list[dict],
+) -> dict:
+    """Append new_nodes/new_edges into existing neo4j_raw_graph, deduplicating by stable key.
+
+    Each node must carry a '_label' field; each edge must carry a '_type' field.
+    Returns a new dict with merged nodes and edges lists.
+    """
+    nodes: list[dict] = list(existing.get("nodes") or [])
+    edges: list[dict] = list(existing.get("edges") or [])
+
+    seen_nodes = {_raw_node_key(n) for n in nodes}
+    for n in (new_nodes or []):
+        k = _raw_node_key(n)
+        if k not in seen_nodes:
+            nodes.append(n)
+            seen_nodes.add(k)
+
+    seen_edges = {_raw_edge_key(e) for e in edges}
+    for e in (new_edges or []):
+        k = _raw_edge_key(e)
+        if k not in seen_edges:
+            edges.append(e)
+            seen_edges.add(k)
+
+    return {"nodes": nodes, "edges": edges}
+
+
 # ─── FilterSpec.value rendering helpers ──────────────────────────────────────
 # FilterSpec.value is typed str | list[str].
 #   str   → single-bound operators: =, >=, <=, >, <, LIKE, ILIKE
@@ -238,7 +322,7 @@ def _build_data_profile(
             else f"first {cap} rows (approximate — stats query timed out)"
         )
         lines += [
-            f"⚠ TRUNCATION WARNING: This query returned {count_part} but only {cap} rows are "
+            f"TRUNCATION WARNING: This query returned {count_part} but only {cap} rows are "
             f"available for display. The DATA SAMPLE below is a stratified {min(50, cap)}-row "
             f"selection. Stats (distinct counts, min, max, mean) are from the {src_label}. "
             "Do NOT extrapolate totals from the sample rows — use the stats above.",
@@ -549,6 +633,47 @@ def _build_concept_mappings_section(concept_mappings: dict | None) -> str:
             line += f"  → COMPUTATION: {comp}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def build_mission_context(state: dict, role: str, feeds: str) -> str:
+    """Return a MISSION block prepended to any LLM node's prompt.
+
+    Universal — works for any question type and any domain.
+    Provides:
+      - The original user question
+      - The structured intent lines from intake_classifier (GOAL/TIME/CONDITION/…)
+      - This node's single responsibility and what the next node needs from it
+      - An alignment check the LLM must perform before finalizing output
+
+    Args:
+        state: LangGraph AgentState dict.
+        role:  One-line description of what THIS node is responsible for.
+        feeds: One-line description of what the NEXT node(s) need from this output.
+    """
+    question = state.get("question") or ""
+    intent_lines: list[str] = state.get("query_intent") or []
+    complexity: str = state.get("complexity") or "unset"
+    intent_block = (
+        "\n".join(f"  {line}" for line in intent_lines)
+        if intent_lines
+        else "  (not available — intake_classifier may have routed via general_chat)"
+    )
+    return (
+        "=== MISSION ===\n"
+        f"QUESTION: {question}\n"
+        f"INTENT:\n{intent_block}\n"
+        f"COMPLEXITY: {complexity}\n"
+        f"YOUR ROLE: {role}\n"
+        f"YOUR OUTPUT FEEDS: {feeds}\n"
+        "ALIGNMENT CHECK: Before finalizing your output:\n"
+        "  1. Scan each GOAL line — does your output serve it?\n"
+        "  2. Scan each CONDITION line — is every threshold, flag, or constraint handled?\n"
+        "  3. Cross-check against what YOUR OUTPUT FEEDS expects from you.\n"
+        "  4. If an upstream decision conflicts with the GOAL/CONDITION lines, correct it"
+        " and note the correction in your reasoning.\n"
+        "  Anything unaddressed must be flagged explicitly — never silently omit.\n"
+        "===============\n"
+    )
 
 
 # ─── Section streamers (mirror quest exactly) ─────────────────────────────────

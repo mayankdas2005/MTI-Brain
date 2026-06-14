@@ -218,6 +218,8 @@ async def generate_and_store(
         ] if t
     ))
 
+    raw_graph: dict = meta.get("neo4j_raw_graph") or {}
+
     col_ids = [
         f"{c['table_fqn']}.{c['column_name']}"
         for c in used_columns
@@ -530,6 +532,127 @@ async def generate_and_store(
             linked = True
         if not linked:
             records.append(_triplet(qt_node, None, None))
+
+    # 5b. Retrieved-only nodes from neo4j_raw_graph — all Neo4j nodes not shown by the anchor path
+    _anchor_table_set: set[str] = set(all_tables)
+    _seen_col_keys: set[str] = {
+        f"{uc['table_fqn']}.{uc['column_name']}"
+        for uc in used_columns if uc.get("table_fqn") and uc.get("column_name")
+    }
+    _seen_bt_terms: set[str] = {bt.get("term", "") for bt in bt_full}
+    _seen_qp_ids: set[str] = set(snap_qp_ids)
+    _seen_ap_ids: set[str] = set(snap_ap_ids)
+    _seen_jp_ids: set[str] = set(join_path_ids)
+
+    for _rn in raw_graph.get("nodes") or []:
+        _label = _rn.get("_label", "")
+        _props = {k: v for k, v in _rn.items() if not k.startswith("_")}
+
+        if _label == "Table":
+            _fqn = _rn.get("fqn")
+            if not _fqn or _fqn in _anchor_table_set:
+                continue
+            records.append(_triplet(
+                _node(table_id(_fqn), ["Table"], _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
+
+        elif _label == "Column":
+            _ctable = _rn.get("table_fqn")
+            _cname = _rn.get("name")
+            if not _ctable or not _cname:
+                continue
+            _ckey = f"{_ctable}.{_cname}"
+            if _ckey in _seen_col_keys:
+                continue
+            _cid_val = col_id(_ckey)
+            records.append(_triplet(
+                _node(table_id(_ctable), ["Table"],
+                      table_props_map.get(_ctable, {"fqn": _ctable, "name": _ctable.split(".")[-1]})),
+                _edge(ids.next_edge_id(), "HAS_COLUMN", table_id(_ctable), _cid_val,
+                      {"_retrieved_only": True}),
+                _node(_cid_val, ["Column"], _strip_embeddings({**_props, "_retrieved_only": True})),
+            ))
+
+        elif _label == "BusinessTerm":
+            _term = _rn.get("term")
+            if not _term or _term in _seen_bt_terms:
+                continue
+            records.append(_triplet(
+                _node(bt_id(_term), ["BusinessTerm"],
+                      _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
+
+        elif _label == "Intent":
+            _iname = _rn.get("name")
+            if not _iname or _iname in intent_map:
+                continue
+            records.append(_triplet(
+                _node(intent_id(_iname), ["Intent"],
+                      _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
+
+        elif _label == "QueryTemplate":
+            _qtid = _rn.get("id")
+            if not _qtid or _qtid in snap_tmpl_ids:
+                continue
+            records.append(_triplet(
+                _node(tmpl_node_id(_qtid), ["QueryTemplate"],
+                      _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
+
+        elif _label == "QueryPattern":
+            _qpid_r = _rn.get("id") or _rn.get("intent", "")
+            if not _qpid_r or _qpid_r in _seen_qp_ids:
+                continue
+            records.append(_triplet(
+                _node(qp_id(_qpid_r), ["QueryPattern"],
+                      _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
+
+        elif _label == "AntiPattern":
+            _apid_r = _rn.get("id") or _rn.get("error_type", "")
+            if not _apid_r or _apid_r in _seen_ap_ids:
+                continue
+            records.append(_triplet(
+                _node(ap_id(_apid_r), ["AntiPattern"],
+                      _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
+
+        elif _label == "JoinPath":
+            _jpid_r = _rn.get("id") or f"{_rn.get('from_fqn','')}→{_rn.get('to_fqn','')}"
+            if not _jpid_r or _jpid_r in _seen_jp_ids:
+                continue
+            records.append(_triplet(
+                _node(jp_id(_jpid_r), ["JoinPath"],
+                      _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
+
+        elif _label == "Community":
+            _com_id = _rn.get("id")
+            if not _com_id or _com_id in community_map:
+                continue
+            records.append(_triplet(
+                _node(comm_id(_com_id), ["Community"],
+                      _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
+
+        elif _label == "Domain":
+            _dom_name = _rn.get("name")
+            if not _dom_name or _dom_name in domain_map:
+                continue
+            records.append(_triplet(
+                _node(domain_id(_dom_name), ["Domain"],
+                      _strip_embeddings({**_props, "_retrieved_only": True})),
+                None, None,
+            ))
 
     logger.info("graph_context_builder | conv={} | records={}", conversation_id, len(records))
 

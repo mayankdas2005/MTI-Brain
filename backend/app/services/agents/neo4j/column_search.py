@@ -57,9 +57,9 @@ def get_columns_for_tables(table_fqns: list[str]) -> list[dict]:
     if not table_fqns:
         return []
     query = """
-    MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+    MATCH (t:Table)-[:HAS_COLUMN]-(c:Column)
     WHERE t.fqn IN $table_fqns
-    RETURN c.name AS name, c.table_fqn AS table_fqn,
+    RETURN c.name AS name, coalesce(c.table_fqn, t.fqn) AS table_fqn,
            c.data_type AS data_type,
            c.semantic_type AS semantic_type,
            c.description AS description,
@@ -77,7 +77,7 @@ def get_columns_for_tables(table_fqns: list[str]) -> list[dict]:
            c.is_nullable AS is_nullable,
            c.referenced_table_fqn AS referenced_table_fqn,
            c.referenced_column AS referenced_column
-    ORDER BY c.table_fqn, c.ordinal_position
+    ORDER BY coalesce(c.table_fqn, t.fqn), c.ordinal_position
     """
     t0 = time.monotonic()
     results = _neo4j_run(query, {"table_fqns": table_fqns})

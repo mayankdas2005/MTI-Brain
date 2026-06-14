@@ -19,7 +19,7 @@ def _is_uuid_col(col_name: str) -> bool:
     return n == "uuid" or any(n.endswith(s) for s in _UUID_SUFFIXES)
 
 from app.core.logger import logger
-from app.services.agents.helpers import format_sql, parse_tag
+from app.services.agents.helpers import build_mission_context, format_sql, parse_tag
 from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns
 from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, REASONING_DIRECTIVE_NORMAL, CTE_COLUMN_PLANNER_PROMPT
 from app.services.agents.semantic_ir import SemanticIR
@@ -110,19 +110,18 @@ async def generate_sql_llm(
         ),
     )
 
-    # Also cache anti-patterns and query patterns — same Neo4j data on every retry
-    if _cached and "_anti_patterns" in state:
-        anti_patterns = state["_anti_patterns"]
-        query_patterns, pattern_matched, pattern_name = (
-            state.get("_query_patterns", []),
-            state.get("_pattern_matched", False),
-            state.get("_pattern_name"),
-        )
+    # Also cache anti-patterns and query patterns — same Neo4j data on every retry.
+    # Use TypedDict-registered keys so LangGraph persists them across node invocations.
+    if _cached and state.get("_cached_anti_patterns") is not None:
+        anti_patterns = state["_cached_anti_patterns"]
+        query_patterns = state.get("_cached_query_patterns") or []
+        pattern_matched = state.get("_pattern_matched", False)
+        pattern_name = state.get("_pattern_name")
     else:
         anti_patterns = await fetch_anti_patterns(state)
         query_patterns, pattern_matched, pattern_name = await fetch_query_patterns(state)
-        state["_anti_patterns"] = anti_patterns
-        state["_query_patterns"] = query_patterns
+        state["_cached_anti_patterns"] = anti_patterns
+        state["_cached_query_patterns"] = query_patterns
         state["pattern_matched"] = pattern_matched
         state["pattern_name"] = pattern_name
 
@@ -169,10 +168,7 @@ async def generate_sql_llm(
     directive_section = build_directive_section(state)
     directive_section += _build_low_confidence_section(state)
 
-    state["_planner_ir"] = ir
-    state["_planner_col_lookup"] = col_lookup
-    cte_plan = await _plan_cte_columns(spec, query_blueprint, schema_reference, state, config, directive_section)
-    cte_column_plan = _build_cte_plan_section(cte_plan)
+    cte_column_plan = ""
 
     # M2: TIME_FILTER is emitted exclusively by directive_writer in directive_section.
     # Do NOT inject a second AUTHORITATIVE TIME FILTER COLUMN — two sources with no priority rule
@@ -203,6 +199,13 @@ async def generate_sql_llm(
         candidate_join_paths_section=candidate_join_paths_section,
     )
 
+    _mission = build_mission_context(
+        state,
+        role="Write Redshift SQL that exactly satisfies all directives and answers the user's question",
+        feeds="executor → synthesis → user (the actual answer)",
+    )
+    prompt[0].content = _mission + "\n\n" + prompt[0].content
+
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
     from app.core.retry import retry_async
@@ -219,7 +222,13 @@ async def generate_sql_llm(
         )
 
     response = await _call()
-    sql = _format_sql(parse_tag(response.content or "", "sql") or "")
+    raw_content = response.content or ""
+    sql = _format_sql(parse_tag(raw_content, "sql") or "")
+    if not sql:
+        logger.warning(
+            "sql_generator | empty_sql | thread={} | raw_response_len={} | raw_tail={}",
+            state["thread_id"], len(raw_content), raw_content[-500:] if raw_content else "(empty)",
+        )
     logger.info(
         "sql_generator | SQL generated | thread={} | anchor={} | sql_len={} | pattern_matched={} | pattern={} | reasoning=DEEP",
         state["thread_id"], ir.anchor_tables, len(sql), pattern_matched, pattern_name,
@@ -254,9 +263,16 @@ async def _plan_cte_columns(
         recompile_count = state.get("recompile_count", 0)
         prior_error = state.get("error") or ""
         if recompile_count > 0 and prior_error:
+            _col_hint = (
+                "\nIf the error says 'column X does not exist in table T': that column may exist in a "
+                "DIFFERENT anchor table — check the SCHEMA REFERENCE below for every anchor table's columns "
+                "and use the correct table alias. Do NOT guess — only reference columns that appear "
+                "in the SCHEMA REFERENCE for their specific table.\n"
+            ) if "does not exist" in prior_error else ""
             prior_error_section = (
                 "PREVIOUS PLAN FAILED VALIDATION — generate a different plan that avoids this error:\n"
                 f"  {prior_error}\n"
+                f"{_col_hint}"
                 "If the error is about a SELECT alias forward-reference (e.g. chargeback_ratio used\n"
                 "in visa_breach_flag in the same SELECT), add an intermediate CTE to compute the\n"
                 "first alias before the second references it."
@@ -264,15 +280,14 @@ async def _plan_cte_columns(
         else:
             prior_error_section = ""
         # F3: pass anti_patterns + query_patterns so planner avoids known-bad structures
-        # _anti_patterns is the pre-formatted string from fetch_anti_patterns (already has header)
-        _raw_anti = state.get("_anti_patterns") or ""
+        _raw_anti = state.get("_cached_anti_patterns") or ""
         planner_anti_patterns = (
             f"ANTI-PATTERNS (avoid these structural mistakes in your CTE plan):\n{_raw_anti}"
             if isinstance(_raw_anti, str) and _raw_anti and _raw_anti.strip() not in ("(none)", "")
             else ""
         )
         planner_query_patterns = _build_query_patterns_section(
-            state.get("_query_patterns") or [],
+            state.get("_cached_query_patterns") or [],
             state.get("_pattern_matched", False),
             state.get("_pattern_name"),
         )
@@ -382,7 +397,7 @@ def _build_entity_hints_section(schema_ctx: dict) -> str:
         # Extract DB code: left side of "CODE -> Human Name", or the value itself
         db_code = matched.split(" -> ")[0].strip() if " -> " in matched else matched
         if token and table_fqn and column and db_code:
-            lines.append(f"  '{token}' → {table_fqn}.{column} = '{db_code}'  — use: WHERE {column} = '{db_code}'")
+            lines.append(f"  '{token}' -> {table_fqn}.{column} = '{db_code}'  — use: WHERE {column} = '{db_code}'")
 
     return "\n".join(lines) + "\n" if len(lines) > 2 else ""
 
@@ -512,7 +527,7 @@ def _get_join_overlap_evidence(
         return ""
     col_a_name, col_b_name = cols[0][2], cols[1][2]
     if _is_uuid_col(col_a_name) or _is_uuid_col(col_b_name):
-        return "⚠ UUID COLUMN — unique per row, will always return 0 rows as a join key"
+        return "WARNING: UUID COLUMN — unique per row, will always return 0 rows as a join key"
     col_a = f"{cols[0][0]}.{cols[0][1]}.{col_a_name}"
     col_b = f"{cols[1][0]}.{cols[1][1]}.{col_b_name}"
     vals_a = set(str(v) for v in (col_lookup.get(col_a) or []))
@@ -521,9 +536,9 @@ def _get_join_overlap_evidence(
         return ""
     overlap = vals_a & vals_b
     if not overlap:
-        return f"⚠ NO VALUE OVERLAP ({len(vals_a)} A-side vs {len(vals_b)} B-side vocabulary values — join will return 0 rows)"
+        return f"WARNING: NO VALUE OVERLAP ({len(vals_a)} A-side vs {len(vals_b)} B-side vocabulary values — join will return 0 rows)"
     sample = sorted(overlap)[:3]
-    evidence = f"✓ {len(overlap)} shared values (e.g. {', '.join(sample)})"
+    evidence = f"VERIFIED: {len(overlap)} shared values (e.g. {', '.join(sample)})"
 
     # Semantic FK confirmation (only when populated)
     if ref_table_lookup:
@@ -532,9 +547,9 @@ def _get_join_overlap_evidence(
         join_to_a = f"{cols[1][0]}.{cols[1][1]}"
         join_to_b = f"{cols[0][0]}.{cols[0][1]}"
         if ref_a and ref_a == join_to_a:
-            evidence += f"  [semantic ref → {ref_a} ✓]"
+            evidence += f"  [semantic ref confirmed: {ref_a}]"
         elif ref_b and ref_b == join_to_b:
-            evidence += f"  [semantic ref → {ref_b} ✓]"
+            evidence += f"  [semantic ref confirmed: {ref_b}]"
 
     return evidence
 
@@ -562,7 +577,7 @@ def _build_early_filter_blueprint(spec: dict) -> str:
         "",
         f"CTE matching_{entity_base}  [FILTER CTE — resolves entity filter, returns small result]",
         f"  reads_from: {entity_chain}",
-        f"  where_slot: yes  ← all entity filters go here (NOT in base_data or WHERE)",
+        f"  where_slot: yes  -- all entity filters go here (NOT in base_data or WHERE)",
     ]
     if entity_filters:
         for f in entity_filters[:3]:
@@ -579,7 +594,7 @@ def _build_early_filter_blueprint(spec: dict) -> str:
         f"  where: fact.fk_col IN (SELECT fk_col FROM matching_{entity_base})",
     ]
     if time_filter_col:
-        ef_lines.append(f"  AND {time_filter_col} >= DATEADD(DAY, -365, CURRENT_DATE)  ← 365-day pre-filter")
+        ef_lines.append(f"  AND {time_filter_col} >= DATEADD(DAY, -365, CURRENT_DATE)  -- 365-day pre-filter")
     ef_lines += [
         "  exports: all columns needed by downstream CTEs",
         "",
@@ -594,7 +609,7 @@ def _build_early_filter_blueprint(spec: dict) -> str:
         "",
         "CTE base_data  [FINAL WINDOW — apply exact date range from bounds]",
         f"  reads_from: {fact_base}_window CROSS JOIN {fact_base}_max",
-        "  where_slot: yes  ← exact date range filter goes here",
+        "  where_slot: yes  -- exact date range filter goes here",
         "  exports: all output columns",
         "",
         "This structure eliminates DS_BCAST_INNER and large-table Seq Scan in Redshift EXPLAIN.",
@@ -701,16 +716,19 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
                 else:
                     lines.append(f"  {fqn}.{col}          alias: {alias}")
             lines.append("")
-            # Multi-grain instruction: when user asked for two time horizons
+            # Multi-grain instruction: when user asked for N time horizons
             if len(temporal_grains) > 1:
-                grains_str = " → ".join(temporal_grains)
+                grains_str = " -> ".join(temporal_grains)
+                cte_steps = "\n".join(
+                    f"  {i+1}. Build CTE at '{g}' grain "
+                    f"(DATE_TRUNC('{g}', date_col)), export grain_rank = {i}."
+                    for i, g in enumerate(temporal_grains)
+                )
                 lines.append(
                     f"MULTI-GRAIN OUTPUT ({grains_str}):\n"
-                    f"  1. Build base CTE at '{temporal_grains[0]}' grain "
-                    f"(DATE_TRUNC('{temporal_grains[0]}', date_col)).\n"
-                    f"  2. Build a rollup CTE at '{temporal_grains[1]}' grain by aggregating the base CTE "
-                    f"(DATE_TRUNC('{temporal_grains[1]}', period_{temporal_grains[0]})).\n"
-                    f"  3. Final SELECT combines both via UNION ALL or joins them side by side."
+                    f"{cte_steps}\n"
+                    f"  {len(temporal_grains)+1}. Final SELECT: UNION ALL of all {len(temporal_grains)} grain CTEs, "
+                    f"ORDER BY period, grain_rank. All CTEs MUST export identical column aliases."
                 )
                 lines.append("")
     else:
@@ -821,11 +839,11 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
     # E2: Render temporal grains before the sort/limit block
     temporal_grains_list = spec.get("temporal_grains") or []
     if len(temporal_grains_list) >= 2:
-        lines.append("TEMPORAL GRAINS (dual-horizon — produce one aggregation CTE per grain, UNION ALL):")
-        for g in temporal_grains_list:
-            lines.append(f"  {g}  → DATE_TRUNC('{g}', <time_col>)::DATE")
-        lines.append("  horizon label: CASE WHEN period <= DATEADD(day, <N>, max_date) THEN '<fine>_view' ELSE '<coarse>_view' END")
-        lines.append("  max_date = SELECT MAX(<date_col>) FROM <table>  ← use for the horizon boundary, NOT CURRENT_DATE")
+        lines.append(f"TEMPORAL GRAINS (multi-horizon — produce one aggregation CTE per grain, UNION ALL):")
+        for i, g in enumerate(temporal_grains_list):
+            lines.append(f"  grain_rank={i}  {g}  -> DATE_TRUNC('{g}', <time_col>)::DATE")
+        lines.append("  horizon label: CASE WHEN grain_rank = 0 THEN '<finest>_view' ... END  (use grain_rank for ordering, not hardcoded grain names)")
+        lines.append("  max_date = SELECT MAX(<date_col>) FROM <table>  -- use for the horizon boundary, NOT CURRENT_DATE")
         lines.append("  (Date range WHERE filters still use CURRENT_DATE OR MAX(col) fallback per Rule 2b — max_date here is ONLY for the CASE WHEN label boundary)")
         lines.append("")
     elif temporal_grains_list:
@@ -860,7 +878,7 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
     cte_steps = spec.get("cte_steps") or []
     if cte_steps:
         lines.append("CTE STEP HINTS (informational only — CTE_CONTRACT names from the planner take precedence):")
-        lines.append("  " + "  →  ".join(cte_steps))
+        lines.append("  " + "  ->  ".join(cte_steps))
         lines.append("")
 
     order_by = spec.get("order_by")
@@ -882,8 +900,8 @@ Write this query as a senior Redshift DBA. Non-negotiable:
   g. Multi-fact CTE drive direction: when 2+ fact tables are pre-aggregated into CTEs and the
      final SELECT has ORDER BY + LIMIT, drive from the most-filtered fact CTE — NOT from the
      dimension table:
-       ✓ FROM <fact_cte> AS f INNER JOIN <dimension> AS d ON f.<key> = d.<key>
-       ✗ FROM <dimension> AS d LEFT JOIN <fact_cte> AS f ON f.<key> = d.<key>
+       CORRECT: FROM <fact_cte> AS f INNER JOIN <dimension> AS d ON f.<key> = d.<key>
+       WRONG: FROM <dimension> AS d LEFT JOIN <fact_cte> AS f ON f.<key> = d.<key>
      The second form forces Redshift to read ALL dimension rows before ORDER BY/LIMIT can reduce
      them. Dimension tables (instruments, companies, counterparties) can have millions of rows.
      Fact CTEs are already date-filtered and grouped — they are tiny. Use the fact CTE as the
@@ -892,9 +910,9 @@ Write this query as a senior Redshift DBA. Non-negotiable:
   h. MAX-date snapshot pattern — NEVER use a scalar correlated subquery directly in WHERE for
      snapshot filtering. Use a pre-computed 1-row CTE instead. Correlated subqueries in WHERE
      repeat the full scan once per CTE branch, causing timeout on large tables.
-       ✗ WRONG (correlated, slow):
+       WRONG (correlated, slow):
            WHERE cb.balance_date = (SELECT MAX(balance_date) FROM lpp.cash_balance)
-       ✓ CORRECT (pre-computed, fast):
+       CORRECT (pre-computed, fast):
            WITH cb_max AS (SELECT MAX(balance_date) AS max_d FROM lpp.cash_balance)
            ... JOIN cb_max ON cb.balance_date = cb_max.max_d
      For queries with 3+ snapshot CTEs: pre-compute ALL MAX dates in a single CTE using
@@ -909,8 +927,8 @@ Write this query as a senior Redshift DBA. Non-negotiable:
   i. COLUMN ALIAS NAMES — MANDATORY business names:
      NEVER use generic placeholders: dimension_1, dimension_2, measure_1, measure_2, etc.
      Every alias must be a meaningful business name derived from the actual column or the question.
-       ✗ WRONG:  total_cash_liquidity AS measure_1, NULL AS measure_2
-       ✓ CORRECT: total_cash_liquidity AS total_cash_liquidity, gross_exposure AS gross_exposure
+       WRONG: total_cash_liquidity AS measure_1, NULL AS measure_2
+       CORRECT: total_cash_liquidity AS total_cash_liquidity, gross_exposure AS gross_exposure
      For UNION ALL across domains: keep domain-specific aliases in each branch. Do NOT
      normalize columns to generic placeholders to make them UNION-compatible.
      If domains have different columns, use NULL AS <meaningful_name> — not NULL AS measure_N.""")
@@ -1062,13 +1080,13 @@ def _build_schema_reference(schema_ctx: dict) -> str:
             hop_count = j.get("hop_count", 1)
             if is_multihop and len(path_tables) >= 3:
                 # Multi-hop: show each intermediate table explicitly so LLM writes the full chain
-                lines.append(f"  {from_t} →({hop_count}-hop)→ {to_t} (via {', '.join(path_tables[1:-1])})")
+                lines.append(f"  {from_t} ->({hop_count}-hop)-> {to_t} (via {', '.join(path_tables[1:-1])})")
                 for idx, clause in enumerate(clauses):
                     # Pair clause to the table it joins: path_tables[idx] → path_tables[idx+1]
                     join_target = path_tables[idx + 1] if idx + 1 < len(path_tables) else to_t
                     lines.append(f"    {join_type} {join_target} ON {clause}")
             else:
-                lines.append(f"  {from_t} → {to_t}")
+                lines.append(f"  {from_t} -> {to_t}")
                 for clause in clauses:
                     lines.append(f"    {join_type} {to_t} ON {clause}")
                     evidence = _get_join_overlap_evidence(clause, col_lookup)
@@ -1123,10 +1141,10 @@ def _build_unresolved_joins_section(unresolved_pairs: list[dict], col_lookup: di
         from_t = pair.get("from", "")
         to_t = pair.get("to", "")
         candidates = pair.get("candidate_join_columns", [])
-        lines.append(f"  {from_t} → {to_t}  [UNRESOLVED]")
+        lines.append(f"  {from_t} -> {to_t}  [UNRESOLVED]")
         if candidates:
             lines.append(f"    candidate_join_columns (shared names): {candidates}")
-            lines.append("    → Check ADDITIONAL JOINS first; otherwise JOIN ON the most specific candidate.")
+            lines.append("    Check ADDITIONAL JOINS first; otherwise JOIN ON the most specific candidate.")
         hints = vocab_hints.get((from_t, to_t), [])
         if hints:
             lines.append("    VOCABULARY OVERLAP (columns sharing actual values):")
@@ -1134,7 +1152,7 @@ def _build_unresolved_joins_section(unresolved_pairs: list[dict], col_lookup: di
                 lines.append(f"      {fc} = {tc}  (shared: {', '.join(shared)})")
         if not candidates and not hints:
             lines.append("    (no candidate columns found — use column description similarity)")
-        lines.append("    → Do NOT produce a CROSS JOIN or omit this table.\n")
+        lines.append("    Do NOT produce a CROSS JOIN or omit this table.\n")
     return "\n".join(lines)
 
 
@@ -1169,7 +1187,7 @@ def _build_candidate_join_paths_section(ir: SemanticIR, col_lookup: dict | None 
         return any(_is_uuid_col(m.group(1)) for m in _fqn_col_re.finditer(clause))
 
     for (from_fqn, to_fqn), path_list in pairs.items():
-        lines.append(f"  {from_fqn} → {to_fqn}:")
+        lines.append(f"  {from_fqn} -> {to_fqn}:")
         for p in path_list:
             tier = p.get("tier", "unknown")
             direction = p.get("direction", "forward")
@@ -1196,7 +1214,7 @@ def _build_candidate_join_paths_section(ir: SemanticIR, col_lookup: dict | None 
     lines.append("")
     lines.append("Use a longer path only when the question semantically requires going through intermediate tables.")
     lines.append("hop_count and intermediate tables indicate which path covers the full relationship.")
-    lines.append("Prefer paths with ✓ overlap evidence over paths with no comment or ⚠ warning.")
+    lines.append("Prefer paths with VERIFIED overlap evidence over paths with no comment or WARNING notice.")
     lines.append("")
     return "\n".join(lines)
 
@@ -1209,7 +1227,7 @@ def _build_low_confidence_section(state: AnalyticsState) -> str:
     for f in lcf:
         lines.append(
             f"  {f.get('column', '')} resolved '{f.get('raw_value', '')}' "
-            f"→ '{f.get('resolved_value', '')}' (fuzzy match)"
+            f"resolved to '{f.get('resolved_value', '')}' (fuzzy match)"
         )
     return "\n".join(lines)
 
@@ -1246,9 +1264,12 @@ def _build_query_patterns_section(
     # Query patterns are LLM-generated SQL from prior successful runs — "successful" means no
     # DB error, NOT that the SQL was optimal or structurally correct. Present as reference only:
     # use for table names and join key hints, never as a structural template to copy.
-    if pattern_matched and pattern_name:
+    # Truncate pattern_name to first sentence (or 80 chars) so a long/discouraging intent
+    # string from a prior run doesn't bleed into the prompt and cause the LLM to give up.
+    _safe_name = (pattern_name or "").split(".")[0].split("\n")[0][:80].strip()
+    if pattern_matched and _safe_name:
         header = (
-            f"PRIOR QUERY REFERENCE (LLM-generated, not human-verified): \"{pattern_name}\" — "
+            f"PRIOR QUERY REFERENCE (LLM-generated, not human-verified): \"{_safe_name}\" — "
             "use ONLY as a hint for which tables and join keys were used in a similar question. "
             "Do NOT copy its CTE structure — follow the CTE CONTRACT above instead."
         )

@@ -15,7 +15,7 @@ import json
 import re
 
 from app.core.logger import logger
-from app.services.agents.helpers import _build_data_profile, parse_tag
+from app.services.agents.helpers import _build_data_profile, build_mission_context, parse_tag
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP,
     SYNTHESIS_PROMPT, INSIGHT_EXTRACTOR_PROMPT,
@@ -53,101 +53,6 @@ _FLAG_INSTRUCTIONS = {
         "The specific rows shown may vary on each execution."
     ),
 }
-
-_FULL_CONSULTING_GATES = (
-    "CONSULTING STANDARD — MANDATORY. These answers are read by C-suite executives and must meet\n"
-    "the standard of Bain, McKinsey, and BCG deliverables. Quality is enforced by three gates.\n"
-    "Before writing each section, check these gates in <reasoning> and mark each ✓ or ✗. Rewrite\n"
-    "any section that fails before finalizing.\n\n"
-    "GATE 1 — PYRAMID PRINCIPLE: Every section must open with the business implication, not the data.\n"
-    "  ✗ DESCRIPTIVE (FAIL): \"GR_FR tax payments total $924,760 due 2026-06-29.\"\n"
-    "  ✓ IMPLICATION-FIRST (PASS): \"GR_FR faces its highest near-term liquidity pressure: a $924,760\n"
-    "    tax obligation due 2026-06-29 cannot be deferred without penalty.\"\n"
-    "  Test before writing: can the reader understand WHY this matters before they see the number?\n"
-    "  If not, rewrite the opening sentence to lead with the consequence.\n\n"
-    "GATE 2 — RECOMMENDATION SPECIFICITY: Every recommendation must contain all four elements or must\n"
-    "not be written at all: (a) imperative action verb, (b) named functional owner, (c) hard deadline,\n"
-    "  (d) quantified expected outcome. Followed by: \"If deferred: [specific cost, regulatory deadline,\n"
-    "or risk event that worsens].\"\n"
-    "  ✗ VAGUE (FAIL): \"Review the liquidity position across entities.\"\n"
-    "  ✓ SPECIFIC (PASS): \"Confirm whether the $200M threshold applies at consolidated group level or\n"
-    "    per entity — Group Treasury Finance, by end of this week. If deferred: every subsequent\n"
-    "    funding decision is made against an unvalidated baseline.\"\n\n"
-    "GATE 3 — SCENARIO GROUNDING: Every branch of Scenario Analysis must cite a specific number from\n"
-    "PRE-EXTRACTED INSIGHTS. Omit branches without a grounded number — speculation is not analysis."
-)
-
-_BRIEF_CONSULTING_GATES = (
-    "CONSULTING STANDARD: Answer first. Evidence second. Implication always.\n"
-    "One key finding, one clear action, one consequence if deferred."
-)
-
-_DEPTH_CALIBRATION_FULL = (
-    "DEPTH CALIBRATION:\n"
-    "  SINGLE VALUE (1 row, 1 number): answer sentence + 1-2 implications + 1 action. No sections.\n"
-    "  SIMPLE LOOKUP (2-10 rows): 2-3 key facts + 1 action if warranted. Skip empty sections.\n"
-    "  RICH DATASET (10+ rows): use full persona structure. All sections apply.\n"
-    "  NO DATA RETURNED: explain why in plain business terms.\n"
-    "  RULE: ≥2 grounded findings required per section — except Verdict and Decision (always appear)."
-)
-
-
-def _build_consulting_gates(depth: str, decision_type: str) -> str:
-    if depth == "rich_dataset" or decision_type in ("judgment", "multi_domain"):
-        return _FULL_CONSULTING_GATES
-    return _BRIEF_CONSULTING_GATES
-
-
-def _build_depth_calibration(depth: str) -> str:
-    _map = {
-        "single_value": "DEPTH: single_value — write 1 answer sentence + 1-2 implications + 1 action. Do NOT force persona sections.",
-        "simple_lookup": "DEPTH: simple_lookup — write 2-3 key facts + 1 action if warranted. Skip sections with fewer than 2 grounded points.",
-        "rich_dataset": _DEPTH_CALIBRATION_FULL,
-        "no_data": "DEPTH: no_data — explain why in plain business terms. Suggest what to change. No fake structure.",
-    }
-    return _map.get(depth, _DEPTH_CALIBRATION_FULL)
-
-
-_DECISION_DIRECTIVES: dict[str, str | None] = {
-    "breach_detection": (
-        "DECISION ANSWER REQUIRED — lead with: YES [which periods breach + magnitude] or NO [minimum balance and when].\n"
-        "Then: supporting data. Then: policy citation (from POLICY & LIMIT CONTEXT if available).\n"
-        "Do NOT lead with a data table — the breach answer IS the answer."
-    ),
-    "judgment": (
-        "JUDGMENT REQUIRED — three-step structure:\n"
-        "  Step 1 — Data answer (SQL result only, no enterprise context)\n"
-        "  Step 2 — Enterprise context (from POLICY & LIMIT CONTEXT: policy thresholds, commitments, obligations)\n"
-        "  Step 3 — Does enterprise context CHANGE the data answer? State explicitly if YES.\n"
-        "  NEVER say 'no action required' without first checking Step 2."
-    ),
-    "comparison": (
-        "COMPARISON ANSWER REQUIRED — lead with: which is higher/lower, by how much, and whether the gap is material.\n"
-        "Then: breakdown by entity/period. Do NOT describe both sides neutrally — state the delta."
-    ),
-    "trend_analysis": (
-        "TREND ANSWER REQUIRED — lead with: direction (up/down/flat) + magnitude + rate of change.\n"
-        "Then: supporting data. State the amount, not 'a decrease was observed'."
-    ),
-    "multi_domain": (
-        "DOMAIN SUMMARY REQUIRED — one finding per DOMAIN line in intake order.\n"
-        "Lead with the most material domain finding. Then others. Then: cross-domain risk if any."
-    ),
-    "lookup": None,
-}
-
-_MULTI_DOMAIN_DIRECTIVE = (
-    "MULTI-DOMAIN STRUCTURE: organize findings one per domain in intake DOMAIN line order.\n"
-    "Each domain finding: metric value + whether above/below target + one-sentence implication.\n"
-    "Do NOT merge domains into a single narrative — keep them separate."
-)
-
-_RECONCILIATION_DIRECTIVE = (
-    "RECONCILIATION ANSWER REQUIRED — lead with: total matched count + total discrepancy count + total discrepancy amount.\n"
-    "Then: table showing matched vs unmatched records with source identifier and delta.\n"
-    "State the reconciliation conclusion: is the discrepancy material? what is the likely cause?\n"
-    "Do NOT describe matched records in detail — focus on the DIFFERENCES."
-)
 
 
 async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
@@ -202,13 +107,20 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         # Recompile is also internal. No user-facing line needed.
         pass
     # Inject pre-computed data quality check from data_quality_checker node.
-    # When data_quality_flag=True, synthesis opens with ### Data Quality Concern
+    # When data_quality_flag=True, synthesis opens with #### Data Quality Concern
     # (enforced by the prompt DATA_INTEGRITY_GATE section + quality_context).
     data_quality_flag = state.get("data_quality_flag", False)
     data_quality_reason = state.get("data_quality_reason")
     if data_quality_flag and data_quality_reason:
         quality_context_lines.insert(0, f"DATA QUALITY CONCERN DETECTED: {data_quality_reason}")
-        quality_context_lines.insert(1, "Your answer MUST open with ### Data Quality Concern before any other section.")
+        quality_context_lines.insert(1, (
+            "Your answer MUST open with a blockquote callout in this EXACT format "
+            "(no #### heading — use the > [!WARNING] block):\n"
+            "> [!WARNING]\n"
+            "> **Data Quality Concern**\n"
+            "> [describe the concern and its implications here]\n\n"
+            "Then continue with the remaining analysis framed as 'pending data confirmation'."
+        ))
         if "repair_required" not in reliability_flags:
             reliability_flags = list(reliability_flags) + ["data_quality_concern"]
 
@@ -266,6 +178,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     extractor_prompt = INSIGHT_EXTRACTOR_PROMPT.format_messages(
         question=state["question"],
+        persona=state.get("persona", "executive"),
         current_date_context=current_date_context,
         flag_instructions_text=flag_instructions or "",
         quality_context=quality_context,
@@ -278,8 +191,6 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     haiku = get_llm("fast")
     insights_json: str = "{}"
-    _depth: str = "simple_lookup"
-    parsed: dict = {}
 
     try:
         @llm_breaker
@@ -298,67 +209,16 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         parsed = json_repair.loads(parsed_tag or raw_insights)
         if isinstance(parsed, dict):
             insights_json = json.dumps(parsed, indent=2)
-            _depth = parsed.get("depth", "simple_lookup")
             logger.info(
                 "synthesis | insight extraction OK | thread={} | depth={} | findings={}",
                 state["thread_id"],
-                _depth,
+                parsed.get("depth", "?"),
                 len(parsed.get("findings") or []),
             )
         else:
-            _depth = "simple_lookup"
             logger.warning("synthesis | insight extraction returned non-dict | thread={}", state["thread_id"])
     except Exception as e:
-        _depth = "simple_lookup"
         logger.warning("synthesis | insight extraction failed, using empty insights | thread={} | error={}", state["thread_id"], e)
-
-    # X3: Decision frame derivation — lead the synthesis with a clear YES/NO or direction
-    # derived from the insights findings, scoped by decision_type.
-    _decision_frame = ""
-    if isinstance(parsed, dict) and _decision_type != "lookup":
-        _insights_findings = parsed.get("findings") or []
-        _key_finding = str(parsed.get("key_finding") or "")
-
-        if _decision_type == "breach_detection":
-            _breach_hits = [
-                f for f in _insights_findings
-                if any(w in (f.get("observation") or "").lower()
-                       for w in ("breach", "below", "threshold", "flag", "minimum"))
-            ]
-            if _breach_hits:
-                _decision_frame = f"BREACH DETECTED: {_breach_hits[0].get('observation', '')}"
-            elif any(w in _key_finding.lower() for w in ("breach", "below", "threshold")):
-                _decision_frame = f"BREACH DETECTED: {_key_finding}"
-            elif _key_finding:
-                _decision_frame = "NO BREACH: All periods above threshold"
-
-        elif _decision_type == "judgment":
-            _data_obs = (_insights_findings[0].get("observation") or _key_finding) if _insights_findings else _key_finding
-            _policy_note = " Enterprise context available." if state.get("tribal_facts") else " No enterprise context retrieved."
-            if _data_obs:
-                _decision_frame = f"Data answer: {_data_obs}.{_policy_note}"
-
-        elif _decision_type == "comparison":
-            _delta_hits = [
-                f for f in _insights_findings
-                if any(w in (f.get("observation") or "").lower()
-                       for w in ("higher", "lower", "above", "below", "delta", "difference", "more", "less", "than"))
-            ]
-            if _delta_hits:
-                _decision_frame = f"COMPARISON: {_delta_hits[0].get('observation', '')}"
-
-        elif _decision_type == "trend_analysis":
-            _trend_hits = [
-                f for f in _insights_findings
-                if any(w in (f.get("observation") or "").lower()
-                       for w in ("increased", "decreased", "grew", "declined", "up", "down", "rising", "falling"))
-            ]
-            if _trend_hits:
-                _decision_frame = f"TREND: {_trend_hits[0].get('observation', '')}"
-
-    decision_frame_section = (
-        f"DECISION FRAME (derived from data — lead your answer with this):\n{_decision_frame}"
-    ) if _decision_frame else ""
 
     # ── Phase 2: Answer Writing (Sonnet — quality, insight-facing) ───────────
     # Sonnet writes the answer from the structured insights only.
@@ -384,7 +244,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         for _f in low_confidence_filters:
             lcf_lines.append(
                 f"  '{_f.get('column', '')}': resolved '{_f.get('raw_value', '')}' "
-                f"→ '{_f.get('resolved_value', '')}' (fuzzy match — may not match intent)"
+                f"resolved to '{_f.get('resolved_value', '')}' (fuzzy match — may not match intent)"
             )
         low_confidence_section = "\n".join(lcf_lines)
     else:
@@ -404,44 +264,13 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     else:
         query_intent_section = ""
 
-    _decision_type = (state.get("decision_type") or "lookup").lower()
-    _decision_directive = _DECISION_DIRECTIVES.get(_decision_type)
-    _has_multi_domain = state.get("has_multi_domain") or False
-    _has_reconciliation = state.get("has_reconciliation") or False
-
-    directives = []
-    if _decision_directive:
-        directives.append(_decision_directive)
-    if _has_multi_domain and _decision_type != "multi_domain":
-        directives.append(_MULTI_DOMAIN_DIRECTIVE)
-    if _has_reconciliation:
-        directives.append(_RECONCILIATION_DIRECTIVE)
-
-    if directives:
-        combined = "\n\n".join(directives)
-        if query_intent_section:
-            query_intent_section = combined + "\n\n" + query_intent_section
-        else:
-            query_intent_section = combined
-        logger.info(
-            "synthesis | decision_directive_injected | type={} | has_multi_domain={} | has_reconciliation={} | thread={}",
-            _decision_type, _has_multi_domain, _has_reconciliation, state["thread_id"],
-        )
-
-    _persona_key = (state.get("persona") or "executive").lower()
+    _persona_key = (state.get("persona") or "analyst").lower()
     persona_structure = _SYNTHESIS_PERSONA_STRUCTURES.get(
-        _persona_key, _SYNTHESIS_PERSONA_STRUCTURES["executive"]
+        _persona_key, _SYNTHESIS_PERSONA_STRUCTURES["analyst"]
     )
 
-    # Y3: build sql_computation_section for synthesis
-    _impl = state.get("sql_computation_summary") or []
-    sql_computation_section = (
-        "COMPUTED COLUMNS AVAILABLE IN RESULT (reference these by name in your answer):\n"
-        + "\n".join(f"  - {c}" for c in _impl)
-    ) if _impl else ""
-
     writer_prompt = SYNTHESIS_PROMPT.format_messages(
-        persona=state.get("persona", "executive"),
+        persona=state.get("persona", "analyst"),
         question=state["question"],
         no_data_context=no_data_context,
         insights_json=insights_json,
@@ -453,11 +282,13 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         low_confidence_section=low_confidence_section,
         query_intent_section=query_intent_section,
         persona_structure=persona_structure,
-        consulting_gates_section=_build_consulting_gates(_depth, _decision_type),
-        depth_calibration_section=_build_depth_calibration(_depth),
-        decision_frame_section=decision_frame_section,
-        sql_computation_section=sql_computation_section,
     )
+    _mission = build_mission_context(
+        state,
+        role="Narrate the result as a direct, complete answer to the user's question — no fabrication, no omission",
+        feeds="chart_agent (framing context), user (final visible answer)",
+    )
+    writer_prompt[0].content = _mission + "\n\n" + writer_prompt[0].content
 
     sonnet = get_llm("balanced")
 
@@ -493,8 +324,8 @@ def _build_current_date_context(current_date: str, all_columns: list[str], all_r
     lines = [
         "TEMPORAL CONTEXT:",
         f"  Today's date: {current_date}",
-        "  → Use today's date as the baseline for all 'days until' / 'days ago' calculations.",
-        "  → Snapshot/position date columns in results are the data-as-of date, NOT today.",
+        "  Use today's date as the baseline for all 'days until' / 'days ago' calculations.",
+        "  Snapshot/position date columns in results are the data-as-of date, NOT today.",
     ]
 
     # Try to detect snapshot date columns and check staleness
@@ -518,7 +349,7 @@ def _build_current_date_context(current_date: str, all_columns: list[str], all_r
                             lines.append(f"  Data snapshot ({col}): {val} — current (matches today).")
                         elif days_old > 0:
                             lines.append(
-                                f"  ⚠ Data snapshot ({col}): {val} — {days_old} day(s) old. "
+                                f"  NOTE - Data snapshot ({col}): {val} — {days_old} day(s) old. "
                                 f"Results reflect data as of {val}, not today."
                             )
                         elif days_old < 0:

@@ -68,7 +68,7 @@ interface PreferencesActions {
 type PreferencesStore = PreferencesState & PreferencesActions;
 
 export const PREFERENCES_DEFAULTS: PreferencesState = {
-  responseTone: 'executive',
+  responseTone: 'analyst',
   showSQL: true,
   autoShowCharts: true,
   showFollowUps: true,

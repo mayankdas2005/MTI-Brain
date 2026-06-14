@@ -16,6 +16,7 @@ interface KeyboardShortcuts {
   'cmd-shift-l'?: () => void;
   'cmd-shift-m'?: () => void;
   'cmd-r'?: () => void;
+  'cmd-q'?: () => void;
   'cmd-enter'?: () => void;
   'escape'?: () => void;
   /** Plain `?` opens the keyboard cheat sheet. Does NOT fire from form
@@ -61,6 +62,7 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
   useHotkeys('mod+shift+l', () => ref.current['cmd-shift-l']?.(), opts);
   useHotkeys('mod+shift+m', () => ref.current['cmd-shift-m']?.(), opts);
   useHotkeys('mod+r', () => ref.current['cmd-r']?.(), opts);
+  useHotkeys('mod+q', () => ref.current['cmd-q']?.(), opts);
   useHotkeys('mod+enter', () => ref.current['cmd-enter']?.(), opts);
   useHotkeys('shift+/', () => ref.current['question-mark']?.(), singleKeyOpts);
   useHotkeys('/', () => ref.current['slash']?.(), singleKeyOpts);

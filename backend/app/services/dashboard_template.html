@@ -364,20 +364,6 @@
       width: 100%;
     }
 
-    .kicon {
-      width: 14px;
-      height: 14px;
-      flex-shrink: 0;
-      color: var(--muted);
-      margin-top: 1px;
-    }
-
-    .kcard.kg .kicon { color: var(--g); }
-    .kcard.ka .kicon { color: var(--a); }
-    .kcard.kr .kicon { color: #dc2626; }
-    .kcard.kb .kicon { color: var(--b); }
-    .kcard.kn .kicon { color: var(--ink-3); }
-
     .kcap {
       font-size: 9.5px;
       font-weight: 700;
@@ -586,7 +572,6 @@
     }
 
     td.r    { text-align: right; font-variant-numeric: tabular-nums; }
-    td.mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: var(--ink-3); }
 
     tfoot tr    { background: var(--surface-2) !important; border-top: 2px solid var(--border-2); }
     tfoot td    { font-weight: 700; color: var(--ink); padding: 11px 14px; }
@@ -599,48 +584,6 @@
       padding: 10px 14px;
       border-top: 1px dashed var(--border);
     }
-
-    /* ──────────────────────────────────────────────────────────────────
-       STATUS PILLS
-       ────────────────────────────────────────────────────────────────── */
-
-    .s {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 9px;
-      border-radius: 20px;
-      font-size: 9.5px;
-      font-weight: 700;
-      letter-spacing: .05em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-
-    .s.settled, .s.approved, .s.matched, .s.won, .s.active, .s.funded, .s.paid
-      { background: var(--g-bg); color: var(--g-dark); }
-
-    .s.pending, .s.authorized, .s.processing, .s.in-review
-      { background: var(--a-bg); color: var(--a-dark); }
-
-    .s.declined, .s.disputed, .s.failed, .s.lost, .s.breach, .s.flagged, .s.blocked
-      { background: #fee2e2; color: #7f1d1d; }
-
-    .s.captured, .s.completed { background: var(--b-bg); color: var(--b-dark); }
-    .s.voided, .s.reversed, .s.refunded { background: var(--p-bg); color: var(--p-dark); }
-    .s.na { background: var(--surface-2); color: var(--muted); }
-
-    /* ──────────────────────────────────────────────────────────────────
-       VARIANCE & HIGHLIGHTS
-       ────────────────────────────────────────────────────────────────── */
-
-    .var-neg { color: #dc2626; font-weight: 700; }
-    .var-pos { color: var(--g); font-weight: 600; }
-
-    .row-flag   { background: #fffbeb !important; }
-    .row-breach { background: #fef2f2 !important; }
-
-    .cell-hi        { background: #fef9c3; font-weight: 700; color: #92400e; }
-    .cell-hi.breach { background: #fee2e2; color: #7f1d1d; }
 
     /* ──────────────────────────────────────────────────────────────────
        FLAGS
@@ -789,16 +732,6 @@
 
     .bench-target { font-size: 10.5px; color: var(--muted); margin-top: 3px; margin-bottom: 8px; }
 
-    .bench-bar {
-      height: 8px; border-radius: 4px;
-      background: var(--border);
-      overflow: hidden;
-    }
-
-    .bench-bar-fill      { height: 100%; border-radius: 3px; background: var(--g);  }
-    .bench-bar-fill.warn { background: var(--a); }
-    .bench-bar-fill.bad  { background: #dc2626; }
-
     /* ──────────────────────────────────────────────────────────────────
        TIMELINE CHIPS
        ────────────────────────────────────────────────────────────────── */
@@ -825,83 +758,6 @@
     .chip.co { border-color: #fecaca; background: #fef2f2; color: #7f1d1d; }
     .chip.cw .chip-dot { background: var(--a); }
     .chip.co .chip-dot { background: #dc2626; }
-
-    /* ──────────────────────────────────────────────────────────────────
-       BAR CHART
-       ────────────────────────────────────────────────────────────────── */
-
-    .bar-chart { display: flex; flex-direction: column; gap: 9px; }
-
-    .bar-row {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .bar-label {
-      font-size: 11.5px;
-      color: var(--ink-3);
-      width: 200px;
-      text-align: right;
-      flex-shrink: 0;
-      font-weight: 500;
-      overflow: hidden;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      line-height: 1.35;
-      word-break: break-word;
-    }
-
-    .card .bar-label { width: 130px; }
-    .card .bar-val   { min-width: 55px; }
-
-    .bar-track {
-      flex: 1;
-      height: 24px;
-      background: var(--surface-2);
-      border-radius: 5px;
-      overflow: hidden;
-      border: 1px solid var(--border);
-    }
-
-    .bar-fill {
-      height: 100%;
-      border-radius: 4px;
-      background: var(--navy-400);
-      transform-origin: left center;
-      animation: barGrow .6s cubic-bezier(.25,.46,.45,.94) both;
-    }
-
-    @keyframes barGrow {
-      from { transform: scaleX(0); }
-      to   { transform: scaleX(1); }
-    }
-
-    .bar-row:nth-child(1)  .bar-fill { animation-delay: .04s; }
-    .bar-row:nth-child(2)  .bar-fill { animation-delay: .10s; }
-    .bar-row:nth-child(3)  .bar-fill { animation-delay: .16s; }
-    .bar-row:nth-child(4)  .bar-fill { animation-delay: .22s; }
-    .bar-row:nth-child(5)  .bar-fill { animation-delay: .28s; }
-    .bar-row:nth-child(6)  .bar-fill { animation-delay: .34s; }
-    .bar-row:nth-child(7)  .bar-fill { animation-delay: .40s; }
-    .bar-row:nth-child(8)  .bar-fill { animation-delay: .46s; }
-    .bar-row:nth-child(9)  .bar-fill { animation-delay: .52s; }
-    .bar-row:nth-child(10) .bar-fill { animation-delay: .58s; }
-
-    .bar-fill.g { background: linear-gradient(90deg, #166534, #16a34a); }
-    .bar-fill.a { background: linear-gradient(90deg, #92400e, #d97706); }
-    .bar-fill.r { background: linear-gradient(90deg, #991b1b, #dc2626); }
-    .bar-fill.b { background: linear-gradient(90deg, #1e3a8a, #2563eb); } /* informational / neutral */
-
-    .bar-val {
-      font-size: 11.5px;
-      font-weight: 600;
-      color: var(--ink-2);
-      min-width: 72px;
-      font-variant-numeric: tabular-nums;
-      text-align: right;
-    }
 
     /* ──────────────────────────────────────────────────────────────────
        GLOSSARY
@@ -951,12 +807,6 @@
       .section { padding: 24px 20px 0; }
       .g2, .g3 { grid-template-columns: 1fr; }
       .hdr-meta-item { border-right: none; padding: 10px 0; margin-right: 0; }
-      /* Bar chart: shrink label width and value column on mobile */
-      .bar-label { width: 90px; }
-      .bar-val   { min-width: 52px; }
-      /* Protect charts from overflowing narrow viewports */
-      .bar-chart { max-width: 100%; overflow: hidden; }
-      .bar-track { min-width: 40px; }
     }
 
     /* ──────────────────────────────────────────────────────────────────
