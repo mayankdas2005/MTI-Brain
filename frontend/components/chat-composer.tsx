@@ -535,6 +535,7 @@ export function ChatComposer() {
             <div className="flex items-center gap-1">
               <button
                 type="button"
+                data-onboarding="deep-analysis"
                 aria-pressed={deepAnalysis}
                 onClick={() => setDeepAnalysis(!deepAnalysis)}
                 className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors border outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${

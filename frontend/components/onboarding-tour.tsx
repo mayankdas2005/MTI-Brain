@@ -16,6 +16,8 @@ import {
   User as UserIcon,
   Keyboard,
   Sparkles,
+  BrainCircuit,
+  BookOpen,
 } from 'lucide-react';
 import { modifierLabel } from '@/lib/utils/platform';
 
@@ -53,6 +55,22 @@ function makeSteps(): Step[] {
       title: 'Ask in plain language',
       body: `Type any question in natural language and press Enter (⇧+Enter for a new line). MTI Brain translates it into SQL, runs it against your data, and streams results as charts, tables, or summaries. Press Esc to stop a running response.`,
       icon: MessageSquare,
+      placement: 'top',
+    },
+    {
+      id: 'deep-analysis',
+      selector: '[data-onboarding="deep-analysis"]',
+      title: 'Deep Analysis',
+      body: 'Toggle Deep Analysis for complex, multi-step queries — it runs a richer pipeline that cross-references policies, limits, and historical context before generating SQL. Use it when a simple question gives incomplete results.',
+      icon: BrainCircuit,
+      placement: 'top',
+    },
+    {
+      id: 'playbook',
+      selector: '[data-onboarding="composer"]',
+      title: 'Save & reuse queries',
+      body: 'When you\'ve typed a question worth keeping, click the bookmark icon (bottom-left of the composer) to save it to your Playbook with a name. Later, type @ in the composer to search and insert any saved query instantly.',
+      icon: BookOpen,
       placement: 'top',
     },
     {
@@ -129,7 +147,7 @@ function makeSteps(): Step[] {
       id: 'done',
       title: "You're ready",
       body:
-        'For best results, ask specific questions - include a metric, date range, or business segment. Use Deep Analysis for complex, multi-step queries.',
+        'For best results, ask specific questions — include a metric, date range, or business segment. The more precise the question, the sharper the answer.',
       icon: Sparkles,
     },
   ];
