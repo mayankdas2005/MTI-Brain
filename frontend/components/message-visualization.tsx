@@ -30,11 +30,10 @@ const CHART_ICONS: Record<string, React.ElementType> = {
 };
 
 const CHART_LABELS: Record<string, string> = {
-  line: 'Line', multi_line: 'Multi-line',
-  stacked_area: 'Stacked area', bar: 'Bar',
-  stacked_bar: 'Stacked bar', grouped_bar: 'Grouped bar',
-  pie: 'Pie', donut: 'Donut', scatter: 'Scatter',
-  waterfall: 'Waterfall', dual_axis: 'Dual axis', kpi_card: 'KPI',
+  bar: 'Bar', grouped_bar: 'Grouped Bar', line: 'Line',
+  pie: 'Pie', donut: 'Donut', scatter: 'Scatter', bubble: 'Bubble',
+  heatmap: 'Heatmap', waterfall: 'Waterfall',
+  dual_axis: 'Dual Axis', kpi_card: 'KPI',
 };
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -844,7 +843,7 @@ function ChartTypeSwitcher({ types, activeType, onSelect }: {
     <div className="flex gap-1 flex-wrap">
       {types.map((t) => {
         const Icon = CHART_ICONS[t] ?? BarChart2;
-        const label = CHART_LABELS[t] ?? t;
+        const label = CHART_LABELS[t] ?? t.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         const isActive = t === activeType;
         return (
           <button
