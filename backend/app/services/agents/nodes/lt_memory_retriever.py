@@ -128,14 +128,26 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
         _lines.append(
             f"- **Memory:** {lt_mem_count} past interaction{'s' if lt_mem_count != 1 else ''} recalled from your history"
         )
-    else:
-        _lines.append("- **Memory:** no past interactions recalled")
 
-    _lines.append(
-        "- **Status:** feedback preferences applied to this response"
-        if feedback_context
-        else "- **Status:** no actionable preferences found, responding without feedback context"
-    )
+    if feedback_context:
+        all_fb_items = (thread_feedback or []) + (similar_feedback or [])
+        _fb_lines = []
+        for fb in all_fb_items[:5]:
+            comment  = (fb.get("comment") or "").strip()
+            liked    = fb.get("liked", True)
+            source   = "this thread" if fb.get("source") == "thread" else "similar query"
+            qprev    = (fb.get("question_text") or "")[:60].strip()
+            label    = "Preferred" if liked else "Flagged for improvement"
+            if comment:
+                _fb_lines.append(f"  - **{label}** [{source}]: {comment}")
+            elif qprev:
+                _fb_lines.append(f"  - **{label}** [{source}]: re \"{qprev}\"")
+            else:
+                _fb_lines.append(f"  - **{label}** [{source}]")
+        _lines.append("- **Feedback applied:**")
+        _lines.extend(_fb_lines)
+    else:
+        _lines.append("- **Status:** no actionable preferences found, responding without feedback context")
     preference_label = "\n".join(_lines)
 
     # ── Terminal visibility ────────────────────────────────────────────────────

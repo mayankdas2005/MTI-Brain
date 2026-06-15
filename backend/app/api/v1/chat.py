@@ -583,7 +583,7 @@ async def ask_question(
         generate_title=is_first_message,
         user_id=str(current_user.id),
         request_time=request_time,
-        persona=_TONE_TO_PERSONA.get(body.response_tone, ""),
+        persona=_TONE_TO_PERSONA.get(body.response_tone, "analyst"),
         max_rows=body.max_rows,
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,

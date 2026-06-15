@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import _build_data_profile, build_mission_context, parse_tag
-from app.services.agents.prompts import CHART_LABEL_PROMPT, CHART_PLAN_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import CHART_BIND_PROMPT, CHART_LABEL_PROMPT, CHART_TYPE_PROMPT, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 _VALID_CHART_TYPES = {
@@ -986,7 +986,7 @@ def _apply_guardrails(chart_type: str, columns: list[str], col_type_map: dict, n
     return chart_type
 
 
-async def _plan_chart(
+async def _select_chart_type(
     columns: list[str],
     rows: list[list],
     query_summary: dict,
@@ -994,43 +994,36 @@ async def _plan_chart(
     config: RunnableConfig,
     intent: str,
     persona: str,
-) -> tuple[dict, str]:
-    """Call 1 of 2: analytical pass — picks chart type, column bindings, per-axis formats."""
-    data_profile = _build_data_profile(columns, rows, query_summary)
-    column_metadata = _build_column_metadata(columns, state)
-
+    data_profile: str,
+) -> str:
+    """Call 1 of 3: pick chart type ONLY — no column assignments."""
     fb = state.get("feedback_context") or ""
     feedback_section = (
         f"USER CHART PREFERENCES (apply silently):\n<feedback_context>{fb}</feedback_context>"
         if fb else ""
     )
 
-    from app.services.agents.helpers import _build_concept_mappings_section
     resolved_intent_chart = state.get("resolved_intent") or {}
     result_shape = resolved_intent_chart.get("result_shape") or "table"
     temporal_grains = resolved_intent_chart.get("temporal_grains") or []
-
     result_shape_hint = f"SUGGESTED OUTPUT SHAPE (from query analysis): {result_shape}"
     temporal_grains_section = "TIME GRAINS: " + ", ".join(temporal_grains) if temporal_grains else ""
-    concept_map_section = _build_concept_mappings_section(state.get("concept_mappings"))
 
-    prompt = CHART_PLAN_PROMPT.format_messages(
+    prompt = CHART_TYPE_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         persona=persona,
         intent=intent,
         data_profile=data_profile,
-        column_metadata=column_metadata,
         feedback_section=feedback_section,
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         result_shape_hint=result_shape_hint,
         temporal_grains_section=temporal_grains_section,
-        concept_mappings_section=concept_map_section,
     )
 
     _mission = build_mission_context(
         state,
-        role="Choose the best chart type and spec for the data given the user's question and intent",
-        feeds="frontend renderer (chart visible to user)",
+        role="Choose the right chart type for the data and question",
+        feeds="column binder (next step assigns axes)",
     )
     prompt[0].content = _mission + "\n\n" + prompt[0].content
 
@@ -1042,14 +1035,61 @@ async def _plan_chart(
     @llm_breaker
     async def _call():
         from app.core.retry import retry_async
-        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-chart-planner", max_attempts=2, backoff_base=5.0)
+        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-chart-type", max_attempts=2, backoff_base=5.0)
 
-    fallback_type = _fallback_chart_type(columns, rows, intent, persona)
-    fallback_plan: dict = {
-        "chart_type": fallback_type,
+    try:
+        response = await _call()
+        raw = response.content or ""
+        output = parse_tag(raw, "chart")
+        if output:
+            from json_repair import loads as json_loads
+            parsed = json_loads(output)
+            if isinstance(parsed, dict) and parsed.get("chart_type") in _VALID_CHART_TYPES:
+                logger.info("chart_agent | type selected={} | thread={}", parsed["chart_type"], state["thread_id"])
+                return parsed["chart_type"]
+    except Exception as e:
+        logger.warning("chart_agent | type LLM failed | error={}", e)
+
+    fallback = _fallback_chart_type(columns, rows, intent, persona)
+    logger.info("chart_agent | type fallback={} | thread={}", fallback, state["thread_id"])
+    return fallback
+
+
+async def _bind_columns(
+    chart_type: str,
+    columns: list[str],
+    rows: list[list],
+    query_summary: dict,
+    state: AnalyticsState,
+    config: RunnableConfig,
+    intent: str,
+    persona: str,
+    data_profile: str,
+    column_metadata: str,
+) -> dict:
+    """Call 2 of 3: assign column bindings, format, aggregation, and alternatives for a known chart type."""
+    prompt = CHART_BIND_PROMPT.format_messages(
+        question=state.get("effective_question") or state["question"],
+        chart_type=chart_type,
+        data_profile=data_profile,
+        column_metadata=column_metadata,
+        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+    )
+
+    from app.services.agents.bedrock import get_llm
+    from app.core.circuit_breaker import llm_breaker
+
+    llm = get_llm("fast")
+
+    @llm_breaker
+    async def _call():
+        from app.core.retry import retry_async
+        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-chart-bind", max_attempts=2, backoff_base=5.0)
+
+    fallback: dict = {
         "x_column": None, "y_column": None, "color_column": None, "size_column": None,
         "x_value_format": None, "y_value_format": ",.0f",
-        "color_scheme": "blues", "chart_confidence": 100, "alternative_types": [],
+        "color_scheme": "blues", "chart_confidence": 100, "agg_function": "sum", "alternative_types": [],
     }
 
     try:
@@ -1063,11 +1103,13 @@ async def _plan_chart(
                 for key in ("x_value_format", "y_value_format"):
                     if isinstance(parsed.get(key), str):
                         parsed[key] = parsed[key].replace("~", "")
-                return parsed, column_metadata
+                parsed["chart_type"] = chart_type
+                return parsed
     except Exception as e:
-        logger.warning("chart_agent | plan LLM failed | error={}", e)
+        logger.warning("chart_agent | bind LLM failed | error={}", e)
 
-    return fallback_plan, column_metadata
+    fallback["chart_type"] = chart_type
+    return fallback
 
 
 async def _label_chart(
@@ -1186,7 +1228,11 @@ async def _select_chart_and_labels(
     intent: str,
     persona: str,
 ) -> tuple[str, dict]:
-    plan, col_meta_str = await _plan_chart(columns, rows, query_summary, state, config, intent, persona)
+    data_profile = _build_data_profile(columns, rows, query_summary)
+    col_meta_str = _build_column_metadata(columns, state)
+
+    chart_type = await _select_chart_type(columns, rows, query_summary, state, config, intent, persona, data_profile)
+    plan = await _bind_columns(chart_type, columns, rows, query_summary, state, config, intent, persona, data_profile, col_meta_str)
 
     # Resolve column hints before calling the labeler so it always gets concrete names.
     # 3-tier: exact -> case-insensitive -> fuzzy (difflib ≥0.85) -> positional fallback.
@@ -1206,8 +1252,6 @@ async def _select_chart_and_labels(
             return lower_map[hint.lower()]
         m = difflib.get_close_matches(hint.lower(), list(lower_map.keys()), n=1, cutoff=0.85)
         return lower_map[m[0]] if m else fallback
-
-    chart_type = plan.get("chart_type") or _fallback_chart_type(columns, rows, intent, persona)
 
     if chart_type in ("scatter", "bubble"):
         x_fb = (numeric_r or columns or [None])[0]

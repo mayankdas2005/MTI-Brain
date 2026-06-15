@@ -573,6 +573,10 @@ INTERVAL syntax with months/years is NOT supported — replace with DATEADD:
       WRONG: DATEADD('day', -7, col)   CORRECT: DATEADD(day, -7, col)
   WRONG: CAST(boolean_col AS VARCHAR) / boolean_col::VARCHAR  — Redshift cannot cast boolean to varchar
       CORRECT: CASE WHEN col THEN 'true' ELSE 'false' END
+  WRONG: json_extract_path_text(super_col, 'key')  — only works on VARCHAR; fails on SUPER type columns
+      CORRECT for SUPER type: super_col.key  (dot notation)  OR  super_col['key']  (bracket notation)
+      If you must use json_extract_path_text: cast first: super_col::varchar
+      How to detect SUPER type: the schema will show the column data_type as "super" (case-insensitive)
 
 USER QUESTION: {question}
 
@@ -1054,6 +1058,10 @@ constructs are INVALID and will cause runtime errors:
       CORRECT: DATEADD(day, -7, col)
   WRONG: CAST(boolean_col AS VARCHAR) / boolean_col::VARCHAR  — Redshift cannot cast boolean to varchar
       CORRECT: CASE WHEN col THEN 'true' ELSE 'false' END
+  WRONG: json_extract_path_text(super_col, 'key')  — only works on VARCHAR; fails on SUPER type columns
+      CORRECT for SUPER type: super_col.key  (dot notation)  OR  super_col['key']  (bracket notation)
+      If you must use json_extract_path_text: cast first: super_col::varchar
+      How to detect SUPER type: the schema will show the column data_type as "super" (case-insensitive)
   WRONG: GENERATE_SERIES, WITH RECURSIVE, FILTER (WHERE ...)           -- not supported
   WRONG: SELECT alias forward-reference: referencing a SELECT alias in another expression in the
     SAME SELECT clause is INVALID (Redshift evaluates all SELECT expressions in parallel):
@@ -1493,7 +1501,7 @@ _SYNTHESIS_PERSONA_STRUCTURES: dict[str, str] = {
     "analyst": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
 ━━━ ANALYST ━━━
-Sections: #### Hypothesis | #### Key Findings | #### Signal in the Noise | #### Data Gaps | #### Next Analysis
+Sections: #### Hypothesis | #### Key Findings | #### Signal in the Noise | #### Data Gaps
 
 TONE & LANGUAGE REGISTER:
   Use: Domain terminology: "liquidity run rate", "stale-data bias", "normalized basis", "distribution skew"
@@ -1534,13 +1542,7 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value" — skip all sections below,
   #### Data Gaps
   Which columns are NULL, sparse (<50% populated), or absent — and what analysis does each gap block?
     Each bullet: **[Missing or sparse field]** — blocks [specific analysis] / creates [X]% estimation uncertainty.
-    Skip entirely if data is complete.
-
-  #### Next Analysis
-  3 research questions (≤12 words each) an analyst would naturally ask next.
-    Each references a specific entity, number, or pattern from the result.
-    Framing: hypothesis-testing ("Does [X] persist across [Y]?") or root-cause ("What drives the [Z] variance?")
-    NEVER write task instructions. These are spoken analytical questions, not retrieval commands.""",
+    Skip entirely if data is complete.""",
 
     "manager": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
@@ -1923,14 +1925,252 @@ The <follow_ups> block: use the follow_up_paths from PRE-EXTRACTED INSIGHTS verb
     executive  -> big-picture, decision-forcing: "Should we top up GR_AE this week?", "What's our total headroom?"
     director   -> strategic risk: "What's the risk if this trend continues?", "Which entities are most exposed?"
     manager    -> operational urgency: "Which accounts need funding before Friday?", "Is the Q2 outflow normal?"
-    analyst    -> data-driven curiosity: "How does GR_AE compare to last quarter?", "What's driving the variance?"
+    analyst    -> hypothesis-testing or root-cause framing, referencing a specific entity or pattern from the result: "Does this GR_AE drop persist across all entities?", "What's driving the Q2 variance?"
   NEVER start with Validate, Retrieve, Confirm whether, Analyze, Quantify, or Identify.
   No multi-part questions. No raw column names. These are questions, not instructions.
 Output only the JSON array inside the tags."""
 )
 
-# ─── Node 5a: Chart Planner (type + column bindings + per-axis format) ────────
+# ─── Node 5a-i: Chart Type Selector (chart type ONLY) ──────────────────────────
 
+CHART_TYPE_PROMPT = ChatPromptTemplate.from_template(
+    """You are a data visualization expert.
+Your ONLY job: pick the right chart type. Do NOT assign columns. Do NOT write labels.
+
+PERSONA: {persona}
+
+PERSONA CHART PREFERENCES — apply first; overrides data-shape defaults:
+  executive: single metric -> kpi_card; trend -> line; comparison -> bar (max 5); NEVER heatmap/bubble/scatter
+  director:  "what changed/bridge" -> waterfall; multi-entity trend -> line; two-dim -> grouped_bar
+  manager:   comparison -> bar; trend -> line; breakdown -> grouped_bar; avoid dual_axis unless scale diff >10×
+  analyst:   no restrictions; choose purely on data shape
+
+QUESTION: {question}
+Intent:   {intent}
+{result_shape_hint}
+{temporal_grains_section}
+
+{feedback_section}
+
+---
+
+{data_profile}
+
+---
+
+CHART TYPE REFERENCE:
+  kpi_card    — single scalar headline KPI; no axis
+  bar         — categorical comparison, sorted descending; default for string x-axis
+  line        — metric over sequential time; supports multiple series via color
+  grouped_bar — side-by-side bars; REQUIRES x Distinct ≥ 2 AND color Distinct ≤ 3
+  donut       — part-of-whole; ≤ 5 slices; no negative values
+  pie         — same as donut without hole
+  scatter     — two continuous numeric axes; correlation analysis
+  waterfall   — variance / P&L bridge / cash-flow increments
+  heatmap     — two categorical axes + numeric intensity; REQUIRES BOTH dims Distinct ≥ 2
+  bubble      — scatter + third numeric as bubble size
+  dual_axis   — two measures at incompatible scales on one time axis
+
+DATA PATTERN → CHART TYPE:
+  rows = 1                                                                 -> kpi_card
+  date Distinct ≤ 2, number ≥ 1, string = 0                               -> kpi_card
+  date Distinct ≤ 2, string ≥ 1, number = 1                               -> bar
+  date Distinct ≥ 3 sequential, string = 0, number = 1                    -> line
+  date Distinct ≥ 3, number ≥ 2                                           -> line (multiple series)
+  date Distinct ≥ 3, string ≥ 1, number = 1                               -> line (color = string)
+  string = 1, number = 1, "share/%" asked, Distinct ≤ 5                   -> donut
+  string = 1, number = 1                                                   -> bar
+  string = 2, number = 1, Distinct(string1) ≥ 2, Distinct(string2) ≤ 3   -> grouped_bar
+  string = 2, number = 1, Distinct(string2) > 3                           -> bar (color = second string)
+  number = 2, correlation asked                                            -> scatter
+  ordered ± increments toward a total                                      -> waterfall
+  string = 2 (BOTH Distinct ≥ 2), number = 1, intensity pattern           -> heatmap
+
+CRITICAL PITFALLS — check these BEFORE finalising:
+  AVOID: heatmap when EITHER string dim has Distinct = 1 — meaningless flat chart; use bar
+  AVOID: grouped_bar when x-axis dim has Distinct = 1 — nothing to group; use bar instead
+  ENTITY PIVOT: x Distinct = 1, color Distinct ≥ 2 (e.g. one scenario × N entities) → bar
+    (the column binder will put the multi-value dim on the x-axis automatically)
+  AVOID: pie/donut with > 5 categories or any negative values — use bar
+  AVOID: line when date Distinct ≤ 2 — use bar or kpi_card
+  AVOID: line with ≤ 3 data points — use bar
+  AVOID: grouped_bar with color Distinct > 3 — use bar with color instead
+  AVOID: bar when date Distinct ≥ 3 and sequential — use line
+  AVOID: kpi_card just because rows ≤ 5 when the data is a time series — use line/bar
+  AVOID: ignoring a Distinct = 1 string column — treat it as non-existent for type selection
+
+  TREND OVERRIDE (HIGHEST PRIORITY — beats all rules above):
+  Question contains "trend" / "over [N] days/weeks/months/years" / "trailing [N]" /
+  "over time" / "history" / "daily/weekly/monthly [metric]"
+    → chart MUST be line or dual_axis
+    EXCEPTION: date Distinct ≤ 3 → use bar (a 2–3 point line is misleading)
+
+---
+
+{reasoning_directive}
+
+<reasoning>
+1. Persona: [persona] — which PERSONA CHART PREFERENCE rule applies?
+2. Column counts: date_cols (Distinct), string_cols (Distinct per col), number_cols
+3. TREND OVERRIDE check: does the question trigger it? yes/no, why?
+4. Pattern match: which DATA PATTERN row fits best?
+5. Pitfall check: does the chosen type hit any CRITICAL PITFALL?
+6. Final choice: [chart_type] — one-line reason
+</reasoning>
+<chart>
+{{"chart_type": "bar"}}
+</chart>"""
+)
+
+# ─── Node 5a-ii: Chart Column Binder (column assignments + format + agg) ────────
+
+CHART_BIND_PROMPT = ChatPromptTemplate.from_template(
+    """You are a data visualization expert.
+The chart type is ALREADY DECIDED: {chart_type}. Do NOT reconsider it.
+Your ONLY job: assign columns to axes, choose format, aggregation, color scheme, confidence, and alternatives.
+
+QUESTION: {question}
+
+Chart type: {chart_type}
+
+---
+
+{data_profile}
+
+---
+
+{column_metadata}
+
+---
+
+COLUMN ASSIGNMENT RULES for {chart_type}:
+
+  bar / waterfall
+    x_column    = categorical or date column (tick labels)
+    y_column    = numeric measure
+    color_column = second string column if Distinct ≤ 10 and adds grouping; else null
+    PIVOT RULE  : if the natural x_column has Distinct = 1, use the OTHER string column as x_column
+
+  line / dual_axis
+    x_column    = date/time column
+    y_column    = primary numeric measure
+    color_column = string series column (one line per value); null for single series
+
+  grouped_bar
+    x_column    = grouping dimension (string; Distinct ≥ 2)
+    y_column    = numeric measure
+    color_column = second string column (side-by-side bands; Distinct ≤ 3)
+
+  scatter / bubble
+    x_column    = first numeric column
+    y_column    = second numeric column (MUST differ from x_column)
+    color_column = string category if present; null otherwise
+    size_column  = third numeric column (bubble only); null for scatter
+
+  donut / pie
+    x_column    = string category column
+    y_column    = numeric value column
+    color_column = null
+
+  heatmap
+    x_column    = first string/date column (Distinct ≥ 2)
+    y_column    = second string column (Distinct ≥ 2)
+    color_column = null  (the numeric column drives intensity automatically)
+
+  kpi_card    → ALL column fields null
+
+RULES THAT APPLY TO ALL TYPES:
+  • Use EXACT column names from COLUMN PROFILES above.
+  • x_column ≠ y_column. color_column ≠ x_column and ≠ y_column.
+  • Skip any column whose Distinct = 1 for x_column or color_column — treat it as non-existent.
+
+---
+
+PER-AXIS FORMAT:
+  USD / dollar      -> "$,.2f"      INR / rupee     -> "₹,.0f"
+  GBP / pound       -> "£,.2f"      EUR / euro      -> "€,.2f"      JPY / yen -> "¥,.0f"
+  count / volume    -> ",.0f"
+  ratio 0–1         -> ".1%"   (Vega multiplies by 100 — ONLY for raw 0–1 ratios)
+  already-percent (4.5 = 4.5%) -> ",.1f"
+  ambiguous         -> Max > 1000 -> ",.0f"  |  Max ≤ 1000 -> ",.2f"
+
+  NEVER use ".2s". x_value_format = null unless chart is scatter or bubble.
+
+---
+
+AGGREGATION FUNCTION:
+  Is aggregation needed? Distinct(x_col) × Distinct(color_col or 1) ≈ total_rows → "none"
+  Otherwise:
+    additive (financial amount, count, volume each row is a partial contribution) → "sum"
+    non-additive (rate, ratio, price, spread, index — each row is a complete measurement) → "avg"
+    question says "highest/peak/worst-case" → "max"
+    question says "lowest/floor/best-case"  → "min"
+    question says "how many"               → "count"
+    genuinely uncertain                    → "sum"
+
+---
+
+COLOR SCHEME:
+  single series / sequential                 → "blues"
+  multiple distinct categories (3–8)         → "tableau10"
+  diverging / positive + negative            → "redblue"
+  executive / financial                      → "dark2"
+
+---
+
+CHART CONFIDENCE (start at 100, deduct):
+  -20  date Distinct < 4 for a time-series chart
+  -20  color series > 10 (unreadable rainbow)
+  -15  primary measure has only 1 distinct value (flat chart)
+  -15  no clear dimensional grouping for the chosen type
+  -10  trend question but < 7 data points
+  -10  y-axis is wrong semantic type for the chart
+  Floor: 0.   80–100 = render.   60–79 = render with caution.   < 60 = set to 0 (table is better).
+
+---
+
+ALTERNATIVES (up to 2, structurally valid for the SAME columns):
+  bar       → [waterfall if ± values,  grouped_bar if 2 string cols Distinct ≤ 3]
+  line      → [grouped_bar if string col Distinct ≤ 3,  bar]
+  grouped_bar → [bar,  line if date col exists]
+  heatmap   → [grouped_bar,  bar]
+  waterfall → [bar]
+  donut/pie → [bar]
+  scatter   → [bar,  dual_axis]
+  kpi_card  → []
+
+---
+
+{reasoning_directive}
+
+<reasoning>
+1. Column assignment: x=[...] y=[...] color=[...] — one sentence WHY each
+   (if PIVOT RULE applies, state it explicitly)
+2. Format: y_value_format=[...] because column description says [...]
+3. Aggregation: [function] because [additive or non-additive — explain]
+4. Confidence: start=100, deductions=[...], final=[...]
+5. Alternatives: [list with column bindings for each]
+</reasoning>
+<chart>
+{{
+  "x_column": "...",
+  "y_column": "...",
+  "color_column": null,
+  "size_column": null,
+  "x_value_format": null,
+  "y_value_format": ",.0f",
+  "color_scheme": "blues",
+  "chart_confidence": 85,
+  "agg_function": "sum",
+  "alternative_types": [
+    {{"type": "grouped_bar", "x_column": "...", "y_column": "...", "color_column": "...", "confidence": 70}},
+    {{"type": "waterfall",   "x_column": "...", "y_column": "...", "color_column": null,  "confidence": 55}}
+  ]
+}}
+</chart>"""
+)
+
+# ─── CHART_PLAN_PROMPT kept as alias for any external references (unused internally) ────
 CHART_PLAN_PROMPT = ChatPromptTemplate.from_template(
     """You are a senior data analyst with deep BI expertise.
 Your job: choose the best chart type for this question and data, then assign each result column to its axis.
@@ -2869,9 +3109,10 @@ Output your reasoning in <reasoning>...</reasoning>, then the directive in <dire
 
 <reasoning>
 Decide which directive lines to emit:
-  1. TIME_FILTER: Which column is the business event timestamp? Use time_filter_col if set and not "not specified".
-     If not set: pick from anchor schema — prefer event dates (transaction_date, detected_at) over freshness dates (loaded_at, updated_at).
-     If timeframe is null but question contains a time reference, emit TIME_FILTER anyway.
+  1. TIME_FILTER: DO NOT select a time column — filter_specialist already made this selection.
+     If time_filter_col is set and not "not specified": emit TIME_FILTER: {time_filter_col} exactly — no substitution.
+     ONLY if time_filter_col = "not specified": fall back to anchor schema — prefer event dates (transaction_date, detected_at) over snapshot dates (loaded_at, updated_at, balance_date, as_of_date).
+     If timeframe is null but the question contains a time reference: emit TIME_FILTER using the value above.
   2. COMPUTATION: Does any measure require a derived SQL expression (net value = A - B, weighted average)?
      Emit COMPUTATION only for derived expressions. Do NOT emit for simple SUM/AVG/COUNT measures.
      ENUM SAFETY: When COMPUTATION contains CASE WHEN on a categorical column, look up that column's
@@ -2933,7 +3174,7 @@ Rules:
   Do NOT emit MULTI_GRAIN for single-grain queries even if multiple COMPUTATION lines exist.
 
 SELF-CHECK before emitting the directive:
-1. TIME ANCHOR: If TEMPORAL COLUMNS is present in SCHEMA DIRECTIVE, pick the column that is the logical time anchor for your computation (on-time rate -> due_date; invoice volume -> issue_date; payment cleared -> execution_date). State your choice as TIME_FILTER: table.column. NEVER silently follow a default when your computation proves a different column is correct.
+1. TIME ANCHOR: Confirm your TIME_FILTER line uses the exact column from time_filter_col above. filter_specialist owns this selection — do NOT substitute a different column. If time_filter_col was provided, your TIME_FILTER line must match it verbatim. Only if time_filter_col = "not specified" should you derive it from anchor schema.
 2. LOOKUP CTEs: Any CTE that maps one key to another (company_ref -> business_unit, code -> label) is a LOOKUP CTE. Lookup CTEs MUST NOT have WHERE time filters — they must be complete across all history. A time-filtered lookup causes NULL dimension values for entities with no events in the window.
 3. DEAD CTEs: List every CTE name you define. Verify each one is referenced in a downstream CTE's FROM/JOIN or in the final SELECT. If a CTE is not referenced — remove it entirely. Do not emit unused CTEs.
 4. INFERRED JOINS: For every JOIN not in JOIN_CHAIN or UNRESOLVED_PAIRS, emit it as SCHEMA_GAP_JOIN — not as a silent inference.

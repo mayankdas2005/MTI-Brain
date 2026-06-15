@@ -396,7 +396,7 @@
         };
         origColors[nd.identity] = colorObj;
         const rawLabel = nd.properties.name || nd.properties.title || primaryLabel;
-        nodes.push({
+        const nodeObj = {
           id:         nd.identity,
           label:      rawLabel,
           title:      rawLabel,        // tooltip shows full name
@@ -409,7 +409,13 @@
           color:      colorObj,
           font:       { color: 'rgba(0,0,0,0.82)', size: 12, face: 'Inter,system-ui,sans-serif', bold: false, multi: false },
           widthConstraint: { maximum: 100 }
-        });
+        };
+        // Use server-pre-computed positions when available — no browser physics needed
+        if (nd._x !== undefined && nd._y !== undefined) {
+          nodeObj.x = nd._x;
+          nodeObj.y = nd._y;
+        }
+        nodes.push(nodeObj);
       }
 
       records.forEach(record => {
@@ -443,13 +449,24 @@
     const visibleNodeIds = new Set(allNodes.map(n => n.id));
     const visibleEdgeIds = new Set(allEdges.map(e => e.id));
 
-    // True only when the node has BOTH a visible edge (been touched) AND a hidden edge (more to explore).
-    // On initial load (no edges visible) every node is clean \u2014 rings appear contextually as you explore.
+    // \u2500\u2500 Adjacency index (built once at startup, O(1) lookups) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    const edgesByNode = new Map();
+    allEdges.forEach(e => {
+      if (!edgesByNode.has(e.from)) edgesByNode.set(e.from, []);
+      if (!edgesByNode.has(e.to))   edgesByNode.set(e.to,   []);
+      edgesByNode.get(e.from).push(e.id);
+      edgesByNode.get(e.to).push(e.id);
+    });
+
+    // True only when the node has BOTH a visible edge AND a hidden edge (more to explore).
     function hasHiddenEdges(nodeId) {
-      const nodeEdges = allEdges.filter(e => e.from === nodeId || e.to === nodeId);
-      const hasVisible = nodeEdges.some(e => visibleEdgeIds.has(e.id));
-      const hasHidden  = nodeEdges.some(e => !visibleEdgeIds.has(e.id));
-      return hasVisible && hasHidden;
+      const ids = edgesByNode.get(nodeId) || [];
+      let vis = false, hid = false;
+      for (const eid of ids) {
+        if (visibleEdgeIds.has(eid)) vis = true; else hid = true;
+        if (vis && hid) return true;
+      }
+      return false;
     }
 
     // Dashed ring = node is a hub with unexplored connections (no glow \u2014 subtle)
@@ -492,30 +509,25 @@
       }));
     }
 
-    // Show all edges for nodeId that are not yet on canvas
+    // Show all edges for nodeId that are not yet visible
     function expandNode(nodeId) {
-      const newEdges = [];
-      allEdges.forEach(e => {
-        if ((e.from === nodeId || e.to === nodeId) && !visibleEdgeIds.has(e.id)) {
-          visibleEdgeIds.add(e.id);
-          newEdges.push(e);
-        }
-      });
-      if (newEdges.length) edgesDS.add(newEdges);
+      const toShow = (edgesByNode.get(nodeId) || []).filter(eid => !visibleEdgeIds.has(eid));
+      if (!toShow.length) return;
+      toShow.forEach(eid => visibleEdgeIds.add(eid));
+      edgesDS.update(toShow.map(eid => ({ id: eid, hidden: false })));
       refreshExpansionStyles();
+      // Brief physics pulse so new edges spring into place naturally
+      _runPhysics(800);
     }
 
     // Hide all currently visible edges for nodeId
     function collapseNode(nodeId) {
-      const toRemove = [];
-      visibleEdgeIds.forEach(eid => {
-        const e = edgesDS.get(eid);
-        if (e && (e.from === nodeId || e.to === nodeId)) toRemove.push(eid);
-      });
-      if (!toRemove.length) return;
-      toRemove.forEach(eid => visibleEdgeIds.delete(eid));
-      edgesDS.remove(toRemove);
+      const toHide = (edgesByNode.get(nodeId) || []).filter(eid => visibleEdgeIds.has(eid));
+      if (!toHide.length) return;
+      toHide.forEach(eid => visibleEdgeIds.delete(eid));
+      edgesDS.update(toHide.map(eid => ({ id: eid, hidden: true })));
       refreshExpansionStyles();
+      _runPhysics(600);
     }
 
     // Show all edges (visible + hidden) connected to nodeId in the details panel
@@ -559,14 +571,20 @@
       setPanelOpen(true);
     }
 
-    // Initial state: all nodes and all edges visible
+    // Detect whether server pre-computed positions for all nodes
+    const _hasPrecomputedLayout = allNodes.length > 0 && allNodes.every(n => n.x !== undefined);
+
+    // Initial state: all nodes visible; edges start hidden (expand on demand)
     const nodesDS = new vis.DataSet(allNodes.map(withExpansionStyle));
-    const edgesDS = new vis.DataSet(allEdges);
+    const edgesDS = new vis.DataSet(allEdges.map(e => ({ ...e, hidden: !visibleEdgeIds.has(e.id) })));
 
     // ── vis.js options ───────────────────────────────────────────────
     const visOptions = {
       physics: {
-        enabled: true,
+        // Always start with physics OFF — we trigger it manually below via _runPhysics().
+        // This prevents vis.js's automatic background stabilization from swallowing the
+        // animation before the user sees it.
+        enabled: false,
         solver: 'forceAtlas2Based',
         forceAtlas2Based: {
           gravitationalConstant: -55,
@@ -576,7 +594,7 @@
           damping: 0.42,
           avoidOverlap: 0.8
         },
-        stabilization: { iterations: 300, updateInterval: 25 }
+        stabilization: { enabled: false }
       },
       interaction: { hover: true, tooltipDelay: 200, navigationButtons: true, keyboard: true, selectConnectedEdges: false, hoverConnectedEdges: false },
       edges: {
@@ -597,50 +615,86 @@
     const container = document.getElementById('mynetwork');
     const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, visOptions);
 
-    // Runs on page load (automatic) and when the Auto Layout button is clicked.
-    function runAutoLayout() {
-      const btn  = document.getElementById('layout-btn');
-      const icon = document.getElementById('layout-icon');
-      btn.disabled = true;
-      icon.classList.add('spinning');
+    // Store the server-computed home positions for instant reset
+    const _homePositions = _hasPrecomputedLayout
+      ? new Map(allNodes.map(n => [n.id, { x: n.x, y: n.y }]))
+      : null;
 
-      const allIds = nodesDS.getIds();
-      const spread = Math.max(600, allIds.length * 60);
-      nodesDS.update(allIds.map(id => ({
-        id,
-        x: (Math.random() - 0.5) * spread,
-        y: (Math.random() - 0.5) * spread,
-        fixed: false
-      })));
-
+    // ── Physics helper ───────────────────────────────────────────────────────
+    // Fires a short physics burst (ms), then disables physics completely.
+    // No centralGravity — nodes only respond to spring/repulsion forces from
+    // their actual edges, so they don't cluster toward the center.
+    let _physicsTimer = null;
+    function _runPhysics(ms) {
+      if (_physicsTimer) { clearTimeout(_physicsTimer); _physicsTimer = null; }
       network.setOptions({
         physics: {
           enabled: true,
           solver: 'forceAtlas2Based',
           forceAtlas2Based: {
             gravitationalConstant: -80,
-            centralGravity: 0.008,
-            springLength: 140,
-            springConstant: 0.08,
-            damping: 0.45,
-            avoidOverlap: 1
+            centralGravity: 0,
+            springLength: 130,
+            springConstant: 0.05,
+            damping: 0.7,
+            avoidOverlap: 0.8
           },
-          stabilization: { enabled: true, updateInterval: 30 }
+          stabilization: { enabled: false }
         }
       });
-
-      network.once('stabilizationIterationsDone', () => {
-        network.stopSimulation();
-        network.fit({ animation: { duration: 500, easingFunction: 'easeOutQuad' } });
-        btn.disabled = false;
-        icon.classList.remove('spinning');
-      });
-
-      network.stabilize(500);
+      _physicsTimer = setTimeout(() => {
+        network.setOptions({ physics: { enabled: false } });
+        _physicsTimer = null;
+      }, ms || 1200);
     }
 
-    // Auto-run layout on initial load
-    runAutoLayout();
+    // Auto Layout:
+    //  • Pre-computed positions → snap home + short physics settle
+    //  • No positions (old cached HTML) → random scatter + full physics
+    function runAutoLayout() {
+      const btn  = document.getElementById('layout-btn');
+      const icon = document.getElementById('layout-icon');
+      btn.disabled = true;
+      icon.classList.add('spinning');
+
+      if (_homePositions) {
+        nodesDS.update(Array.from(_homePositions.entries()).map(([id, pos]) => ({ id, x: pos.x, y: pos.y, fixed: false })));
+        network.fit({ animation: { duration: 300, easingFunction: 'easeOutQuad' } });
+        _runPhysics(1000);
+        setTimeout(() => { btn.disabled = false; icon.classList.remove('spinning'); }, 1000);
+      } else {
+        const allIds = nodesDS.getIds();
+        const spread = Math.max(600, allIds.length * 60);
+        nodesDS.update(allIds.map(id => ({
+          id,
+          x: (Math.random() - 0.5) * spread,
+          y: (Math.random() - 0.5) * spread,
+          fixed: false
+        })));
+        _runPhysics(3000);
+        setTimeout(() => {
+          network.fit({ animation: { duration: 500, easingFunction: 'easeOutQuad' } });
+          btn.disabled = false;
+          icon.classList.remove('spinning');
+        }, 3000);
+      }
+    }
+
+    // Initial load
+    network.fit({ animation: false });
+    if (_hasPrecomputedLayout) {
+      // Nodes are already at server-computed positions — no physics needed on load.
+      // Physics fires only on dragEnd / expand / collapse (wired below).
+    } else {
+      runAutoLayout();
+    }
+
+    // ── Drag-end physics — spring reaction when user releases a node ──────────
+    network.on('dragEnd', function(params) {
+      if (params.nodes.length > 0) {
+        _runPhysics(1200);
+      }
+    });
 
     // ── Panel refs ───────────────────────────────────────────────────
     const overviewContent = document.getElementById('overviewContent');
@@ -1053,17 +1107,13 @@
 
     edgesBtn.addEventListener('click', () => {
       edgesVisible = !edgesVisible;
+      // Use `hidden` property — single batch update, no DataSet rebuild, no re-layout
+      edgesDS.update(allEdges.map(e => ({ id: e.id, hidden: !edgesVisible })));
       if (edgesVisible) {
-        // Restore all edges that aren't already on canvas
-        const currentIds = new Set(edgesDS.getIds());
-        const toAdd = allEdges.filter(e => !currentIds.has(e.id));
-        if (toAdd.length) edgesDS.add(toAdd);
         allEdges.forEach(e => visibleEdgeIds.add(e.id));
         edgesLabel.textContent = 'Hide relationships';
         edgesBtn.classList.remove('active');
-        runAutoLayout();
       } else {
-        edgesDS.remove(edgesDS.getIds());
         visibleEdgeIds.clear();
         edgesLabel.textContent = 'Show relationships';
         edgesBtn.classList.add('active');

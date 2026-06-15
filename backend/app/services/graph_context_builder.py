@@ -136,6 +136,61 @@ def _triplet(n: dict, r: dict | None, m: dict | None) -> dict:
     return {"n": n, "r": r, "m": m}
 
 
+# ── Server-side graph layout ─────────────────────────────────────────────────
+
+def _compute_layout(records: list[dict]) -> dict[int, tuple[float, float]]:
+    """Compute Fruchterman-Reingold layout in Python; returns {node_id: (x_px, y_px)}.
+
+    Running layout server-side (once, in ~ms) eliminates the O(n²) physics
+    simulation that vis.js would otherwise run in the browser on every page load.
+    Positions are embedded as _x/_y on each node so the template starts with
+    physics disabled and pre-positioned nodes — instant render regardless of scale.
+    """
+    try:
+        import networkx as nx
+    except ImportError:
+        return {}
+
+    G = nx.Graph()
+    for rec in records:
+        for key in ("n", "m"):
+            nd = rec.get(key)
+            if nd and nd.get("identity") is not None:
+                G.add_node(nd["identity"])
+        r = rec.get("r")
+        if r and r.get("start") is not None and r.get("end") is not None:
+            G.add_edge(r["start"], r["end"])
+
+    if not G.nodes:
+        return {}
+
+    n = len(G.nodes)
+    # k controls ideal edge length; larger k → more spread.  seed → deterministic.
+    pos = nx.spring_layout(G, k=2.5 / max(1, n ** 0.5), iterations=80, seed=42)
+
+    # Scale normalized [-1, 1] → vis.js pixel coords
+    scale = max(800, n * 55)
+    return {node_id: (float(x) * scale, float(y) * scale) for node_id, (x, y) in pos.items()}
+
+
+def _inject_layout(records: list[dict], positions: dict[int, tuple[float, float]]) -> None:
+    """Stamp _x/_y top-level fields onto every node dict in-place."""
+    if not positions:
+        return
+    seen: set[int] = set()
+    for rec in records:
+        for key in ("n", "m"):
+            nd = rec.get(key)
+            if nd is None:
+                continue
+            nid = nd.get("identity")
+            if nid is None or nid in seen:
+                continue
+            seen.add(nid)
+            if nid in positions:
+                nd["_x"], nd["_y"] = positions[nid]
+
+
 # ── join_clause parser ────────────────────────────────────────────────────────
 
 def _parse_join_clause_tables(clause: str) -> tuple[str, str] | None:
@@ -654,15 +709,81 @@ async def generate_and_store(
                 None, None,
             ))
 
-    logger.info("graph_context_builder | conv={} | records={}", conversation_id, len(records))
+    # 5c. Edges from neo4j_raw_graph — wire retrieved-only (and anchor) nodes together.
+    # addNode() in the template deduplicates by identity, so emitting _triplet(None, edge, None)
+    # is safe: the edge is registered against already-present node IDs with no node re-emission.
+    def _resolve_raw_edge_endpoints(raw_edge: dict) -> tuple[str, str] | None:
+        t = raw_edge.get("_type", "")
+        if t == "JOINS_TO":
+            ff, tf = raw_edge.get("from_fqn"), raw_edge.get("to_fqn")
+            return (f"T:{ff}", f"T:{tf}") if ff and tf else None
+        if t == "HAS_COLUMN":
+            tf, cn = raw_edge.get("table_fqn"), raw_edge.get("column_name")
+            return (f"T:{tf}", f"C:{tf}.{cn}") if tf and cn else None
+        if t == "REFERENCES_TABLE":
+            term, tf = raw_edge.get("term"), raw_edge.get("table_fqn")
+            return (f"BT:{term}", f"T:{tf}") if term and tf else None
+        if t == "RELEVANT_TO":
+            tf, iname = raw_edge.get("table_fqn"), raw_edge.get("intent_name")
+            return (f"T:{tf}", f"I:{iname}") if tf and iname else None
+        if t == "CONTAINS_TABLE":
+            cid, tf = raw_edge.get("community_id"), raw_edge.get("table_fqn")
+            return (f"COM:{cid}", f"T:{tf}") if cid and tf else None
+        if t == "BELONGS_TO":
+            tf, dn = raw_edge.get("table_fqn"), raw_edge.get("domain_name")
+            return (f"T:{tf}", f"D:{dn}") if tf and dn else None
+        if t == "REQUIRES_TABLE":
+            tid, tf = raw_edge.get("template_id"), raw_edge.get("table_fqn")
+            return (f"QT:{tid}", f"T:{tf}") if tid and tf else None
+        if t == "SEMANTICALLY_SIMILAR":
+            fc, tc = raw_edge.get("from_col_id"), raw_edge.get("to_col_id")
+            return (f"C:{fc}", f"C:{tc}") if fc and tc else None
+        if t == "STRUCTURALLY_SIMILAR":
+            ff, tf = raw_edge.get("from_fqn"), raw_edge.get("to_fqn")
+            return (f"T:{ff}", f"T:{tf}") if ff and tf else None
+        if t == "BRIDGES_TO":
+            fc, tc = raw_edge.get("from_community_id"), raw_edge.get("to_community_id")
+            return (f"COM:{fc}", f"COM:{tc}") if fc and tc else None
+        return None
 
-    # 6. Inject into template
+    _raw_edge_count = 0
+    for _re in raw_graph.get("edges") or []:
+        _endpoints = _resolve_raw_edge_endpoints(_re)
+        if not _endpoints:
+            continue
+        _src_key, _tgt_key = _endpoints
+        # Only emit the edge if BOTH endpoints already exist as registered nodes.
+        # ids._map is the authoritative set of node IDs assigned during sections 1–5b.
+        if _src_key not in ids._map or _tgt_key not in ids._map:
+            continue
+        _src_id = ids._map[_src_key]
+        _tgt_id = ids._map[_tgt_key]
+        _rel_type = _re.get("_type", "RELATED_TO")
+        _eprops = {k: v for k, v in _re.items() if not k.startswith("_")}
+        _eprops["_retrieved_only"] = True
+        # Emit edge-only triplet: addNode(None) is null-safe in the template.
+        records.append(_triplet(
+            None,
+            _edge(ids.next_edge_id(), _rel_type, _src_id, _tgt_id, _eprops),
+            None,
+        ))
+        _raw_edge_count += 1
+
+    logger.info(
+        "graph_context_builder | conv={} | records={} | raw_edges_wired={}",
+        conversation_id, len(records), _raw_edge_count,
+    )
+
+    # 6. Compute server-side layout and embed positions before serialization
+    _inject_layout(records, _compute_layout(records))
+
+    # 7. Inject into template
     template_html = _TEMPLATE_PATH.read_text(encoding="utf-8")
     if _PLACEHOLDER not in template_html:
         raise RuntimeError("graph_explorer_template.html is missing GRAPH_DATA_PLACEHOLDER")
     html = template_html.replace(_PLACEHOLDER, json.dumps(records, default=str))
 
-    # 7. Upload to S3
+    # 8. Upload to S3
     short_id = str(conversation_id)[:8]
     today = date.today().isoformat()
     s3_key = f"graph-contexts/graph-{short_id}-{today}.html"
@@ -972,6 +1093,8 @@ async def _generate_from_old_snapshot(
             records.append(_triplet(jp_node, None, None))
 
     logger.info("graph_context_builder | legacy | conv={} | records={}", conversation_id, len(records))
+
+    _inject_layout(records, _compute_layout(records))
 
     template_html = _TEMPLATE_PATH.read_text(encoding="utf-8")
     if _PLACEHOLDER not in template_html:

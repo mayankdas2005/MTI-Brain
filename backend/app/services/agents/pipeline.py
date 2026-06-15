@@ -49,6 +49,8 @@ _STATE_KEYS = {
     "low_confidence_filters", "zero_row_probe_result", "zero_row_rewrite_count",
     "data_quality_flag", "data_quality_reason",
     "answer", "chart_spec", "chart_type", "alternative_chart_specs", "follow_ups", "error", "stopped", "prior_sql",
+    "query_intent", "entity_tokens", "search_terms", "is_followup", "complexity",
+    "preference_summary", "neo4j_raw_graph",
 }
 
 
@@ -584,7 +586,12 @@ async def stream_pipeline(
                     "persona":           state.get("persona", ""),
                     "sql":               state.get("sql_list", [""])[0] if state.get("sql_list") else "",
                     "tables_used":       (state.get("semantic_ir_list") or [{}])[0].get("anchor_tables") or [],
-                    "intent":            (state.get("semantic_ir_list") or [{}])[0].get("intent") or "",
+                    # "intent":            (state.get("semantic_ir_list") or [{}])[0].get("intent") or "",
+                    "intent":            "\n\n".join(
+                        f"**{line.split(': ', 1)[0]}**: {line.split(': ', 1)[1]}" if ": " in line else line
+                        for line in state["query_intent"]
+                    ) if isinstance(state.get("query_intent"), list) else (state.get("query_intent") or ""),
+
                     "complexity":        (state.get("semantic_ir_list") or [{}])[0].get("complexity") or "",
                     "columns":           _done_cols,
                     "rows":              _done_rows,

@@ -340,7 +340,7 @@ const markdownComponents: Components = {
 
   strong: ({ children }) => {
     const text = extractText(children as ReactNode).trim();
-    const isMetric = text.split(/\s+/).filter(Boolean).length <= 4 && /\d/.test(text);
+    const isMetric = /^[\-+]?[\d,.%]+(\s+[a-zA-Z]{1,10})?$/.test(text.trim());
     if (isMetric) {
       return (
         <span className="inline-flex items-center font-mono font-semibold text-[0.85em] bg-muted/60 border border-border/70 rounded px-1.5 py-px mx-0.5 text-foreground whitespace-nowrap">
@@ -430,6 +430,18 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 }: MarkdownRendererProps) {
   const deferredContent = useDeferredValue(content);
 
+  // Strip [!TYPE] GitHub alert markers from blockquote lines before react-markdown
+  // processes them. The blockquote renderer's keyword fallback ("Data", "warning",
+  // "concern", etc.) still detects the alert type for styling.
+  const processedContent = useMemo(() => {
+    if (!deferredContent) return deferredContent;
+    return deferredContent
+      // Case 1: [!TYPE] is the only content on its blockquote line — remove the whole line
+      .replace(/^>[ \t]*\[!(WARNING|NOTE|TIP|IMPORTANT|CAUTION)\][ \t]*(\r?\n|$)/gim, '')
+      // Case 2: [!TYPE] is a prefix followed by content on the same line — strip the marker
+      .replace(/^(>[ \t]*)\[!(WARNING|NOTE|TIP|IMPORTANT|CAUTION)\][ \t]+/gim, '$1');
+  }, [deferredContent]);
+
   if (isUser) {
     return <p className="whitespace-pre-wrap">{content}</p>;
   }
@@ -441,7 +453,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         rehypePlugins={rehypePlugins}
         components={markdownComponents}
       >
-        {deferredContent}
+        {processedContent}
       </ReactMarkdown>
     </div>
   );
