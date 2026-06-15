@@ -539,6 +539,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           reasoning: parseReasoning(m.reasoning),
           streamingSteps: m.role === 'assistant' ? extractSteps(m.reasoning, m.content, m.metadata_) : undefined,
           metadata_: m.metadata_,
+          preference_summary: m.metadata_?.preference_summary,
           feedback: m.feedback ? { liked: m.feedback.liked, comment: m.feedback.comment ?? undefined } : undefined,
           created_at: m.created_at,
         }));
