@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useState, useMemo, useRef, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   X,
@@ -29,7 +29,7 @@ interface Step {
    *  centered/no-target overview slide. */
   selector?: string;
   title: string;
-  body: string;
+  body: ReactNode;
   icon: typeof MessageSquare;
   /** Where to position the popover. Ignored when selector is omitted. */
   placement?: 'top' | 'bottom' | 'right' | 'left';
@@ -39,21 +39,39 @@ interface Step {
   skipIfMissing?: boolean;
 }
 
+function K({ children }: { children: ReactNode }) {
+  return (
+    <kbd className="px-1 py-0.5 rounded border border-border bg-muted text-[11px] font-mono">
+      {children}
+    </kbd>
+  );
+}
+
 function makeSteps(): Step[] {
   const mod = modifierLabel();
   return [
     {
       id: 'welcome',
       title: 'Welcome to MTI Brain',
-      body:
-        'Your AI-powered financial data assistant. This short tour covers the key features - use Next to continue, or Skip to jump straight in.',
+      body: (
+        <>
+          <p>Your AI-powered financial data assistant.</p>
+          <p>Use Next to continue, or Skip to jump straight in.</p>
+        </>
+      ),
       icon: Sparkles,
     },
     {
       id: 'composer',
       selector: '[data-onboarding="composer"]',
       title: 'Ask in plain language',
-      body: `Type any question in natural language and press Enter (⇧+Enter for a new line). MTI Brain translates it into SQL, runs it against your data, and streams results as charts, tables, or summaries. Press Esc to stop a running response.`,
+      body: (
+        <>
+          <p>Type any question in natural language and press Enter (⇧+Enter for a new line). MTI Brain translates it into SQL, runs it against your data, and streams results as charts, tables, or summaries.</p>
+          <p>Press <K>Esc</K> to stop a running response.</p>
+          <p>Type <K>/</K> to access slash commands — switch theme, change tone, retry, and more.</p>
+        </>
+      ),
       icon: MessageSquare,
       placement: 'top',
     },
@@ -61,7 +79,12 @@ function makeSteps(): Step[] {
       id: 'deep-analysis',
       selector: '[data-onboarding="deep-analysis"]',
       title: 'Deep Analysis',
-      body: 'Toggle Deep Analysis for complex, multi-step queries — it runs a richer pipeline that cross-references policies, limits, and historical context before generating SQL. Use it when a simple question gives incomplete results.',
+      body: (
+        <>
+          <p>Toggle Deep Analysis for complex, multi-step queries — it runs a richer pipeline that cross-references policies, limits, and historical context before generating SQL.</p>
+          <p>Use it when a simple question gives incomplete results.</p>
+        </>
+      ),
       icon: BrainCircuit,
       placement: 'top',
     },
@@ -69,7 +92,12 @@ function makeSteps(): Step[] {
       id: 'playbook',
       selector: '[data-onboarding="composer"]',
       title: 'Save & reuse queries',
-      body: 'When you\'ve typed a question worth keeping, click the bookmark icon (bottom-left of the composer) to save it to your Playbook with a name. Later, type @ in the composer to search and insert any saved query instantly.',
+      body: (
+        <>
+          <p>When you've typed a question worth keeping, click the bookmark icon (bottom-left of the composer) to save it to your Playbook with a name.</p>
+          <p>Later, type <K>@</K> in the composer to search and insert any saved query instantly.</p>
+        </>
+      ),
       icon: BookOpen,
       placement: 'top',
     },
@@ -77,7 +105,12 @@ function makeSteps(): Step[] {
       id: 'sidebar',
       selector: '[data-onboarding="sidebar"]',
       title: 'Navigate your work',
-      body: `Switch between Projects and Chats at the top. Starred conversations stay pinned for quick access, and Recents shows your history grouped by date. Hover any conversation to rename it. Press ${mod}+. to toggle the sidebar.`,
+      body: (
+        <>
+          <p>Switch between Projects and Chats at the top. Starred conversations stay pinned for quick access, and Recents shows your history grouped by date.</p>
+          <p>Hover any conversation to rename it. Press <K>{mod}+.</K> to toggle the sidebar.</p>
+        </>
+      ),
       icon: FolderOpen,
       placement: 'right',
       skipIfMissing: true,
@@ -86,7 +119,12 @@ function makeSteps(): Step[] {
       id: 'new-chat',
       selector: '[data-onboarding="new-chat"]',
       title: 'Start a new conversation',
-      body: `Click New Chat or press ${mod}+Shift+O to begin a fresh query. Each conversation is private to you and saved automatically.`,
+      body: (
+        <>
+          <p>Click New Chat or press <K>{mod}+Shift+O</K> to begin a fresh query.</p>
+          <p>Each conversation is private to you and saved automatically.</p>
+        </>
+      ),
       icon: Plus,
       placement: 'right',
       skipIfMissing: true,
@@ -95,7 +133,12 @@ function makeSteps(): Step[] {
       id: 'cmd-k',
       selector: '[data-onboarding="cmd-k"]',
       title: 'Search your history',
-      body: `Press ${mod}+K (or /) to search across all your past conversations by title or content. Use ${mod}+1 through ${mod}+9 to jump directly to a recent conversation.`,
+      body: (
+        <>
+          <p>Press <K>{mod}+K</K> or <K>/</K> to search across all your past conversations by title or content.</p>
+          <p>Use <K>{mod}+1</K> through <K>{mod}+9</K> to jump directly to a recent conversation.</p>
+        </>
+      ),
       icon: Search,
       placement: 'bottom',
     },
@@ -103,7 +146,12 @@ function makeSteps(): Step[] {
       id: 'star',
       selector: '[data-onboarding="star"]',
       title: 'Star important conversations',
-      body: `Star any conversation to pin it to the top of your sidebar — ideal for ongoing analyses or reports you return to regularly. Shortcut: ${mod}+S.`,
+      body: (
+        <>
+          <p>Star any conversation to pin it to the top of your sidebar — ideal for ongoing analyses or reports you return to regularly.</p>
+          <p>Shortcut: <K>{mod}+S</K></p>
+        </>
+      ),
       icon: Star,
       placement: 'bottom',
       skipIfMissing: true,
@@ -112,27 +160,26 @@ function makeSteps(): Step[] {
       id: 'add-to-project',
       selector: '[data-onboarding="add-to-project"]',
       title: 'Organise into projects',
-      body: `Move this conversation into a project to keep related analyses grouped together. Shortcut: ${mod}+Shift+M.`,
+      body: (
+        <>
+          <p>Move this conversation into a project to keep related analyses grouped together.</p>
+          <p>Shortcut: <K>{mod}+Shift+M</K></p>
+        </>
+      ),
       icon: FolderInput,
       placement: 'bottom',
       skipIfMissing: true,
     },
-    // Export PDF step - hidden
-    // {
-    //   id: 'export-pdf',
-    //   selector: '[data-onboarding="export-pdf"]',
-    //   title: 'Export as PDF',
-    //   body:
-    //     'Save any conversation as a polished PDF - full responses, SQL, data tables, and rendered charts included.',
-    //   icon: FileDown,
-    //   placement: 'bottom',
-    //   skipIfMissing: true,
-    // },
     {
       id: 'user-menu',
       selector: '[data-onboarding="user-menu"]',
       title: 'Theme & preferences',
-      body: `Open the user menu to switch between light and dark theme, adjust your preferences in Settings, or sign out. Shortcuts: ${mod}+, for Settings, ${mod}+Shift+L to toggle theme.`,
+      body: (
+        <>
+          <p>Open the user menu to switch between light and dark theme, adjust your preferences in Settings, or sign out.</p>
+          <p><K>{mod}+,</K> for Settings · <K>{mod}+Shift+L</K> to toggle theme.</p>
+        </>
+      ),
       icon: UserIcon,
       placement: 'top',
       skipIfMissing: true,
@@ -140,14 +187,20 @@ function makeSteps(): Step[] {
     {
       id: 'shortcuts',
       title: 'Keyboard shortcuts',
-      body: `Press ${mod}+/ or ? to view all shortcuts at any time.`,
+      body: (
+        <p>Press <K>{mod}+/</K> or <K>?</K> to view all shortcuts at any time.</p>
+      ),
       icon: Keyboard,
     },
     {
       id: 'done',
       title: "You're ready",
-      body:
-        'For best results, ask specific questions — include a metric, date range, or business segment. The more precise the question, the sharper the answer.',
+      body: (
+        <>
+          <p>For best results, ask specific questions — include a metric, date range, or business segment.</p>
+          <p>The more precise the question, the sharper the answer.</p>
+        </>
+      ),
       icon: Sparkles,
     },
   ];
@@ -348,7 +401,7 @@ export function OnboardingTour({ forceOpen, onClose }: OnboardingTourProps = {})
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold">{step.title}</p>
-            <p className="text-sm text-muted-foreground mt-1 leading-relaxed">{step.body}</p>
+            <div className="text-sm text-muted-foreground mt-1 leading-relaxed space-y-2">{step.body}</div>
           </div>
           <button
             type="button"
