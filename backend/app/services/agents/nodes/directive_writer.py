@@ -22,6 +22,7 @@ from app.services.agents.state import AnalyticsState
 
 def _build_anchor_schema_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
+    table_grains = enriched_schema.get("table_grains") or {}
     if not columns:
         return "(no schema loaded)"
 
@@ -33,13 +34,15 @@ def _build_anchor_schema_section(enriched_schema: dict) -> str:
 
     lines = []
     for fqn, cols in by_table.items():
-        lines.append(f"\n{fqn}:")
+        grain = table_grains.get(fqn, "")
+        grain_note = f"  [grain: {grain[:100]}]" if grain else ""
+        lines.append(f"\n{fqn}:{grain_note}")
         for c in cols:
             name = c.get("name", "")
-            dtype = c.get("data_type") or c.get("semantic_type", "")
+            sem = c.get("semantic_type") or c.get("data_type", "")
             desc = (c.get("description") or "")[:120]
             ref_table = (c.get("referenced_table_fqn") or "").strip()
-            col_line = f"  {name}  [{dtype}]"
+            col_line = f"  [{sem}] {name}"
             if ref_table:
                 col_line += f"  [FK -> {ref_table}]"
             lines.append(col_line)

@@ -622,11 +622,14 @@ ANTI-PATTERNS (do not repeat these):
 ---
 
 RULES:
-0. EXISTS SUBQUERY PROHIBITION — ABSOLUTE: Do NOT add, keep, or reintroduce EXISTS / IN / ANY
-   subqueries for tables that are not in the ANCHOR TABLES listed in QUERY INTENT.
-   If the broken SQL contains such subqueries, REMOVE them — they are hallucinations that
-   eliminate all rows. A column's description or its filter_values list is documentation,
-   never a filter value. The only valid WHERE predicates are those explicitly listed in QUERY INTENT.
+0. EXISTS / DEAD-TABLE SUBQUERY PROHIBITION — ABSOLUTE: Do NOT add, keep, or reintroduce
+   EXISTS / IN / ANY subqueries whose sole purpose is to include a table that contributes
+   NO columns to the FINAL SELECT and provides no required WHERE filter.
+   This applies regardless of whether the table appears in ANCHOR TABLES — a table in the
+   anchor list that fails Rule 1h criteria is still a dead table and MUST be omitted.
+   If the broken SQL contains such subqueries, REMOVE them — they eliminate all rows.
+   A column's description or its filter_values list is documentation, never a filter value.
+   The only valid WHERE predicates are those explicitly listed in QUERY INTENT.
 1. Fix ONLY: syntax errors, wrong column names, wrong schema prefix, type mismatches,
    Redshift dialect issues, invalid ON clauses, incorrect filter logic, broken CTE structure.
 
@@ -658,8 +661,10 @@ RULES:
    If no candidate path is available, look in PRIMARY COLUMNS within SCHEMA REFERENCE for those
    two tables. Use ONLY a column name EXPLICITLY LISTED there. Check `grain` of both tables —
    if joining fact to fact, verify the key is unique on one side.
-3. Never change what is defined in QUERY INTENT above: tables joined, aggregation logic, metric
-   definitions, or the semantic meaning of the query.
+3. Never change the semantic meaning of the query: aggregation logic, metric definitions, filter
+   values, or time ranges. You MAY remove a table from a JOIN if it contributes no columns to
+   FINAL SELECT, is not a true intermediate bridge (joined on both sides), and provides no
+   required WHERE filter — removing a dead table is a correctness fix, not a semantic change.
 3b. FILTER VALUES ARE DB CODES: Every filter value shown in QUERY INTENT is the exact string
    stored in Redshift — already resolved by filter_resolver before this repair runs.
    `balance_type = 'CLOSING'` means the column stores the string "CLOSING"; there is no row
@@ -1121,12 +1126,14 @@ If any input from 1-5 conflicts with a lower-numbered source: the higher-numbere
 Never invent a JOIN, filter, or column not traceable to a source in 1-5.
 
 RULES:
-1. PRE-COMPUTED JOIN CHAIN (or BASE TABLE for single-table queries) gives the exact FROM + JOIN
-   sequence for the first CTE — copy it verbatim. Every table referenced by column name must
-   appear in a FROM or JOIN of that CTE; never write schema.table.column for a table that is not
-   in the FROM or a JOIN. Never drop or invent tables. You may substitute a different ON clause
-   ONLY when VOCABULARY OVERLAP HINTS in UNRESOLVED JOIN PAIRS provide a better-evidenced join column.
-   Rule 1a overrides all others; each subsequent sub-rule (1b–1d) is an exception that only
+1. PRE-COMPUTED JOIN CHAIN (or BASE TABLE for single-table queries) gives the FROM + JOIN
+   sequence for the first CTE — use it as the starting point. Every table you DO include must
+   appear in a FROM or JOIN; never write schema.table.column for a table that is not in FROM or JOIN.
+   Never invent tables not in the chain. Rule 1h (DEAD TABLE PROHIBITION) OVERRIDES this rule:
+   any table that fails Rule 1h criteria MUST be omitted even if it appears in this chain.
+   You may substitute a different ON clause ONLY when VOCABULARY OVERLAP HINTS in UNRESOLVED JOIN
+   PAIRS provide a better-evidenced join column.
+   Rule 1a overrides all others; each subsequent sub-rule (1b–1h) is an exception that only
    applies in the stated condition.
 1a. SCHEMA DIRECTIVE JOIN_CHAIN (in DIRECTIVES above): when present, gives confirmed ON clauses.
    If SCHEMA DIRECTIVE JOIN_CHAIN and PRE-COMPUTED JOIN CHAIN disagree on the ON clause for the
@@ -1182,13 +1189,18 @@ RULES:
     Cast timestamptz columns to TIMESTAMP in the subquery to prevent DATEADD type errors:
       (SELECT MAX(detected_at)::TIMESTAMP FROM lpp.payment_exception)
     Only collect MAX() for tables whose date column is used in a stale-data OR MAX WHERE branch.
-1h. DEAD TABLE PROHIBITION: Never JOIN, EXISTS, or subquery a table unless at least ONE of:
+1h. DEAD TABLE PROHIBITION (overrides Rule 1's "never drop" instruction): A table MUST be omitted
+    from the SQL — even if it appears in the PRE-COMPUTED JOIN CHAIN or AVAILABLE TABLES list —
+    unless at least ONE of:
     (a) At least one column from that table appears in FINAL SELECT (directly or forwarded), OR
-    (b) The table is a confirmed bridge in the PRE-COMPUTED JOIN CHAIN (path_tables), OR
+    (b) The table is a true intermediate bridge in the PRE-COMPUTED JOIN CHAIN — meaning it has
+        an incoming JOIN from one table AND an outgoing JOIN to another table (two or more JOIN
+        clauses reference it). A table that is only a JOIN endpoint (only one JOIN clause) with
+        no columns in SELECT or WHERE is NOT a bridge — omit it. OR
     (c) The table provides a WHERE/HAVING filter column AND has a confirmed ON clause to the
         primary fact table (shown in JOIN_CHAIN).
     Tables listed in UNRESOLVED_PAIRS have NO confirmed join path — OMIT them entirely.
-    Never use EXISTS/IN subqueries to force an anchor table into the query to satisfy a table
+    Never use EXISTS/IN subqueries to force a table into the query to satisfy any table
     list requirement. A dead EXISTS with a NULL join column silently filters every row to zero.
     WRONG: AND EXISTS (SELECT 1 FROM lpp.bank_account ba
                          JOIN lpp.cash_flow cf ON cf.account_ref = ba.code
@@ -1387,7 +1399,7 @@ an upstream CTE OR comes from a table that is in THIS CTE's own FROM/JOIN. Write
 columns: <alias_from_upstream OR table.col_with_join>". Any schema.table.column reference for a table not
 in that CTE's FROM/JOIN is a violation of Rule 6 and will fail validation.
 For each CTE: list which columns from PRIMARY COLUMNS are aggregated ([AGG]) vs in GROUP BY ([GRP]).
-Confirm GROUP BY is complete per CTE. Confirm every PRE-COMPUTED JOIN is used verbatim.
+Confirm GROUP BY is complete per CTE. Confirm every PRE-COMPUTED JOIN that satisfies Rule 1h is included; confirm any that fail Rule 1h are omitted.
 Check grain for each joined table — does any join risk row multiplication? If so, state how you mitigate it.
 CTE COLUMN FORWARDING AUDIT (mandatory — do this before writing SQL):
   For each downstream CTE and the final SELECT: name its upstream source, then list every
@@ -1940,9 +1952,9 @@ Your ONLY job: pick the right chart type. Do NOT assign columns. Do NOT write la
 PERSONA: {persona}
 
 PERSONA CHART PREFERENCES — apply first; overrides data-shape defaults:
-  executive: single metric -> kpi_card; trend -> line; comparison -> bar (max 5); NEVER heatmap/bubble/scatter
+  executive: single metric -> kpi_card; trend -> line; comparison -> bar (max 5); NEVER heatmap/scatter
   director:  "what changed/bridge" -> waterfall; multi-entity trend -> line; two-dim -> grouped_bar
-  manager:   comparison -> bar; trend -> line; breakdown -> grouped_bar; avoid dual_axis unless scale diff >10×
+  manager:   comparison -> bar; trend -> line; breakdown -> grouped_bar
   analyst:   no restrictions; choose purely on data shape
 
 QUESTION: {question}
@@ -1964,12 +1976,11 @@ CHART TYPE REFERENCE:
   line        — metric over sequential time; supports multiple series via color
   grouped_bar — side-by-side bars; REQUIRES x Distinct ≥ 2 AND color Distinct ≤ 3
   donut       — part-of-whole; ≤ 5 slices; no negative values
-  pie         — same as donut without hole
   scatter     — two continuous numeric axes; correlation analysis
   waterfall   — variance / P&L bridge / cash-flow increments
   heatmap     — two categorical axes + numeric intensity; REQUIRES BOTH dims Distinct ≥ 2
-  bubble      — scatter + third numeric as bubble size
-  dual_axis   — two measures at incompatible scales on one time axis
+
+NOT AVAILABLE: dual_axis, bubble, pie — do not output these types.
 
 DATA PATTERN → CHART TYPE:
   rows = 1                                                                 -> kpi_card
@@ -2002,7 +2013,7 @@ CRITICAL PITFALLS — check these BEFORE finalising:
   TREND OVERRIDE (HIGHEST PRIORITY — beats all rules above):
   Question contains "trend" / "over [N] days/weeks/months/years" / "trailing [N]" /
   "over time" / "history" / "daily/weekly/monthly [metric]"
-    → chart MUST be line or dual_axis
+    → chart MUST be line
     EXCEPTION: date Distinct ≤ 3 → use bar (a 2–3 point line is misleading)
 
 ---
@@ -2051,7 +2062,7 @@ COLUMN ASSIGNMENT RULES for {chart_type}:
     color_column = second string column if Distinct ≤ 10 and adds grouping; else null
     PIVOT RULE  : if the natural x_column has Distinct = 1, use the OTHER string column as x_column
 
-  line / dual_axis
+  line
     x_column    = date/time column
     y_column    = primary numeric measure
     color_column = string series column (one line per value); null for single series
@@ -2130,14 +2141,14 @@ CHART CONFIDENCE (start at 100, deduct):
 ---
 
 ALTERNATIVES (up to 2, structurally valid for the SAME columns):
-  bar       → [waterfall if ± values,  grouped_bar if 2 string cols Distinct ≤ 3]
-  line      → [grouped_bar if string col Distinct ≤ 3,  bar]
+  bar         → [waterfall if ± values,  grouped_bar if 2 string cols Distinct ≤ 3]
+  line        → [grouped_bar if string col Distinct ≤ 3,  bar]
   grouped_bar → [bar,  line if date col exists]
-  heatmap   → [grouped_bar,  bar]
-  waterfall → [bar]
-  donut/pie → [bar]
-  scatter   → [bar,  dual_axis]
-  kpi_card  → []
+  heatmap     → [grouped_bar,  bar]
+  waterfall   → [bar]
+  donut       → [bar]
+  scatter     → [bar]
+  kpi_card    → []
 
 ---
 
@@ -2193,7 +2204,6 @@ PERSONA CHART PREFERENCES — apply BEFORE the generic rules below; persona over
     • Operational comparison -> bar sorted descending
     • Trend monitoring -> line (clear, single series preferred)
     • Breakdown by component -> grouped_bar
-    • Clarity over sophistication; avoid dual_axis unless scales differ by >10×
   analyst:
     • No persona-based restrictions; choose purely on data shape
     • Correlation -> scatter; multi-dim analysis -> heatmap; size-weighted -> bubble
@@ -2240,7 +2250,7 @@ STEP 2 — PICK THE CHART TYPE
   "What share does each part hold?"          -> donut (≤5 slices only)
   "Side-by-side comparison across groups"    -> grouped_bar
   "Correlation between two metrics?"         -> scatter
-  "Two metrics at different scales?"         -> dual_axis
+  "Two metrics at different scales?"         -> line (use color_column for series)
 
 ━━━ CHART TYPE GUIDE ━━━
   kpi_card    — single scalar or a small set of headline KPIs; no axis
@@ -2248,12 +2258,11 @@ STEP 2 — PICK THE CHART TYPE
   line        — metric trend over time; supports multiple series via color_column
   grouped_bar — side-by-side bars for 2-3 groups; direct visual comparison
   donut       — part-of-whole; ≤ 5 slices in finance context
-  pie         — same as donut without hole; use donut by default
   scatter     — two continuous numeric axes; correlation / risk analysis
   waterfall   — variance / P&L bridge / cash flow
   heatmap     — two categorical axes, one numeric intensity
-  bubble      — scatter + third numeric as bubble size
-  dual_axis   — two metrics at incompatible scales on one time axis
+
+NOT AVAILABLE: dual_axis, bubble, pie — do not output these types.
 
 ━━━ DATA PATTERN -> CHART MAPPING ━━━
   rows=1, any cols                                                              -> kpi_card
@@ -2276,7 +2285,7 @@ STEP 2 — PICK THE CHART TYPE
   • Waterfall: go-to for ANY "what changed" or "bridge" analysis.
   • Donut: in finance, donut beats pie.
   • Grouped bar limit: ≤ 3 groups; beyond that, use bar with color.
-  • Dual axis: ONLY when scales differ by 10× or more.
+  • Two metrics at different scales: use line with color_column (one series per metric).
   • Line with color_column: the correct way to show multiple series — set color_column to the string grouping column.
 
 ━━━ CRITICAL PITFALLS ━━━
@@ -2298,7 +2307,7 @@ STEP 2 — PICK THE CHART TYPE
   TREND OVERRIDE (HIGHEST PRIORITY — overrides all rules above):
   If the question contains ANY of: "trend", "over [N] days/weeks/months/years",
   "trailing [N]", "over time", "history", "daily/weekly/monthly [metric]",
-  chart MUST be one of: line / dual_axis.
+  chart MUST be line.
   grouped_bar, bar, kpi_card are FORBIDDEN when TREND OVERRIDE fires.
   EXCEPTION: when date Distinct ≤ 3, use bar even for trend questions (a 2–3 point line is misleading).
 
@@ -2310,13 +2319,11 @@ STEP 3 — PICK UP TO 2 ALTERNATIVES (structurally valid for the SAME columns, w
   primary = line        -> alternatives: [grouped_bar (if string_col exists and Distinct ≤ 3), bar]
   primary = bar         -> alternatives: [waterfall (if ± values), grouped_bar (if 2 string cols with Distinct ≤ 3)]
   primary = grouped_bar -> alternatives: [bar, line (if date col exists)]
-  primary = donut / pie -> alternatives: [bar]
-  primary = scatter     -> alternatives: [bar, dual_axis]
+  primary = donut       -> alternatives: [bar]
+  primary = scatter     -> alternatives: [bar]
   primary = waterfall   -> alternatives: [bar]
   primary = kpi_card    -> alternatives: []
-  primary = dual_axis   -> alternatives: [line, bar]
   primary = heatmap     -> alternatives: [grouped_bar, bar]
-  primary = bubble      -> alternatives: [scatter, bar]
 
 ---
 
@@ -2332,7 +2339,7 @@ STEP 4 — COLUMN BINDINGS
   • x_column ≠ y_column. color_column ≠ x_column and ≠ y_column.
   • kpi_card: set ALL column fields to null.
   • bar / waterfall: x_column = category or time (string/date); y_column = measure (numeric).
-  • line / dual_axis: x_column = date/time column; y_column = numeric measure.
+  • line: x_column = date/time column; y_column = numeric measure.
     color_column = string series column (when multiple series exist — one line per value).
   • grouped_bar: x_column = grouping dimension (string/date); y_column = numeric measure;
     color_column = the second string column that drives the side-by-side color bands.
@@ -2574,6 +2581,168 @@ Begin IMMEDIATELY with <reasoning>. No text before it. Then output <chart>. No t
 </chart>"""
 )
 
+# ─── Node 5: Chart Agent (unified — type + bindings + labels + sort in one call) ─
+
+CHART_AGENT_PROMPT = ChatPromptTemplate.from_template(
+    """You are a data visualization expert building financial dashboards.
+One call. Decide everything: chart type, column assignments, axis types, labels, sort order, aggregation.
+
+LESS IS MORE: Only generate a chart when it adds clear insight over reading the numbers.
+If the data does not lend itself to a meaningful chart (raw detail rows, too many dimensions,
+no clear pattern to visualize), output chart_confidence: 0 — do not force a chart.
+
+PERSONA: {persona}
+Persona chart preferences:
+  executive  — single metric → kpi_card; trend → line; comparison → bar (max 5 categories)
+  director   — bridge / P&L → waterfall; multi-entity trend → line; two-dim breakdown → grouped_bar
+  manager    — comparison → bar; trend → line
+  analyst    — no restrictions; choose purely on data shape
+
+QUESTION: {question}
+
+QUERY INTENT:
+{query_intent}
+
+{feedback_section}
+
+---
+
+{data_profile}
+
+---
+
+{column_metadata}
+
+---
+
+CHART TYPE OPTIONS:
+  kpi_card    — single scalar KPI; only when result is 1–3 summary rows with no meaningful grouping
+  bar         — categorical comparison; default for string x-axis
+  line        — metric over time or ordered sequence; supports multiple series via color
+  grouped_bar — side-by-side bars; requires x string + color string (Distinct ≤ 3) + y numeric
+  donut       — part-of-whole; max 5 slices; no negative values
+  scatter     — two numeric axes; correlation
+  waterfall   — incremental bridge / ± deltas summing to a total; max 20 rows
+  heatmap     — two categorical axes + numeric intensity
+
+DO NOT USE: dual_axis (confusing scales), bubble (adds size dimension that is rarely meaningful),
+  pie (donut is always better). These chart types are not available.
+
+---
+
+NO CHART: Output chart_confidence: 0 when:
+  • The result is raw detail rows with no aggregation pattern
+  • There are more than 2 independent dimensions and no clear primary measure
+  • No single chart type from the list above adds insight over reading the numbers
+  • The data is a single row with many unrelated metrics (report card — text is better)
+
+---
+
+X_COLUMN_TYPE — determines Vega-Lite rendering; decide from actual sample values:
+  "temporal"     — actual ISO dates / timestamps (YYYY-MM-DD, 2024-01-15, etc.)
+  "ordinal"      — ordered strings: period codes (2024-Q1, FY2025, Jan-2024), rank labels
+  "nominal"      — unordered categories: bank names, instrument types, country codes
+  "quantitative" — numeric x-axis (scatter only)
+
+---
+
+SORT — choose the order that makes the chart most meaningful given the question and intent.
+  Trend / time-series → chronological (x ascending).
+  Ranking / "top N" / "highest/lowest" → value order (y descending).
+  Bridge / waterfall → time-ordered or contribution-sized depending on question.
+  Categorical with no inherent order → value sort if ranking matters; none if already ordered.
+  Valid values: sort_by = "x_column" | "y_column" | "none", sort_order = "ascending" | "descending"
+
+---
+
+FORMAT:
+  USD / dollar amounts  → "$,.0f"     (renderer auto-abbreviates to K/M/B/T)
+  INR / rupee           → "₹,.0f"
+  GBP / pound           → "£,.0f"
+  EUR / euro            → "€,.0f"
+  Counts / volumes      → ",.0f"
+  Ratios 0–1            → ".1%"       (Vega multiplies by 100 — ONLY for raw 0–1 ratios)
+  Already-% (4.5 = 4.5%)  → ",.1f"
+  x_value_format        → null unless chart is scatter
+
+---
+
+AGGREGATION — decide if rows need collapsing before charting:
+  Step 1: count Distinct(x_column) × Distinct(color_column or 1). If that ≈ total row count → "none".
+  Step 2: if rows must be combined, ask what the measure represents:
+    Each row is a partial contribution (financial amount, count, volume) → "sum"
+    Each row is a complete measurement (rate, ratio, price, % change, spread) → "avg"
+    Question asks for the peak / worst case → "max"
+    Question asks for the floor / best case → "min"
+    Question asks "how many entities / occurrences" → "count"
+
+---
+
+CHART CONFIDENCE (start 100, deduct):
+  -20  time-series chart but x Distinct < 4
+  -20  color series > 10 distinct values (unreadable)
+  -15  primary measure has only 1 distinct value (flat chart)
+  -10  trend question but < 7 data points
+  -30  multiple unrelated numeric columns with no clear primary measure
+  Floor 0. Render if ≥ 60. Output 0 if no chart type adds clear insight.
+
+---
+
+{reasoning_directive}
+
+<reasoning>
+1. Feedback: quote what the feedback_section says (if any) and state exactly how you will apply it.
+   If no feedback: "No feedback provided."
+2. Persona "{persona}": which preference rule applies here?
+3. Data shape: identify date cols, string cols, numeric cols from the profile above.
+4. No-chart check: does this data benefit from visualization? If not, state why and output confidence 0.
+5. x_column: which column, what x_column_type — justify from actual sample values.
+6. y_column: which numeric measure best answers the question?
+7. color_column: is there a meaningful series dimension? null for single series.
+8. Sort reasoning: what order makes this chart most readable given the question intent?
+9. Aggregation reasoning: check Distinct(x) × Distinct(color) vs row_count.
+10. Chart type: final choice + one-line reason.
+11. Confidence: start=100, list deductions, state final score.
+12. Alternatives: up to 2 structurally valid alternatives with full column bindings.
+</reasoning>
+<chart>
+{{
+  "chart_type": "line",
+  "x_column": "period_quarter",
+  "x_column_type": "ordinal",
+  "y_column": "total_cash_flow",
+  "color_column": null,
+  "size_column": null,
+  "chart_title": "Quarterly Cash Flow Trend",
+  "x_axis_label": "Period Quarter",
+  "y_axis_label": "Total Cash Flow",
+  "legend_title": "",
+  "y_value_format": "$,.0f",
+  "x_value_format": null,
+  "agg_function": "none",
+  "sort_by": "x_column",
+  "sort_order": "ascending",
+  "chart_confidence": 85,
+  "alternative_types": [
+    {{
+      "type": "bar",
+      "x_column": "period_quarter",
+      "x_column_type": "ordinal",
+      "y_column": "total_cash_flow",
+      "color_column": null,
+      "chart_title": "Quarterly Cash Flow",
+      "x_axis_label": "Period Quarter",
+      "y_axis_label": "Total Cash Flow",
+      "y_value_format": "$,.0f",
+      "sort_by": "x_column",
+      "sort_order": "ascending",
+      "confidence": 70
+    }}
+  ]
+}}
+</chart>"""
+)
+
 # ─── Conversation Compress ───────────────────────────────────────────────────
 
 COMPRESS_PROMPT = ChatPromptTemplate.from_template(
@@ -2784,12 +2953,12 @@ User question: {question}
 {query_intent_section}
 
 Rules:
-- Minimum 2 tables. For multi-domain queries (≥3 DOMAIN lines in the question, e.g. liquidity + debt + FX): 1 table per named domain — no fixed maximum; incomplete domain coverage is worse than a larger anchor set. (See MULTI-DOMAIN exception below.)
+- Minimum 1 table. Add more only if the first cannot provide all required measures and date columns. For multi-domain queries (≥3 DOMAIN lines in the question, e.g. liquidity + debt + FX): 1 table per named domain — no fixed maximum; incomplete domain coverage is worse than a larger anchor set. (See MULTI-DOMAIN exception below.)
 - Tables marked [business-term] MUST be included — the user named concepts that
   live in those tables
 - If any business term shows [tables: ...], include those tables — they are confirmed
   mappings of the user's concept to specific database tables
-- For each table beyond the top 2, name one output column or join key that requires it.
+- For each table beyond the primary fact table, name one output column or join key that requires it.
   If you cannot name one, remove the table.
 - result_shape must be one of: kpi | table | ratio | time_series | comparison
 - MULTI-DOMAIN EXCEPTION: when the question lists 3+ named domains (liquidity, debt, FX, interest
@@ -2803,12 +2972,30 @@ Rules:
 Output your reasoning in <reasoning>...</reasoning>, then the JSON in <output>...</output>.
 
 <reasoning>
-For each table: name it, then name the specific output column or join key that requires it.
+For each table: name it, cite the query_intent line (GOAL, TIME, DOMAIN, OUTPUT) that requires it, then name the specific column that delivers it.
 </reasoning>
 SELF-CHECK before outputting anchor_tables:
-1. TABLE JUSTIFICATION: For each table, name one output column or confirmed join key. If you cannot name one, remove the table.
-2. RESULT SHAPE: Match the question verb — "compare"/"vs" -> comparison; "trend"/"over time" -> time_series; "total"/"how much" with no breakdown -> kpi; "rate"/"ratio" -> ratio or kpi; default -> table.
-3. COUNT CHECK: More than 5 anchor tables is almost always wrong — EXCEPT for multi-domain synthesis queries (3+ named domains). For single-domain queries: if >5, remove the weakest until every remaining one is justified by rule 1.
+0. QUERY_INTENT JUSTIFICATION: For each selected table, identify which line in the CONFIRMED INTENT section
+   (GOAL, TIME, DOMAIN, CONDITION, OUTPUT) requires it. State it explicitly in reasoning.
+   Example: "lpp.cash_flow — GOAL: 'cash flow quarter over quarter' requires signed_amount and value_date"
+            "lpp.bank_account — OUTPUT: 'by bank' requires bank_name dimension"
+   If no query_intent line requires the table: REMOVE IT. Domain match alone is not justification.
+1. SUFFICIENCY CHECK: For each table beyond the primary fact table, verify it provides at least one of:
+   (a) A measure column (see "measures:" line) NOT present in already-selected tables, OR
+   (b) A date column (see "dates:" line) NOT present in already-selected tables, OR
+   (c) A specific dimension or filter column explicitly named in the question or intent.
+   If none of (a), (b), (c) apply: REMOVE the table. Shared domain alone is NOT justification.
+2. PERIODIC TABLE RULE: Read the "grain:" line for each table carefully.
+   A grain like "one row per company per reporting date", "one row per account per month",
+   or "one row per entity per period" means the table stores pre-aggregated data — NOT one row per event.
+   A periodic/snapshot table MUST NOT be selected as a time filter source when the primary fact table
+   already has a date column in its "dates:" line.
+   A periodic table is ONLY justified when the user explicitly asks for the specific pre-aggregated
+   metric it stores (e.g., user says "quarterly EPS", "budget vs actual commitment balance").
+   Selecting a periodic table for time filtering multiplies every aggregate by the number of periods.
+3. TABLE JUSTIFICATION: For each table, name one output column or confirmed join key. If you cannot name one, remove the table.
+4. RESULT SHAPE: Match the question verb — "compare"/"vs" -> comparison; "trend"/"over time" -> time_series; "total"/"how much" with no breakdown -> kpi; "rate"/"ratio" -> ratio or kpi; default -> table.
+5. COUNT CHECK: More than 5 anchor tables is almost always wrong — EXCEPT for multi-domain synthesis queries (3+ named domains). For single-domain queries: if >5, remove the weakest until every remaining one is justified by rules 0–3.
 
 <output>
 {{
@@ -2854,6 +3041,10 @@ alias: clear business name (e.g. "total_balance" not "amount").
 State which columns match the requested metrics and what aggregation applies — one sentence per measure.
 For list queries: state "no aggregation — user wants individual records."
 For aggregation queries with empty measures: name the metric and why no column matches.
+INTENT VALIDATION: For each measure, cite the query_intent line (GOAL, DOMAIN, OUTPUT) that requires it.
+If no query_intent line requires a column: do not emit it.
+  Example: GOAL "cash flow quarter over quarter" → SUM(signed_amount) ✓
+  Example: GOAL "cash flow quarter over quarter" → metric_value from company_financial_metric ✗ (not in GOAL)
 </reasoning>
 <output>
 {{
@@ -3022,6 +3213,10 @@ Measures already selected: {measures_summary}
 <reasoning>
 One sentence per dimension: which grouping columns match what the user wants broken down by.
 For missing breakdowns: name them explicitly.
+INTENT VALIDATION: For each dimension, cite the query_intent line (GOAL, OUTPUT, DOMAIN) that requires this breakdown.
+If no query_intent line requires this grouping: remove it.
+  Example: OUTPUT "by quarter" → date_trunc(quarter, value_date) ✓
+  Example: OUTPUT "by quarter" → period_type from company_financial_metric ✗ (not in OUTPUT)
 </reasoning>
 <output>
 {{

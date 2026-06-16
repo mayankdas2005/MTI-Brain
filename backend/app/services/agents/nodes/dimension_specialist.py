@@ -55,28 +55,36 @@ def _is_dimension(c: dict) -> bool:
 
 def _build_groupable_columns_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
+    table_grains = enriched_schema.get("table_grains") or {}
     groupable = [c for c in columns if _is_dimension(c)]
     if not groupable:
         return "(no groupable columns found)"
 
-    lines = []
+    by_table: dict[str, list[dict]] = {}
     for c in groupable[:20]:
-        fqn = c.get("table_fqn", "")
-        name = c.get("name", "")
-        dtype = c.get("data_type") or c.get("semantic_type", "")
-        desc = (c.get("description") or "")[:150]
-        synonyms = c.get("synonyms") or []
-        distinct_vals = c.get("distinct_values") or c.get("value_vocabulary") or []
-        sample_vals = (c.get("sample_values") or [])[:5]
-        lines.append(f"  {fqn}.{name}  [{dtype}]")
-        if desc:
-            lines.append(f"    description: {desc}")
-        if synonyms:
-            lines.append(f"    also known as: {', '.join(synonyms[:3])}")
-        if distinct_vals:
-            lines.append(f"    example_values: {distinct_vals[:8]}")
-        elif sample_vals:
-            lines.append(f"    example_values: {sample_vals}")
+        by_table.setdefault(c.get("table_fqn", ""), []).append(c)
+
+    lines = []
+    for fqn, cols in by_table.items():
+        grain = table_grains.get(fqn, "")
+        grain_note = f"  [grain: {grain[:100]}]" if grain else ""
+        lines.append(f"{fqn}{grain_note}")
+        for c in cols:
+            name = c.get("name", "")
+            sem = c.get("semantic_type") or c.get("data_type", "")
+            desc = (c.get("description") or "")[:150]
+            synonyms = c.get("synonyms") or []
+            distinct_vals = c.get("distinct_values") or c.get("value_vocabulary") or []
+            sample_vals = (c.get("sample_values") or [])[:5]
+            lines.append(f"  [{sem}] {name}")
+            if desc:
+                lines.append(f"    description: {desc}")
+            if synonyms:
+                lines.append(f"    also known as: {', '.join(synonyms[:3])}")
+            if distinct_vals:
+                lines.append(f"    example_values: {distinct_vals[:8]}")
+            elif sample_vals:
+                lines.append(f"    example_values: {sample_vals}")
     return "\n".join(lines)
 
 

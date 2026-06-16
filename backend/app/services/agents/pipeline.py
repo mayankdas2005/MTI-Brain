@@ -431,10 +431,11 @@ async def stream_pipeline(
 
                 # Emit a synthetic reasoning.delta for deterministic nodes that have a
                 # natural language label to show in the UI pipeline timeline.
+                _preference_label = ""
                 if node == N_LT_MEMORY_RETRIEVER and isinstance(output, dict):
-                    _label = output.get("preference_label") or ""
-                    if _label:
-                        yield {"event": "reasoning.delta", "data": {"node": node, "text": _label}}
+                    _preference_label = output.get("preference_label") or ""
+                    if _preference_label:
+                        yield {"event": "reasoning.delta", "data": {"node": node, "text": _preference_label}}
 
                 _node_visit_count[node] = visit_before + 1
                 visit_key  = f"{node}:{visit_before}"
@@ -453,10 +454,13 @@ async def stream_pipeline(
                     )
                     step["status"]      = "error" if node_set_error else "done"
                     step["duration_ms"] = round(node_dur * 1000)
-                    step["reasoning"]   = "".join(
+                    llm_reasoning = "".join(
                         "".join(_reasoning_entries[i]["tokens"])
                         for i in _step_reasoning_idx.get(visit_key, [])
                     )
+                    # For deterministic nodes with a synthetic label (e.g. lt_memory_retriever),
+                    # persist the label as step reasoning so it survives reload.
+                    step["reasoning"] = llm_reasoning or _preference_label
                     yield {
                         "event": "node.done",
                         "data": {

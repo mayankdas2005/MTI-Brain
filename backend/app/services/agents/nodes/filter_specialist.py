@@ -55,41 +55,51 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
     for tbl_cols in by_table.values():
         capped.extend(tbl_cols[:6])
 
+    table_grains = enriched_schema.get("table_grains") or {}
+
     header_lines = [
         "FILTERABLE COLUMNS — known_values listed are DB enum codes (reference only).",
         "Your raw_user_value MUST be the user's exact words. The downstream resolver maps them to DB codes.",
         "",
     ]
     lines = header_lines[:]
+
+    capped_by_table: dict = {}
     for c in capped:
-        fqn = c.get("table_fqn", "")
-        name = c.get("name", "")
-        dtype = c.get("data_type") or c.get("semantic_type", "")
-        desc = (c.get("description") or "")[:200]
-        synonyms = c.get("synonyms") or []
-        distinct_vals = c.get("distinct_values") or c.get("value_vocabulary") or []
-        value_aliases = c.get("value_aliases") or []
-        sample_vals = (c.get("sample_values") or [])[:5]
-        n_distinct = c.get("n_distinct") or -1
+        capped_by_table.setdefault(c.get("table_fqn", ""), []).append(c)
 
-        dtype_lower = (dtype or "").lower()
-        is_date_type = "date" in dtype_lower or "timestamp" in dtype_lower
-        time_label = " [time-filter eligible]" if is_date_type else ""
+    for fqn, tbl_cols in capped_by_table.items():
+        grain = table_grains.get(fqn, "")
+        grain_note = f"  [grain: {grain[:100]}]" if grain else ""
+        lines.append(f"{fqn}{grain_note}")
+        for c in tbl_cols:
+            name = c.get("name", "")
+            sem = c.get("semantic_type") or c.get("data_type", "")
+            desc = (c.get("description") or "")[:200]
+            synonyms = c.get("synonyms") or []
+            distinct_vals = c.get("distinct_values") or c.get("value_vocabulary") or []
+            value_aliases = c.get("value_aliases") or []
+            sample_vals = (c.get("sample_values") or [])[:5]
+            n_distinct = c.get("n_distinct") or -1
 
-        lines.append(f"  {fqn}.{name}  [{dtype}]{time_label}")
-        if desc:
-            lines.append(f"    description: {desc}")
-        if synonyms:
-            lines.append(f"    also known as: {', '.join(synonyms[:3])}")
-        if distinct_vals:
-            is_exhaustive = len(distinct_vals) > 0 and n_distinct > 0 and len(distinct_vals) >= n_distinct
-            label = "all_values (complete set)" if is_exhaustive else "known_values (may be partial)"
-            lines.append(f"    {label}: {distinct_vals[:20]}")
-        elif sample_vals:
-            lines.append(f"    sample_values: {sample_vals}")
-        if value_aliases:
-            lines.append(f"    code_mappings (DB_CODE -> human name): {value_aliases[:8]}")
-            lines.append(f"      Use human name as raw_user_value — downstream resolves to DB code")
+            sem_lower = (sem or "").lower()
+            is_date_type = "date" in sem_lower or "timestamp" in sem_lower
+            time_label = " [time-filter eligible]" if is_date_type else ""
+
+            lines.append(f"  [{sem}] {name}{time_label}")
+            if desc:
+                lines.append(f"    description: {desc}")
+            if synonyms:
+                lines.append(f"    also known as: {', '.join(synonyms[:3])}")
+            if distinct_vals:
+                is_exhaustive = len(distinct_vals) > 0 and n_distinct > 0 and len(distinct_vals) >= n_distinct
+                label = "all_values (complete set)" if is_exhaustive else "known_values (may be partial)"
+                lines.append(f"    {label}: {distinct_vals[:20]}")
+            elif sample_vals:
+                lines.append(f"    sample_values: {sample_vals}")
+            if value_aliases:
+                lines.append(f"    code_mappings (DB_CODE -> human name): {value_aliases[:8]}")
+                lines.append(f"      Use human name as raw_user_value — downstream resolves to DB code")
     return "\n".join(lines)
 
 

@@ -40,11 +40,11 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
             from app.services.chat.feedback import find_thread_feedback
             async with async_session_factory() as db:
                 rows = await asyncio.wait_for(
-                    find_thread_feedback(db, thread_id, limit=5), timeout=2.0
+                    find_thread_feedback(db, thread_id, limit=5), timeout=15.0
                 )
                 return [{**r, "source": "thread"} for r in (rows or [])]
         except Exception as exc:
-            logger.warning("lt_memory_retriever | thread_fb_failed | thread={} | err={}", thread_id, exc)
+            logger.warning("lt_memory_retriever | thread_fb_failed | thread={} | err={}: {}", thread_id, type(exc).__name__, exc)
             return []
 
     async def _similar_fb() -> list:
@@ -53,7 +53,7 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
             from app.services.chat.feedback import find_similar_feedback
             async with async_session_factory() as db:
                 rows = await asyncio.wait_for(
-                    find_similar_feedback(db, question, current_thread_id=thread_id, limit=5), timeout=8.0
+                    find_similar_feedback(db, question, current_thread_id=thread_id, limit=5), timeout=15.0
                 )
                 return [{**r, "source": "similar"} for r in (rows or [])]
         except Exception as exc:
@@ -105,28 +105,25 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
     # Markdown bullet list — rendered by MarkdownRenderer in the pipeline step UI
     if thread_fb_count > 0:
         _liked_str   = f"{thread_liked} preferred" if thread_liked > 0 else ""
-        _dislike_str = f"{thread_disliked} flagged for improvement" if thread_disliked > 0 else ""
+        _dislike_str = f"{thread_disliked} flagged" if thread_disliked > 0 else ""
         _detail      = " · ".join(filter(None, [_liked_str, _dislike_str]))
         _lines.append(
-            f"- **Conversation:** {thread_fb_count} prior rating{'s' if thread_fb_count != 1 else ''} found"
+            f"- **This thread:** {thread_fb_count} rating{'s' if thread_fb_count != 1 else ''}"
             + (f" ({_detail})" if _detail else "")
         )
     else:
-        _lines.append("- **Conversation:** no prior ratings in this thread")
+        _lines.append("- **This thread:** no ratings yet")
 
     if similar_fb_count > 0:
         _sims = [f["similarity"] for f in (similar_feedback or []) if f.get("similarity")]
-        _avg  = f", avg. {round(sum(_sims) / len(_sims) * 100)}% semantic match" if _sims else ""
+        _avg  = f" · avg. {round(sum(_sims) / len(_sims) * 100)}% match" if _sims else ""
         _lines.append(
-            f"- **Cross-session:** {similar_fb_count} semantically similar "
-            f"quer{'ies' if similar_fb_count != 1 else 'y'} matched from other conversations{_avg}"
+            f"- **Other threads:** {similar_fb_count} rated question{'s' if similar_fb_count != 1 else ''} found with similar intent{_avg}"
         )
-    else:
-        _lines.append("- **Cross-session:** no similar queries matched in other conversations")
 
     if lt_mem_count > 0:
         _lines.append(
-            f"- **Memory:** {lt_mem_count} past interaction{'s' if lt_mem_count != 1 else ''} recalled from your history"
+            f"- **Memory:** {lt_mem_count} past interaction{'s' if lt_mem_count != 1 else ''} recalled"
         )
 
     if feedback_context:
@@ -135,19 +132,19 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
         for fb in all_fb_items[:5]:
             comment  = (fb.get("comment") or "").strip()
             liked    = fb.get("liked", True)
-            source   = "this thread" if fb.get("source") == "thread" else "similar query"
+            source   = "this thread" if fb.get("source") == "thread" else "other thread"
             qprev    = (fb.get("question_text") or "")[:60].strip()
-            label    = "Preferred" if liked else "Flagged for improvement"
+            label    = "Keep doing" if liked else "Avoid"
             if comment:
                 _fb_lines.append(f"  - **{label}** [{source}]: {comment}")
             elif qprev:
                 _fb_lines.append(f"  - **{label}** [{source}]: re \"{qprev}\"")
             else:
                 _fb_lines.append(f"  - **{label}** [{source}]")
-        _lines.append("- **Feedback applied:**")
+        _lines.append("- **Applying:**")
         _lines.extend(_fb_lines)
     else:
-        _lines.append("- **Status:** no actionable preferences found, responding without feedback context")
+        _lines.append("- **No feedback to apply** — responding without prior preferences")
     preference_label = "\n".join(_lines)
 
     # ── Terminal visibility ────────────────────────────────────────────────────

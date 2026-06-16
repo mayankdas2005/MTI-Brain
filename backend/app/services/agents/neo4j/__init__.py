@@ -10,6 +10,7 @@ from .client import (
     _neo4j_run,
     _neo4j_run_single,
     _neo4j_write,
+    get_candidate_col_summary,
 )
 from .table_search import (
     search_tables_vector,
@@ -82,7 +83,7 @@ from .write import (
 )
 
 __all__ = [
-    "init_neo4j", "close_neo4j", "get_driver",
+    "init_neo4j", "close_neo4j", "get_driver", "get_candidate_col_summary",
     "search_tables_vector", "search_tables_fulltext",
     "search_tables_via_intents", "search_tables_via_community",
     "search_tables_via_domain", "search_tables_via_joinpaths",

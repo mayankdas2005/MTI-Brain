@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from app.core.circuit_breaker import neo4j_breaker
 from app.core.config import settings
 from app.core.logger import logger
@@ -87,3 +89,75 @@ def _neo4j_write(cypher: str, **kwargs) -> None:
 def _do_neo4j_write(cypher: str, **kwargs) -> None:
     with get_driver().session(database=settings.NEO4J_DB) as session:
         session.run(cypher, **kwargs)
+
+
+@neo4j_breaker
+def get_candidate_col_summary(fqns: list[str]) -> dict[str, dict]:
+    """Return measure_cols, date_cols, and identifier_cols per table.
+
+    Used by anchor_resolver gates:
+    - Gate 1 (col-gate): measure_cols — does candidate add unique measures?
+    - Gate 2 (grain-gate): uses table_meta grain text, not this function
+    - Gate 3 (fan-out gate): identifier_cols with n_distinct — does joining this table
+      multiply rows by > 10x?
+
+    identifier_cols contains only columns with semantic_type='identifier' and a reliable
+    positive n_distinct (absolute count from PostgreSQL stats). Used to detect snapshot/
+    balance tables whose join keys have low cardinality relative to row_count.
+
+    Returns:
+        {
+            "lpp.cash_flow": {
+                "measure_cols": ["signed_amount", "flow_amount"],
+                "date_cols":    ["value_date", "transaction_date"],
+                "identifier_cols": [],
+            },
+            "lpp.cash_balance": {
+                "measure_cols": ["amount"],
+                "date_cols":    ["balance_date"],
+                "identifier_cols": [{"name": "account_ref", "n_distinct": 114}],
+            },
+            ...
+        }
+    """
+    if not fqns:
+        return {}
+    cypher = """
+    MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)
+    WHERE t.fqn IN $fqns
+      AND (c.semantic_type IN ['measure', 'amount', 'percentage', 'ratio', 'identifier']
+           OR c.semantic_type = 'date'
+           OR c.data_type IN ['date', 'timestamp with time zone'])
+    RETURN t.fqn AS fqn,
+           [x IN collect(CASE WHEN c.semantic_type IN ['measure', 'amount', 'percentage', 'ratio']
+                              THEN c.name END) WHERE x IS NOT NULL] AS measure_cols,
+           [x IN collect(CASE WHEN c.semantic_type = 'date'
+                                   OR c.data_type IN ['date', 'timestamp with time zone']
+                              THEN c.name END) WHERE x IS NOT NULL] AS date_cols,
+           [x IN collect(CASE WHEN c.semantic_type = 'identifier' AND c.n_distinct > 0
+                              THEN {name: c.name, n_distinct: c.n_distinct} END)
+            WHERE x IS NOT NULL] AS identifier_cols
+    """
+    t0 = time.monotonic()
+    rows = _neo4j_run(cypher, {"fqns": fqns})
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    result: dict[str, dict] = {}
+    for row in rows:
+        fqn = row.get("fqn")
+        if not fqn:
+            continue
+        raw_id_cols = row.get("identifier_cols") or []
+        result[fqn] = {
+            "measure_cols":    list(row.get("measure_cols") or []),
+            "date_cols":       list(row.get("date_cols") or []),
+            "identifier_cols": [
+                {"name": c["name"], "n_distinct": int(c["n_distinct"])}
+                for c in raw_id_cols
+                if isinstance(c, dict) and c.get("name") and c.get("n_distinct", 0) > 0
+            ],
+        }
+    logger.debug(
+        "neo4j | get_candidate_col_summary | fqns={} | ms={:.0f} | results={}",
+        len(fqns), elapsed_ms, len(result),
+    )
+    return result

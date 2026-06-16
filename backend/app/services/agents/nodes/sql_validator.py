@@ -10,7 +10,7 @@ import re as _re
 
 from app.core.logger import logger
 from app.services.agents.helpers import format_sql
-from app.services.agents.sql_validator_logic import try_fix_cte_refs, validate_sql, validate_column_names, validate_filter_types
+from app.services.agents.sql_validator_logic import try_fix_cte_refs, validate_sql, validate_column_names, validate_filter_types, detect_fan_out_joins
 from app.services.agents.state import AnalyticsState
 
 
@@ -68,16 +68,18 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
     fixed_sql_list = list(sql_list)
     auto_fixed = False
 
+    fan_out_risk_fqns: set = state.get("fan_out_risk_fqns") or set()
+
     for i, sql in enumerate(fixed_sql_list):
         if not sql.strip():
             errors.append(f"SQL #{i+1} is empty")
             failed_indices.append(i)
             continue
-        is_valid, error_msg = validate_sql(sql)
+        is_valid, error_msg = validate_sql(sql, fan_out_risk_fqns=fan_out_risk_fqns)
         if not is_valid:
             fixed = try_fix_cte_refs(sql)
             if fixed:
-                is_valid2, error_msg2 = validate_sql(fixed)
+                is_valid2, error_msg2 = validate_sql(fixed, fan_out_risk_fqns=fan_out_risk_fqns)
                 if is_valid2:
                     fixed_sql_list[i] = format_sql(fixed)
                     auto_fixed = True
@@ -119,6 +121,38 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
             if not type_ok:
                 errors.append(f"SQL #{i+1}: {type_err}")
                 failed_indices.append(i)
+
+    if not errors:
+        # Gate 3.8 — fan-out join detection (blocking)
+        _fan_out_risk_fqns: set = state.get("fan_out_risk_fqns") or set()
+        if _fan_out_risk_fqns:
+            _jp_by_fqn = {
+                jp.get("to_fqn"): jp
+                for jp in (state.get("anchor_join_paths") or [])
+                if jp.get("fan_out_risk") is True
+            }
+            for i, sql in enumerate(fixed_sql_list):
+                if i in failed_indices:
+                    continue
+                _hits = detect_fan_out_joins(sql, _fan_out_risk_fqns)
+                if _hits:
+                    _msg_parts = []
+                    for _fqn in _hits:
+                        _jp = _jp_by_fqn.get(_fqn, {})
+                        _factor = _jp.get("fan_out_factor", "?")
+                        _jk = _jp.get("fan_out_join_key", "?")
+                        _msg_parts.append(f"{_fqn} (join_key={_jk}, ~{_factor}x row multiplication)")
+                    _err = (
+                        f"Direct JOIN to fan-out-risk table(s): {'; '.join(_msg_parts)}. "
+                        f"Replace with: WHERE key IN (SELECT DISTINCT key FROM table WHERE ...) "
+                        f"or pre-aggregate in a CTE before joining."
+                    )
+                    errors.append(f"SQL #{i+1}: {_err}")
+                    failed_indices.append(i)
+                    logger.warning(
+                        "sql_validator | gate_3_8_fan_out_join | thread={} | sql_idx={} | tables={}",
+                        state["thread_id"], i, _hits,
+                    )
 
     if not errors:
         logger.info("sql_validator DONE | thread={} | all {} SQL(s) valid | auto_fixed={}", state["thread_id"], len(fixed_sql_list), auto_fixed)

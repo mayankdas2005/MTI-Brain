@@ -639,6 +639,86 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         if c.get("table_fqn") and c.get("name")
     }
 
+    # ── Layer 5: fan-out risk detection ──────────────────────────────────────
+    # Detects low-cardinality join keys that multiply rows on direct JOIN.
+    # Uses n_distinct as PRIMARY cardinality source (absolute count from PostgreSQL stats,
+    # reliable when positive). Falls back to len(distinct_values) only when n_distinct is 0.
+    # The old `len(distinct_values) >= 100 → safe` shortcut was removed — it missed
+    # cash_balance.account_ref which has exactly 100 sampled values but n_distinct=114 (7,590x fan-out).
+    _FAN_OUT_MIN_ROWS = 1000   # skip tiny tables (bank_account=116, company=24)
+    _FAN_OUT_MIN_FACTOR = 10.0  # 10x threshold — 2.0 was too sensitive for small reference tables
+    _ctx_tables_seq = semantic_context.get("tables") or []
+    _ctx_tables_map = {t.get("fqn"): t for t in _ctx_tables_seq if t.get("fqn")}
+
+    def _get_join_key_for_target(join_clauses: list[str], to_fqn: str) -> str | None:
+        for fqn, col in _parse_join_col_pairs(join_clauses):
+            if fqn == to_fqn:
+                return col
+        return None
+
+    def _resolve_join_key_cardinality(col_meta: dict) -> int | None:
+        """Resolve cardinality using n_distinct (primary) or len(distinct_values) (fallback).
+
+        n_distinct > 0: absolute count — reliable.
+        n_distinct < 0: PostgreSQL fraction format (high cardinality) — assume safe → None.
+        n_distinct == 0: not estimated → fall back to len(distinct_values).
+        distinct_values list capped at 100 entries — use as last resort only.
+        """
+        n_distinct = col_meta.get("n_distinct")
+        if n_distinct is not None:
+            if n_distinct > 0:
+                return int(n_distinct)
+            if n_distinct < 0:
+                return None  # high-fraction → safe → skip
+        # n_distinct == 0 or missing — fall back to sampled list
+        distinct_vals = col_meta.get("distinct_values") or []
+        if distinct_vals:
+            return len(distinct_vals)
+        if not col_meta.get("has_data"):
+            return None  # NULL join key → 0 rows (N1 prunes this anyway)
+        return None  # no data to assess
+
+    for _path in anchor_join_paths:
+        _to_fqn = _path.get("to_fqn")
+        if not _to_fqn:
+            continue
+        _join_key = _get_join_key_for_target(_path.get("join_clauses") or [], _to_fqn)
+        if not _join_key:
+            continue
+        _col_meta = anchor_lookup.get((_to_fqn, _join_key)) or {}
+        _cardinality = _resolve_join_key_cardinality(_col_meta)
+        if _cardinality is None:
+            continue  # high-fraction or no data → assume safe
+        _tbl_meta = _ctx_tables_map.get(_to_fqn) or {}
+        _row_count = _tbl_meta.get("row_count") or 0
+        if _row_count < _FAN_OUT_MIN_ROWS:
+            continue  # tiny table → no meaningful fan-out
+        _factor = _row_count / max(_cardinality, 1)
+        if _factor > _FAN_OUT_MIN_FACTOR:
+            _path["fan_out_risk"] = True
+            _path["fan_out_factor"] = round(_factor, 1)
+            _path["fan_out_join_key"] = _join_key
+            _path["safe_pattern"] = "IN_SUBQUERY"
+            logger.warning(
+                "schema_enricher | fan_out_risk | {} | join_key={} | cardinality={} | row_count={} | factor={}x",
+                _to_fqn, _join_key, _cardinality, _row_count, round(_factor, 1),
+            )
+
+    _fan_out_risk_fqns: set = {
+        p["to_fqn"] for p in anchor_join_paths if p.get("fan_out_risk") is True
+    }
+    if _fan_out_risk_fqns:
+        logger.warning(
+            "schema_enricher | fan_out_risk_summary | fqns={}", sorted(_fan_out_risk_fqns)
+        )
+
+    # ── Layer 8: table_grains for specialists ─────────────────────────────────
+    _table_grains: dict = {
+        t.get("fqn"): t.get("grain") or ""
+        for t in _ctx_tables_seq
+        if t.get("fqn") and t.get("grain")
+    }
+
     # ── enriched_schema: anchor tables ONLY ──────────────────────────────────
     # Specialists (measure/filter/dimension/directive_writer) read this.
     # Hub/bridge join columns must NOT be here — bridge FK cols would be picked
@@ -648,6 +728,7 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         "columns": anchor_display_cols,  # 25-col capped for specialists
         "_column_lookup": anchor_lookup,
         "join_critical_cols": list(join_crit_cols),
+        "table_grains": _table_grains,
     }
 
     for t in anchor_tables:
@@ -784,4 +865,5 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         "candidate_overlap_joins": candidate_overlap_joins,
         "concept_mappings": concept_mappings or None,
         "neo4j_raw_graph": neo4j_raw_graph,
+        "fan_out_risk_fqns": _fan_out_risk_fqns,
     }

@@ -141,7 +141,16 @@ async def generate_sql_llm(
         if c.get("table_fqn") and c.get("name")
     }
 
-    query_blueprint = _build_query_blueprint(spec, schema_ctx, col_lookup)
+    _fan_out_risk_fqns: set = state.get("fan_out_risk_fqns") or set()
+    _fan_out_details: dict = {}
+    for _jp in (state.get("anchor_join_paths") or []):
+        _fqn = _jp.get("to_fqn")
+        if _fqn and _jp.get("fan_out_risk") is True:
+            _fan_out_details[_fqn] = {
+                "join_key": _jp.get("fan_out_join_key") or "?",
+                "factor": _jp.get("fan_out_factor") or "?",
+            }
+    query_blueprint = _build_query_blueprint(spec, schema_ctx, col_lookup, fan_out_risk_details=_fan_out_details)
     schema_reference = _build_schema_reference(schema_ctx)
     unresolved_joins_section = _build_unresolved_joins_section(unresolved_pairs, col_lookup)
     feedback_section = _build_feedback_section(state)
@@ -618,7 +627,7 @@ def _build_early_filter_blueprint(spec: dict) -> str:
     return "\n".join(ef_lines)
 
 
-def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None = None) -> str:
+def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None = None, fan_out_risk_details: dict | None = None) -> str:
     """Build structured QUERY SPECIFICATION text replacing json.dumps(spec)."""
     lines = ["--- QUERY SPECIFICATION ---", ""]
 
@@ -646,7 +655,11 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
     }
 
     anchor_tables = spec.get("anchor_tables") or []
-    lines.append("ANCHOR TABLES (every one must appear in the SQL — do not drop or add):")
+    lines.append(
+        "AVAILABLE TABLES (include a table ONLY if it satisfies Rule 1h — "
+        "at least one column contributes to FINAL SELECT, it is a confirmed bridge in JOIN_CHAIN, "
+        "or it provides a required WHERE filter. Tables not satisfying Rule 1h MUST be omitted.):"
+    )
     for t in anchor_tables:
         lines.append(f"  {t}")
     lines.append("")
@@ -809,6 +822,19 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
                 clause = f"({parts})"
                 label = "[fuzzy — multiple, use OR ~* regex]"
             lines.append(f"  {section}:   {clause}   {label}")
+        lines.append("")
+
+    if fan_out_risk_details:
+        lines.append("FAN-OUT RISK TABLES — these tables have multiple rows per join key.")
+        lines.append("Joining directly multiplies every source row by the number of matching rows, inflating all SUM/COUNT values.")
+        for _fqn, _detail in fan_out_risk_details.items():
+            _jk = _detail.get("join_key", "?")
+            _fx = _detail.get("factor", "?")
+            lines.append(f"  {_fqn}  (join_key={_jk}, ~{_fx}x row multiplication)")
+            lines.append(f"    NEVER: JOIN {_fqn} ON key = {_fqn}.{_jk}")
+            lines.append(f"    USE INSTEAD — filter only: WHERE key IN (SELECT DISTINCT {_jk} FROM {_fqn} WHERE ...)")
+            lines.append(f"    USE INSTEAD — need columns: WITH agg AS (SELECT {_jk}, AGG(val) FROM {_fqn} GROUP BY {_jk})")
+            lines.append(f"                               JOIN agg ON source.{_jk} = agg.{_jk}")
         lines.append("")
 
     joins = spec.get("joins") or []

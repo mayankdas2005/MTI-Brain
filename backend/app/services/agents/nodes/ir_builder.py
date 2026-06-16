@@ -181,12 +181,21 @@ async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict 
         anchor_tables = anchor_tables + missing
         logger.info("ir_builder | anchor_tables extended | added={} | final={}", missing, anchor_tables)
 
-    # Inject cross-domain hub table into anchor_tables (must be at front for joins)
+    # Inject cross-domain hub table only when ANCHOR tables themselves span multiple communities.
+    # cross_domain_hub is set by context_fetcher based on candidate diversity (30+ tables across many
+    # domains) — that condition is almost always true and would inject company unconditionally.
+    # The correct check: do the selected anchors actually need a bridge between their communities?
     hub_info = (semantic_context or {}).get("cross_domain_hub") or {}
     hub_fqn = hub_info.get("hub_table_fqn")
     if hub_fqn and hub_fqn not in anchor_tables:
-        anchor_tables.insert(0, hub_fqn)
-        logger.info("ir_builder | hub_injected | fqn={}", hub_fqn)
+        _ir_tbl_meta = {t["fqn"]: t for t in (semantic_context or {}).get("tables") or [] if t.get("fqn")}
+        _anchor_communities = {_ir_tbl_meta.get(t, {}).get("community_id") for t in anchor_tables}
+        _anchor_communities.discard(None)
+        if len(_anchor_communities) > 1:
+            anchor_tables.insert(0, hub_fqn)
+            logger.info("ir_builder | hub_injected | fqn={} | anchor_communities={}", hub_fqn, _anchor_communities)
+        else:
+            logger.info("ir_builder | hub_skip_single_community | fqn={} | communities={}", hub_fqn, _anchor_communities)
 
     join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs, _rescued_raw_paths = \
         await _load_join_paths(
@@ -494,7 +503,7 @@ async def _load_join_paths(
     anchor_tables: list[str],
     intent_directive: str = "",
     anchor_join_paths: list[dict] | None = None,
-) -> tuple[list, list, list, list, list, list]:
+) -> tuple:
     """Load join paths — primary: anchor_join_paths from state (Neo4j ground truth).
 
     Tier A: use anchor_join_paths from state (set by schema_enricher).
@@ -502,11 +511,9 @@ async def _load_join_paths(
     Tier C: full Neo4j cascade (JOINS_TO -> Dijkstra -> Yen's -> value_overlap -> graph traversal).
     Pairs surviving all tiers without a path become unresolved_pairs.
 
-    Returns: (join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs)
+    Returns: (join_path_ids, join_clauses, path_tables, join_types, candidate_join_paths, unresolved_pairs, rescued_raw_paths)
+    Single anchor table: loop runs zero iterations → all lists are empty, one return path only.
     """
-    if len(anchor_tables) <= 1:
-        return [], [], list(anchor_tables), [], [], []
-
     all_join_clauses: list[str] = []
     all_path_tables: list[str] = [anchor_tables[0]]
     join_types: list[str] = []

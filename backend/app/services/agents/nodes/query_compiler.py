@@ -40,10 +40,14 @@ def _build_schema_directive(ir: SemanticIR, semantic_context: dict | None = None
     lines = ["SCHEMA DIRECTIVE — code-verified structure from ir_builder:"]
     lines.append(f"ANCHOR_TABLES: {', '.join(ir.anchor_tables)}")
     lines.append(
-        "  (SCHEMA AVAILABLE — include a table in the SQL ONLY IF at least one of its columns "
-        "appears in FINAL SELECT, it is a confirmed bridge in JOIN_CHAIN, or it provides a "
-        "required WHERE filter on the primary fact table. Tables with UNRESOLVED joins MUST be "
-        "OMITTED entirely — never include them via EXISTS, bridge CTEs, or extra JOINs.)"
+        "  (SCHEMA AVAILABLE — include a table in the SQL ONLY IF: (a) at least one of its "
+        "columns appears in FINAL SELECT or WHERE, (b) it is a confirmed INTERMEDIATE bridge "
+        "in JOIN_CHAIN — meaning TWO OR MORE JOIN clauses reference it so other tables connect "
+        "THROUGH it, or (c) it provides a required WHERE filter on the primary fact table. "
+        "A table that appears only as a JOIN endpoint (only one JOIN clause references it) "
+        "with no columns in SELECT or WHERE MUST be OMITTED. "
+        "Tables with UNRESOLVED joins MUST be OMITTED entirely — never include them "
+        "via EXISTS, bridge CTEs, or extra JOINs.)"
     )
 
     if ir.join_clauses:

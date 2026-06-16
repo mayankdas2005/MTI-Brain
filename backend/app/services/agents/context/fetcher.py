@@ -117,6 +117,25 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             except Exception as _e:
                 logger.warning("context_fetcher | canonical_domain_lookup failed | error={}", _e)
 
+        # ── Candidate column summary — batch Neo4j call across all discovered tables ──
+        # Lightweight: returns measure_cols and date_cols names only (no cardinality).
+        # Used by anchor_resolver._inject_signal_tables() to gate tables that add no
+        # unique measures/dates when the primary fact table already covers them.
+        _all_candidate_fqns = [t["fqn"] for t in tables if t.get("fqn")]
+        try:
+            candidate_col_summary = await asyncio.to_thread(
+                neo4j_client.get_candidate_col_summary, _all_candidate_fqns
+            )
+            _measure_count = sum(1 for v in candidate_col_summary.values() if v.get("measure_cols"))
+            _date_count    = sum(1 for v in candidate_col_summary.values() if v.get("date_cols"))
+            logger.info(
+                "context_fetcher | candidate_col_summary | tables={} | with_measures={} | with_dates={}",
+                len(candidate_col_summary), _measure_count, _date_count,
+            )
+        except Exception as _e:
+            logger.warning("context_fetcher | candidate_col_summary failed | error={} — skipping", _e)
+            candidate_col_summary = {}
+
         # ── Groups A + B run in parallel ───────────────────────────────────────
         # Group A: independent of table results — templates, terms, intents
         # Group B: depends on tables — cross-domain, join-critical cols, column loading
@@ -166,6 +185,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             "consensus_table_fqns":  consensus_table_fqns,
             "entity_pinned_fqns":    set(entity_pinned_fqns),
             "entity_col_tables":     list(entity_col_tables),
+            "candidate_col_summary": candidate_col_summary,
         }
 
         tables_found  = [t["fqn"] for t in tables_trimmed if t.get("fqn")]

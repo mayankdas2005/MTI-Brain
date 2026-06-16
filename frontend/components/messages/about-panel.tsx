@@ -221,7 +221,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                         {m.preference_summary.thread_feedback_count}
                       </div>
                       <div className="text-[10px] text-muted-foreground/70 leading-tight mt-0.5">
-                        Conversation<br />ratings
+                        This thread<br />ratings
                       </div>
                     </div>
                   )}
@@ -231,7 +231,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                         {m.preference_summary.similar_feedback_count}
                       </div>
                       <div className="text-[10px] text-muted-foreground/70 leading-tight mt-0.5">
-                        Cross-session<br />matches
+                        Other threads<br />matches
                       </div>
                     </div>
                   )}
@@ -587,8 +587,8 @@ function FeedbackSignalList({ items }: { items: FeedbackItem[] }) {
             </span>
             <span className="ml-auto text-[10px] text-muted-foreground/50 font-medium">
               {item.source === 'similar' && item.similarity != null
-                ? `cross-session · ${Math.round(item.similarity * 100)}% match`
-                : 'this conversation'}
+                ? `other thread · ${Math.round(item.similarity * 100)}% match`
+                : 'this thread'}
             </span>
           </div>
           <div className="px-2.5 py-2 text-xs space-y-1">

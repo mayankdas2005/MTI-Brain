@@ -56,26 +56,34 @@ def _is_measurable(c: dict) -> bool:
 
 def _build_measurable_columns_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
+    table_grains = enriched_schema.get("table_grains") or {}
     measurable = [c for c in columns if _is_measurable(c)]
     if not measurable:
         return "(no measurable columns found — check anchor table schema)"
 
-    lines = []
+    by_table: dict[str, list[dict]] = {}
     for c in measurable:
-        fqn = c.get("table_fqn", "")
-        name = c.get("name", "")
-        dtype = c.get("data_type") or c.get("semantic_type", "")
-        desc = (c.get("description") or "")[:200]
-        default_agg = c.get("default_aggregation", "SUM")
-        synonyms = c.get("synonyms") or []
-        sample_vals = (c.get("sample_values") or [])[:4]
-        lines.append(f"  {fqn}.{name}  [{dtype}]  default={default_agg}")
-        if desc:
-            lines.append(f"    description: {desc}")
-        if synonyms:
-            lines.append(f"    also known as: {', '.join(synonyms[:3])}")
-        if sample_vals:
-            lines.append(f"    sample_values: {sample_vals}")
+        by_table.setdefault(c.get("table_fqn", ""), []).append(c)
+
+    lines = []
+    for fqn, cols in by_table.items():
+        grain = table_grains.get(fqn, "")
+        grain_note = f"  [grain: {grain[:100]}]" if grain else ""
+        lines.append(f"{fqn}{grain_note}")
+        for c in cols:
+            name = c.get("name", "")
+            sem = c.get("semantic_type") or c.get("data_type", "")
+            desc = (c.get("description") or "")[:200]
+            default_agg = c.get("default_aggregation", "SUM")
+            synonyms = c.get("synonyms") or []
+            sample_vals = (c.get("sample_values") or [])[:4]
+            lines.append(f"  [{sem}] {name}  default={default_agg}")
+            if desc:
+                lines.append(f"    description: {desc}")
+            if synonyms:
+                lines.append(f"    also known as: {', '.join(synonyms[:3])}")
+            if sample_vals:
+                lines.append(f"    sample_values: {sample_vals}")
     return "\n".join(lines)
 
 
