@@ -3,9 +3,12 @@
 import { useState, useRef, useEffect, useCallback, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { useThreadStore, isThreadCreationPending } from '@/lib/store/threads';
+import { usePreferencesStore } from '@/lib/store/preferences';
+import { useUIStore } from '@/lib/store/ui';
 import { toast } from '@/lib/toast';
 import { MessageList } from '@/components/message-list';
 import { ChatComposer } from '@/components/chat-composer';
+import { ThinkingSidePanel } from '@/components/thinking-side-panel';
 import { ArrowDown } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -255,6 +258,21 @@ export default function ChatPage({ params }: ChatPageProps) {
     setHasNewResponse(false);
   };
 
+  // Thinking side panel: auto-open during streaming when in sidebar mode
+  const thinkingPlacement = usePreferencesStore((s) => s.thinkingPlacement);
+  const openThinkingPanel = useUIStore((s) => s.openThinkingPanel);
+
+  useEffect(() => {
+    if (
+      thinkingPlacement === 'sidebar' &&
+      isStreaming &&
+      streamingThreadId === chatId &&
+      streamingMessageId
+    ) {
+      openThinkingPanel(streamingMessageId);
+    }
+  }, [thinkingPlacement, isStreaming, streamingThreadId, chatId, streamingMessageId, openThinkingPanel]);
+
   const hasMessages = displayedMessages.length > 0;
 
   // Show loading when thread data hasn't arrived yet:
@@ -296,40 +314,45 @@ export default function ChatPage({ params }: ChatPageProps) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-background relative">
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-y-auto"
-        onScroll={handleScroll}
-      >
-        <div className="min-h-full flex flex-col">
-          {!hasMessages ? (
-            <div className="flex-1" />
-          ) : (
-            <div className="flex-1 py-6">
-              <div className="max-w-3xl lg:max-w-[900px] xl:max-w-[1100px] 2xl:max-w-[1200px] mx-auto px-4 md:px-6">
-                <MessageList messages={displayedMessages} threadId={chatId} />
+    <div className="flex h-full overflow-hidden">
+      <div className="flex flex-col flex-1 min-w-0 bg-background relative">
+        <div
+          ref={containerRef}
+          className="flex-1 overflow-y-auto"
+          onScroll={handleScroll}
+        >
+          <div className="min-h-full flex flex-col">
+            {!hasMessages ? (
+              <div className="flex-1" />
+            ) : (
+              <div className="flex-1 py-6">
+                <div className="max-w-3xl lg:max-w-[900px] xl:max-w-[1100px] 2xl:max-w-[1200px] mx-auto px-4 md:px-6">
+                  <MessageList messages={displayedMessages} threadId={chatId} />
+                </div>
               </div>
-            </div>
-          )}
-          <div ref={scrollRef} className="h-px shrink-0" />
+            )}
+            <div ref={scrollRef} className="h-px shrink-0" />
+          </div>
         </div>
+
+        {/* Scroll-to-bottom button */}
+        {!autoScroll && (
+          <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 animate-fade-in">
+            <button
+              onClick={scrollToBottom}
+              className="flex items-center gap-1.5 rounded-full bg-foreground text-background px-3 py-1.5 text-xs font-medium shadow-lg hover:opacity-90 transition-opacity"
+            >
+              <ArrowDown className="w-3.5 h-3.5" />
+              {hasNewResponse ? 'New response' : 'Scroll to bottom'}
+            </button>
+          </div>
+        )}
+
+        <ChatComposer />
       </div>
 
-      {/* Scroll-to-bottom button */}
-      {!autoScroll && (
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 animate-fade-in">
-          <button
-            onClick={scrollToBottom}
-            className="flex items-center gap-1.5 rounded-full bg-foreground text-background px-3 py-1.5 text-xs font-medium shadow-lg hover:opacity-90 transition-opacity"
-          >
-            <ArrowDown className="w-3.5 h-3.5" />
-            {hasNewResponse ? 'New response' : 'Scroll to bottom'}
-          </button>
-        </div>
-      )}
-
-      <ChatComposer />
+      {/* Thinking side panel (right side) */}
+      <ThinkingSidePanel />
     </div>
   );
 }

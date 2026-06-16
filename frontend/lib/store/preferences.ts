@@ -7,6 +7,7 @@ export type Density = 'comfortable' | 'compact';
 export type TTSRate = 0.75 | 1 | 1.25 | 1.5;
 
 export type NotifyOnComplete = 'when-hidden' | 'off';
+export type ThinkingPlacement = 'inline' | 'sidebar';
 
 interface PreferencesState {
   responseTone: ResponseTone;
@@ -35,6 +36,8 @@ interface PreferencesState {
   deepAnalysis: boolean;
   /** Conversation mode (hands-free loop) - persists across conversations. */
   conversationMode: boolean;
+  /** Where to display the thinking/reasoning steps. */
+  thinkingPlacement: ThinkingPlacement;
 }
 
 interface PreferencesActions {
@@ -54,6 +57,7 @@ interface PreferencesActions {
   setHighContrast: (val: boolean) => void;
   setDeepAnalysis: (val: boolean) => void;
   setConversationMode: (val: boolean) => void;
+  setThinkingPlacement: (val: ThinkingPlacement) => void;
   /** Reset every persisted preference back to its DEFAULT value. The
    *  `softPromptShown` flag is preserved - it tracks whether we've ever
    *  shown the notification permission soft-prompt and resetting it
@@ -84,6 +88,7 @@ export const PREFERENCES_DEFAULTS: PreferencesState = {
   highContrast: false,
   deepAnalysis: false,
   conversationMode: false,
+  thinkingPlacement: 'inline',
 };
 
 const STORAGE_PREFIX = 'mti-brain-prefs';
@@ -110,6 +115,7 @@ export const usePreferencesStore = create<PreferencesStore>()(
       setHighContrast: (val) => set({ highContrast: val }),
       setDeepAnalysis: (val) => set({ deepAnalysis: val }),
       setConversationMode: (val) => set({ conversationMode: val }),
+      setThinkingPlacement: (val) => set({ thinkingPlacement: val }),
 
       resetToDefaults: () =>
         set((state) => ({

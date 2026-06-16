@@ -665,8 +665,28 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
         )}
       </div>
 
+      {/* Expand sidebar button (collapsed only) */}
+      {!isOpen && (
+        <div className="pt-3 pb-1 shrink-0 flex justify-center">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                onClick={handleToggle}
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 tap-44 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                aria-label="Open sidebar"
+              >
+                <PanelLeft className="w-[18px] h-[18px]" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={6}>Open sidebar</TooltipContent>
+          </Tooltip>
+        </div>
+      )}
+
       {/* New Chat */}
-      <div className={cn("shrink-0 flex", isOpen ? "px-3 pt-3 pb-2" : "pt-3 pb-2 justify-center")}>
+      <div className={cn("shrink-0 flex", isOpen ? "px-3 pt-3 pb-2" : "pb-2 justify-center")}>
         {isOpen ? (
           <Button
             onClick={handleNewChat}

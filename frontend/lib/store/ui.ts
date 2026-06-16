@@ -26,6 +26,13 @@ interface UIStore {
   tourReplay: boolean;
   startTourReplay: () => void;
   stopTourReplay: () => void;
+  // Thinking side panel state
+  thinkingPanelOpen: boolean;
+  thinkingPanelMessageId: string | null;
+  thinkingPanelWidth: number;
+  openThinkingPanel: (messageId: string) => void;
+  closeThinkingPanel: () => void;
+  setThinkingPanelWidth: (width: number) => void;
 }
 
 export const useUIStore = create<UIStore>((set) => ({
@@ -45,4 +52,10 @@ export const useUIStore = create<UIStore>((set) => ({
   tourReplay: false,
   startTourReplay: () => set({ tourReplay: true }),
   stopTourReplay: () => set({ tourReplay: false }),
+  thinkingPanelOpen: false,
+  thinkingPanelMessageId: null,
+  thinkingPanelWidth: 380,
+  openThinkingPanel: (messageId) => set({ thinkingPanelOpen: true, thinkingPanelMessageId: messageId }),
+  closeThinkingPanel: () => set({ thinkingPanelOpen: false }),
+  setThinkingPanelWidth: (width) => set({ thinkingPanelWidth: width }),
 }));

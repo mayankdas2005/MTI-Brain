@@ -39,6 +39,7 @@ import {
   type ResponseTone,
   type DefaultDataView,
   type Density,
+  type ThinkingPlacement,
 } from '@/lib/store/preferences';
 import {
   getPermission,
@@ -101,6 +102,8 @@ export default function SettingsPage() {
   const setDensity = usePreferencesStore((s) => s.setDensity);
   const highContrast = usePreferencesStore((s) => s.highContrast ?? false);
   const setHighContrast = usePreferencesStore((s) => s.setHighContrast);
+  const thinkingPlacement = usePreferencesStore((s) => s.thinkingPlacement);
+  const setThinkingPlacement = usePreferencesStore((s) => s.setThinkingPlacement);
   const resetToDefaults = usePreferencesStore((s) => s.resetToDefaults);
   const hydrated = usePreferencesStore((s) => s.hydrated);
 
@@ -119,11 +122,13 @@ export default function SettingsPage() {
       maxResultRows !== PREFERENCES_DEFAULTS.maxResultRows ||
       notifyOnComplete !== PREFERENCES_DEFAULTS.notifyOnComplete ||
       notifySound !== PREFERENCES_DEFAULTS.notifySound ||
-      density !== PREFERENCES_DEFAULTS.density
+      density !== PREFERENCES_DEFAULTS.density ||
+      thinkingPlacement !== PREFERENCES_DEFAULTS.thinkingPlacement
     );
   }, [
     responseTone, showSQL, autoShowCharts, showFollowUps, showReasoning,
     defaultDataView, maxResultRows, notifyOnComplete, notifySound, density,
+    thinkingPlacement,
   ]);
 
   useEffect(() => {
@@ -144,6 +149,7 @@ export default function SettingsPage() {
       v('auto show charts visualizations') ||
       v('follow-up suggestions follow up') ||
       v('show reasoning thinking process') ||
+      v('thinking placement inline sidebar position') ||
       v('default data view sql table') ||
       v('max result rows per query'),
     appearance:
@@ -176,6 +182,7 @@ export default function SettingsPage() {
     autoShowCharts, setAutoShowCharts,
     showFollowUps, setShowFollowUps,
     showReasoning, setShowReasoning,
+    thinkingPlacement, setThinkingPlacement,
     defaultDataView, setDefaultDataView,
     maxResultRows, setMaxResultRows,
     density, setDensity,
@@ -313,6 +320,7 @@ function SectionPanel({
   autoShowCharts, setAutoShowCharts,
   showFollowUps, setShowFollowUps,
   showReasoning, setShowReasoning,
+  thinkingPlacement, setThinkingPlacement,
   defaultDataView, setDefaultDataView,
   maxResultRows, setMaxResultRows,
   density, setDensity,
@@ -327,6 +335,7 @@ function SectionPanel({
   autoShowCharts: boolean; setAutoShowCharts: (v: boolean) => void;
   showFollowUps: boolean; setShowFollowUps: (v: boolean) => void;
   showReasoning: boolean; setShowReasoning: (v: boolean) => void;
+  thinkingPlacement: ThinkingPlacement; setThinkingPlacement: (v: ThinkingPlacement) => void;
   defaultDataView: DefaultDataView; setDefaultDataView: (v: DefaultDataView) => void;
   maxResultRows: number; setMaxResultRows: (v: number) => void;
   density: Density; setDensity: (v: Density) => void;
@@ -372,6 +381,7 @@ function SectionPanel({
             autoShowCharts={autoShowCharts} setAutoShowCharts={setAutoShowCharts}
             showFollowUps={showFollowUps} setShowFollowUps={setShowFollowUps}
             showReasoning={showReasoning} setShowReasoning={setShowReasoning}
+            thinkingPlacement={thinkingPlacement} setThinkingPlacement={setThinkingPlacement}
             defaultDataView={defaultDataView} setDefaultDataView={setDefaultDataView}
             maxResultRows={maxResultRows} setMaxResultRows={setMaxResultRows}
           />
@@ -405,6 +415,7 @@ function SearchResults({
   autoShowCharts, setAutoShowCharts,
   showFollowUps, setShowFollowUps,
   showReasoning, setShowReasoning,
+  thinkingPlacement, setThinkingPlacement,
   defaultDataView, setDefaultDataView,
   maxResultRows, setMaxResultRows,
   density, setDensity,
@@ -420,6 +431,7 @@ function SearchResults({
   autoShowCharts: boolean; setAutoShowCharts: (v: boolean) => void;
   showFollowUps: boolean; setShowFollowUps: (v: boolean) => void;
   showReasoning: boolean; setShowReasoning: (v: boolean) => void;
+  thinkingPlacement: ThinkingPlacement; setThinkingPlacement: (v: ThinkingPlacement) => void;
   defaultDataView: DefaultDataView; setDefaultDataView: (v: DefaultDataView) => void;
   maxResultRows: number; setMaxResultRows: (v: number) => void;
   density: Density; setDensity: (v: Density) => void;
@@ -461,6 +473,7 @@ function SearchResults({
             autoShowCharts={autoShowCharts} setAutoShowCharts={setAutoShowCharts}
             showFollowUps={showFollowUps} setShowFollowUps={setShowFollowUps}
             showReasoning={showReasoning} setShowReasoning={setShowReasoning}
+            thinkingPlacement={thinkingPlacement} setThinkingPlacement={setThinkingPlacement}
             defaultDataView={defaultDataView} setDefaultDataView={setDefaultDataView}
             maxResultRows={maxResultRows} setMaxResultRows={setMaxResultRows}
           />
@@ -557,6 +570,7 @@ function DisplayContent({
   autoShowCharts, setAutoShowCharts,
   showFollowUps, setShowFollowUps,
   showReasoning, setShowReasoning,
+  thinkingPlacement, setThinkingPlacement,
   defaultDataView, setDefaultDataView,
   maxResultRows, setMaxResultRows,
 }: {
@@ -565,6 +579,7 @@ function DisplayContent({
   autoShowCharts: boolean; setAutoShowCharts: (v: boolean) => void;
   showFollowUps: boolean; setShowFollowUps: (v: boolean) => void;
   showReasoning: boolean; setShowReasoning: (v: boolean) => void;
+  thinkingPlacement: ThinkingPlacement; setThinkingPlacement: (v: ThinkingPlacement) => void;
   defaultDataView: DefaultDataView; setDefaultDataView: (v: DefaultDataView) => void;
   maxResultRows: number; setMaxResultRows: (v: number) => void;
 }) {
@@ -608,6 +623,50 @@ function DisplayContent({
           />
         )}
       </div>
+
+      {v('thinking placement inline sidebar position') && (
+        <SettingBlock
+          label="Thinking panel placement"
+          description="Choose where the reasoning/thinking steps are displayed."
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md mt-3">
+            {([
+              {
+                value: 'inline' as ThinkingPlacement,
+                label: 'Inline',
+                description: 'Show thinking steps directly in the conversation stream, above the response.',
+              },
+              {
+                value: 'sidebar' as ThinkingPlacement,
+                label: 'Side panel',
+                description: 'Show thinking steps in a dedicated sidebar panel beside the conversation.',
+              },
+            ]).map((option) => {
+              const isSelected = thinkingPlacement === option.value;
+              const isDefault = option.value === PREFERENCES_DEFAULTS.thinkingPlacement;
+              return (
+                <div key={option.value} className="flex flex-col">
+                  <button
+                    onClick={() => setThinkingPlacement(option.value)}
+                    aria-pressed={isSelected}
+                    className={`flex-1 rounded-xl px-4 py-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background transition-colors ${
+                      isSelected
+                        ? 'ring-2 ring-primary bg-primary/8 text-foreground border border-primary/30'
+                        : 'bg-muted/40 hover:bg-muted/70 text-muted-foreground border border-transparent'
+                    }`}
+                  >
+                    <span className="text-sm font-semibold block text-foreground">{option.label}</span>
+                    <span className="text-xs text-muted-foreground leading-snug block mt-1">
+                      {option.description}
+                    </span>
+                  </button>
+                  <DefaultTag visible={isDefault} />
+                </div>
+              );
+            })}
+          </div>
+        </SettingBlock>
+      )}
 
       {v('default data view sql table') && (
         <SettingBlock

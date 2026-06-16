@@ -338,6 +338,26 @@ html[data-density="compact"] {
   }
 }
 
+/* Subtle fading shadow on the left edge of the main content area,
+   giving the impression it's cast by the sidebar's right border. */
+.sidebar-shadow {
+  position: relative;
+}
+.sidebar-shadow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 14px;
+  pointer-events: none;
+  z-index: 20;
+  background: linear-gradient(to right, rgba(0, 0, 0, 0.09), transparent);
+}
+.dark .sidebar-shadow::before {
+  background: linear-gradient(to right, rgba(0, 0, 0, 0.35), transparent);
+}
+
 @layer utilities {
   .font-display {
     font-family: var(--font-display);
