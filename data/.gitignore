@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment files
+backend.env
+.env
+.env.*
+!.env.example
+
+
+# Alembic
+alembic/versions/__pycache__/
+
+# Data
+
+# Docs
+
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Claude
+.claude/worktrees/
+graphify-out/
+.github/
