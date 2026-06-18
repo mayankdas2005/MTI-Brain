@@ -133,7 +133,7 @@ export function ThinkingSidePanel() {
                   const tok = message.metadata_?.token_usage?.total_tokens
                     ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
                   if (!tok) return null;
-                  const fmt = tok >= 1000 ? `${(tok / 1000).toFixed(2)}K` : `${tok}`;
+                  const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
                   return (
                     <>
                       <span className="text-foreground/30">·</span>

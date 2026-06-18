@@ -482,7 +482,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                       const tok = message.metadata_?.token_usage?.total_tokens
                         ?? (message.streamingSteps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
                       if (!tok) return null;
-                      const fmt = tok >= 1000 ? `${(tok / 1000).toFixed(2)}K` : `${tok}`;
+                      const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
                       return <span className="text-muted-foreground/60">· {fmt} tokens</span>;
                     })()}
                   </>
@@ -980,7 +980,7 @@ function ReasoningPanel({
                 const tok = message.metadata_?.token_usage?.total_tokens
                   ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
                 if (!tok) return null;
-                const fmt = tok >= 1000 ? `${(tok / 1000).toFixed(2)}K` : `${tok}`;
+                const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
                 return <span className="text-foreground/40 text-[10px] tabular-nums">{fmt} tokens</span>;
               })()}
             </span>

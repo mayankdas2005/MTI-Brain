@@ -102,7 +102,7 @@ export function PipelineTimeline({
         const showTokens =
           step.total_tokens && step.total_tokens > 0
             ? step.total_tokens >= 1000
-              ? `${(step.total_tokens / 1000).toFixed(2)}K`
+              ? `${parseFloat((step.total_tokens / 1000).toFixed(2))}K`
               : `${step.total_tokens}`
             : '';
 
