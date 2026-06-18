@@ -118,24 +118,24 @@ export function ThinkingSidePanel() {
       </div>
 
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <Brain className="w-4 h-4 text-primary shrink-0" />
+      <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-border shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Brain className="w-[18px] h-[18px] text-primary shrink-0" />
           <div className="min-w-0 truncate">
             {message.isStreaming ? (
               <ThinkingWords label={activeLabel} />
             ) : (
-              <span className="text-sm font-medium text-foreground">
+              <span className="text-base font-semibold tracking-[-0.02em] text-foreground">
                 Reasoning
                 {message.metadata_?.duration_ms != null &&
-                  ` · ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+                  <span className="text-sm font-normal text-muted-foreground ml-2">{(message.metadata_.duration_ms / 1000).toFixed(1)}s</span>}
               </span>
             )}
           </div>
         </div>
         <button
           onClick={closePanel}
-          className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+          className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
           aria-label="Close thinking panel"
         >
           <X className="w-4 h-4" />

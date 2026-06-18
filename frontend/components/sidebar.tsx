@@ -514,6 +514,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
   const projectsLoading = useProjectStore((s) => s.loading);
 
   const [projectsOpen, setProjectsOpen] = useState(true);
+  const [chatsOpen, setChatsOpen] = useState(false);
   // Settings + create-project visibility lives in the UI store so Cmd+K
   // commands (and any other surface) can open them without prop-drilling.
   const createProjectOpen = useUIStore((s) => s.createProjectOpen);
@@ -788,20 +789,63 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
         </div>
       )}
 
-      {/* Chats navigation — always visible */}
+      {/* Chats navigation — dropdown with last 5 chats */}
       {isOpen ? (
         <div className="px-3 pb-1 shrink-0 sidebar-content-enter">
-          <button
-            onClick={() => { closeOnNav(); router.push('/chats'); }}
-            onMouseEnter={() => router.prefetch('/chats')}
-            aria-current={onChats ? 'page' : undefined}
-            className={cn("w-full flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar", onChats && "bg-sidebar-accent")}
-          >
-            <span className="flex items-center h-5 shrink-0">
-              <MessageSquare className="w-[18px] h-[18px] text-sidebar-foreground/50" />
-            </span>
-            <span className="text-sm font-medium">Chats</span>
-          </button>
+          <Collapsible open={chatsOpen} onOpenChange={setChatsOpen}>
+            <CollapsibleTrigger asChild>
+              <button
+                aria-current={onChats ? 'page' : undefined}
+                className={cn("w-full flex items-center gap-2 px-2 py-[var(--density-pad-y-tight)] rounded-lg text-left transition-colors hover:bg-sidebar-accent text-sidebar-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar", onChats && "bg-sidebar-accent")}
+              >
+                <span className="flex items-center h-5 shrink-0">
+                  <MessageSquare className="w-[18px] h-[18px] text-sidebar-foreground/50" />
+                </span>
+                <span className="text-sm font-medium flex-1">Chats</span>
+                {chatsOpen ? (
+                  <ChevronDown className="w-3.5 h-3.5 text-sidebar-foreground/40" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 text-sidebar-foreground/40" />
+                )}
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="mt-1 space-y-[var(--density-list-gap)] px-1">
+                {threads.length === 0 ? (
+                  <p className="text-xs text-sidebar-foreground/50 px-2 py-2" suppressHydrationWarning>
+                    {RECENTS_EMPTY_PHRASES[Math.floor(Date.now() / 60000) % RECENTS_EMPTY_PHRASES.length]}
+                  </p>
+                ) : (
+                  <>
+                    {(() => {
+                      const recents = threads.filter((t) => !t.starred).slice(0, 5);
+                      const groups = groupByRecencyBucket(
+                        recents,
+                        (t) => t.updated_at,
+                        sidebarNow,
+                      );
+                      return groups.map(({ bucket, label, items }) => (
+                        <div key={bucket} className="space-y-[var(--density-list-gap)]">
+                          <p className="text-[10px] uppercase tracking-widest font-medium text-sidebar-foreground/40 px-2 pt-2 pb-1">
+                            {label}
+                          </p>
+                          {items.map(renderThread)}
+                        </div>
+                      ));
+                    })()}
+                  </>
+                )}
+                <button
+                  onClick={() => { closeOnNav(); router.push('/chats'); }}
+                  onMouseEnter={() => router.prefetch('/chats')}
+                  className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
+                >
+                  <span>See all chats</span>
+                  <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
       ) : (
         <div className="pb-1 shrink-0 flex justify-center">
@@ -889,52 +933,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
           );
         })()}
 
-        {/* Recent Chats Section */}
-        <div className="px-3 pb-1">
-          <p className="text-[13px] font-semibold tracking-tight text-sidebar-foreground/55 py-1">
-            Recents
-          </p>
-        </div>
-        <div className="px-2 pb-3 pt-0 space-y-[var(--density-list-gap)]">
-          {threads.length === 0 && threadsLoading ? (
-            null /* no skeleton — threads persisted so length=0 means truly empty; skip false promise */
-          ) : threads.length === 0 ? (
-            <div className="text-center py-8">
-              <p className="text-sm text-sidebar-foreground/60" suppressHydrationWarning>
-                {RECENTS_EMPTY_PHRASES[Math.floor(Date.now() / 60000) % RECENTS_EMPTY_PHRASES.length]}
-              </p>
-            </div>
-          ) : (
-            <>
-              {(() => {
-                const recents = threads.filter((t) => !t.starred).slice(0, 8);
-                const groups = groupByRecencyBucket(
-                  recents,
-                  (t) => t.updated_at,
-                  sidebarNow,
-                );
-                return groups.map(({ bucket, label, items }) => (
-                  <div key={bucket} className="space-y-[var(--density-list-gap)]">
-                    <p className="text-[10px] uppercase tracking-widest font-medium text-sidebar-foreground/40 px-2 pt-2 pb-1">
-                      {label}
-                    </p>
-                    {items.map(renderThread)}
-                  </div>
-                ));
-              })()}
-              {(threads.filter((t) => !t.starred).length > 8 || hasMore) && (
-                <button
-                  onClick={() => { closeOnNav(); router.push('/chats'); }}
-                  onMouseEnter={() => router.prefetch('/chats')}
-                  className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
-                >
-                  <span>See all chats</span>
-                  <ChevronRight className="w-3 h-3" />
-                </button>
-              )}
-            </>
-          )}
-        </div>
+
         </div>)}
       </ScrollArea>
 

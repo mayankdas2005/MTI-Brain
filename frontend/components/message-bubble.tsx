@@ -225,9 +225,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       );
     }
 
-    const messageDate = new Date(message.created_at);
-    const timeStr = `${messageDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${messageDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-
     return (
       <div className="flex flex-col items-end px-4 py-1 group">
         {/* Persistent version pill - always visible when this turn has alternates */}
@@ -339,14 +336,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           }}
         >
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <p className="text-[11px] opacity-40 mt-1.5 text-right cursor-default">{timeStr}</p>
-            </TooltipTrigger>
-            <TooltipContent side="left">
-              {messageDate.toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
-            </TooltipContent>
-          </Tooltip>
         </div>
       </div>
     );
