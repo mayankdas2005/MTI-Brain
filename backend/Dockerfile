@@ -35,6 +35,7 @@ ENV PATH="/venv/bin:$PATH"
 COPY ./app ./app
 COPY node_names.yml ./node_names.yml
 COPY config.yml ./config.yml
+COPY join_key_profile.json ./join_key_profile.json
 
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

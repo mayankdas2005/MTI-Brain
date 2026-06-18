@@ -129,20 +129,20 @@ def render_filter_value(operator: str, value) -> str:
 
 
 def apply_stale_fallback(operator: str, value, col_name: str, table_fqn: str):
-    """Return a MAX-anchored copy of value for the stale-data OR branch.
+    """Return a LEAST(CURRENT_DATE, MAX(col))-anchored copy of value for stale-data safety.
 
-    Replaces every occurrence of CURRENT_DATE in value with
-    (SELECT MAX(col_name) FROM table_fqn).  Works for both str and list values.
+    Replaces CURRENT_DATE with LEAST(CURRENT_DATE, (SELECT MAX(col_name)::DATE FROM table_fqn)).
+    This single anchor date handles both cases correctly:
+      - Stale data (MAX < CURRENT_DATE): LEAST = MAX → window anchored to latest available data.
+      - Future-dated rows (MAX > CURRENT_DATE): LEAST = CURRENT_DATE → caps at today, no future leak.
 
-    Returns None when no CURRENT_DATE is present (fallback would be identical
-    to the primary filter and adds no value) or when operator is BETWEEN_SQL
-    pointing to a future window (stale fallback is meaningless for forecasts).
+    Returns None when no CURRENT_DATE is present (no substitution needed).
     """
-    max_expr = f"(SELECT MAX({col_name}) FROM {table_fqn})"
+    least_expr = f"LEAST(CURRENT_DATE, (SELECT MAX({col_name})::DATE FROM {table_fqn}))"
 
     if isinstance(value, list):
         # BETWEEN_SQL with two bounds — replace in both
-        replaced = [v.replace("CURRENT_DATE", max_expr) if isinstance(v, str) else str(v)
+        replaced = [v.replace("CURRENT_DATE", least_expr) if isinstance(v, str) else str(v)
                     for v in value]
         if replaced == list(value):
             return None  # nothing changed — no CURRENT_DATE to replace
@@ -152,7 +152,7 @@ def apply_stale_fallback(operator: str, value, col_name: str, table_fqn: str):
         return None
     if "CURRENT_DATE" not in value:
         return None
-    return value.replace("CURRENT_DATE", max_expr)
+    return value.replace("CURRENT_DATE", least_expr)
 
 
 def _strip_dead_ctes(parsed) -> None:

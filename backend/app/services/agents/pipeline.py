@@ -51,6 +51,7 @@ _STATE_KEYS = {
     "answer", "chart_spec", "chart_type", "alternative_chart_specs", "follow_ups", "error", "stopped", "prior_sql",
     "query_intent", "entity_tokens", "search_terms", "is_followup", "complexity",
     "preference_summary", "neo4j_raw_graph",
+    "_measure_specialist_output", "_dimension_specialist_output", "_directive_summary", "_cte_outline",
 }
 
 

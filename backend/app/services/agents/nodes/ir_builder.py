@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from app.core.logger import logger
 from app.services.agents.context.column_loader import get_filter_values as _get_filter_values
+from app.services.agents.join_key_filter import is_clause_safe as _jk_clause_safe
 from app.services.agents.semantic_ir import ColumnRef, FilterSpec, SemanticIR
 
 
@@ -202,6 +203,19 @@ async def build_semantic_ir(resolved: dict, semantic_context: dict, state: dict 
             anchor_tables,
             intent_directive=(state or {}).get("intent_directive") or "",
             anchor_join_paths=(state or {}).get("anchor_join_paths"),
+        )
+
+    # Final join chain summary — one log line showing exactly what the sql_generator will receive
+    _real_clauses = [c for c in join_clauses if c]
+    if _real_clauses:
+        logger.info(
+            "ir_builder | final_join_chain | tables={} | clauses={} | path_tables={}",
+            anchor_tables, _real_clauses, path_tables,
+        )
+    else:
+        logger.info(
+            "ir_builder | final_join_chain | single_table={} | no_joins",
+            anchor_tables[0] if anchor_tables else "none",
         )
 
     raw_measures = resolved.get("measures", [])
@@ -585,24 +599,49 @@ async def _load_join_paths(
             if rescued:
                 path_clauses = rescued.get("join_clauses") or []
                 hop_tables   = rescued.get("path_tables") or [from_table, to_table]
-                all_join_clauses.extend(path_clauses)
-                join_types.extend(["JOIN"] * len(path_clauses))
-                for tbl in hop_tables:
-                    if tbl not in all_path_tables:
-                        all_path_tables.append(tbl)
-                _rescued_raw_paths.append({
-                    "_label": "JoinPath",
-                    "from_fqn": from_table,
-                    "to_fqn": to_table,
-                    "join_clauses": path_clauses,
-                    "path_tables": hop_tables,
-                    "tier": rescued.get("tier", "cascade"),
-                    "source": "ir_builder_cascade",
-                })
-                logger.info(
-                    "ir_builder | join | {}<->{} | hops={} | clauses={} | via=cascade(tier={})",
-                    from_table, to_table, len(path_clauses), path_clauses, rescued.get("tier", "?"),
-                )
+                # Profile filter: Tier C paths bypass schema_enricher's filter — validate here
+                _safe_clauses, _blocked = [], []
+                for _c in path_clauses:
+                    _ok, _reason = _jk_clause_safe(_c)
+                    if _ok:
+                        _safe_clauses.append(_c)
+                    else:
+                        _blocked.append((_c, _reason))
+                if _blocked:
+                    logger.warning(
+                        "ir_builder | cascade_join_blocked | {}<->{} | blocked={} | tier={}",
+                        from_table, to_table, _blocked, rescued.get("tier"),
+                    )
+                if not _safe_clauses:
+                    logger.warning(
+                        "ir_builder | cascade_join_all_blocked | {}<->{} | all clauses dangerous | treating as unresolved",
+                        from_table, to_table,
+                    )
+                    unresolved_pairs.append({"from": from_table, "to": to_table, "reason": "cascade_all_blocked"})
+                    if to_table not in all_path_tables:
+                        all_path_tables.append(to_table)
+                    all_join_clauses.append(None)
+                    join_types.append("JOIN")
+                else:
+                    path_clauses = _safe_clauses
+                    all_join_clauses.extend(path_clauses)
+                    join_types.extend(["JOIN"] * len(path_clauses))
+                    for tbl in hop_tables:
+                        if tbl not in all_path_tables:
+                            all_path_tables.append(tbl)
+                    _rescued_raw_paths.append({
+                        "_label": "JoinPath",
+                        "from_fqn": from_table,
+                        "to_fqn": to_table,
+                        "join_clauses": path_clauses,
+                        "path_tables": hop_tables,
+                        "tier": rescued.get("tier", "cascade"),
+                        "source": "ir_builder_cascade",
+                    })
+                    logger.info(
+                        "ir_builder | join | {}<->{} | hops={} | clauses={} | via=cascade(tier={})",
+                        from_table, to_table, len(path_clauses), path_clauses, rescued.get("tier", "?"),
+                    )
             else:
                 logger.warning(
                     "ir_builder | unresolved_pair | from={} to={} | exhausted all cascade tiers",

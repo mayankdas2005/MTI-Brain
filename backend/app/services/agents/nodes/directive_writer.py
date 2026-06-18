@@ -1,13 +1,20 @@
-"""Node 1g: directive_writer — single job: write the intent directive.
+"""Node 1g: directive_writer — emit structured directives from assembled specialist intent.
 
-Runs after intent_assembler with the complete assembled intent.
-Sonnet model — needs to reason about CTE patterns, schema gaps, computation requirements.
+Architecture (Phase 2):
+  1. _build_directive_deterministic() — pure Python, no LLM. Converts structured
+     specialist output fields directly to directive lines:
+       TIME_FILTER  ← resolved_intent["time_filter_col"]   (filter_specialist)
+       COMPUTATION  ← resolved_intent["derived_measures"]   (measure_specialist)
+                   ← state["concept_mappings"]              (context_fetcher)
+       COMPUTED_FILTER ← resolved_intent["threshold_specs"] (filter_specialist)
+       MULTI_GRAIN  ← resolved_intent["temporal_grains"]   (filter_specialist)
+       JOIN_PATH    ← state["anchor_join_paths"]            (ir_builder)
+  2. _detect_schema_gaps() — single Haiku call. Identifies SCHEMA_GAP_* lines by
+     comparing user intent against the loaded enriched schema.
+  3. _compute_confidence() — rule-based. Degrades from 0.90 per gap/unresolved join.
 
-Produces intent_directive_instructions + intent_directive_context in the same format
-that ir_builder already parses (JOIN_PATH:, TIME_FILTER:, SCHEMA_GAP: etc.)
-
-This is the ONLY node that reasons about COMPUTATION/COMPUTED_FILTER/CTE logic.
-All other agents see the directive as an authoritative spec — they do not re-derive it.
+Downstream nodes (sql_generator, ir_builder, schema_gap_resolver, confidence) read the
+directive output format unchanged — same field names, same tag structure.
 """
 
 from __future__ import annotations
@@ -15,14 +22,23 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.helpers import build_mission_context, build_refinement_section, parse_tag
-from app.services.agents.prompts import DIRECTIVE_WRITER_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
+
+from app.services.agents.prompts import (
+    REASONING_DIRECTIVE_DEEP,
+    REASONING_DIRECTIVE_NORMAL,
+    SCHEMA_GAP_DETECTOR_PROMPT,
+)
 from app.services.agents.state import AnalyticsState
 
+
+# ---------------------------------------------------------------------------
+# Schema section builder (reused by gap detector Haiku call)
+# ---------------------------------------------------------------------------
 
 def _build_anchor_schema_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
     table_grains = enriched_schema.get("table_grains") or {}
+    table_row_counts = enriched_schema.get("table_row_counts") or {}
     if not columns:
         return "(no schema loaded)"
 
@@ -35,8 +51,10 @@ def _build_anchor_schema_section(enriched_schema: dict) -> str:
     lines = []
     for fqn, cols in by_table.items():
         grain = table_grains.get(fqn, "")
+        row_count = table_row_counts.get(fqn, 0)
         grain_note = f"  [grain: {grain[:100]}]" if grain else ""
-        lines.append(f"\n{fqn}:{grain_note}")
+        row_note = f"  rows={row_count:,}" if row_count else ""
+        lines.append(f"\n{fqn}:{grain_note}{row_note}")
         for c in cols:
             name = c.get("name", "")
             sem = c.get("semantic_type") or c.get("data_type", "")
@@ -50,6 +68,10 @@ def _build_anchor_schema_section(enriched_schema: dict) -> str:
                 lines.append(f"    {desc}")
     return "\n".join(lines)
 
+
+# ---------------------------------------------------------------------------
+# Formatting helpers (used by prompt sections and gap detector input)
+# ---------------------------------------------------------------------------
 
 def _format_measures(measures: list[dict]) -> str:
     if not measures:
@@ -76,7 +98,6 @@ def _format_dimensions(dimensions: list[dict]) -> str:
         f"{d.get('table_fqn', '')}.{d.get('column_name', '')} as {d.get('alias', d.get('column_name', ''))}"
         for d in dimensions
     )
-
 
 
 def _build_query_plan_section(query_plan: dict | None, timeframe: str | None) -> str:
@@ -110,223 +131,288 @@ def _build_query_plan_section(query_plan: dict | None, timeframe: str | None) ->
     return "\n".join(lines) if lines else ""
 
 
-def _build_concept_mappings_section(concept_mappings: dict | None) -> str:
-    if not concept_mappings:
-        return ""
-    lines = ["CONCEPT MAPPINGS — business terms linked to anchor tables (emit COMPUTATION: not SCHEMA_GAP_CONCEPT):"]
-    for term, info in concept_mappings.items():
-        computation = info.get("computation") or ""
-        definition = (info.get("definition") or "")[:120]
-        table_fqn = info.get("table_fqn") or ""
-        line = f"  {term}"
-        if table_fqn:
-            line += f"  [{table_fqn}]"
-        if definition:
-            line += f"  — {definition}"
-        lines.append(line)
-        if computation:
-            lines.append(f"    COMPUTATION: {term.lower().replace(' ', '_')} = {computation}")
-    return "\n".join(lines)
-
-
-def _build_filter_columns_section(filters: list[dict], timeframe: str | None, time_filter_col: str | None) -> str:
-    lines = []
-    if time_filter_col and timeframe:
-        lines.append(f"  {time_filter_col}  (time window: {timeframe})")
-    for f in filters:
-        fqn = f.get("table_fqn", "")
-        col = f.get("column_name", "")
-        val = f.get("raw_value") or f.get("raw_user_value", "")
-        op = f.get("operator", "=")
-        if fqn and col:
-            lines.append(f"  {fqn}.{col} {op} '{val}'")
-    return "\n".join(lines) if lines else "  (none)"
-
-
 def _build_confirmed_join_paths_section(anchor_join_paths: list[dict] | None) -> str:
     if not anchor_join_paths:
         return ""
-    lines = ["CONFIRMED JOIN PATHS (emit JOIN_PATH: for each — do NOT emit SCHEMA_GAP_JOIN for these pairs):"]
-    for p in anchor_join_paths:
+    lines = ["CONFIRMED JOIN PATHS (these pairs have confirmed FK paths — do NOT emit SCHEMA_GAP_JOIN for them):"]
+    for p in anchor_join_paths or []:
         from_fqn = p.get("from_fqn", "")
         to_fqn = p.get("to_fqn", "")
-        clauses = p.get("join_clauses") or p.get("from_col") and [
-            f"{from_fqn}.{p.get('from_col')} = {to_fqn}.{p.get('to_col')}"
-        ] or []
+        clauses = p.get("join_clauses") or (
+            [f"{from_fqn}.{p.get('from_col')} = {to_fqn}.{p.get('to_col')}"]
+            if p.get("from_col") else []
+        )
         if clauses:
             lines.append(f"  {from_fqn} ↔ {to_fqn}")
             for clause in (clauses if isinstance(clauses, list) else [clauses]):
-                lines.append(f"    JOIN_PATH: {clause}")
+                lines.append(f"    {clause}")
         else:
-            lines.append(f"  {from_fqn} ↔ {to_fqn}  (join clause not available — emit JOIN_PATH with best matching columns)")
+            lines.append(f"  {from_fqn} ↔ {to_fqn}  (join clause unavailable)")
     return "\n".join(lines)
 
 
-_CTE_PREFIXES = (
-    "from ", "join ", "select ", "with ", "union ", "insert ", "update ", "delete ",
-    "join_path:", "reads_from:", "exports:", "snapshot_dates", "forecast_base", "prior_year",
-    "opening_balance", "liquidity_", "combined_forecast", "breaches_only",
-)
+# ---------------------------------------------------------------------------
+# Deterministic directive handlers — one function per directive line type
+# ---------------------------------------------------------------------------
 
+def _emit_time_filter(resolved: dict) -> str | None:
+    """TIME_FILTER from filter_specialist's authoritative time_filter_col.
 
-def _strip_cte_lines(text: str) -> str:
-    """Remove lines that indicate the LLM generated a full SQL/CTE structure.
-
-    directive_writer should only emit COMPUTATION/TIME_FILTER/SCHEMA_GAP/MULTI_GRAIN lines.
-    Lines starting SQL keywords or CTE names are scope creep — they conflict with
-    ir_builder's pre_loaded_joins when both reach sql_generator simultaneously.
-    Pure string check, no regex.
+    Source: resolved_intent["time_filter_col"] — set by filter_specialist, assembled by intent_assembler.
+    Single authoritative source; Python cannot emit duplicates (no M17 needed).
     """
-    kept: list[str] = []
-    for line in text.splitlines():
-        lower = line.strip().lower()
-        if any(lower.startswith(pfx) for pfx in _CTE_PREFIXES):
-            continue
-        kept.append(line)
-    cleaned = "\n".join(kept)
-    if len(cleaned) < len(text) - 20:
-        from app.core.logger import logger as _log
-        _log.warning(
-            "directive_writer | cte_scope_creep_stripped | removed={} chars",
-            len(text) - len(cleaned),
-        )
-    return cleaned
+    col = (resolved.get("time_filter_col") or "").strip()
+    return f"TIME_FILTER: {col}" if col else None
 
+
+def _emit_computations(resolved: dict, concept_mappings: dict | None) -> list[str]:
+    """COMPUTATION lines from two sources:
+
+    1. resolved_intent["derived_measures"] — from MEASURE_SPECIALIST_PROMPT output.
+       Each item: {alias: str, expression: SQL str, aggregation: str}
+       expression is always SQL (e.g., "SUM(inflows) - SUM(outflows)"), never natural language.
+    2. state["concept_mappings"] — business term → {computation: SQL expr, ...} from context_fetcher.
+    """
+    lines: list[str] = []
+    for dm in resolved.get("derived_measures") or []:
+        alias = (dm.get("alias") or "").strip()
+        expr = (dm.get("expression") or "").strip()
+        if alias and expr:
+            lines.append(f"COMPUTATION: {alias} = {expr}")
+    for term, mapping in (concept_mappings or {}).items():
+        comp = ((mapping or {}).get("computation") or "").strip()
+        if comp:
+            key = term.lower().replace(" ", "_")
+            lines.append(f"COMPUTATION: {key} = {comp}")
+    return lines
+
+
+def _emit_computed_filters(resolved: dict) -> list[str]:
+    """COMPUTED_FILTER lines from resolved_intent["threshold_specs"].
+
+    Source: FILTER_SPECIALIST_PROMPT output, field threshold_specs[].
+    Each item: {expression: str, operator: str, value: numeric, label: str, is_having: bool}
+    is_having=True  → HAVING clause (post-aggregation threshold)
+    is_having=False → WHERE clause (pre-aggregation filter)
+    Only emitted for CONDITION="Highlight" queries; empty list otherwise.
+    """
+    lines: list[str] = []
+    for spec in resolved.get("threshold_specs") or []:
+        expr = (spec.get("expression") or "").strip()
+        op   = (spec.get("operator") or "").strip()
+        val  = spec.get("value")
+        if expr and op and val is not None:
+            clause = "HAVING" if spec.get("is_having") else "WHERE"
+            lines.append(f"COMPUTED_FILTER: {clause} {expr} {op} {val}")
+    return lines
+
+
+def _emit_multi_grain(resolved: dict) -> str | None:
+    """MULTI_GRAIN when 2+ temporal grains requested.
+
+    Source: resolved_intent["temporal_grains"] from filter_specialist.
+    Single grain (or empty) → None (no line emitted).
+    """
+    grains = [g for g in (resolved.get("temporal_grains") or []) if g]
+    return f"MULTI_GRAIN: {'+'.join(grains)}" if len(grains) >= 2 else None
+
+
+def _emit_join_paths(anchor_join_paths: list[dict]) -> list[str]:
+    """JOIN_PATH lines from ir_builder's resolved join clauses.
+
+    Source: state["anchor_join_paths"] — each path has join_clauses: list[str].
+    These are confirmed FK paths for Tier B join fallback in ir_builder.
+    """
+    lines: list[str] = []
+    for path in anchor_join_paths or []:
+        for clause in (path.get("join_clauses") or []):
+            clause_str = (clause or "").strip()
+            if clause_str:
+                lines.append(f"JOIN_PATH: {clause_str}")
+    return lines
+
+
+def _build_directive_deterministic(state: dict) -> tuple[str, str]:
+    """Build directive text from structured specialist outputs. No LLM, no network calls.
+
+    Returns (instructions_text, context_text) — same structure consumed by downstream nodes.
+    Missing fields emit nothing; never raises KeyError.
+    """
+    resolved = state.get("resolved_intent") or {}
+    concept_mappings = state.get("concept_mappings") or {}
+    anchor_join_paths = state.get("anchor_join_paths") or []
+
+    instructions: list[str] = list(filter(None, [
+        _emit_time_filter(resolved),
+        *_emit_computations(resolved, concept_mappings),
+        *_emit_computed_filters(resolved),
+        _emit_multi_grain(resolved),
+    ]))
+
+    anchors = resolved.get("anchor_tables") or []
+    shape = resolved.get("result_shape", "")
+    context: list[str] = [
+        *_emit_join_paths(anchor_join_paths),
+        *(["ANCHOR_TABLES: " + ", ".join(anchors)] if anchors else []),
+        *(["RESULT_SHAPE: " + shape] if shape else []),
+    ]
+
+    return "\n".join(instructions), "\n".join(context)
+
+
+# ---------------------------------------------------------------------------
+# Schema gap detector — Haiku, one job only
+# ---------------------------------------------------------------------------
+
+def _compute_confidence(gap_text: str, anchor_join_paths: list) -> str:
+    """Rule-based confidence score: degrade from 0.90 per schema gap and unresolved join."""
+    n_gaps = sum(1 for l in gap_text.splitlines() if l.strip().startswith("SCHEMA_GAP"))
+    n_unresolved = sum(1 for p in (anchor_join_paths or []) if not (p.get("join_clauses") or []))
+    score = max(0.40, 0.90 - 0.10 * n_gaps - 0.05 * n_unresolved)
+    return f"CONFIDENCE_NOTE: {score:.2f} ({n_gaps} schema gaps, {n_unresolved} unresolved joins)"
+
+
+async def _detect_schema_gaps(state: dict, config: RunnableConfig) -> str:
+    """Haiku call: identify SCHEMA_GAP_* lines by comparing intent against loaded schema.
+
+    Input:
+      - enriched_schema (schema_enricher) → column visibility for gap detection
+      - query_intent (intake_classifier) → what user actually asked for
+      - anchor_join_paths (ir_builder) → which table pairs have confirmed FK paths
+      - query_plan (query_planner) → explicit output/grouping contracts
+      - deep_analysis → reasoning depth selector
+
+    Output: ONLY SCHEMA_GAP_JOIN / SCHEMA_GAP_TABLE / SCHEMA_GAP_CONCEPT lines, or "".
+    Non-fatal: returns "" on any exception.
+    """
+    resolved = state.get("resolved_intent") or {}
+    enriched_schema = state.get("enriched_schema") or {}
+    anchor_join_paths = state.get("anchor_join_paths") or []
+    query_intent_lines = state.get("query_intent") or []
+    query_plan = state.get("query_plan") or {}
+    deep_analysis = state.get("deep_analysis", False)
+
+    schema_section = _build_anchor_schema_section(enriched_schema)
+    confirmed_joins_section = _build_confirmed_join_paths_section(anchor_join_paths)
+    query_plan_section = _build_query_plan_section(query_plan, resolved.get("timeframe"))
+
+    anchors = resolved.get("anchor_tables") or []
+    measures = resolved.get("measures") or []
+    dimensions = resolved.get("dimensions") or []
+    temporal_grains = resolved.get("temporal_grains") or []
+    intent_summary = (
+        f"ANCHOR TABLES: {', '.join(anchors)}\n"
+        f"MEASURES: {_format_measures(measures)}\n"
+        f"DIMENSIONS: {_format_dimensions(dimensions)}\n"
+        f"TEMPORAL GRAINS: {', '.join(temporal_grains) if temporal_grains else 'single'}\n"
+        f"QUERY INTENT LINES:\n"
+        + ("\n".join(query_intent_lines) if query_intent_lines else "(none)")
+    )
+
+    reasoning = REASONING_DIRECTIVE_DEEP if deep_analysis else REASONING_DIRECTIVE_NORMAL
+
+    try:
+        from app.services.agents.bedrock import get_llm
+        from app.core.circuit_breaker import llm_breaker
+
+        llm = get_llm("fast")
+
+        prompt = SCHEMA_GAP_DETECTOR_PROMPT.format_messages(
+            intent_summary=intent_summary,
+            anchor_schema_section=schema_section,
+            confirmed_join_paths_section=confirmed_joins_section,
+            query_plan_section=query_plan_section,
+            reasoning_directive=reasoning,
+        )
+
+        @llm_breaker
+        async def _call():
+            from app.core.retry import retry_async
+            return await retry_async(
+                lambda: llm.ainvoke(prompt, config=config),
+                service="bedrock-gap-detector",
+                max_attempts=2,
+                backoff_base=5.0,
+            )
+
+        response = await _call()
+        raw = response.content if isinstance(response.content, str) else ""
+
+        # Keep ONLY SCHEMA_GAP_* lines — filter out everything else
+        gap_lines = [
+            l.strip() for l in raw.splitlines()
+            if l.strip().startswith("SCHEMA_GAP_")
+        ]
+        return "\n".join(gap_lines)
+
+    except Exception as e:
+        logger.warning("directive_writer | gap_detector_failed | error={}", e)
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Main node
+# ---------------------------------------------------------------------------
 
 async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("directive_writer START | thread={}", state.get("thread_id", ""))
 
-    resolved_intent = state.get("resolved_intent") or {}
-    enriched_schema = state.get("enriched_schema") or {}
+    # Step 1: deterministic directive from structured specialist outputs (no LLM)
+    instructions_text, context_text = _build_directive_deterministic(state)
 
-    # Extract assembled intent fields
-    anchor_tables = resolved_intent.get("anchor_tables") or state.get("anchor_tables_resolved") or []
-    measures = resolved_intent.get("measures") or []
-    filters = resolved_intent.get("filters") or []
-    dimensions = resolved_intent.get("dimensions") or []
-    result_shape = resolved_intent.get("result_shape", "table")
-    query_complexity = resolved_intent.get("complexity") or "simple"
-    # Prefer intake-time query_intent typed lines over late-bound resolved_intent.intent
-    _qi_lines = state.get("query_intent") or []
-    query_intent = "\n".join(_qi_lines) if _qi_lines else (resolved_intent.get("intent") or "")
+    # Step 2: Haiku gap detection (non-fatal — returns "" on failure)
+    gap_text = await _detect_schema_gaps(state, config)
 
-    # Get timeframe + time_filter_col — prefer resolved_intent (set by intent_assembler),
-    # fall back to specialist_outputs for the non-assembler path.
-    specialist_outputs = state.get("specialist_outputs") or []
-    timeframe = resolved_intent.get("timeframe")
-    temporal_grains = resolved_intent.get("temporal_grains") or []
-    time_filter_col = resolved_intent.get("time_filter_col") or None
-    for s in specialist_outputs:
-        if s.get("type") == "filters":
-            timeframe = timeframe or s.get("timeframe")
-            time_filter_col = time_filter_col or s.get("time_filter_col") or None
-            temporal_grains = temporal_grains or s.get("temporal_grains") or []
-            break
+    # Step 3: rule-based confidence score
+    anchor_join_paths = state.get("anchor_join_paths") or []
+    confidence_line = _compute_confidence(gap_text, anchor_join_paths)
 
-    logger.info("directive_writer | resolved_time_filter_col={} | timeframe={}", time_filter_col, timeframe)
+    # Assemble context: join_paths + anchor echo + gap lines + confidence
+    context_parts = list(filter(None, [context_text, gap_text, confidence_line]))
+    full_context_text = "\n".join(context_parts)
 
-    filter_hint = state.get("filter_directive_hint") or ""
-    filter_hint_section = (
-        f"\nFILTER VALUE MAPPINGS (from filter specialist — use for COMPUTED_FILTER):\n{filter_hint}"
-        if filter_hint else ""
+    directive = (
+        "<directive>\n"
+        f"<instructions>\n{instructions_text}\n</instructions>\n"
+        f"<context>\n{full_context_text}\n</context>\n"
+        "</directive>"
     )
 
-    prompt = DIRECTIVE_WRITER_PROMPT.format_messages(
-        question=state.get("effective_question") or state["question"],
-        anchor_tables=", ".join(anchor_tables),
-        measures=_format_measures(measures),
-        filters=_format_filters(filters, timeframe, time_filter_col),
-        dimensions=_format_dimensions(dimensions),
-        result_shape=result_shape,
-        timeframe=timeframe or "not specified",
-        temporal_grains=", ".join(temporal_grains) if temporal_grains else "single",
-        query_intent=query_intent,
-        query_complexity=query_complexity,
-        anchor_schema_section=_build_anchor_schema_section(enriched_schema),
-        confirmed_join_paths_section=_build_confirmed_join_paths_section(state.get("anchor_join_paths")),
-        concept_mappings_section=_build_concept_mappings_section(state.get("concept_mappings")),
-        filter_hint_section=filter_hint_section,
-        query_plan_section=_build_query_plan_section(state.get("query_plan"), timeframe),
-        refinement_section=build_refinement_section(state, role="directive"),
-        reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
-        time_filter_col=time_filter_col or "not specified",
-        filter_columns_section=_build_filter_columns_section(filters, timeframe, time_filter_col),
+    # Build directive_summary: all meaningful directive lines from instructions_text + SCHEMA_GAP lines.
+    # Captures TIME_FILTER, COMPUTATION, COMPUTED_FILTER, MULTI_GRAIN — so even a simple SUM query
+    # (which has no COMPUTATION lines) still produces a non-empty summary via its TIME_FILTER line.
+    _SUMMARY_PREFIXES = ("TIME_FILTER:", "COMPUTATION:", "COMPUTED_FILTER:", "MULTI_GRAIN:")
+    _directive_summary_lines = [
+        l.strip() for l in instructions_text.splitlines()
+        if any(l.strip().startswith(p) for p in _SUMMARY_PREFIXES)
+    ] + [
+        l.strip() for l in gap_text.splitlines()
+        if l.strip().startswith("SCHEMA_GAP")
+    ]
+    directive_summary = "\n".join(_directive_summary_lines)
+
+    # Log TIME_FILTER emission — authoritative column for all downstream date filtering
+    tf_line = next(
+        (l for l in instructions_text.splitlines() if l.strip().upper().startswith("TIME_FILTER:")),
+        None,
     )
-    _mission = build_mission_context(
-        state,
-        role="Translate the assembled specialist intent + schema into COMPUTATION/SCHEMA_GAP directives for sql_generator",
-        feeds="sql_generator (the sole consumer of directives — this is the critical handoff)",
-    )
-    prompt[0].content = _mission + "\n\n" + prompt[0].content
-
-    from app.services.agents.bedrock import get_llm
-    from app.core.circuit_breaker import llm_breaker
-
-    llm = get_llm("balanced")
-
-    @llm_breaker
-    async def _call():
-        from app.core.retry import retry_async
-        return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-directive-writer", max_attempts=2, backoff_base=5.0)
-
-    try:
-        response = await _call()
-        raw = response.content if isinstance(response.content, str) else ""
-    except Exception as e:
-        logger.error("directive_writer | LLM failed | thread={} | error={}", state.get("thread_id"), e)
-        return {
-            "intent_directive": "DIRECTIVE_UNAVAILABLE: LLM call failed — sql_generator: use schema context and filter directive only",
-            "intent_directive_instructions": "",
-            "intent_directive_context": "",
-        }
-
-    # Parse directive tags
-    directive_raw = parse_tag(raw, "directive") or raw
-    instructions_text = parse_tag(directive_raw, "instructions") or ""
-    context_text = parse_tag(directive_raw, "context") or ""
-
-    # Strip CTE scope creep from instructions: directive_writer's job is COMPUTATION/TIME_FILTER
-    # lines only. Any line that starts a FROM/JOIN/SELECT/WITH/UNION structure means the model
-    # generated a full SQL blueprint that conflicts with ir_builder's pre_loaded_joins.
-    # Remove such lines so sql_generator receives a clean directive, not a competing SQL schema.
-    instructions_text = _strip_cte_lines(instructions_text)
-
-    # M17: enforce exactly ONE TIME_FILTER line — multiple would give CTE planner two date columns
-    _tf_lines = [l for l in instructions_text.splitlines() if l.strip().upper().startswith("TIME_FILTER:")]
-    if len(_tf_lines) > 1:
-        logger.warning(
-            "directive_writer | multiple TIME_FILTER lines={} | keeping first | thread={}",
-            len(_tf_lines), state.get("thread_id"),
-        )
-        first_seen = False
-        clean_lines = []
-        for l in instructions_text.splitlines():
-            if l.strip().upper().startswith("TIME_FILTER:"):
-                if not first_seen:
-                    clean_lines.append(l)
-                    first_seen = True
-            else:
-                clean_lines.append(l)
-        instructions_text = "\n".join(clean_lines)
-
-    # Log TIME_FILTER emission — authoritative column emitted to directive
-    time_filter_emitted = None
-    for line in instructions_text.splitlines():
-        stripped = line.strip()
-        if stripped.upper().startswith("TIME_FILTER:") and time_filter_emitted is None:
-            time_filter_emitted = stripped
-
-    if time_filter_emitted:
-        logger.info("directive_writer | time_filter_emitted | {}", time_filter_emitted)
+    if tf_line:
+        logger.info("directive_writer | time_filter_emitted | {}", tf_line)
     else:
         logger.warning("directive_writer | TIME_FILTER missing from directive | thread={}", state.get("thread_id"))
+
+    n_gaps = sum(1 for l in gap_text.splitlines() if l.strip().startswith("SCHEMA_GAP"))
     logger.info(
-        "directive_writer DONE | thread={} | has_instructions={} | has_context={}",
-        state.get("thread_id"), bool(instructions_text.strip()), bool(context_text.strip()),
+        "directive_writer DONE | thread={} | instructions_lines={} | schema_gaps={} | directive_summary_lines={}",
+        state.get("thread_id"),
+        len([l for l in instructions_text.splitlines() if l.strip()]),
+        n_gaps,
+        len(_directive_summary_lines),
     )
 
     return {
-        "intent_directive": directive_raw,
+        "intent_directive": directive,
         "intent_directive_instructions": instructions_text,
-        "intent_directive_context": context_text,
+        "intent_directive_context": full_context_text,
+        "_directive_summary": directive_summary,
     }

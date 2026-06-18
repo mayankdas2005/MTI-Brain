@@ -86,12 +86,6 @@ async def write_query_pattern(
 ) -> None:
     if not ir:
         return
-    if confidence_score < _MIN_CONFIDENCE_FOR_PATTERN:
-        logger.debug(
-            "audit | QueryPattern skipped (low confidence) | score={} | threshold={}",
-            confidence_score, _MIN_CONFIDENCE_FOR_PATTERN,
-        )
-        return
     recompile = state.get("recompile_count", 0)
     repair = state.get("repair_count", 0)
     try:
@@ -101,8 +95,12 @@ async def write_query_pattern(
             "id": pattern_id or str(uuid.uuid4()),
             "question_text": state["question"],
             "sql_text": sql or "",
+            "sql_cte_outline": state.get("_cte_outline") or "",
             "join_outline": _extract_join_outline(sql),
             "filter_summary": _extract_filter_summary(ir),
+            "measure_summary": state.get("_measure_specialist_output") or "",
+            "dimension_summary": state.get("_dimension_specialist_output") or "",
+            "directive_summary": state.get("_directive_summary") or "",
             "tables_used": list(ir.anchor_tables),
             "intent": ir.intent,
             "complexity": ir.complexity,

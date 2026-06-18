@@ -32,8 +32,12 @@ MERGE (qp:QueryPattern {id: $id})
 ON CREATE SET
   qp.question_text    = $question_text,
   qp.sql_text         = $sql_text,
+  qp.sql_cte_outline  = $sql_cte_outline,
   qp.join_outline     = $join_outline,
   qp.filter_summary   = $filter_summary,
+  qp.measure_summary  = $measure_summary,
+  qp.dimension_summary = $dimension_summary,
+  qp.directive_summary = $directive_summary,
   qp.tables_used      = $tables_used,
   qp.intent           = $intent,
   qp.complexity       = $complexity,
@@ -49,29 +53,79 @@ ON CREATE SET
   qp.first_seen       = datetime(),
   qp.occurrence_count = 1
 ON MATCH SET
-  qp.occurrence_count = coalesce(qp.occurrence_count, 0) + 1,
-  qp.last_seen        = datetime(),
-  qp.sql_text         = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_text         ELSE qp.sql_text         END,
-  qp.join_outline     = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $join_outline     ELSE qp.join_outline     END,
-  qp.filter_summary   = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $filter_summary   ELSE qp.filter_summary   END,
-  qp.tables_used      = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $tables_used      ELSE qp.tables_used      END,
-  qp.confidence_score = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
-  qp.repair_count     = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
-  qp.recompile_count  = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
+  qp.occurrence_count  = coalesce(qp.occurrence_count, 0) + 1,
+  qp.last_seen         = datetime(),
+  qp.sql_text          = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $sql_text          ELSE qp.sql_text          END,
+  qp.sql_cte_outline   = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $sql_cte_outline   ELSE qp.sql_cte_outline   END,
+  qp.join_outline      = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $join_outline      ELSE qp.join_outline      END,
+  qp.filter_summary    = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $filter_summary    ELSE qp.filter_summary    END,
+  qp.measure_summary   = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+      THEN $measure_summary   ELSE qp.measure_summary   END,
+  qp.dimension_summary = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+      THEN $dimension_summary ELSE qp.dimension_summary END,
+  qp.directive_summary = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+      THEN $directive_summary ELSE qp.directive_summary END,
+  qp.tables_used       = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $tables_used       ELSE qp.tables_used       END,
+  qp.confidence_score  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
+  qp.repair_count      = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
+  qp.recompile_count   = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
 """
 
 _QP_UPDATE_CYPHER = """
 MATCH (qp:QueryPattern {id: $id})
 SET
-  qp.occurrence_count = coalesce(qp.occurrence_count, 0) + 1,
-  qp.last_seen        = datetime(),
-  qp.sql_text         = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $sql_text         ELSE qp.sql_text         END,
-  qp.join_outline     = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $join_outline     ELSE qp.join_outline     END,
-  qp.filter_summary   = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $filter_summary   ELSE qp.filter_summary   END,
-  qp.tables_used      = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $tables_used      ELSE qp.tables_used      END,
-  qp.confidence_score = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
-  qp.repair_count     = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
-  qp.recompile_count  = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
+  qp.occurrence_count  = coalesce(qp.occurrence_count, 0) + 1,
+  qp.last_seen         = datetime(),
+  qp.sql_text          = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $sql_text          ELSE qp.sql_text          END,
+  qp.sql_cte_outline   = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $sql_cte_outline   ELSE qp.sql_cte_outline   END,
+  qp.join_outline      = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $join_outline      ELSE qp.join_outline      END,
+  qp.filter_summary    = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $filter_summary    ELSE qp.filter_summary    END,
+  qp.measure_summary   = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+      THEN $measure_summary   ELSE qp.measure_summary   END,
+  qp.dimension_summary = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+      THEN $dimension_summary ELSE qp.dimension_summary END,
+  qp.directive_summary = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+      THEN $directive_summary ELSE qp.directive_summary END,
+  qp.tables_used       = CASE
+      WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
+        OR $confidence_score > coalesce(qp.confidence_score, 0)
+      THEN $tables_used       ELSE qp.tables_used       END,
+  qp.confidence_score  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
+  qp.repair_count      = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
+  qp.recompile_count   = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
 """
 
 _AP_CYPHER = """
@@ -90,30 +144,24 @@ ON CREATE SET
   ap.first_seen       = datetime(),
   ap.occurrence_count = 1
 ON MATCH SET
-  ap.occurrence_count = ap.occurrence_count + 1,
-  ap.last_seen        = datetime(),
-  ap.sql_text         = $sql_text,
-  ap.error_detail     = $error_detail,
-  ap.failing_element  = CASE WHEN $failing_element <> '' THEN $failing_element ELSE ap.failing_element END
+  ap.occurrence_count  = ap.occurrence_count + 1,
+  ap.last_seen         = datetime(),
+  ap.sql_text          = $sql_text,
+  ap.error_detail      = $error_detail,
+  ap.failing_element   = CASE WHEN $failing_element <> '' THEN $failing_element ELSE ap.failing_element END
 """
 
 
 @neo4j_breaker
 def write_query_pattern(pattern_data: dict, is_update: bool = False) -> None:
-    if _WRITER_AVAILABLE:
-        _wqp(run_fn=_neo4j_write, pattern_data=pattern_data, is_update=is_update)
-    else:
-        cypher = _QP_UPDATE_CYPHER if is_update else _QP_CREATE_CYPHER
-        _neo4j_write(cypher, **pattern_data)
+    cypher = _QP_UPDATE_CYPHER if is_update else _QP_CREATE_CYPHER
+    _neo4j_write(cypher, **pattern_data)
     logger.debug("neo4j | fn=write_query_pattern | id={} | is_update={}", pattern_data.get("id"), is_update)
 
 
 @neo4j_breaker
 def write_anti_pattern(pattern_data: dict) -> None:
-    if _WRITER_AVAILABLE:
-        _wap(run_fn=_neo4j_write, pattern_data=pattern_data)
-    else:
-        _neo4j_write(_AP_CYPHER, **pattern_data)
+    _neo4j_write(_AP_CYPHER, **pattern_data)
     logger.debug("neo4j | fn=write_anti_pattern | merge_key={}", (pattern_data.get("merge_key") or "")[:8])
 
 

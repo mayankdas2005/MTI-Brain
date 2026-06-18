@@ -204,19 +204,23 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
     result = await _call_llm(prompt, config)
     question_type, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent = _parse_intake(result)
 
+    # Derive query_type from structured query_intent signals
+    query_type = _derive_query_type(query_intent)
+
     # Combine current search_terms with prior turn's terms for follow-up queries
     prior_search_terms = list(state.get("search_terms") or [])
     combined_search_terms = _combine_search_terms(search_terms, prior_search_terms, is_followup)
 
     logger.info(
-        "intake_classifier DONE | thread={} | type={} | is_followup={} | complexity={} | entity_tokens={} | search_terms={} | combined={} | prior_analytics={} | query_intent_lines={} | query_intent={}",
+        "intake_classifier DONE | thread={} | type={} | is_followup={} | complexity={} | entity_tokens={} | search_terms={} | combined={} | prior_analytics={} | query_intent_lines={} | query_intent={} | query_type={}",
         state["thread_id"], question_type, is_followup, complexity, entity_tokens,
-        search_terms, combined_search_terms, prior_analytics, len(query_intent), query_intent,
+        search_terms, combined_search_terms, prior_analytics, len(query_intent), query_intent, query_type,
     )
     return {
         "question_type": question_type,
         "is_followup": is_followup,
         "complexity": complexity,
+        "query_type": query_type,
         "entity_tokens": entity_tokens or None,
         "search_terms": combined_search_terms or None,
         "search_variants": search_variants or entity_tokens or None,
@@ -272,6 +276,32 @@ def _parse_intake(raw: str) -> tuple[str, bool, str, list[str], list[str], list[
         return qtype, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent
     except Exception:
         return "analytics", False, "simple", [], [], [], []  # Layer 3 fallback
+
+
+def _derive_query_type(query_intent: list[str]) -> str | None:
+    """Derive query_type from structured query_intent signals.
+
+    Returns: lookup | aggregate | trend | comparison | ratio | None
+    """
+    if not query_intent:
+        return None
+    intent_text = " ".join(query_intent).lower()
+    # TIME_INPUT signals projection/trend
+    if any("TIME_INPUT" in line for line in query_intent):
+        return "trend"
+    # COMPUTATION with trend/OLS/slope keywords
+    for line in query_intent:
+        if line.startswith("GOAL:") or line.startswith("OUTPUT:"):
+            ll = line.lower()
+            if any(w in ll for w in ("trend", "slope", "ols", "projection", "forecast", "extrapolat")):
+                return "trend"
+            if any(w in ll for w in ("ratio", "rate", "spread", "percentage of")):
+                return "ratio"
+    # COMPARISON line present
+    if any(line.startswith("COMPARISON:") for line in query_intent):
+        return "comparison"
+    # Default: aggregate (most common analytics query)
+    return "aggregate"
 
 
 def _combine_search_terms(

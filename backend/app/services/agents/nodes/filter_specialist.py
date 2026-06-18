@@ -56,6 +56,7 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
         capped.extend(tbl_cols[:6])
 
     table_grains = enriched_schema.get("table_grains") or {}
+    table_row_counts = enriched_schema.get("table_row_counts") or {}
 
     header_lines = [
         "FILTERABLE COLUMNS — known_values listed are DB enum codes (reference only).",
@@ -70,8 +71,10 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
 
     for fqn, tbl_cols in capped_by_table.items():
         grain = table_grains.get(fqn, "")
+        row_count = table_row_counts.get(fqn, 0)
         grain_note = f"  [grain: {grain[:100]}]" if grain else ""
-        lines.append(f"{fqn}{grain_note}")
+        row_note = f"  rows={row_count:,}" if row_count else ""
+        lines.append(f"{fqn}{grain_note}{row_note}")
         for c in tbl_cols:
             name = c.get("name", "")
             sem = c.get("semantic_type") or c.get("data_type", "")
@@ -160,6 +163,48 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
     _explicit = _query_plan.get("explicit_entities") or []
     _effective_entity_tokens = _explicit if _explicit else entity_tokens
 
+    # ── Prior pattern injection ─────────────────────────────────────────────────
+    _pat  = _sc.get("_matched_pattern")
+    _pat2 = _sc.get("_matched_pattern_second")
+    _anti = _sc.get("_matched_anti_patterns") or []
+    _tier = _sc.get("_matched_pattern_tier")
+
+    prior_verified_section = ""
+    prior_trace_row = ""
+
+    if _pat and _tier in ("exact", "strong") and _pat.get("filter_summary"):
+        _corroboration = ""
+        if _pat2 and _pat2.get("filter_summary"):
+            _corroboration = f"\nCORROBORATED BY 2nd pattern: {_pat2['filter_summary']}"
+        _anti_sql_lines = "\n".join(
+            f"Prior SQL error: {a.get('error_type', 'error')} on {a.get('failing_element', 'unknown')}"
+            for a in _anti if a.get("error_type")
+        )
+        verb = "EXACT MATCH" if _tier == "exact" else "STRONG MATCH"
+        prior_verified_section = (
+            f"<prior_pattern>\n"
+            f"Similar question: \"{_pat.get('question_text', '')}\"\n"
+            f"{verb} — Prior verified filter interpretation:\n"
+            f"  {_pat['filter_summary']}{_corroboration}\n"
+            + (f"Note — similar questions had SQL errors (not interpretation errors):\n{_anti_sql_lines}\n" if _anti_sql_lines else "")
+            + "Keep this in mind as you fill the GATE tables below. "
+            "Adopt if the current question aligns. If different, explain the deviation in <reasoning>.\n"
+            "</prior_pattern>"
+        )
+        prior_trace_row = (
+            f"  | **[PRIOR — consider]** {_pat['filter_summary']} "
+            f"| — | {_tier} match — adopt or explain deviation |\n"
+        )
+    elif _anti:
+        _anti_sql_lines = "\n".join(
+            f"SQL error: {a.get('error_type', 'error')} on {a.get('failing_element', 'unknown')}"
+            for a in _anti if a.get("error_type")
+        )
+        if _anti_sql_lines:
+            prior_verified_section = (
+                f"<prior_failed>\nSimilar questions previously had SQL errors (interpretation may still be correct):\n{_anti_sql_lines}\n</prior_failed>"
+            )
+
     prompt = FILTER_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -170,6 +215,8 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
         entity_hints_section=_build_entity_hints_section(entity_hints),
         entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
+        prior_verified_section=prior_verified_section,
+        prior_trace_row=prior_trace_row,
     )
     _mission = build_mission_context(
         state,
@@ -201,6 +248,10 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
     try:
         import json_repair
         parsed = json_repair.loads(json_str)
+        if isinstance(parsed, list):
+            parsed = parsed[0] if parsed else {}
+        if not isinstance(parsed, dict):
+            raise ValueError(f"unexpected type {type(parsed).__name__}")
     except Exception:
         logger.warning("filter_specialist | JSON parse failed | thread={} | raw={}", state.get("thread_id"), raw[:200])
         return {"specialist_outputs": [{"type": "filters", "filters": [], "timeframe": None, "time_filter_col": None}]}

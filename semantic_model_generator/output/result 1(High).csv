@@ -1,0 +1,89 @@
+from_schema,from_table,from_column,to_schema,to_table,to_column,input_confidence,original_reasoning,unique_source_values_checked,matched_target_values,actual_value_overlap,final_system_verdict
+lpp,ach_return,bank_account_ref,lpp,bank_account,code,High,"bank_account_ref in ach_return matches code values in bank_account (e.g., GR_DE_OPERATING_1 pattern matches bank_account codes)",17,17,100,CORRECT
+lpp,acquirer_contract,acquirer_ref,lpp,acquirer,code,High,"acquirer_ref in acquirer_contract matches code values in acquirer table (e.g., ADYEN, BANK_OF_AMERICA_MS, FISERV)",8,8,100,CORRECT
+lpp,acquirer_sla_metric,acquirer_ref,lpp,acquirer,code,High,"acquirer_ref in acquirer_sla_metric matches code values in acquirer table (e.g., FISERV)",8,8,100,CORRECT
+lpp,acquirer,bank_ref,lpp,bank,code,High,"bank_ref in acquirer matches code values in bank table (e.g., BANK_BAC)",3,3,100,CORRECT
+lpp,acquirer,settlement_account_ref,lpp,bank_account,code,High,"settlement_account_ref in acquirer matches code values in bank_account table (e.g., USA_RGNL_OPERATING, EUR_RGNL_OPERATING)",3,3,100,CORRECT
+lpp,bank_account,branch_ref,lpp,bank_branch,code,High,"branch_ref in bank_account matches code values in bank_branch table (e.g., BR_HSBC_DXB, BR_ANZ_SYD)",25,25,100,CORRECT
+lpp,bank_branch,bank_ref,lpp,bank,code,High,"bank_ref in bank_branch matches code values in bank table (e.g., BANK_ANZ, BANK_BAC, BANK_BBVA_MX)",14,14,100,CORRECT
+lpp,bank_fee,bank_ref,lpp,bank,code,High,"bank_ref in bank_fee matches code values in bank table (e.g., BANK_RBC)",13,13,100,CORRECT
+lpp,bank_fee,bank_account_ref,lpp,bank_account,code,High,"bank_account_ref in bank_fee matches code values in bank_account table (e.g., GR_CA_TAX_1, GR_CA_OPERATING_1, GR_CA_PAYROLL_1)",97,97,100,CORRECT
+lpp,bank_fee,service_code,lpp,bank_service_type,code,High,"service_code in bank_fee matches code values in bank_service_type table (e.g., 100, 251, 260)",6,6,100,CORRECT
+lpp,bank_statement_balance,account_ref,lpp,bank_account,code,High,"account_ref in bank_statement_balance matches code values in bank_account table (e.g., USA_RGNL_OPERATING)",115,115,100,CORRECT
+lpp,bank_account_signatory,bank_account_ref,lpp,bank_account,code,High,"bank_account_ref in bank_account_signatory matches code values in bank_account table (e.g., GR_KR_TAX_1, GR_US_INC_TAX_1)",110,110,100,CORRECT
+lpp,bank_account_signatory,user_ref,lpp,app_user,code,High,"user_ref in bank_account_signatory matches code values in app_user table (e.g., TREAS_FRONT, TREAS_BACK, CONTROLLER_GLOBAL)",9,9,100,CORRECT
+lpp,bank_account_group_member,account_group_code,lpp,bank_account_group,code,High,account_group_code in bank_account_group_member is a foreign key to code in bank_account_group based on naming convention,0,0,0,WRONG (Source Column is Empty)
+lpp,bank_account_group_member,bank_account_code,lpp,bank_account,code,High,bank_account_code in bank_account_group_member is a foreign key to code in bank_account based on naming convention,0,0,0,WRONG (Source Column is Empty)
+lpp,bank_group_member,bank_group_code,lpp,bank_group,code,High,bank_group_code in bank_group_member is a foreign key to code in bank_group based on naming convention,0,0,0,WRONG (Source Column is Empty)
+lpp,bank_group_member,bank_code,lpp,bank,code,High,bank_code in bank_group_member is a foreign key to code in bank based on naming convention,0,0,0,WRONG (Source Column is Empty)
+lpp,borrowing,company_ref,lpp,company,code,High,"company_ref in borrowing matches code values in company table (e.g., GR_PL pattern matches company codes)",14,14,0,CORRECT
+lpp,capital_allocation_actual,company_ref,lpp,company,code,High,company_ref values like GR_HOLDINGS match company.code values,3,3,0,CORRECT
+lpp,card_rebate_earning,company_ref,lpp,company,code,High,company_ref values like GR_US_INC match company.code values,3,3,0,CORRECT
+lpp,card_rebate_earning,program_ref,lpp,card_rebate_program,code,High,program_ref values like REB_AMEX_BUS directly match code values in card_rebate_program,4,4,0,CORRECT
+lpp,card_rebate_program,company_ref,lpp,company,code,High,"company_ref values like GR_HOLDINGS, GR_US_INC, GR_EU_BV match company.code values",3,3,0,CORRECT
+lpp,card_authorization,network_code,lpp,card_network,code,High,"network_code values like VISA, AMEX, MASTERCARD, COSTCO_PRIVATE match card_network.code values",8,8,0,CORRECT
+lpp,card_bin_range,network_code,lpp,card_network,code,High,"network_code values like AMEX, JCB, VISA match card_network.code values",8,8,0,CORRECT
+lpp,card_settlement_batch,network_code,lpp,card_network,code,High,"network_code values like VISA, MASTERCARD, AMEX, DISCOVER match card_network.code values",8,8,0,CORRECT
+lpp,chargeback,network_code,lpp,card_network,code,High,"network_code values like MASTERCARD, AMEX, VISA match card_network.code values",8,8,0,CORRECT
+lpp,card_settlement_line,batch_ref,lpp,card_settlement_batch,uuid,High,"batch_ref in card_settlement_line is a UUID reference to card_settlement_batch.uuid, following the _ref naming convention",34745,34745,0,CORRECT
+lpp,card_settlement_line,authorization_ref,lpp,card_authorization,uuid,High,authorization_ref in card_settlement_line is a UUID reference to card_authorization.uuid,63237,63237,0,CORRECT
+lpp,chargeback,authorization_ref,lpp,card_authorization,uuid,High,authorization_ref in chargeback is a UUID reference to card_authorization.uuid,906,906,0,CORRECT
+lpp,chargeback,company_ref,lpp,company,code,High,company_ref values like GR_US_INC match company.code values,10,10,0,CORRECT
+lpp,cash_flow,budget_code_ref,lpp,budget_code,code,High,budget_code_ref values like BC_OPS match budget_code.code values,4,4,0,CORRECT
+lpp,cash_flow,flow_code_ref,lpp,cash_flow_code,code,High,flow_code_ref values like DISB_PAYROLL match cash_flow_code.code values,34,34,0,CORRECT
+lpp,cash_flow,account_ref,lpp,cash_balance,account_ref,High,account_ref values like GR_AU_PAYROLL_1 and USA_RGNL_OPERATING appear in both cash_flow and cash_balance tables,132,114,0,CORRECT
+lpp,company_group_member,company_group_code,lpp,company_group,code,High,"company_group_code values like GROUP_GLOBAL, GROUP_AMER match company_group.code values",6,6,0,CORRECT
+lpp,company_group_member,company_code,lpp,company,code,High,"company_code values like GR_AE, GR_AU match company.code values",24,24,0,CORRECT
+lpp,company_financial_metric,company_ref,lpp,company,code,High,"company_ref values like GR_EU_BV, GR_HOLDINGS, GR_US_INC match company.code values",8,8,0,CORRECT
+lpp,credit_facility,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in credit_facility (e.g., GR_HOLDINGS, GR_EU_BV) match company_code values in gen_company_region",14,14,0,CORRECT
+lpp,credit_facility,currency_ref,lpp,currency,code,High,"currency_ref values in credit_facility (e.g., USD, EUR, GBP) match code values in currency table",13,13,0,CORRECT
+lpp,credit_rating,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in credit_rating (e.g., GR_HOLDINGS, GR_US_INC, GR_TREASURY) match company_code values in gen_company_region",6,6,0,CORRECT
+lpp,derivative_mtm,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in derivative_mtm (e.g., GR_LATAM_SA) follow same GR_ naming convention as company_code in gen_company_region",6,6,0,CORRECT
+lpp,derivative_mtm,instrument_ref,lpp,fx_forward,deal_id,High,"instrument_ref values in derivative_mtm (e.g., FXF-0000101) match the deal_id format in fx_forward (e.g., FXF-0001404) when instrument_type is FX_FORWARD",1780,1780,0,CORRECT
+lpp,derivative_mtm,mtm_currency,lpp,currency,code,High,"mtm_currency values (e.g., USD) match currency code values",1,1,0,CORRECT
+lpp,equity_action,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in equity_action (e.g., GR_HOLDINGS) match company_code values in gen_company_region",1,1,0,CORRECT
+lpp,equity_action,currency_code,lpp,currency,code,High,"currency_code values in equity_action (e.g., USD) match code values in currency table",1,1,0,CORRECT
+lpp,fee_rate_card,company_ref,lpp,gen_company_region,company_code,High,company_ref in fee_rate_card follows same GR_ naming convention as company_code in gen_company_region,0,0,0,WRONG (Source Column is Empty)
+lpp,fee_rate_card,currency_code,lpp,currency,code,High,"currency_code values in fee_rate_card (e.g., USD) match code values in currency table",1,1,0,CORRECT
+lpp,forecast_cash_flow,snapshot_id,lpp,forecast_snapshot,snapshot_id,High,"snapshot_id values in forecast_cash_flow (e.g., FC_20241001_Q) reference snapshot_id in forecast_snapshot table",38,38,0,CORRECT
+lpp,forecast_cash_flow,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in forecast_cash_flow (e.g., GR_APAC_PTE, GR_DE, GR_EU_BV) match company_code values in gen_company_region",10,10,0,CORRECT
+lpp,forecast_cash_flow,currency_code,lpp,currency,code,High,"currency_code values in forecast_cash_flow (e.g., USD) match code values in currency table",3,3,0,CORRECT
+lpp,forecast_vs_actual,snapshot_id,lpp,forecast_snapshot,snapshot_id,High,"snapshot_id values in forecast_vs_actual (e.g., FC_20230501_M) match snapshot_id in forecast_snapshot table",25,17,0,CORRECT
+lpp,forecast_vs_actual,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in forecast_vs_actual (e.g., GR_APAC_PTE) match company_code values in gen_company_region",24,24,0,CORRECT
+lpp,forecast_vs_actual,currency_code,lpp,currency,code,High,"currency_code values in forecast_vs_actual (e.g., USD) match code values in currency table",1,1,0,CORRECT
+lpp,fraud_loss,detection_event_uuid,lpp,fraud_detection_event,uuid,High,"detection_event_uuid in fraud_loss directly references the uuid primary key of fraud_detection_event, linking losses to their detection events",0,0,0,WRONG (Source Column is Empty)
+lpp,fraud_loss,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in fraud_loss (e.g., GR_MX, GR_DE) match company_code values in gen_company_region",9,9,0,CORRECT
+lpp,fraud_loss,currency_code,lpp,currency,code,High,"currency_code values in fraud_loss (e.g., USD, EUR) match code values in currency table",7,7,0,CORRECT
+lpp,fx_exposure_forecast,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in fx_exposure_forecast (e.g., GR_US_INC) match company_code values in gen_company_region",6,6,0,CORRECT
+lpp,fx_exposure_forecast,exposure_currency,lpp,currency,code,High,"exposure_currency values (e.g., MXN, EUR, BRL, CNY) match code values in currency table",6,6,0,CORRECT
+lpp,fx_exposure_forecast,functional_currency,lpp,currency,code,High,"functional_currency values (e.g., USD) match code values in currency table",5,5,0,CORRECT
+lpp,fx_forward,company_ref,lpp,gen_company_region,company_code,High,"company_ref values in fx_forward (e.g., GR_APAC_PTE, GR_HOLDINGS, GR_TREASURY) match company_code values in gen_company_region",6,6,0,CORRECT
+lpp,fx_forward,buy_currency,lpp,currency,code,High,"buy_currency values in fx_forward (e.g., EUR, MXN, CNY, CAD, HKD) match code values in currency table",11,11,0,CORRECT
+lpp,fx_forward,sell_currency,lpp,currency,code,High,"sell_currency values in fx_forward (e.g., USD) match code values in currency table",1,1,0,CORRECT
+lpp,fx_rate,base_currency,lpp,currency,code,High,"base_currency values in fx_rate (e.g., USD) match code values in currency table",18,18,0,CORRECT
+lpp,fx_rate,quote_currency,lpp,currency,code,High,"quote_currency values in fx_rate (e.g., BRL, MXN, CHF, SEK, EUR) match code values in currency table",18,18,0,CORRECT
+lpp,data_permission,profile_code,lpp,data_permission_profile,code,High,"profile_code values in data_permission (e.g., PROF_GLOBAL_FULL) match code values in data_permission_profile table",7,7,0,CORRECT
+lpp,cross_border_payment_leg,send_currency,lpp,currency,code,High,"send_currency values in cross_border_payment_leg (e.g., AED, SEK, KRW, HKD, GBP) match code values in currency table",16,16,0,CORRECT
+lpp,cross_border_payment_leg,receive_currency,lpp,currency,code,High,"receive_currency values in cross_border_payment_leg (e.g., EUR, AUD, SGD, HKD) match code values in currency table",9,9,0,CORRECT
+lpp,gl_balance,gl_account_ref,lpp,gl_account,code,High,gl_balance.gl_account_ref values like '1300-GR_IE' match the naming pattern of gl_account.code values like '1110-GR_AE_COLLECTION_1'; both use account code format,451,451,0,CORRECT
+lpp,gl_reconciliation,gl_account_ref,lpp,gl_account,code,High,gl_reconciliation.gl_account_ref values like '1110-USA_RGNL_OPERATING' match the code pattern in gl_account.code,115,115,0,CORRECT
+lpp,gl_reconciliation,bank_account_ref,lpp,gl_account,bank_account_ref,High,gl_reconciliation.bank_account_ref and gl_account.bank_account_ref share the same column name and similar values referencing bank accounts,115,115,0,CORRECT
+lpp,hedge_dedesignation,hedge_ref,lpp,hedge_relationship,code,High,hedge_dedesignation.hedge_ref values like 'HR-0001216' directly match hedge_relationship.code values like 'HR-0001552' sharing the same 'HR-' prefix pattern,4,4,0,CORRECT
+lpp,investment_position,instrument_ref,lpp,investment_instrument,code,High,investment_position.instrument_ref values like 'INV_CD_0007' match the naming convention of investment_instrument.code values like 'INV_MMF_0014',89,89,0,CORRECT
+lpp,investment_transaction,instrument_ref,lpp,investment_instrument,code,High,"investment_transaction.instrument_ref values like 'INV_MMF_0006', 'INV_CP_0002' match the code pattern in investment_instrument.code",120,120,0,CORRECT
+lpp,mapping_entry,mapping_table_code,lpp,mapping_table,code,High,"mapping_entry.mapping_table_code values like 'RAIL_TO_AFP' exactly match mapping_table.code values, indicating a direct FK relationship",4,4,0,CORRECT
+lpp,payment_exception,file_uuid,lpp,payment_file,file_uuid,High,"payment_exception.file_uuid directly matches the primary key file_uuid in payment_file, indicating exceptions are linked to specific payment files",3060,3060,0,CORRECT
+lpp,payment_transaction,file_uuid,lpp,payment_file,file_uuid,High,"payment_transaction.file_uuid directly matches the primary key file_uuid in payment_file, indicating transactions belong to a payment file",16967,16967,0,CORRECT
+lpp,pension_valuation,plan_ref,lpp,pension_plan,code,High,"pension_valuation.plan_ref values (PP_US_DB, PP_UK_DB, PP_JP_DB) exactly match pension_plan.code values, indicating valuations belong to a specific pension plan",3,3,0,CORRECT
+lpp,peer_company_metric,peer_code,lpp,peer_company,code,High,"peer_company_metric.peer_code values (KR, LOW, AMZN, HD, BJ) match peer_company.code values, indicating metrics belong to a specific peer company",7,7,0,CORRECT
+lpp,stress_run_result,scenario_ref,lpp,stress_scenario,code,High,"stress_run_result.scenario_ref values (STR_BANK_DOWNGRADE, STR_AR_DROP_30_60D, STR_FX_USD_PLUS_10) match stress_scenario.code values, linking run results to their scenario definitions",6,6,0,CORRECT
+lpp,sweep_execution,instruction_ref,lpp,sweep_instruction,code,High,"sweep_execution.instruction_ref values (SW_LAT_RGNL_CONCENTRATION) follow the same naming pattern as sweep_instruction.code values (SW_GR_AE_OPERATING_1), linking executions to their instructions",38,38,0,CORRECT
+lpp,pos_transaction,member_id,lpp,membership_fee,member_id,High,"Both tables share member_id with identical format (MBR-XXXXXXXXX), linking POS transactions to membership records",59621,6415,0,ATTENTION (Low Value Match: 10.76%)
+lpp,third_party_bank_account,third_party_code,lpp,third_party,code,High,"third_party_bank_account.third_party_code references third_party.code by naming convention, linking bank accounts to their owning third party",0,0,0,WRONG (Source Column is Empty)
+lpp,third_party_category_assignment,third_party_code,lpp,third_party,code,High,"third_party_category_assignment.third_party_code references third_party.code by naming convention, linking category assignments to third parties",0,0,0,WRONG (Source Column is Empty)
+lpp,third_party_category_assignment,category_code,lpp,third_party_category,code,High,"third_party_category_assignment.category_code references third_party_category.code by naming convention, linking assignments to category definitions",0,0,0,WRONG (Source Column is Empty)
+lpp,sme_transcript_chunk,session_uuid,lpp,sme_feedback_session,uuid,High,"sme_transcript_chunk.session_uuid references sme_feedback_session.uuid by naming convention, linking transcript chunks to their parent feedback session",0,0,0,WRONG (Source Column is Empty)
+lpp,user_group_member,user_group_code,lpp,user_group,code,High,"user_group_member.user_group_code directly matches user_group.code; sample values like UG_TREASURY, UG_AP appear in both tables",6,6,0,CORRECT
+lpp,user_profile_assignment,user_code,lpp,user_group_member,user_code,High,"user_profile_assignment.user_code shares the same user_code values as user_group_member.user_code; sample values like TREAS_HEAD, TREAS_FRONT appear in both tables",15,15,0,CORRECT
+lpp,tribal_knowledge_entity_link,fact_uuid,lpp,tribal_knowledge_fact,uuid,High,"tribal_knowledge_entity_link.fact_uuid follows the naming convention table_name + _uuid and directly references tribal_knowledge_fact.uuid, forming a classic link/junction table pattern",0,0,0,WRONG (Source Column is Empty)
+lpp,v_tribal_fact_indexable,fact_uuid,lpp,tribal_knowledge_fact,uuid,High,v_tribal_fact_indexable.fact_uuid references tribal_knowledge_fact.uuid; the view is clearly derived from the fact table using the same identifier,0,0,0,WRONG (Source Column is Empty)
