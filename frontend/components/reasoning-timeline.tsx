@@ -77,15 +77,9 @@ export function PipelineTimeline({
   }, [steps, tokenUsage]);
 
   return (
-<<<<<<< HEAD
-    <div className="px-5 pb-5 pt-3">
-      {steps.map((step, i) => {
-        const isLast = i === steps.length - 1;
-=======
     <div className="px-4 pb-3 pt-1 border-t border-border/40">
       {enrichedSteps.map((step, i) => {
         const isLast = i === enrichedSteps.length - 1;
->>>>>>> 21d5f6fce0ef6a9ebc7f6dfd667b0fb9588d0c74
         const isActive = step.status === 'active';
         const isDone = step.status === 'done';
         const isSkipped = step.status === 'skipped';
@@ -173,7 +167,6 @@ export function PipelineTimeline({
                     {showDuration}
                   </span>
                 )}
-<<<<<<< HEAD
                 <span className="w-3.5 h-3.5 flex items-center justify-center">
                   {isExpandable && (
                     <ChevronDown
@@ -183,29 +176,17 @@ export function PipelineTimeline({
                     />
                   )}
                 </span>
-=======
-                {showDuration && showTokens && (
-                  <span className="text-[10px] text-foreground/30 mx-0.5">·</span>
-                )}
-                {showTokens && (
-                  <span className="text-[10px] tabular-nums text-foreground/35">
-                    {showTokens} tokens
-                  </span>
-                )}
-                {isExpandable && (
-                  <ChevronDown
-                    className={`w-3 h-3 text-foreground/40 transition-transform duration-150 ${
-                      expandedSteps.has(i) ? 'rotate-180' : ''
-                    }`}
-                  />
-                )}
->>>>>>> 21d5f6fce0ef6a9ebc7f6dfd667b0fb9588d0c74
               </div>
             </div>
 
             {/* Per-step reasoning */}
             {cleanedReasoning && isExpanded && (
-              <StepReasoning text={cleanedReasoning} active={isActive} />
+              <>
+                {showTokens && (
+                  <p className="mt-1.5 text-[11px] tabular-nums text-foreground/35">{showTokens} tokens</p>
+                )}
+                <StepReasoning text={cleanedReasoning} active={isActive} />
+              </>
             )}
           </div>
         );
