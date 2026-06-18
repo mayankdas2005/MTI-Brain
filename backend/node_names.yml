@@ -121,6 +121,21 @@ nodes:
     tier: deep
     stream: [reasoning, reasoning.delta]
 
+  - id: deep_sensitivity
+    label: null
+    tier: none
+    stream: null
+
+  - id: deep_denominator
+    label: null
+    tier: none
+    stream: null
+
+  - id: deep_projection
+    label: null
+    tier: none
+    stream: null
+
   - id: synthesis
     label: "Insight Analysis"
     tier: balanced

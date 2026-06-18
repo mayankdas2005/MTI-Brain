@@ -1806,6 +1806,8 @@ SELF-CHECK before emitting insights:
 2. TREND GATE: Do not describe a trend from fewer than 3 data points. Two values is a comparison, not a trend.
 3. IMPLICATION CHECK: Does each "implication" follow logically from the observation, or does it require outside knowledge? If it requires inference beyond the data, hedge it ("may indicate", "warrants investigation") rather than stating it as fact.
 
+{deep_analysis_extraction}
+
 <insights>
 {{ JSON here }}
 </insights>"""
@@ -2274,6 +2276,7 @@ Answer for the {persona}. #### headers, **bold key numbers in every bullet**, no
 If insights.data_quality_concern is non-null: begin with > [!WARNING] blockquote callout (see DATA QUALITY RULE).
 Otherwise begin directly with the persona's first section header.
 Never open with "Let me analyze", "Based on the results", "The data shows", or any meta-commentary.
+{deep_analysis_sections}
 </answer>
 <follow_ups>
 ["question 1", "question 2", "question 3"]

@@ -113,6 +113,11 @@ class AnalyticsState(TypedDict):
     tribal_facts: list[dict]
     max_rows: int                         # user-configured SQL row limit (default 100, applied as LIMIT in executor)
 
+    # ── Deep analysis supplementary outputs ──────────────────────────────────
+    sensitivity_table: list[dict] | None    # threshold sensitivity: [{threshold, count, total}] from deep_sensitivity node
+    denominator_context: dict | None        # natural denominator: {concept, value, share} from deep_denominator node
+    temporal_projection: dict | None        # in-flight projection: {completeness_pct, projected_total, prior_period_at_same_point, prior_period_final} from deep_projection node
+
     # ── Audit / lineage ───────────────────────────────────────────────────────
     user_email: str | None               # caller email — written to execution log
     pipeline_start_ms: float             # time.perf_counter() at pipeline entry — used to compute duration_ms in audit log

@@ -164,6 +164,10 @@ def _build_sse_generator(
                 "was_truncated": save_data.get("was_truncated", False),
                 "true_total_rows": save_data.get("true_total_rows"),
                 "preference_summary": save_data.get("preference_summary"),
+                "sensitivity_table":  save_data.get("sensitivity_table"),
+                "denominator_context": save_data.get("denominator_context"),
+                "temporal_projection": save_data.get("temporal_projection"),
+                "deep_analysis":      save_data.get("deep_analysis", False),
             }),
         )
         _conf = save_data.get("confidence")

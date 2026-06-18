@@ -650,6 +650,10 @@ async def stream_pipeline(
                     "search_terms":      state.get("search_terms") or [],
                     "is_followup":       state.get("is_followup", False),
                     "preference_summary": state.get("preference_summary"),
+                    "sensitivity_table":  state.get("sensitivity_table"),
+                    "denominator_context": state.get("denominator_context"),
+                    "temporal_projection": state.get("temporal_projection"),
+                    "deep_analysis":      state.get("deep_analysis", False),
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

@@ -58,6 +58,9 @@ from app.services.agents.node_names import (
     GENERAL_CHAT as N_GENERAL_CHAT,
     INTAKE as N_INTAKE,
     INTENT_RESOLVER as N_INTENT_RESOLVER,
+    DEEP_SENSITIVITY as N_DEEP_SENSITIVITY,
+    DEEP_DENOMINATOR as N_DEEP_DENOMINATOR,
+    DEEP_PROJECTION as N_DEEP_PROJECTION,
     QUERY_COMPILER as N_QUERY_COMPILER,
     SQL_GENERATOR as N_SQL_GENERATOR,
     SQL_VALIDATOR as N_SQL_VALIDATOR,
@@ -80,6 +83,9 @@ from app.services.agents.nodes.intake_classifier import intake_classifier
 from app.services.agents.nodes.intent_assembler import intent_assembler
 from app.services.agents.nodes.intent_resolver import intent_resolver
 from app.services.agents.nodes.tribal_retrieval import tribal_retrieval
+from app.services.agents.nodes.deep_sensitivity import deep_sensitivity
+from app.services.agents.nodes.deep_denominator import deep_denominator
+from app.services.agents.nodes.deep_projection import deep_projection
 from app.services.agents.nodes.measure_specialist import measure_specialist
 from app.services.agents.nodes.query_compiler import query_compiler
 from app.services.agents.nodes.schema_enricher import schema_enricher
@@ -148,8 +154,12 @@ def compile_graph():
     b.add_node(N_SQL_VALIDATOR,       sql_validator)
     b.add_node(N_EXECUTOR,            executor,             retry_policy=LLM_RETRY)
 
-    # ── Post-execution: data quality check then synthesis ────────────────────
+    # ── Post-execution: data quality check then deep analysis enrichment then synthesis ──
     b.add_node(N_DATA_QUALITY_CHECKER,data_quality_checker, retry_policy=LLM_RETRY)
+    # Deep analysis enrichment chain — self-gate on deep_analysis; no-ops for normal mode
+    b.add_node(N_DEEP_SENSITIVITY,    deep_sensitivity)
+    b.add_node(N_DEEP_DENOMINATOR,    deep_denominator)
+    b.add_node(N_DEEP_PROJECTION,     deep_projection)
     b.add_node(N_SYNTHESIS,           synthesis,            retry_policy=LLM_RETRY)
     b.add_node(N_CHART_AGENT,         chart_agent,          retry_policy=LLM_RETRY)
     b.add_node(N_ERROR_RESPONSE,      error_response)
@@ -224,14 +234,17 @@ def compile_graph():
         N_EXECUTOR, route_executor,
         {
             N_SQL_VALIDATOR:        N_SQL_VALIDATOR,
-            N_DATA_QUALITY_CHECKER: N_DATA_QUALITY_CHECKER,  # executor success → quality check first (when enabled)
-            N_SYNTHESIS:            N_SYNTHESIS,             # executor success → synthesis directly (when DQ checker disabled)
+            N_DATA_QUALITY_CHECKER: N_DATA_QUALITY_CHECKER,  # executor success → quality check first (when DQ enabled)
+            N_DEEP_SENSITIVITY:     N_DEEP_SENSITIVITY,      # executor success → deep analysis chain (when DQ disabled)
             N_INTENT_RESOLVER:      N_INTENT_RESOLVER,       # recompile still uses legacy path
         },
     )
 
-    # data_quality_checker always proceeds to synthesis
-    b.add_edge(N_DATA_QUALITY_CHECKER, N_SYNTHESIS)
+    # data_quality_checker → deep analysis enrichment chain → synthesis
+    b.add_edge(N_DATA_QUALITY_CHECKER, N_DEEP_SENSITIVITY)
+    b.add_edge(N_DEEP_SENSITIVITY,     N_DEEP_DENOMINATOR)
+    b.add_edge(N_DEEP_DENOMINATOR,     N_DEEP_PROJECTION)
+    b.add_edge(N_DEEP_PROJECTION,      N_SYNTHESIS)
 
     b.add_conditional_edges(
         N_SYNTHESIS, route_synthesis,

@@ -56,6 +56,187 @@ _FLAG_INSTRUCTIONS = {
 }
 
 
+_DEEP_ANALYSIS_EXTRACTION_INSTRUCTIONS = """
+DEEP ANALYSIS MODE — additionally extract these two fields into the JSON object:
+
+"concentration_challenge": Scan the data for the single sharpest challenge to the headline finding.
+  Look for: one item/entity dominating >60% of an aggregate total; an average that hides extreme outliers;
+  a positive headline trend that reverses when the top contributor is excluded.
+  Write one concrete sentence with specific numbers if found (e.g. "2 counterparties account for 72%
+  of $42M — excluding them, the remainder is flat MoM"). Set to null if no meaningful challenge exists.
+
+"sql_explanation": In 2-3 sentences of plain business language (no SQL, no column names), describe:
+  (1) what was counted or summed and from which business concept, (2) what time window or key filter
+  was applied, (3) what was excluded if the FILTER CONTEXT below shows any exclusions.
+  Example: "Summed total transaction value from wire transfers for settled USD transactions in June 2026
+  above $1M. Excluded 47 pending transactions and 23 non-USD transactions."
+
+FILTER CONTEXT (use for sql_explanation — do not fabricate exclusions not listed here):
+{filter_directive}
+"""
+
+
+def _build_assumption_audit(state: AnalyticsState) -> list[str]:
+    """Extract implicit assumptions from state — pure Python, no LLM."""
+    if not state.get("deep_analysis"):
+        return []
+
+    lines: list[str] = []
+    ir_list = state.get("semantic_ir_list") or []
+    ir = ir_list[0] if ir_list else {}
+    current_date_str = state.get("current_date") or datetime.date.today().isoformat()
+
+    # Time range + partial-period completeness
+    time_filter = ir.get("time_filter") or {}
+    tf_value = time_filter.get("value")
+    if isinstance(tf_value, list) and len(tf_value) == 2:
+        start_str, end_str = str(tf_value[0])[:10], str(tf_value[1])[:10]
+        try:
+            start_d = datetime.date.fromisoformat(start_str)
+            end_d = datetime.date.fromisoformat(end_str)
+            today = datetime.date.fromisoformat(current_date_str)
+            period_days = (end_d - start_d).days + 1
+            elapsed_days = (today - start_d).days + 1
+            if 0 < elapsed_days < period_days:
+                pct = round(elapsed_days / period_days * 100)
+                lines.append(f"Date range: {start_str} to {end_str} — {pct}% of period elapsed as of {current_date_str}")
+            else:
+                lines.append(f"Date range: {start_str} to {end_str}")
+        except (ValueError, TypeError):
+            lines.append(f"Date range: {start_str} to {end_str}")
+
+    # Non-time filters — surface raw user phrasing
+    filters = ir.get("filters") or []
+    for f in filters:
+        if f is time_filter:
+            continue
+        raw_val = f.get("raw_user_value") or f.get("value") or ""
+        col = f.get("column_name") or ""
+        op = f.get("operator") or "="
+        if raw_val and col:
+            col_label = col.replace("_", " ").title()
+            lines.append(f"Filter applied: {col_label} {op} '{raw_val}'")
+
+    # Low-confidence filters
+    for lcf in (state.get("low_confidence_filters") or []):
+        raw = lcf.get("raw_value") or ""
+        resolved = lcf.get("resolved_value") or ""
+        if raw and resolved and raw != resolved:
+            lines.append(f"Approximate match: '{raw}' resolved to '{resolved}' (fuzzy)")
+
+    # Row cap / truncation
+    if state.get("result_was_truncated"):
+        max_rows = state.get("max_rows") or 5000
+        lines.append(f"Results capped at {max_rows:,} rows — full dataset may be larger")
+
+    # Schema gaps
+    directive_ctx = state.get("intent_directive_context") or ""
+    gap_lines = [ln for ln in directive_ctx.splitlines() if ln.strip().startswith("SCHEMA_GAP")]
+    for gap in gap_lines[:2]:
+        gap_text = gap.replace("SCHEMA_GAP_JOIN", "join path unavailable").replace("SCHEMA_GAP_TABLE", "table unavailable").replace("SCHEMA_GAP_CONCEPT", "concept unmapped")
+        lines.append(f"Data limitation: {gap_text.strip()}")
+
+    return lines
+
+
+def _fmt_number(v: float | int | None) -> str:
+    if v is None:
+        return "N/A"
+    if abs(v) >= 1_000_000_000_000:
+        return f"${v/1_000_000_000_000:.2f}T"
+    if abs(v) >= 1_000_000_000:
+        return f"${v/1_000_000_000:.2f}B"
+    if abs(v) >= 1_000_000:
+        return f"${v/1_000_000:.1f}M"
+    if abs(v) >= 1_000:
+        return f"${v/1_000:.0f}K"
+    return f"${v:,.0f}"
+
+
+def _build_deep_analysis_sections(
+    concentration_challenge: str | None,
+    sql_explanation: str | None,
+    assumption_lines: list[str],
+    sensitivity_table: list[dict] | None,
+    denominator_context: dict | None,
+    temporal_projection: dict | None,
+) -> str:
+    """Build the deep analysis supplementary sections string injected into SYNTHESIS_PROMPT."""
+    parts: list[str] = []
+
+    # Denominator context — inline note after main answer
+    if denominator_context and denominator_context.get("share") is not None:
+        concept = denominator_context.get("concept", "total")
+        denom_val = denominator_context.get("value")
+        share_pct = round(denominator_context["share"] * 100, 1)
+        denom_fmt = _fmt_number(denom_val)
+        parts.append(
+            f"\n\n*Context: this represents **{share_pct}% of {concept}** ({denom_fmt} total)*"
+        )
+
+    # Temporal projection — inline note
+    if temporal_projection:
+        pct = temporal_projection.get("completeness_pct", 0)
+        proj = temporal_projection.get("projected_total")
+        period_end = temporal_projection.get("period_end", "")
+        prior_at_same = temporal_projection.get("prior_period_at_same_point")
+        prior_final = temporal_projection.get("prior_period_final")
+        period_start_prior = temporal_projection.get("prior_period_start", "")
+
+        proj_line = f"**Projected {period_end[:7]} total: {_fmt_number(proj)}**" if proj else ""
+        pace_note = ""
+        if prior_at_same is not None and prior_final is not None and prior_at_same > 0:
+            pace_ratio = (temporal_projection.get("current_total", 0) / prior_at_same) if prior_at_same else None
+            if pace_ratio is not None:
+                direction = "ahead of" if pace_ratio > 1.05 else ("behind" if pace_ratio < 0.95 else "on pace with")
+                pace_note = (
+                    f"At this same point in {period_start_prior[:7]}, the value was {_fmt_number(prior_at_same)} "
+                    f"(full period: {_fmt_number(prior_final)}) — current pace is **{direction}** prior period."
+                )
+
+        projection_text = f"*Period is {pct}% complete as of today. {proj_line}. {pace_note}*".strip(". ")
+        parts.append(f"\n\n{projection_text}")
+
+    # Devil's advocate challenge
+    if concentration_challenge:
+        parts.append(
+            "\n\n---\n\n"
+            "> **However:** " + concentration_challenge.strip()
+        )
+
+    # Threshold sensitivity table
+    if sensitivity_table:
+        rows_md = "\n".join(
+            f"| {r['threshold_label']} | {r['count']:,} |"
+            for r in sensitivity_table
+        )
+        parts.append(
+            "\n\n**Threshold Sensitivity**\n\n"
+            "| Threshold | Count |\n"
+            "|-----------|-------|\n"
+            + rows_md
+        )
+
+    # SQL plain English explanation
+    if sql_explanation:
+        parts.append(
+            "\n\n<details>\n<summary>How this was computed</summary>\n\n"
+            + sql_explanation.strip()
+            + "\n</details>"
+        )
+
+    # Assumption audit
+    if assumption_lines:
+        bullet_list = "\n".join(f"- {ln}" for ln in assumption_lines)
+        parts.append(
+            "\n\n<details>\n<summary>Assumptions & Scope</summary>\n\n"
+            + bullet_list
+            + "\n</details>"
+        )
+
+    return "".join(parts) if parts else ""
+
+
 async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("synthesis START | thread={} | persona={} | no_data={}", state["thread_id"], state.get("persona"), state.get("no_data"))
 
@@ -187,6 +368,16 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     from app.core.circuit_breaker import llm_breaker
     from app.core.retry import retry_async
 
+    # Deep analysis: build extraction instructions for Phase 1
+    is_deep = bool(state.get("deep_analysis"))
+    if is_deep and not no_data:
+        filter_directive_text = state.get("filter_directive") or ""
+        deep_extraction = _DEEP_ANALYSIS_EXTRACTION_INSTRUCTIONS.format(
+            filter_directive=filter_directive_text or "(no filter context available)"
+        )
+    else:
+        deep_extraction = ""
+
     # ── Phase 1: Insight Extraction (Haiku — fast, data-facing) ──────────────
     # Haiku reads the raw data and produces a structured insights JSON.
     # This is the only phase that sees the raw data profile.
@@ -202,10 +393,13 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         data_profile=data_profile,
         tribal_facts_section=tribal_facts_section,
         conversation_context=conversation_section,
+        deep_analysis_extraction=deep_extraction,
     )
 
     haiku = get_llm("fast")
     insights_json: str = "{}"
+    concentration_challenge: str | None = None
+    sql_explanation: str | None = None
 
     try:
         @llm_breaker
@@ -224,16 +418,31 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         parsed = json_repair.loads(parsed_tag or raw_insights)
         if isinstance(parsed, dict):
             insights_json = json.dumps(parsed, indent=2)
+            if is_deep:
+                concentration_challenge = parsed.get("concentration_challenge") or None
+                sql_explanation = parsed.get("sql_explanation") or None
             logger.info(
-                "synthesis | insight extraction OK | thread={} | depth={} | findings={}",
+                "synthesis | insight extraction OK | thread={} | depth={} | findings={} | deep_challenge={}",
                 state["thread_id"],
                 parsed.get("depth", "?"),
                 len(parsed.get("findings") or []),
+                bool(concentration_challenge),
             )
         else:
             logger.warning("synthesis | insight extraction returned non-dict | thread={}", state["thread_id"])
     except Exception as e:
         logger.warning("synthesis | insight extraction failed, using empty insights | thread={} | error={}", state["thread_id"], e)
+
+    # Build deep analysis supplementary sections (injected into Phase 2 prompt)
+    assumption_lines = _build_assumption_audit(state) if is_deep else []
+    deep_analysis_sections = _build_deep_analysis_sections(
+        concentration_challenge=concentration_challenge,
+        sql_explanation=sql_explanation,
+        assumption_lines=assumption_lines,
+        sensitivity_table=state.get("sensitivity_table") if is_deep else None,
+        denominator_context=state.get("denominator_context") if is_deep else None,
+        temporal_projection=state.get("temporal_projection") if is_deep else None,
+    ) if is_deep else ""
 
     # ── Phase 2: Answer Writing (Sonnet — quality, insight-facing) ───────────
     # Sonnet writes the answer from the structured insights only.
@@ -297,6 +506,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         low_confidence_section=low_confidence_section,
         query_intent_section=query_intent_section,
         persona_structure=persona_structure,
+        deep_analysis_sections=deep_analysis_sections,
     )
     _mission = build_mission_context(
         state,

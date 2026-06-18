@@ -17,6 +17,7 @@ from app.services.agents.node_names import (
     COMPRESS as N_COMPRESS,
     CONTEXT_FETCHER as N_CONTEXT_FETCHER,
     DATA_QUALITY_CHECKER as N_DATA_QUALITY_CHECKER,
+    DEEP_SENSITIVITY as N_DEEP_SENSITIVITY,
     DIRECTIVE_WRITER as N_DIRECTIVE_WRITER,
     ERROR_RESPONSE as N_ERROR_RESPONSE,
     EXECUTOR as N_EXECUTOR,
@@ -126,7 +127,10 @@ def route_validator(state: AnalyticsState) -> str:
 
 def route_executor(state: AnalyticsState) -> str:
     repair_count = state.get("repair_count", 0)
-    _next_after_exec = N_DATA_QUALITY_CHECKER if settings.DATA_QUALITY_CHECKER_ENABLED else N_SYNTHESIS
+    # Post-execution always enters deep analysis enrichment chain first;
+    # deep_sensitivity self-gates and is a no-op when deep_analysis=False.
+    # DQ checker runs before the deep chain when enabled.
+    _next_after_exec = N_DATA_QUALITY_CHECKER if settings.DATA_QUALITY_CHECKER_ENABLED else N_DEEP_SENSITIVITY
 
     if state.get("stopped"):
         logger.info("route: executor → {} (stopped) | thread={}", _next_after_exec, state["thread_id"])
