@@ -968,6 +968,12 @@ function ReasoningPanel({
                   />
                 </span>
               )}
+              {(() => {
+                const tok = (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                if (!tok) return null;
+                const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                return <span className="text-foreground/40 text-[10px] tabular-nums">{fmt} tokens</span>;
+              })()}
             </span>
           ) : (
             <span className="flex items-center justify-between w-full pr-1">

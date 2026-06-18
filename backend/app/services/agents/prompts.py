@@ -2874,6 +2874,15 @@ AGGREGATION:
   COUNT -> counts, volumes, how-many
   null  -> ratio result_shape only (SQL generator computes the division)
 
+IMPLICIT DATA QUALITY DEFAULT rule:
+  When multiple similar numeric columns exist for the same concept, read each column's description.
+  If the descriptions distinguish between reliable/settled/confirmed data and provisional/estimated data,
+  and the user question does not explicitly request the estimated or all-inclusive version,
+  prefer the column representing the reliable/confirmed state.
+  State in <reasoning> which column was chosen and what the description says that drove the choice.
+  When descriptions are equally ambiguous, pick the column whose name or description most closely
+  matches the user's question wording.
+
 For DERIVED measures (net flow, ratio, running total): use derived_measures[].
 Use default_aggregation hint when provided and user did not specify differently.
 alias: clear business name (e.g. "total_balance" not "amount").
@@ -2898,6 +2907,13 @@ RULES:
 - If "Column found?" = NO → emit in measure_directive as "MISSING: X not found, closest: Y"
 - If "Grain match?" = NO → note: aggregation may need adjustment or pre-CTE
 - derived_measures: only when formula combining 2+ columns is needed. Write the formula.
+
+DATA QUALITY CHECK — when multiple similar numeric columns exist for the same concept:
+  | Candidate column | Description: reliable/confirmed? | Description: provisional/estimated? | Preferred? | Reason |
+  |---|---|---|---|---|
+  | [col_name] | [quote phrase] / N/A | [quote phrase] / N/A | YES / NO | [description drove choice / question wording matched] |
+
+  If only one numeric column exists for the concept: write "single candidate — no selection needed".
 
 ---
 
@@ -2954,6 +2970,16 @@ QUALIFIER pattern — adjective attached to a metric noun: "closing balance", "a
   Look for a column in anchor tables whose description or sample_values encodes that qualifier.
   If found: add filter with raw_user_value = the qualifier word (e.g. "closing").
   If not found: ignore it. Do NOT hardcode column names — use column descriptions.
+
+IMPLICIT DATA QUALITY DEFAULT rule:
+  For every low-cardinality column (few distinct values) in the filterable list, read its description
+  and values. Ask: does this column partition rows into "reliable/settled" vs "provisional/estimated"?
+  If the description makes that distinction clear AND the question asks for a standard business metric
+  without any qualifier overriding it: apply the reliable state as a filter.
+  Use the exact value from distinct_values/sample_values as raw_user_value.
+  Do NOT apply if: the description is ambiguous, the column purpose is unclear, or the question
+  explicitly asks for all states or uses words that override the default.
+  This applies to any domain — cash, payments, positions, orders, or anything else.
 
 These are the FILTERABLE columns available:
 {filterable_columns_section}
@@ -3049,6 +3075,14 @@ DATE COLUMN SELECTION:
   | Selected column | [col_name] |
   | Reason | [column description says EVENT/TRANSACTION → selected / SNAPSHOT → selected] |
   | [time-filter eligible] confirmed? | [YES / NO — if NO, set time_filter_col = null] |
+
+GATE 3 — IMPLICIT DATA QUALITY CHECK:
+  For each low-cardinality column in filterable_columns, fill one row:
+  | Column | Description signals reliable vs provisional? | User question overrides? | Apply default? | Default value |
+  |---|---|---|---|---|
+  | [col_name] | YES — [quote description phrase] / NO — ambiguous | YES: [user word] / NO | YES / NO | [exact value from distinct_values] |
+
+  If no low-cardinality status/flag columns exist in the schema: write "none found".
 
 ---
 

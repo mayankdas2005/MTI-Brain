@@ -259,6 +259,24 @@ function markStepError(steps: StreamingStep[] | undefined): StreamingStep[] | un
   );
 }
 
+/** Update total_tokens on the active step for a node (live streaming progress). */
+function updateStepTokens(
+  steps: StreamingStep[] | undefined,
+  node: string,
+  tokens: number,
+): StreamingStep[] | undefined {
+  if (!steps) return steps;
+  let found = false;
+  const next = steps.map((s) => {
+    if (!found && s.node === node && s.status === 'active') {
+      found = true;
+      return { ...s, total_tokens: tokens };
+    }
+    return s;
+  });
+  return found ? next : steps;
+}
+
 /** Replace streamingSteps with the authoritative final list from `done`. */
 function finalizeStepsFromDone(rawSteps: unknown): StreamingStep[] | undefined {
   if (!Array.isArray(rawSteps) || rawSteps.length === 0) return undefined;
@@ -1116,6 +1134,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             : m,
         );
       },
+      onNodeTokens: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: updateStepTokens(m.streamingSteps, data.node, data.tokens) }
+            : m,
+        );
+      },
       onFollowUps: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
@@ -1489,6 +1514,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             : m,
         );
       },
+      onNodeTokens: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: updateStepTokens(m.streamingSteps, data.node, data.tokens) }
+            : m,
+        );
+      },
       onFollowUps: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, followUpsReady: true, metadata_: { ...m.metadata_, follow_ups: data.questions } } : m,
@@ -1802,6 +1834,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         mapMsgs((m) =>
           m.id === assistantMsgId
             ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done', data.total_tokens as number | undefined) }
+            : m,
+        );
+      },
+      onNodeTokens: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, streamingSteps: updateStepTokens(m.streamingSteps, data.node, data.tokens) }
             : m,
         );
       },

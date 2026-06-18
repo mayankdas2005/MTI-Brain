@@ -39,10 +39,7 @@ COPY join_key_profile.json ./join_key_profile.json
 
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    GUNICORN_TIMEOUT=120 \
-    GUNICORN_GRACEFUL_TIMEOUT=30 \
-    GUNICORN_KEEP_ALIVE=5
+    PYTHONUNBUFFERED=1
 
 HEALTHCHECK --interval=120s --timeout=90s --retries=3 --start-period=60s \
     CMD ["python3", "-c", "import urllib.request, sys; urllib.request.urlopen('http://localhost:8000/health', timeout=80) or sys.exit(1)"]

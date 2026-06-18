@@ -30,7 +30,8 @@ export interface SSEHandlers {
     metric_owner?: string | null;
     metric_defined_at?: string | null;
   }) => void;
-  onNodeDone?: (data: { node: string; duration_ms: number; status?: 'done' | 'error' }) => void;
+  onNodeDone?: (data: { node: string; duration_ms: number; status?: 'done' | 'error'; total_tokens?: number }) => void;
+  onNodeTokens?: (data: { node: string; tokens: number }) => void;
   onChart?: (data: { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[] }) => void;
   onVizSkip?: () => void;
   onFollowUps?: (data: { questions: string[] }) => void;
@@ -161,7 +162,10 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       });
       break;
     case 'node.done':
-      handlers.onNodeDone?.(data as { node: string; duration_ms: number; status?: 'done' | 'error' });
+      handlers.onNodeDone?.(data as { node: string; duration_ms: number; status?: 'done' | 'error'; total_tokens?: number });
+      break;
+    case 'node.tokens':
+      handlers.onNodeTokens?.(data as { node: string; tokens: number });
       break;
     case 'chart':
       handlers.onChart?.(data as { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[] });

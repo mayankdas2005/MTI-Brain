@@ -355,6 +355,11 @@ async def stream_pipeline(
                             "[{}] tokens | node={} | in={} out={} cost=${:.6f}",
                             run_id, node, usage["input_tokens"], usage["output_tokens"], usage["cost_usd"],
                         )
+                        if node in NODE_MESSAGE:
+                            yield {
+                                "event": "node.tokens",
+                                "data": {"node": node, "tokens": _node_token_totals[_vk]},
+                            }
 
             if node not in NODE_MESSAGE:
                 continue
