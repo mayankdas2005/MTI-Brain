@@ -8,6 +8,7 @@ invents observations that aren't in the result set.
 """
 
 from __future__ import annotations
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 import datetime
@@ -312,7 +313,10 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     follow_ups = _parse_follow_ups(raw)
 
     logger.info("synthesis DONE | thread={} | answer_len={} | follow_ups={}", state["thread_id"], len(answer), len(follow_ups))
-    return {"answer": answer, "follow_ups": follow_ups}
+    result: dict = {"answer": answer, "follow_ups": follow_ups}
+    if not state.get("is_retry"):
+        result["messages"] = [HumanMessage(content=state["question"]), AIMessage(content=answer)]
+    return result
 
 
 def _build_current_date_context(current_date: str, all_columns: list[str], all_rows: list[list]) -> str:

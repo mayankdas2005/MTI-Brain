@@ -320,6 +320,30 @@ def _build_label_expr(currency_sym: str = "") -> str:
     return pos + neg + fallback
 
 
+def _spec_field_values(spec: dict, field: str) -> list[float]:
+    """Extract numeric values for a named field from spec['data']['values'].
+
+    The spec data is always the aggregated/plotted data regardless of chart type.
+    Using it for axis stats ensures max/p99 reflect what is actually rendered,
+    not the raw SQL rows which may be pre-aggregation and differ in magnitude.
+    """
+    data = spec.get("data", {}).get("values")
+    if not isinstance(data, list):
+        return []
+    vals: list[float] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        v = row.get(field)
+        if v is None:
+            continue
+        try:
+            vals.append(abs(float(v)))
+        except (TypeError, ValueError):
+            pass
+    return vals
+
+
 def _fix_large_number_axes(spec: dict, columns: list[str], rows: list[list], plan: dict) -> dict:
     encoding = spec.get("encoding")
     if not isinstance(encoding, dict) or not rows:
@@ -327,6 +351,7 @@ def _fix_large_number_axes(spec: dict, columns: list[str], rows: list[list], pla
     spec = copy.deepcopy(spec)
     encoding = spec["encoding"]
 
+    # Global max from raw rows (used only when field is not in spec data)
     global_numeric_max: float = 0.0
     for i in range(len(columns)):
         v = _col_max_abs(rows, i)
@@ -341,11 +366,26 @@ def _fix_large_number_axes(spec: dict, columns: list[str], rows: list[list], pla
         currency_sym = _extract_currency_symbol(fmt)
         non_dollar = bool(currency_sym and currency_sym != "$")
         field = ch.get("field")
-        if isinstance(field, str) and field in columns:
-            col_idx = columns.index(field)
-            max_val = _col_max_abs(rows, col_idx)
+
+        # Always derive max/p99 from spec data (aggregated), not raw SQL rows.
+        # Raw rows are pre-aggregation; their values differ from what is plotted.
+        if isinstance(field, str):
+            spec_vals = _spec_field_values(spec, field)
+        else:
+            spec_vals = []
+
+        if spec_vals:
+            max_val: float | None = max(spec_vals)
+            spec_vals_sorted = sorted(spec_vals)
+            n = len(spec_vals_sorted)
+            p99: float | None = spec_vals_sorted[max(0, int(n * 0.99) - 1)] if n >= 2 else None
+        elif isinstance(field, str) and field in columns:
+            max_val = _col_max_abs(rows, columns.index(field))
+            p99 = _col_p99(rows, columns.index(field))
         else:
             max_val = global_numeric_max or None
+            p99 = None
+
         if not non_dollar and (max_val is None or max_val < 1_000_000):
             continue
         axis = ch.get("axis")
@@ -360,11 +400,12 @@ def _fix_large_number_axes(spec: dict, columns: list[str], rows: list[list], pla
             _cleaned = re.sub(r"\s+%$", "", _cleaned).strip()
             if _cleaned != _title:
                 axis["title"] = _cleaned
-        if isinstance(field, str) and field in columns:
-            p99 = _col_p99(rows, columns.index(field))
-            if p99 and max_val and max_val > 100 * p99:
-                ch.setdefault("scale", {})["domainMax"] = p99 * 1.1
-                ch["scale"]["clamp"] = True
+        # Outlier clamp: only meaningful when there are enough plotted data points
+        # to compute a reliable p99. With few points (e.g. 2-category bar), every
+        # value is meaningful and should never be clipped.
+        if p99 and max_val and max_val > 100 * p99 and len(spec_vals) > 10:
+            ch.setdefault("scale", {})["domainMax"] = p99 * 1.1
+            ch["scale"]["clamp"] = True
 
     _col_ch = encoding.get("color") if isinstance(encoding, dict) else None
     if isinstance(_col_ch, dict) and _col_ch.get("type") == "quantitative":
@@ -412,11 +453,25 @@ def _fix_large_number_axes(spec: dict, columns: list[str], rows: list[list], pla
 
 def _fix_large_number_tooltips(spec: dict, columns: list[str], rows: list[list], plan: dict) -> dict:
     spec = copy.deepcopy(spec)
-    global_numeric_max: float = 0.0
-    for i in range(len(columns)):
-        v = _col_max_abs(rows, i)
-        if v is not None and v > global_numeric_max:
-            global_numeric_max = v
+
+    # Global fallback: max from spec data first, raw rows second
+    spec_all_vals: list[float] = []
+    for row in (spec.get("data", {}).get("values") or []):
+        if not isinstance(row, dict):
+            continue
+        for v in row.values():
+            if v is None:
+                continue
+            try:
+                spec_all_vals.append(abs(float(v)))
+            except (TypeError, ValueError):
+                pass
+    global_numeric_max: float = max(spec_all_vals) if spec_all_vals else 0.0
+    if not global_numeric_max:
+        for i in range(len(columns)):
+            v = _col_max_abs(rows, i)
+            if v is not None and v > global_numeric_max:
+                global_numeric_max = v
 
     encoding = spec.get("encoding") or {}
     field_to_channel: dict[str, str] = {}
@@ -432,9 +487,12 @@ def _fix_large_number_tooltips(spec: dict, columns: list[str], rows: list[list],
             if not isinstance(item, dict) or item.get("type") != "quantitative":
                 continue
             field = item.get("field")
-            if isinstance(field, str) and field in columns:
-                max_val = _col_max_abs(rows, columns.index(field))
+            if isinstance(field, str):
+                spec_vals = _spec_field_values(spec, field)
+                max_val: float | None = max(spec_vals) if spec_vals else None
             else:
+                max_val = None
+            if max_val is None:
                 max_val = global_numeric_max or None
             channel = field_to_channel.get(field or "", "y")
             fmt_str = plan.get(f"{channel}_value_format") or plan.get("y_value_format") or ""
@@ -829,19 +887,61 @@ def _build_vega_lite_spec(
     # ── Donut ─────────────────────────────────────────────────────────────────
     if chart_type in ("donut", "pie"):
         data_rows = _aggregate_rows(rows, columns, [x_col], y_col, agg_fn)
+
+        y_idx_d = columns.index(y_col) if y_col in columns else -1
+        total_val = sum(
+            abs(float(r[y_idx_d])) for r in data_rows
+            if y_idx_d >= 0 and r[y_idx_d] is not None
+        ) if y_idx_d >= 0 else 0.0
+        has_tiny = total_val > 0 and any(
+            (abs(float(r[y_idx_d])) / total_val) < 0.05
+            for r in data_rows if y_idx_d >= 0 and r[y_idx_d] is not None
+        )
+
+        data_values: list[dict] = []
+        for r in data_rows:
+            row_dict = dict(zip(columns, r))
+            if has_tiny and total_val > 0 and y_idx_d >= 0 and r[y_idx_d] is not None:
+                pct = abs(float(r[y_idx_d])) / total_val * 100
+                row_dict["_pct_label"] = f"{pct:.1f}%"
+            data_values.append(row_dict)
+
+        theta_enc: dict = {"field": y_col, "type": "quantitative", "stack": True}
+        color_enc: dict = {
+            "field": x_col, "type": "nominal",
+            "legend": {"title": leg_ttl or _snake_to_title(x_col)},
+        }
+        arc_tooltip = [
+            {"field": x_col, "type": "nominal"},
+            {"field": y_col, "type": "quantitative", "format": safe_y_fmt, "title": y_title},
+        ]
+        if has_tiny:
+            arc_tooltip.append({"field": "_pct_label", "type": "nominal", "title": "Share"})
+
+        arc_layer: dict = {
+            "mark": {"type": "arc", "innerRadius": 65, "padAngle": 0.015, "cornerRadius": 3},
+            "encoding": {"theta": theta_enc, "color": color_enc, "tooltip": arc_tooltip},
+        }
+
+        if has_tiny:
+            return {
+                **base,
+                "data": {"values": data_values},
+                "layer": [
+                    arc_layer,
+                    {
+                        "mark": {"type": "text", "radius": 148, "fontSize": 10, "color": "#555"},
+                        "encoding": {
+                            "theta": theta_enc,
+                            "text": {"field": "_pct_label", "type": "nominal"},
+                        },
+                    },
+                ],
+            }
         return {
             **base,
-            "data": {"values": [dict(zip(columns, r)) for r in data_rows]},
-            "mark": {"type": "arc", "innerRadius": 65, "padAngle": 0.015, "cornerRadius": 3},
-            "encoding": {
-                "theta": {"field": y_col, "type": "quantitative", "stack": True},
-                "color": {"field": x_col, "type": "nominal",
-                          **({"legend": {"title": leg_ttl or _snake_to_title(x_col)}} if True else {})},
-                "tooltip": [
-                    {"field": x_col, "type": "nominal"},
-                    {"field": y_col, "type": "quantitative", "format": safe_y_fmt, "title": y_title},
-                ],
-            },
+            "data": {"values": data_values},
+            **arc_layer,
         }
 
     # ── Scatter ───────────────────────────────────────────────────────────────

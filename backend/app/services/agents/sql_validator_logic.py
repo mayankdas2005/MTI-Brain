@@ -47,7 +47,7 @@ def _run_gates(sql: str) -> tuple[bool, str]:
     )
     if not isinstance(stmt, _READ_ONLY_TYPES):
         stmt_type = type(stmt).__name__
-        logger.warning("sql_validator DDL/DML rejected | stmt_type={}", stmt_type)
+        logger.warning("sql_validator DDL/DML rejected | stmt_type={} | sql={}", stmt_type, sql[:300])
         return False, f"DDL/DML rejected: {stmt_type} is not allowed — only SELECT statements"
 
     # Gate 2 — Identifier safety

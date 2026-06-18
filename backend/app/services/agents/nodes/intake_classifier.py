@@ -274,7 +274,8 @@ def _parse_intake(raw: str) -> tuple[str, bool, str, list[str], list[str], list[
             if str(line).strip() and any(str(line).strip().startswith(lbl) for lbl in _VALID_LABELS)
         ][:12]
         return qtype, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent
-    except Exception:
+    except Exception as _e:
+        logger.warning("intake_classifier | parse_failed | error={} | raw={}", _e, (raw or "")[:300])
         return "analytics", False, "simple", [], [], [], []  # Layer 3 fallback
 
 

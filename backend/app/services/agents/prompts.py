@@ -437,8 +437,8 @@ Step 11B — FORECAST CHECK: If TIME_OUTPUT exists in QUERY INTENT or COMPUTATIO
 
 # ─── Node 0: Intake Classifier ───────────────────────────────────────────────
 
-INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
-    """You classify financial analytics questions and extract entity tokens for graph search.
+INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You classify financial analytics questions and extract entity tokens for graph search.
 
 SYSTEM SCOPE — this assistant queries organizational financial data in these domains:
   {domain_list}
@@ -455,10 +455,7 @@ is_followup=true. Consider the full semantic meaning, not just surface keywords.
 TIEBREAKER: When ambiguous, default to "analytics". A failed query returns "no data found"; a misclassified
 data question silently disappears.
 
-Conversation context:
-{conversation_context}
-
-User question: "{question}"
+Respond with ONLY the JSON inside an <output> block. No explanation, no preamble.
 
 <output>
 {{
@@ -542,8 +539,13 @@ Other examples:
 <output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["JPMorgan", "operating", "balance"], "search_terms": ["JPMorgan operating account", "closing balance", "cash balance bank"], "search_variants": ["JPMorgan", "JP Morgan", "operating"], "query_intent": ["GOAL: Retrieve closing balance for JPMorgan operating account", "TIME: Last 7 days", "OUTPUT: Daily balance trend"]}}</output>
 <output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["ACH"], "search_terms": ["ACH receipts payment", "ACH volume", "payment receipts"], "search_variants": ["ACH", "automated clearing house"], "query_intent": ["GOAL: Total ACH receipts for the period", "TIME: Yesterday — point-in-time", "OUTPUT: Single total value"]}}</output>
 <output>{{"type": "analytics", "is_followup": false, "complexity": "complex", "entity_tokens": ["FX", "hedges"], "search_terms": ["FX hedge notional", "foreign exchange exposure", "derivative hedge", "FX hedge position"], "search_variants": ["FX", "foreign exchange", "hedge", "FX hedge"], "query_intent": ["GOAL: Report total notional of outstanding FX hedges by currency", "DOMAIN: FX hedging", "OUTPUT: Summary table by currency pair"]}}</output>
-<output>{{"type": "general_chat", "is_followup": false, "complexity": "simple", "entity_tokens": [], "search_terms": [], "search_variants": [], "query_intent": []}}</output>"""
-)
+<output>{{"type": "general_chat", "is_followup": false, "complexity": "simple", "entity_tokens": [], "search_terms": [], "search_variants": [], "query_intent": []}}</output>"""),
+    ("human", """Conversation context:
+{conversation_context}
+
+User question: "{question}"
+"""),
+])
 
 # ─── Node G: General Chat ────────────────────────────────────────────────────
 

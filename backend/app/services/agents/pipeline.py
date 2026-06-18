@@ -214,7 +214,6 @@ async def stream_pipeline(
         "thread_id": thread_id,
         "persona": persona or "analyst",
         "question": question,
-        "question_type": "",
         "needs_clarification": False,
         "clarification_count": 0,
         "clarification_reason": None,
