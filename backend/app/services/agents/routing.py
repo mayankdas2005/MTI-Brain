@@ -8,6 +8,7 @@ from __future__ import annotations
 from langgraph.graph import END
 from langgraph.types import RetryPolicy
 
+from app.core.config import settings
 from app.core.logger import logger
 from app.services.agents.nodes.compress import SUMMARIZE_THRESHOLD
 from app.services.agents.node_names import (
@@ -125,21 +126,22 @@ def route_validator(state: AnalyticsState) -> str:
 
 def route_executor(state: AnalyticsState) -> str:
     repair_count = state.get("repair_count", 0)
+    _next_after_exec = N_DATA_QUALITY_CHECKER if settings.DATA_QUALITY_CHECKER_ENABLED else N_SYNTHESIS
 
     if state.get("stopped"):
-        logger.info("route: executor → data_quality_checker (stopped) | thread={}", state["thread_id"])
-        return N_DATA_QUALITY_CHECKER
+        logger.info("route: executor → {} (stopped) | thread={}", _next_after_exec, state["thread_id"])
+        return _next_after_exec
 
     if state.get("error") and repair_count >= MAX_REPAIR:
-        logger.info("route: executor → data_quality_checker (repairs exhausted) | thread={}", state["thread_id"])
-        return N_DATA_QUALITY_CHECKER
+        logger.info("route: executor → {} (repairs exhausted) | thread={}", _next_after_exec, state["thread_id"])
+        return _next_after_exec
 
     if repair_count > state.get("_prev_repair_count", -1):
         logger.info("route: executor → sql_validator (after repair) | thread={}", state["thread_id"])
         return N_SQL_VALIDATOR
 
-    logger.info("route: executor → data_quality_checker | thread={}", state["thread_id"])
-    return N_DATA_QUALITY_CHECKER
+    logger.info("route: executor → {} | thread={}", _next_after_exec, state["thread_id"])
+    return _next_after_exec
 
 
 def route_synthesis(state: AnalyticsState) -> str:

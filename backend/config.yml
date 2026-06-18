@@ -21,6 +21,14 @@ server:
     - "http://127.0.0.1:3000"
     - "http://100.21.28.155:3000"
 
+auth:
+  jwt_algorithm: HS256
+  jwt_expiry_hours: 8
+
+rate_limit:
+  login_per_minute: 5              # Max login attempts per IP per minute
+  ask_per_minute: 30               # Max /ask, /retry, /edit requests per IP per minute
+
 postgres:                            # PostgreSQL / PgBouncer connection settings
   port: 5432
   ssl_mode: disable                # disable | require | verify-ca | verify-full
@@ -37,21 +45,24 @@ postgres:                            # PostgreSQL / PgBouncer connection setting
     max_size: 5                    # Max connections
     max_idle_seconds: 300          # Close idle connections after N seconds
 
+neo4j:
+  pool:
+    max_connections: 10            # Bolt connection pool size (server bolt thread max is 40)
+    connection_timeout_seconds: 10 # Seconds before a connection attempt times out
+    acquisition_timeout_seconds: 10 # Seconds to wait for a free pool connection
+
+redis:
+  pool:
+    max_connections: 20            # Cap on pooled Redis connections
+    health_check_interval_seconds: 30  # Auto-PING idle connections; reconnects dead ones
+
 circuit_breaker:
   # Pybreaker settings for the Postgres health-check circuit.
   fail_max: 5                      # Consecutive failures before opening the circuit
   reset_timeout_seconds: 30        # Seconds before the circuit half-opens to probe recovery
 
-core_toggles:
-  langfuse_enabled: true           # Enable Langfuse tracing and model usage tracking
-
-jwt:
-  algorithm: HS256
-  expiry_hours: 8
-
-rate_limit:
-  login_per_minute: 5              # Max login attempts per IP per minute
-  ask_per_minute: 30               # Max /ask, /retry, /edit requests per IP per minute
+pipeline:
+  recursion_limit: 80              # LangGraph recursion limit (advanced queries need headroom)
 
 model_routing:
   llm_routing_enabled: true        # Model routing (Haiku / Sonnet / Opus)
@@ -59,20 +70,6 @@ model_routing:
 prompt_cache:
   aws_bedrock_prompt_cache: true   # Enable AWS Bedrock prompt cache
 
-
-pipeline:
-  recursion_limit: 80              # LangGraph recursion limit (advanced queries need headroom)
-
-neo4j:
-  pool:
-    max_connections: 10            # Bolt connection pool size (server bolt thread max is 40)
-    connection_timeout_seconds: 10 # Seconds before a connection attempt times out
-    acquisition_timeout_seconds: 10 # Seconds to wait for a free pool connection
-
-sql_validator:
-  explain_cost_threshold: 10000000  # Cost units above which EXPLAIN triggers LARGE_TABLE_SCAN flag
-
-redis:
-  pool:
-    max_connections: 20            # Cap on pooled Redis connections
-    health_check_interval_seconds: 30  # Auto-PING idle connections; reconnects dead ones
+feature_toggles:
+  langfuse_enabled: true           # Enable Langfuse tracing and model usage tracking
+  data_quality_checker_enabled: false  # When true: runs after executor; output feeds confidence + synthesis

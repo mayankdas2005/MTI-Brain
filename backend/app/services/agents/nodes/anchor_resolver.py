@@ -494,11 +494,12 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         _qi = list(state.get("query_intent") or [])
         _fx_line = (
             "FX: lpp.fx_rate required — "
-            "join ON f.base_currency = src.<currency_col> AND f.quote_currency = 'USD'; "
+            "use 2-CTE pattern: fx_anchor (LEAST(CURRENT_DATE, MAX(rate_date)) AS ref) + fx_latest (AVG rate per base_currency within 14 days of ref); "
+            "join ON fx_latest.base_currency = src.<currency_col>; "
             "both directions exist in the table; USD-to-USD row (rate=1.0) exists so USD accounts need no special handling; "
-            "PARTITION BY (<pk_col>, <currency_col>) ORDER BY f.rate_date DESC — pick rn=1 per account+currency; "
+            "rate_date filter: rate_date <= LEAST(CURRENT_DATE, MAX(rate_date)) anchor — never use CURRENT_DATE directly or ROW_NUMBER; "
             "conversion: amount * rate = amount_usd (multiply); "
-            "do NOT filter on rate_type or source; window: rate_date within 14 days before transaction date"
+            "do NOT filter on rate_type or source"
         )
         if not any("FX:" in l for l in _qi):
             _qi.append(_fx_line)

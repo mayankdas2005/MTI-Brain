@@ -39,7 +39,6 @@ from app.core.logger import logger
 from app.services.agents import neo4j_client, redis_client
 from app.services.agents.memory import long_term as lt_memory
 from app.services.agents.node_names import (
-    LT_MEMORY_RETRIEVER as N_LT_MEMORY_RETRIEVER,
     ANCHOR_RESOLVER as N_ANCHOR_RESOLVER,
     SCHEMA_ENRICHER as N_SCHEMA_ENRICHER,
     MEASURE_SPECIALIST as N_MEASURE_SPECIALIST,
@@ -64,7 +63,6 @@ from app.services.agents.node_names import (
     SQL_VALIDATOR as N_SQL_VALIDATOR,
     SYNTHESIS as N_SYNTHESIS,
 )
-from app.services.agents.nodes.lt_memory_retriever import lt_memory_retriever
 from app.services.agents.nodes.anchor_resolver import anchor_resolver
 from app.services.agents.nodes.chart_agent import chart_agent
 from app.services.agents.nodes.compress import compress
@@ -122,7 +120,6 @@ def compile_graph():
     b = StateGraph(AnalyticsState)
 
     # ── Core infrastructure nodes ─────────────────────────────────────────────
-    b.add_node(N_LT_MEMORY_RETRIEVER, lt_memory_retriever)
     b.add_node(N_INTAKE,              intake_classifier,    retry_policy=LLM_RETRY)
     b.add_node(N_GENERAL_CHAT,        general_chat,         retry_policy=LLM_RETRY)
     b.add_node(N_CONTEXT_FETCHER,     context_fetcher)
@@ -159,8 +156,7 @@ def compile_graph():
     b.add_node(N_COMPRESS,            compress,             retry_policy=LLM_RETRY)
 
     # ── Edges ─────────────────────────────────────────────────────────────────
-    b.add_edge(START, N_LT_MEMORY_RETRIEVER)
-    b.add_edge(N_LT_MEMORY_RETRIEVER, N_INTAKE)
+    b.add_edge(START, N_INTAKE)
 
     b.add_conditional_edges(
         N_INTAKE, route_intake,
@@ -228,7 +224,8 @@ def compile_graph():
         N_EXECUTOR, route_executor,
         {
             N_SQL_VALIDATOR:        N_SQL_VALIDATOR,
-            N_DATA_QUALITY_CHECKER: N_DATA_QUALITY_CHECKER,  # executor success → quality check first
+            N_DATA_QUALITY_CHECKER: N_DATA_QUALITY_CHECKER,  # executor success → quality check first (when enabled)
+            N_SYNTHESIS:            N_SYNTHESIS,             # executor success → synthesis directly (when DQ checker disabled)
             N_INTENT_RESOLVER:      N_INTENT_RESOLVER,       # recompile still uses legacy path
         },
     )

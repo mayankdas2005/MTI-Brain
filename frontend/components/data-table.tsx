@@ -13,14 +13,13 @@ import {
 import {
   ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger,
 } from '@/components/ui/context-menu';
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, FileText, FileSpreadsheet, ArrowUp, ArrowDown, ArrowUpDown, Copy, AlertTriangle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, FileText, FileSpreadsheet, ArrowUp, ArrowDown, ArrowUpDown, Copy } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { copyText } from '@/lib/utils';
 import { formatNumber, formatNumberWithDecimals } from '@/lib/utils/number';
 import { downloadCSV, downloadXLSX, safeFilename } from '@/lib/utils/export-table';
 
 const ROWS_PER_PAGE = 10;
-const MIN_ROWS_FOR_OUTLIER = 5;
 
 function formatLabel(s: string) {
   return s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -70,27 +69,6 @@ function inferColType(rows: unknown[][], colIndex: number): ColType {
   return 'text';
 }
 
-/** IQR outlier detection. Returns Set of row indices (within the provided rows array) that are outliers. */
-function detectOutliers(rows: unknown[][], colIndex: number): Set<number> {
-  const vals: { idx: number; v: number }[] = [];
-  rows.forEach((row, i) => {
-    const raw = row[colIndex];
-    const n = typeof raw === 'number' ? raw : Number(raw);
-    if (!isNaN(n) && raw !== null && raw !== undefined && raw !== '') {
-      vals.push({ idx: i, v: n });
-    }
-  });
-  if (vals.length < MIN_ROWS_FOR_OUTLIER) return new Set();
-  const sorted = [...vals].sort((a, b) => a.v - b.v);
-  const q1 = sorted[Math.floor(sorted.length * 0.25)].v;
-  const q3 = sorted[Math.floor(sorted.length * 0.75)].v;
-  const iqr = q3 - q1;
-  if (iqr === 0) return new Set();
-  const lower = q1 - 1.5 * iqr;
-  const upper = q3 + 1.5 * iqr;
-  return new Set(vals.filter(({ v }) => v < lower || v > upper).map(({ idx }) => idx));
-}
-
 /** Compare two cell values for sorting. */
 function compareCells(a: unknown, b: unknown, colType: ColType): number {
   if (a === null || a === undefined) return 1;
@@ -111,7 +89,6 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
   const [page, setPage] = useState(0);
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
-  const [showAnomalies, setShowAnomalies] = useState(true);
 
   const totalRows = rowCount ?? rows.length;
 
@@ -126,24 +103,6 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
     const sorted = [...rows].sort((a, b) => compareCells(a[sortCol], b[sortCol], ct));
     return sortDir === 'desc' ? sorted.reverse() : sorted;
   }, [rows, sortCol, sortDir, colTypes]);
-
-  // Outlier sets per column, keyed against sortedRows indices.
-  // Always detect outliers so the button stays visible even when display is toggled off
-  const allOutliersByCol = useMemo(() => {
-    const map = new Map<number, Set<number>>();
-    columns.forEach((_, ci) => {
-      if (colTypes[ci] === 'int' || colTypes[ci] === 'float') {
-        const set = detectOutliers(sortedRows, ci);
-        if (set.size > 0) map.set(ci, set);
-      }
-    });
-    return map;
-  }, [sortedRows, columns, colTypes]);
-
-  // When toggle is off, use empty map so no cells are highlighted
-  const outliersByCol = showAnomalies ? allOutliersByCol : new Map<number, Set<number>>();
-
-  const hasAnyOutliers = allOutliersByCol.size > 0;
 
   const totalPages = Math.ceil(sortedRows.length / ROWS_PER_PAGE);
   const start = page * ROWS_PER_PAGE;
@@ -214,12 +173,11 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
                     const isNumeric = colTypes[ci] === 'int' || colTypes[ci] === 'float';
                     const isFirst = ci === 0;
                     const rowBg = ri % 2 === 1 ? 'bg-[color-mix(in_srgb,var(--muted)_15%,var(--background))]' : 'bg-background';
-                    const isOutlier = showAnomalies && (outliersByCol.get(ci)?.has(absoluteRowIdx) ?? false);
                     return (
                       <ContextMenu key={ci}>
                         <ContextMenuTrigger asChild>
                           <TableCell
-                            className={`text-xs font-mono whitespace-nowrap py-[var(--density-pad-y)] tabular-nums transition-colors ${isNumeric ? 'text-right font-medium' : ''} ${isFirst ? `sticky left-0 z-10 ${rowBg} md:static md:bg-transparent` : ''} ${isOutlier ? 'bg-warning-soft/50 text-foreground' : ''}`}
+                            className={`text-xs font-mono whitespace-nowrap py-[var(--density-pad-y)] tabular-nums transition-colors ${isNumeric ? 'text-right font-medium' : ''} ${isFirst ? `sticky left-0 z-10 ${rowBg} md:static md:bg-transparent` : ''}`}
                           >
                             <span className="inline-flex items-center gap-1 justify-end">
                               {cell === null || cell === undefined ? (
@@ -230,16 +188,6 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
                                   : formatNumberWithDecimals(cell, { minimumFractionDigits: 2, maximumFractionDigits: 4 })
                               ) : (
                                 cellStr
-                              )}
-                              {isOutlier && (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <AlertTriangle className="w-3 h-3 shrink-0 text-warning" aria-label="Unusual value" />
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top">
-                                    Unusual value - outside normal range for this column
-                                  </TooltipContent>
-                                </Tooltip>
                               )}
                             </span>
                           </TableCell>
@@ -262,7 +210,7 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
         </Table>
       </div>
 
-      {/* Footer: row count + anomaly toggle + pagination + download — shown as soon as rows exist */}
+      {/* Footer: row count + pagination + download */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 border-t border-border bg-muted/30 text-xs text-muted-foreground">
         <span className="min-w-0 truncate">
           {totalRows > rows.length
@@ -272,29 +220,6 @@ export function DataTable({ columns, rows, rowCount, filename, isStreaming }: Da
               : `${totalRows.toLocaleString('en-US')} row${totalRows === 1 ? '' : 's'}`}
         </span>
         <div className="flex items-center gap-1 ml-auto">
-          {hasAnyOutliers && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  aria-pressed={showAnomalies}
-                  onClick={() => setShowAnomalies((v) => !v)}
-                  className={`h-6 gap-1 px-2 text-[10px] font-medium border transition-colors ${
-                    showAnomalies
-                      ? 'border-warning/40 bg-warning-soft/40 text-warning'
-                      : 'border-border text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  <AlertTriangle className="w-3 h-3" />
-                  Anomalies
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="left">
-                {showAnomalies ? 'Hide anomaly highlights' : 'Show anomaly highlights'}
-              </TooltipContent>
-            </Tooltip>
-          )}
           <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] font-medium" onClick={() => downloadCSV(columns, sortedRows, resolvedFilename)}>
             <FileText className="w-3 h-3" />
             CSV

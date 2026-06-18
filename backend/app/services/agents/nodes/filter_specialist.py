@@ -100,6 +100,18 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
                 lines.append(f"    {label}: {distinct_vals[:20]}")
             elif sample_vals:
                 lines.append(f"    sample_values: {sample_vals}")
+            else:
+                _dt_lower = (c.get("data_type") or "").lower()
+                _sem_type = (c.get("semantic_type") or "").lower()
+                _is_string = "char" in _dt_lower or "varchar" in _dt_lower or "text" in _dt_lower
+                _is_categorical = _is_string or _sem_type in {
+                    "code", "dimension", "category", "flag", "status", "identifier",
+                }
+                if _is_categorical:
+                    lines.append("    ⚠ NO KNOWN VALUES — 0 distinct values found for this column.")
+                    lines.append("      This column is likely all-NULL in the source system.")
+                    lines.append("      Filtering or joining on it will most likely return 0 rows.")
+                    lines.append("      If required by the question: emit SCHEMA_GAP. Do NOT guess a value.")
             if value_aliases:
                 lines.append(f"    code_mappings (DB_CODE -> human name): {value_aliases[:8]}")
                 lines.append(f"      Use human name as raw_user_value — downstream resolves to DB code")

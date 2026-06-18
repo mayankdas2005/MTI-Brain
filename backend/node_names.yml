@@ -16,13 +16,8 @@
 # ─────────────────────────────────────────────────────────────────────────────────
 
 nodes:
-  - id: lt_memory_retriever
-    label: "Recalling your feedback"
-    tier: none
-    stream: null
-
   - id: intake_classifier
-    label: "Reading your question"
+    label: "Planner and Classifier"
     tier: fast
     stream: null
 
@@ -32,7 +27,7 @@ nodes:
     stream: multi
 
   - id: context_fetcher
-    label: "Exploring data model"
+    label: "Knowledge Graph Retrieval"
     tier: none
     stream: null
 
@@ -42,7 +37,7 @@ nodes:
     stream: null
 
   - id: anchor_resolver
-    label: "Selecting tables"
+    label: "Metadata Extraction"
     tier: fast
     stream: [reasoning, reasoning.delta]
 
@@ -57,17 +52,17 @@ nodes:
     stream: null
 
   - id: measure_specialist
-    label: "Finding metrics"
+    label: null
     tier: fast
     stream: null
 
   - id: filter_specialist
-    label: "Resolving filters"
+    label: "Knowledge Graph Enhancer"
     tier: fast
     stream: [reasoning, reasoning.delta]
 
   - id: dimension_specialist
-    label: "Finding groupings"
+    label: null
     tier: fast
     stream: null
 
@@ -77,7 +72,7 @@ nodes:
     stream: null
 
   - id: directive_writer
-    label: "Planning computation"
+    label: null
     tier: balanced
     stream: null
 
@@ -107,12 +102,12 @@ nodes:
     stream: null
 
   - id: filter_resolver
-    label: "Matching filter values"
+    label: null
     tier: fast
-    stream: [reasoning, reasoning.delta]
+    stream: null
 
   - id: sql_generator
-    label: "Writing SQL"
+    label: "Query Composer"
     tier: deep
     stream: [reasoning, reasoning.delta]
 
@@ -122,17 +117,17 @@ nodes:
     stream: null
 
   - id: executor
-    label: "Running query"
+    label: "Data Query Engine"
     tier: deep
     stream: [reasoning, reasoning.delta]
 
   - id: synthesis
-    label: "Preparing answer"
+    label: "Insight Analysis"
     tier: balanced
     stream: multi
 
   - id: chart_agent
-    label: "Building chart"
+    label: "Insight Presenter"
     tier: fast
     stream: [reasoning, reasoning.delta]
 

@@ -175,6 +175,8 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
         state["thread_id"], state["question"][:80],
     )
 
+    from app.services.agents.nodes.lt_memory_retriever import lt_memory_retriever
+
     question = state["question"]
     prior_analytics = _prior_was_analytics(state)
 
@@ -185,9 +187,20 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
             "intake_classifier | fast_path | type={} | thread={}",
             quick_result, state["thread_id"],
         )
-        return {"question_type": quick_result, "specialist_outputs": [{"__reset__": True}]}
+        memory_output = await lt_memory_retriever(state, config)
+        classification_line = f"Classified as **{quick_result}** (fast path)"
+        preference_label = _build_combined_label(memory_output, classification_line)
+        return {
+            "question_type": quick_result,
+            "specialist_outputs": [{"__reset__": True}],
+            **_extract_memory_keys(memory_output),
+            "preference_label": preference_label,
+        }
 
     # Layer 2: LLM classifier with domain/intent context from Neo4j
+    # Run feedback retrieval concurrently with LLM classification
+    memory_task = asyncio.create_task(lt_memory_retriever(state, config))
+
     ctx = _get_classifier_context()
     conversation_context = _format_conversation(
         state.get("messages", []), state.get("summary") or ""
@@ -211,6 +224,14 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
     prior_search_terms = list(state.get("search_terms") or [])
     combined_search_terms = _combine_search_terms(search_terms, prior_search_terms, is_followup)
 
+    # Await feedback retrieval
+    memory_output = await memory_task
+
+    classification_line = f"Classified as **{question_type}** — {complexity}"
+    if is_followup:
+        classification_line += " (follow-up)"
+    preference_label = _build_combined_label(memory_output, classification_line)
+
     logger.info(
         "intake_classifier DONE | thread={} | type={} | is_followup={} | complexity={} | entity_tokens={} | search_terms={} | combined={} | prior_analytics={} | query_intent_lines={} | query_intent={} | query_type={}",
         state["thread_id"], question_type, is_followup, complexity, entity_tokens,
@@ -226,7 +247,30 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
         "search_variants": search_variants or entity_tokens or None,
         "query_intent": query_intent or None,
         "specialist_outputs": [{"__reset__": True}],
+        **_extract_memory_keys(memory_output),
+        "preference_label": preference_label,
     }
+
+
+# ── Memory + label helpers ────────────────────────────────────────────────────
+
+def _extract_memory_keys(memory_output: dict) -> dict:
+    """Extract state keys produced by lt_memory_retriever."""
+    return {
+        "lt_memory_context":  memory_output.get("lt_memory_context", ""),
+        "feedback_context":   memory_output.get("feedback_context", ""),
+        "preference_summary": memory_output.get("preference_summary"),
+    }
+
+
+def _build_combined_label(memory_output: dict, classification_line: str) -> str:
+    """Combine feedback markdown and classification reasoning into one label."""
+    feedback_label = memory_output.get("preference_label") or ""
+    parts = []
+    if feedback_label:
+        parts.append(feedback_label)
+    parts.append(f"\n{classification_line}")
+    return "\n".join(parts)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

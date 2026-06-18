@@ -203,8 +203,34 @@ def _build_sse_generator(
                         "data": json.dumps({"thread_id": str(thread_id), "title": title}),
                     }
 
-            # Track partial answer tokens so we can save them if the user stops.
+            # Accumulate partial state so stop/error saves a complete picture,
+            # not just whatever answer tokens happened to stream before the cut.
             _partial_answer: list[str] = []
+            _partial_reasoning: dict[str, list[str]] = {}   # node -> [token, ...]
+            _partial_reasoning_order: list[str] = []        # insertion order
+            _partial_steps: list[dict] = []                 # pipeline timeline
+            _partial_steps_idx: dict[str, int] = {}         # node -> last step index
+            _partial_node_labels: dict[str, str] = {}       # node -> display label
+
+            def _build_partial_save(answer_override: str | None = None) -> dict:
+                _dur = int((time.perf_counter() - _stream_start) * 1000)
+                _ans = answer_override if answer_override is not None else "".join(_partial_answer)
+                _rsn = [
+                    {
+                        "node": n,
+                        "label": _partial_node_labels.get(n, n),
+                        "text": "".join(_partial_reasoning.get(n, [])).strip(),
+                    }
+                    for n in _partial_reasoning_order
+                    if "".join(_partial_reasoning.get(n, [])).strip()
+                ]
+                return {
+                    "answer": _ans,
+                    "stopped": True,
+                    "duration_ms": _dur,
+                    "reasoning": _rsn,
+                    "pipeline_steps": list(_partial_steps),
+                }
 
             async for sse_ev in stream_pipeline(
                 question=question,
@@ -223,15 +249,45 @@ def _build_sse_generator(
                 event_name = sse_ev["event"]
                 data = sse_ev["data"]
 
+                # ── Accumulate partial state ──────────────────────────────────
+                if event_name == "node.start":
+                    _n = data["node"]
+                    _partial_node_labels[_n] = data.get("message", _n)
+                    _partial_steps_idx[_n] = len(_partial_steps)
+                    _partial_steps.append({
+                        "node": _n,
+                        "message": _partial_node_labels[_n],
+                        "is_retry": data.get("is_retry", False),
+                        "status": "active",
+                        "duration_ms": 0,
+                        "total_tokens": 0,
+                        "reasoning": "",
+                    })
+                elif event_name == "node.done":
+                    _n = data["node"]
+                    _i = _partial_steps_idx.get(_n)
+                    if _i is not None:
+                        _partial_steps[_i].update({
+                            "status": data.get("status", "done"),
+                            "duration_ms": data.get("duration_ms", 0),
+                            "total_tokens": data.get("total_tokens", 0),
+                            "reasoning": "".join(_partial_reasoning.get(_n, [])).strip(),
+                        })
+                elif event_name == "reasoning.delta":
+                    _n = data["node"]
+                    if _n not in _partial_reasoning:
+                        _partial_reasoning[_n] = []
+                        _partial_reasoning_order.append(_n)
+                    _partial_reasoning[_n].append(data.get("text", ""))
+                elif event_name == "answer.delta":
+                    _partial_answer.append(data.get("text", ""))
+
+                # ── Terminal events ───────────────────────────────────────────
                 if event_name == "stopped":
-                    duration_ms = int((time.perf_counter() - _stream_start) * 1000)
-                    data = {**data, "conversation_id": str(conversation_id), "duration_ms": duration_ms}
+                    _saved = _build_partial_save()
+                    data = {**data, "conversation_id": str(conversation_id), "duration_ms": _saved["duration_ms"]}
                     yield {"event": event_name, "data": json.dumps(data, default=_json_serial)}
-                    asyncio.create_task(_save_assistant_message({
-                        "answer": "".join(_partial_answer),
-                        "stopped": True,
-                        "duration_ms": duration_ms,
-                    }))
+                    asyncio.create_task(_save_assistant_message(_saved))
                     break
 
                 if event_name == "done":
@@ -240,16 +296,20 @@ def _build_sse_generator(
                     asyncio.create_task(_save_assistant_message(data))
                     break
 
-                if event_name == "answer.delta":
-                    _partial_answer.append(data.get("text", ""))
-
                 yield {"event": event_name, "data": json.dumps(data, default=_json_serial)}
 
                 if event_name == "error":
+                    _partial = "".join(_partial_answer)
+                    asyncio.create_task(_save_assistant_message(
+                        _build_partial_save(_partial or data.get("message", "Something went wrong. Please try again."))
+                    ))
                     break
 
         except Exception as e:
             logger.exception(f"Stream error for thread {thread_id}: {e}")
+            asyncio.create_task(_save_assistant_message(
+                _build_partial_save("Something went wrong. Please try again.")
+            ))
             yield {
                 "event": "error",
                 "data": json.dumps({
@@ -259,12 +319,11 @@ def _build_sse_generator(
             }
 
         except BaseException:
-            # GeneratorExit (client disconnect / navigation). Save a stopped
-            # record so the DB is not left with a dangling unsaved message.
-            duration_ms = int((time.perf_counter() - _stream_start) * 1000)
-            asyncio.create_task(_save_assistant_message({
-                "answer": "", "stopped": True, "duration_ms": duration_ms,
-            }))
+            # GeneratorExit (client disconnect / navigation). Save whatever
+            # partial state was accumulated so the thread is not left empty.
+            asyncio.create_task(_save_assistant_message(
+                _build_partial_save()
+            ))
             raise
 
         finally:

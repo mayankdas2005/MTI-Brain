@@ -102,6 +102,7 @@ class AnalyticsState(TypedDict):
     lt_memory_context: str               # long-term memory fetched by lt_memory_retriever node
     preference_summary: dict | None      # structured summary from lt_memory_retriever (counts + items) → saved to message metadata
     summary: str                          # short-term session summary
+    context_fetch_label: str | None      # deterministic markdown summary from context_fetcher — emitted as synthetic reasoning.delta
 
     # ── Error / control ──────────────────────────────────────────────────────
     error: str | None

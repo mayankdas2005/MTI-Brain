@@ -400,41 +400,6 @@ Step 11B — FORECAST CHECK: If TIME_OUTPUT exists in QUERY INTENT or COMPUTATIO
   HARDCODED RATES ARE FORBIDDEN: never use * 1.05 or any fixed multiplier.
   OLS slope is forbidden here — this is a rates-based projection, not a regression."""
 
-# ─── Prompt ownership table ──────────────────────────────────────────────────
-#
-# Prompt                    | Node file                  | Decides
-# INTAKE_CLASSIFY           | intake_classifier.py       | question type, entity tokens, query_intent
-# GENERAL_CHAT              | general_chat.py            | conversational response
-# ANCHOR_RESOLVER           | anchor_resolver.py         | anchor tables, result_shape
-# QUERY_PLANNER             | query_planner.py           | output_slots (suggestions only)
-# MEASURE_SPECIALIST        | measure_specialist.py      | measures + aggregation functions
-# FILTER_SPECIALIST         | filter_specialist.py       | filters (raw_user_value), thresholds, time_filter_col
-# DIMENSION_SPECIALIST      | dimension_specialist.py    | dimensions for GROUP BY
-# DIRECTIVE_WRITER          | directive_writer.py        | COMPUTATION, TIME_FILTER, SCHEMA_GAP_* directives
-# SCHEMA_GAP_DETECTOR       | directive_writer.py (Ph.2) | SCHEMA_GAP_* lines (Haiku sub-call)
-# CTE_COLUMN_PLANNER        | sql_generator.py (pre)     | CTE contract (names, exports, sources)
-# SQL_GENERATE              | sql_generator.py           | Redshift SQL
-# REPAIR / REPAIR_SYNTAX /  | repair.py                  | SQL fix
-#   REPAIR_STRUCTURE /       |                            |
-#   REPAIR_PERFORMANCE       |                            |
-# INTENT_RESOLVE            | intent_resolver.py         | fallback intent resolution
-# INSIGHT_EXTRACTOR         | synthesis.py (Phase 1)     | structured insights from data
-# SYNTHESIS                 | synthesis.py (Phase 2)     | narrative answer
-# CHART_AGENT               | chart_agent.py             | chart type + bindings + labels
-# COMPRESS                  | compress.py                | conversation summary
-# CONFIDENCE_JUDGE          | confidence.py              | confidence explanation
-# TEMPORAL_RESOLVE          | filter_resolver.py         | temporal → SQL date range
-# FILTER_DISAMBIGUATE       | filter_resolver.py         | ambiguous filter → DB code
-# ZERO_ROW_PROBE            | zero_row_probe.py          | diagnostic SQL for 0-row results
-# DATA_QUALITY_CHECKER      | data_quality_checker.py    | implausible value flags
-# CLARIFICATION             | clarification.py           | targeted question
-#
-# Aggregation chain: query_planner (suggests) → measure_specialist (decides) → intent_resolver (null)
-# Filter chain: filter_specialist (raw_user_value) → filter_resolver (DB codes) → sql_generator
-# TIME_FILTER: exclusively from directive_writer (M2 rule)
-# result_shape: exclusively from anchor_resolver
-# ─────────────────────────────────────────────────────────────────────────────
-
 # ─── Node 0: Intake Classifier ───────────────────────────────────────────────
 
 INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
@@ -1608,6 +1573,35 @@ S3b. FILTER SYNTAX (3 tiers — when operator not already given by FILTER DIRECT
    a. Column marked [enum: ...] -> EXACT match only. ILIKE FORBIDDEN on enum columns.
    b. [exact] tag -> use = 'VALUE'. [exact — multiple values, use IN] -> use IN ('V1', 'V2').
    c. [fuzzy — use ~* regex] tag -> use case-insensitive regex.
+S3c. NEVER infer or guess enum values for a column by analogy from other columns or tables.
+   Only these three sources authorise a filter value:
+   a. The column's own distinct_values or sample_values listed in SCHEMA REFERENCE.
+   b. A resolved value from FILTER DIRECTIVE for that exact column.
+   c. ENTITY VALUE MATCHES for that exact column.
+   If none of these exist: DO NOT write a WHERE/HAVING filter for that column. Instead emit:
+     -- UNRESOLVED FILTER: <table.column> — no known values in schema; cannot apply filter
+   Example violation: lpp.bank.risk_tier_ref has TIER_1/TIER_2 but that does NOT authorise
+   using category_code = 'TIER_2' on a different table — those are unrelated columns.
+S3d. NULL-SAFE JOIN KEYS — for EVERY table involved in any JOIN (fact, dimension, bridge, hub, cross-domain):
+   In the CTE that reads from that table, add WHERE <join_column> IS NOT NULL before the JOIN.
+   A NULL join key silently drops every row from the JOIN — producing 0 results with no error, on ANY table type.
+   Apply to both sides of the join key if either side can be NULL.
+   This is always safe: a NULL join key can never produce a match anyway.
+   WRONG (bridge/fact join):
+     net60_vendors AS (SELECT DISTINCT ai.vendor_ref FROM lpp.ap_invoice ai WHERE ...)
+     JOIN lpp.third_party tp ON tp.code = ai.vendor_ref
+   RIGHT:
+     net60_vendors AS (SELECT DISTINCT ai.vendor_ref FROM lpp.ap_invoice ai
+                       WHERE ai.vendor_ref IS NOT NULL AND ...)
+     JOIN lpp.third_party tp ON tp.code = ai.vendor_ref
+   WRONG (dimension join):
+     invoices AS (SELECT i.entity_ref, SUM(i.amount) FROM lpp.ap_invoice i GROUP BY i.entity_ref)
+     JOIN lpp.entity e ON e.code = invoices.entity_ref
+   RIGHT:
+     invoices AS (SELECT i.entity_ref, SUM(i.amount) FROM lpp.ap_invoice i
+                  WHERE i.entity_ref IS NOT NULL GROUP BY i.entity_ref)
+     JOIN lpp.entity e ON e.code = invoices.entity_ref
+   Apply to every JOIN column regardless of datatype or table type.
 S10b. SCHEMA REFERENCE filter_values are vocabulary hints only — NOT pre-resolved filter values.
     All actual filter values come from FILTER DIRECTIVE and QUERY SPECIFICATION only.
 

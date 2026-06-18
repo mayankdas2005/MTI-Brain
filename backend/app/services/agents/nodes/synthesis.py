@@ -59,6 +59,20 @@ _FLAG_INSTRUCTIONS = {
 async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("synthesis START | thread={} | persona={} | no_data={}", state["thread_id"], state.get("persona"), state.get("no_data"))
 
+    # If any pipeline node set an error, skip the LLM entirely.
+    # A detailed analytical report on a failed run is misleading — return a brief message.
+    if state.get("error"):
+        logger.info("synthesis | pipeline error — returning brief error | thread={} | error={}", state["thread_id"], str(state.get("error"))[:120])
+        return {
+            "answer": (
+                "The query could not be completed. "
+                "This is a transient infrastructure issue, not a data or query problem.\n\n"
+                "**To retry:** try rephrasing with a narrower scope — a single entity, "
+                "a shorter time period, or one metric at a time — to reduce query complexity."
+            ),
+            "follow_ups": [],
+        }
+
     query_summary = state.get("query_summary") or {}
     no_data = state.get("no_data", False)
     reliability_flags = state.get("reliability_flags") or []
@@ -179,7 +193,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     extractor_prompt = INSIGHT_EXTRACTOR_PROMPT.format_messages(
         question=state["question"],
-        persona=state.get("persona", "executive"),
+        persona=state.get("persona", "analyst"),
         current_date_context=current_date_context,
         flag_instructions_text=flag_instructions or "",
         quality_context=quality_context,

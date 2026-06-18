@@ -39,14 +39,12 @@ _server = _yml.get("server", {})
 _db = _yml.get("postgres", {})
 _pool = _db.get("pool", {})
 _cb = _yml.get("circuit_breaker", {})
-_jwt = _yml.get("jwt", {})
+_auth = _yml.get("auth", {})
 _rl = _yml.get("rate_limit", {})
 _mdl_rt = _yml.get("model_routing", {})
 _prompt_cache = _yml.get("prompt_cache", {})
-_fuseki = _yml.get("fuseki", {})
-_tribal = _yml.get("tribal_graph", {})
 _pipeline = _yml.get("pipeline", {})
-_core_toggles = _yml.get("core_toggles", {})
+_feature_toggles = _yml.get("feature_toggles", {})
 _ckpt_cfg = _db.get("checkpoint_pool", {})
 _neo4j_cfg = _yml.get("neo4j", {}).get("pool", {})
 _redis_cfg = _yml.get("redis", {}).get("pool", {})
@@ -91,9 +89,9 @@ class Settings(BaseSettings):
     CB_FAIL_MAX: int = Field(default=_cb.get("fail_max", 5))
     CB_RESET_TIMEOUT: int = Field(default=_cb.get("reset_timeout_seconds", 30))
 
-    # ── JWT config (config.yml) + secret (.env) ───────────────────────────────
-    JWT_ALGORITHM: str = Field(default=_jwt.get("algorithm", "HS256"))
-    JWT_EXPIRY_HOURS: int = Field(default=_jwt.get("expiry_hours", 8))
+    # ── JWT config (config.yml → auth) + secret (.env) ──────────────────────────
+    JWT_ALGORITHM: str = Field(default=_auth.get("jwt_algorithm", "HS256"))
+    JWT_EXPIRY_HOURS: int = Field(default=_auth.get("jwt_expiry_hours", 8))
     JWT_SECRET: str = Field(..., min_length=32, repr=False)
 
     # ── Rate limiting (config.yml) ────────────────────────────────────────────
@@ -119,8 +117,11 @@ class Settings(BaseSettings):
     # ── Prompt cache (config.yml) ───────────────────────────────────────────
     AWS_BEDROCK_PROMPT_CACHE: bool = Field(default=_prompt_cache.get("aws_bedrock_prompt_cache", False))
     
+    # ── Feature toggles (config.yml → feature_toggles) ───────────────────────
+    LANGFUSE_ENABLED: bool = Field(default=_feature_toggles.get("langfuse_enabled", False))
+    DATA_QUALITY_CHECKER_ENABLED: bool = Field(default=_feature_toggles.get("data_quality_checker_enabled", False))
+
     # ── Langfuse observability (.env) ────────────────────────────────────────
-    LANGFUSE_ENABLED: bool = Field(default=_core_toggles.get("langfuse_enabled", False))
     LANGFUSE_PUBLIC_KEY: str = Field(default="")
     LANGFUSE_SECRET_KEY: str = Field(default="", repr=False)
     LANGFUSE_BASE_URL: str = Field(default="https://cloud.langfuse.com")
