@@ -370,7 +370,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const dashTimedOut = dashStatus === 'pending' && !!dashEntry && (Date.now() - dashEntry.queuedAt) > DASHBOARD_TIMEOUT_MS;
   // Only assistant messages can have dashboards; user messages never do.
   const showDashEntry  = !!convId && message.role === 'assistant' && !!message.content;
-  const showDashButton = showDashEntry && (rowCount ?? 0) >= 2;
+  const showDashButton = showDashEntry && (rowCount ?? 0) > 0;
 
   // On mount: sync dashboard state with server.
   // Runs for both 'idle' (restore) and 'ready'/'failed' (verify still exists).
@@ -829,7 +829,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                             </DropdownMenuItem>
                           </div>
                         </TooltipTrigger>
-                        <TooltipContent side="right">Requires at least 2 rows of data</TooltipContent>
+                        <TooltipContent side="right">No data available to build a report</TooltipContent>
                       </Tooltip>
                     )
                   )}
