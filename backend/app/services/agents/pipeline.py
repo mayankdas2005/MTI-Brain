@@ -275,6 +275,7 @@ async def stream_pipeline(
     _step_by_visit: dict[str, int] = {}
     _visit_timers: dict[str, float] = {}
     _token_records: list[dict] = []
+    _node_token_totals: dict[str, int] = {}  # visit_key → total tokens for that node invocation
     _per_call_streamers: dict[str, "MultiSectionStreamer | SectionStreamer | None"] = {}
     _node_visit_count: dict[str, int] = {}
     _reasoning_entries: list[dict] = []
@@ -348,6 +349,8 @@ async def stream_pipeline(
                     usage = extract_usage(ai_msg, node=node or "pipeline", tier=tier)
                     if usage:
                         _token_records.append(usage)
+                        _vk = f"{node}:{_node_visit_count.get(node, 0)}"
+                        _node_token_totals[_vk] = _node_token_totals.get(_vk, 0) + usage["total_tokens"]
                         logger.debug(
                             "[{}] tokens | node={} | in={} out={} cost=${:.6f}",
                             run_id, node, usage["input_tokens"], usage["output_tokens"], usage["cost_usd"],
@@ -455,6 +458,7 @@ async def stream_pipeline(
                     )
                     step["status"]      = "error" if node_set_error else "done"
                     step["duration_ms"] = round(node_dur * 1000)
+                    step["total_tokens"] = _node_token_totals.get(visit_key, 0)
                     llm_reasoning = "".join(
                         "".join(_reasoning_entries[i]["tokens"])
                         for i in _step_reasoning_idx.get(visit_key, [])
@@ -468,6 +472,7 @@ async def stream_pipeline(
                             "node":        node,
                             "duration_ms": step["duration_ms"],
                             "status":      step["status"],
+                            "total_tokens": step["total_tokens"],
                         },
                     }
 

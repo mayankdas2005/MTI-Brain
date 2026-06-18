@@ -125,10 +125,22 @@ export function ThinkingSidePanel() {
             {message.isStreaming ? (
               <ThinkingWords label={activeLabel} />
             ) : (
-              <span className="text-sm font-medium text-foreground">
+              <span className="text-sm font-medium text-foreground flex items-center gap-1.5">
                 Reasoning
                 {message.metadata_?.duration_ms != null &&
                   ` · ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+                {(() => {
+                  const tok = message.metadata_?.token_usage?.total_tokens
+                    ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                  if (!tok) return null;
+                  const fmt = tok >= 1000 ? `${(tok / 1000).toFixed(2)}K` : `${tok}`;
+                  return (
+                    <>
+                      <span className="text-foreground/30">·</span>
+                      <span className="text-xs font-normal text-foreground/50 tabular-nums">{fmt} tokens</span>
+                    </>
+                  );
+                })()}
               </span>
             )}
           </div>
@@ -154,7 +166,7 @@ export function ThinkingSidePanel() {
       >
         {hasContent ? (
           hasSteps ? (
-            <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} />
+            <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} tokenUsage={message.metadata_?.token_usage} />
           ) : (
             <ReasoningContent
               isStreaming={message.isStreaming}

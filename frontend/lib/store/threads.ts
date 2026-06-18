@@ -31,6 +31,8 @@ export interface StreamingStep {
   started_at_ms?: number;
   /** Final duration in ms once the step closes. Null while active. */
   duration_ms?: number | null;
+  /** Total LLM tokens consumed by this step (input + output). 0 for deterministic nodes. */
+  total_tokens?: number;
   /** Reasoning text emitted while this step was active. */
   reasoning?: string;
   /** @deprecated context_summary removed — preference_summary is on MessageMetadata */
@@ -134,6 +136,7 @@ function extractSteps(
       timestamp: s.started_at_ms,
       started_at_ms: s.started_at_ms,
       duration_ms: s.duration_ms,
+      total_tokens: s.total_tokens,
       reasoning: s.reasoning,
     }));
   }
@@ -235,13 +238,14 @@ function markStepDone(
   node: string,
   duration_ms: number,
   status: 'done' | 'error' = 'done',
+  total_tokens?: number,
 ): StreamingStep[] | undefined {
   if (!steps) return steps;
   let found = false;
   const next = steps.map((s) => {
     if (!found && s.node === node && s.status === 'active') {
       found = true;
-      return { ...s, status, duration_ms };
+      return { ...s, status, duration_ms, ...(total_tokens ? { total_tokens } : {}) };
     }
     return s;
   });
@@ -265,6 +269,7 @@ function finalizeStepsFromDone(rawSteps: unknown): StreamingStep[] | undefined {
     timestamp: s.started_at_ms,
     started_at_ms: s.started_at_ms,
     duration_ms: s.duration_ms,
+    total_tokens: s.total_tokens,
     reasoning: s.reasoning,
   }));
 }
@@ -1107,7 +1112,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onNodeDone: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done') }
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done', data.total_tokens as number | undefined) }
             : m,
         );
       },
@@ -1480,7 +1485,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onNodeDone: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done') }
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done', data.total_tokens as number | undefined) }
             : m,
         );
       },
@@ -1796,7 +1801,7 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onNodeDone: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
-            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done') }
+            ? { ...m, streamingSteps: markStepDone(m.streamingSteps, data.node, data.duration_ms, data.status ?? 'done', data.total_tokens as number | undefined) }
             : m,
         );
       },

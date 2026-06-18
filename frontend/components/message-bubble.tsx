@@ -472,12 +472,19 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors py-1.5 px-2 rounded-md hover:bg-muted/50 w-fit"
             >
               <Brain className="w-3.5 h-3.5" />
-              <span>
+              <span className="flex items-center gap-1">
                 {message.isStreaming ? 'Show reasoning' : (
                   <>
                     Show reasoning
                     {message.metadata_?.duration_ms != null &&
                       ` · ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+                    {(() => {
+                      const tok = message.metadata_?.token_usage?.total_tokens
+                        ?? (message.streamingSteps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                      if (!tok) return null;
+                      const fmt = tok >= 1000 ? `${(tok / 1000).toFixed(2)}K` : `${tok}`;
+                      return <span className="text-muted-foreground/60">· {fmt} tokens</span>;
+                    })()}
                   </>
                 )}
               </span>
@@ -963,10 +970,19 @@ function ReasoningPanel({
               )}
             </span>
           ) : (
-            <span>
-              Thought
-              {message.metadata_?.duration_ms != null &&
-                ` for ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+            <span className="flex items-center justify-between w-full pr-1">
+              <span>
+                Thought
+                {message.metadata_?.duration_ms != null &&
+                  ` for ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+              </span>
+              {(() => {
+                const tok = message.metadata_?.token_usage?.total_tokens
+                  ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                if (!tok) return null;
+                const fmt = tok >= 1000 ? `${(tok / 1000).toFixed(2)}K` : `${tok}`;
+                return <span className="text-foreground/40 text-[10px] tabular-nums">{fmt} tokens</span>;
+              })()}
             </span>
           )}
         </AccordionTrigger>
@@ -980,7 +996,7 @@ function ReasoningPanel({
             }}
           >
             {hasSteps ? (
-              <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} />
+              <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} tokenUsage={message.metadata_?.token_usage} />
             ) : legacyReasoning ? (
               <ReasoningContent
                 ref={reasoningRef}

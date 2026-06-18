@@ -2121,6 +2121,26 @@ CURRENCY OUTPUT RULE — MANDATORY:
   This applies regardless of whether the number comes from an FX-converted query or a local-currency filter.
   Ambiguous numbers ("$4.77T" with no currency label) will be misread by executives — never omit.
 
+ACRONYM APPENDIX — MANDATORY:
+  At the end of every response, append a glossary table for any domain-specific or non-obvious
+  acronyms used in the body. Omit universally known terms (USD, EUR, KPI, SQL, API).
+  Include treasury, finance, banking, and system acronyms (e.g. ACH, FX, SLA, GL, AP, AR,
+  KRW, MTM, LGD, PD, EAD, WCF, SCC, RCF, LOC, TMS, ERP, SWIFT, SEPA, RTGS).
+  Format:
+
+  ---
+  **Acronym Glossary**
+
+  | Acronym | Full Form |
+  |---------|-----------|
+  | ACH     | Automated Clearing House |
+  | ... (only acronyms actually used above) |
+
+  Rules:
+  - Only include acronyms that appear in this response.
+  - Definitions must be accurate and specific to the treasury/finance context.
+  - If no domain-specific acronyms were used, omit the table entirely (do not add an empty table).
+
 ---
 
 {persona_structure}

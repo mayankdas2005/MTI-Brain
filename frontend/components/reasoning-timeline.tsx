@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Check, X, ChevronDown } from 'lucide-react';
 import { MarkdownRenderer } from './markdown-renderer';
 import type { StreamingStep } from '@/lib/store/threads';
+import type { TokenUsage } from '@/lib/types/api';
 import React from 'react';
 
 // ─── Step reasoning content ───
@@ -34,7 +35,15 @@ ReasoningContent.displayName = 'ReasoningContent';
 
 // ─── Vertical step timeline ───
 
-export function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[]; isStreaming?: boolean }) {
+export function PipelineTimeline({
+  steps,
+  isStreaming,
+  tokenUsage,
+}: {
+  steps: StreamingStep[];
+  isStreaming?: boolean;
+  tokenUsage?: TokenUsage | null;
+}) {
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
 
   useEffect(() => {
@@ -49,10 +58,28 @@ export function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[
     });
   }, []);
 
+  // Backfill missing per-step total_tokens from tokenUsage.by_node for older messages
+  const enrichedSteps = useMemo(() => {
+    if (!tokenUsage?.by_node?.length) return steps;
+    const byNode: Record<string, number[]> = {};
+    for (const n of tokenUsage.by_node) {
+      if (!byNode[n.node]) byNode[n.node] = [];
+      byNode[n.node].push(n.total_tokens);
+    }
+    const visitIdx: Record<string, number> = {};
+    return steps.map(s => {
+      if (s.total_tokens) return s;
+      const idx = visitIdx[s.node] ?? 0;
+      visitIdx[s.node] = idx + 1;
+      const tok = byNode[s.node]?.[idx];
+      return tok ? { ...s, total_tokens: tok } : s;
+    });
+  }, [steps, tokenUsage]);
+
   return (
     <div className="px-4 pb-3 pt-1 border-t border-border/40">
-      {steps.map((step, i) => {
-        const isLast = i === steps.length - 1;
+      {enrichedSteps.map((step, i) => {
+        const isLast = i === enrichedSteps.length - 1;
         const isActive = step.status === 'active';
         const isDone = step.status === 'done';
         const isSkipped = step.status === 'skipped';
@@ -70,6 +97,13 @@ export function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[
             ? `${(step.duration_ms / 1000).toFixed(1)}s`
             : isActive
             ? 'live'
+            : '';
+
+        const showTokens =
+          step.total_tokens && step.total_tokens > 0
+            ? step.total_tokens >= 1000
+              ? `${(step.total_tokens / 1000).toFixed(2)}K`
+              : `${step.total_tokens}`
             : '';
 
         const isExpandable = (isDone || isError) && !!cleanedReasoning;
@@ -125,6 +159,14 @@ export function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[
                     }`}
                   >
                     {showDuration}
+                  </span>
+                )}
+                {showDuration && showTokens && (
+                  <span className="text-[10px] text-foreground/30 mx-0.5">·</span>
+                )}
+                {showTokens && (
+                  <span className="text-[10px] tabular-nums text-foreground/35">
+                    {showTokens} tokens
                   </span>
                 )}
                 {isExpandable && (

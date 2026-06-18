@@ -11,6 +11,7 @@ export interface PipelineStep {
   status: 'active' | 'done' | 'skipped' | 'error';
   started_at_ms: number;
   duration_ms: number | null;
+  total_tokens?: number;
   reasoning?: string;
 }
 
