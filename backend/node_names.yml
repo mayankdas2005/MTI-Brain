@@ -17,7 +17,7 @@
 
 nodes:
   - id: lt_memory_retriever
-    label: "Recalling your preferences"
+    label: "Recalling your feedback"
     tier: none
     stream: null
 
@@ -59,7 +59,7 @@ nodes:
   - id: measure_specialist
     label: "Finding metrics"
     tier: fast
-    stream: [reasoning, reasoning.delta]
+    stream: null
 
   - id: filter_specialist
     label: "Resolving filters"
@@ -69,7 +69,7 @@ nodes:
   - id: dimension_specialist
     label: "Finding groupings"
     tier: fast
-    stream: [reasoning, reasoning.delta]
+    stream: null
 
   - id: intent_assembler
     label: null
@@ -79,7 +79,7 @@ nodes:
   - id: directive_writer
     label: "Planning computation"
     tier: balanced
-    stream: [reasoning, reasoning.delta]
+    stream: null
 
   - id: schema_gap_resolver
     label: null
@@ -107,7 +107,7 @@ nodes:
     stream: null
 
   - id: filter_resolver
-    label: "Resolving filters"
+    label: "Matching filter values"
     tier: fast
     stream: [reasoning, reasoning.delta]
 

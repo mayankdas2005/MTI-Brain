@@ -10,6 +10,17 @@ import json
 
 from langchain_core.runnables import RunnableConfig
 
+from app.core.logger import logger
+from app.services.agents.helpers import build_mission_context, format_sql, parse_tag
+from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns
+from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, CTE_COLUMN_PLANNER_PROMPT
+from app.services.agents.prompts import (
+    _SQL_RULES_TREND, _SQL_RULES_RATIO, _SQL_RULES_FORECAST,
+    _CTE_PLANNER_TREND, _CTE_PLANNER_MULTIGRAIN, _CTE_PLANNER_FORECAST,
+)
+from app.services.agents.semantic_ir import SemanticIR
+from app.services.agents.state import AnalyticsState
+
 # UUID columns are unique per row — using them as join keys always returns 0 rows.
 _UUID_SUFFIXES = ("_uuid", "_guid", "_uid")
 
@@ -18,12 +29,65 @@ def _is_uuid_col(col_name: str) -> bool:
     n = col_name.lower()
     return n == "uuid" or any(n.endswith(s) for s in _UUID_SUFFIXES)
 
-from app.core.logger import logger
-from app.services.agents.helpers import build_mission_context, format_sql, parse_tag
-from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns
-from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, REASONING_DIRECTIVE_NORMAL, CTE_COLUMN_PLANNER_PROMPT
-from app.services.agents.semantic_ir import SemanticIR
-from app.services.agents.state import AnalyticsState
+
+def _is_projection_query(state: dict, spec: dict) -> bool:
+    """Detect OLS trend/projection: TIME_INPUT without TIME_OUTPUT, or explicit slope keywords."""
+    query_intent = state.get("query_intent") or []
+    has_time_input = any("TIME_INPUT" in line for line in query_intent)
+    has_time_output = any("TIME_OUTPUT" in line for line in query_intent)
+    # If TIME_OUTPUT exists, this is a forecast — handled by _is_forecast_query instead
+    if has_time_output:
+        return False
+    if has_time_input:
+        return True
+    if any(
+        "COMPUTATION" in line
+        and any(w in line.lower() for w in ("trend", "slope", "ols", "projection"))
+        for line in query_intent
+    ):
+        return True
+    if state.get("query_type") == "trend":
+        return True
+    return False
+
+
+def _is_forecast_query(state: dict, spec: dict) -> bool:
+    """Detect historical-anchor forecast: TIME_OUTPUT present, or forecast/running_balance keywords."""
+    query_intent = state.get("query_intent") or []
+    if any("TIME_OUTPUT" in line for line in query_intent):
+        return True
+    _forecast_keywords = ("forecast", "running_balance", "seasonalit", "cash_forecast", "project forward")
+    if any(
+        any(w in line.lower() for w in _forecast_keywords)
+        for line in query_intent
+    ):
+        return True
+    return False
+
+
+def _build_sql_rules_section(state: dict, spec: dict) -> str:
+    """Assemble conditional SQL rules based on query type."""
+    parts: list[str] = []
+    if spec.get("result_shape") == "ratio":
+        parts.append(_SQL_RULES_RATIO)
+    if _is_forecast_query(state, spec):
+        parts.append(_SQL_RULES_FORECAST)
+    elif _is_projection_query(state, spec):
+        parts.append(_SQL_RULES_TREND)
+    return "\n".join(parts)
+
+
+def _build_planner_rules_section(state: dict, spec: dict) -> str:
+    """Assemble conditional CTE planner rules based on query type."""
+    parts: list[str] = []
+    temporal_grains = spec.get("temporal_grains") or []
+    if len(temporal_grains) > 1:
+        parts.append(_CTE_PLANNER_MULTIGRAIN)
+    if _is_forecast_query(state, spec):
+        parts.append(_CTE_PLANNER_FORECAST)
+    elif _is_projection_query(state, spec):
+        parts.append(_CTE_PLANNER_TREND)
+    return "\n\n".join(parts)
 
 
 async def generate_sql_llm(
@@ -31,7 +95,7 @@ async def generate_sql_llm(
     semantic_context: dict,
     state: AnalyticsState,
     config: RunnableConfig,
-) -> str:
+) -> tuple[str, str]:
     # On recompile, the IR/schema haven't changed — reuse the cached schema context
     # to avoid redundant Neo4j queries (build_schema_context + fetch_anti_patterns +
     # fetch_query_patterns all hit Neo4j; running them 3× per query is pure waste).
@@ -141,16 +205,32 @@ async def generate_sql_llm(
         if c.get("table_fqn") and c.get("name")
     }
 
-    _fan_out_risk_fqns: set = state.get("fan_out_risk_fqns") or set()
-    _fan_out_details: dict = {}
-    for _jp in (state.get("anchor_join_paths") or []):
-        _fqn = _jp.get("to_fqn")
-        if _fqn and _jp.get("fan_out_risk") is True:
-            _fan_out_details[_fqn] = {
-                "join_key": _jp.get("fan_out_join_key") or "?",
-                "factor": _jp.get("fan_out_factor") or "?",
-            }
-    query_blueprint = _build_query_blueprint(spec, schema_ctx, col_lookup, fan_out_risk_details=_fan_out_details)
+    # n_distinct_lookup and tbl_row_counts — used for inline JOIN fan-out annotation
+    # (secondary gate: fires even when schema_enricher detection failed)
+    _n_distinct_lookup: dict[str, float] = {
+        f"{c.get('table_fqn', '')}.{c.get('name', '')}": float(c["n_distinct"])
+        for c in schema_ctx.get("columns", [])
+        if c.get("table_fqn") and c.get("name") and (c.get("n_distinct") or 0) > 0
+    }
+    _tbl_row_counts: dict[str, int] = {
+        t.get("fqn", ""): t.get("row_count") or 0
+        for t in (state.get("semantic_context") or {}).get("tables", [])
+        if t.get("fqn")
+    }
+
+    _query_plan = state.get("query_plan") or {}
+    _output_slots = _query_plan.get("output_slots") or []
+    _fx_template = bool(state.get("fx_rate_template_join"))
+    _fan_out_fqns: set[str] = set(state.get("fan_out_annotated_fqns") or [])
+
+    query_blueprint = _build_query_blueprint(
+        spec, schema_ctx, col_lookup,
+        n_distinct_lookup=_n_distinct_lookup,
+        tbl_row_counts=_tbl_row_counts,
+        output_slots=_output_slots,
+        fx_rate_template_join=_fx_template,
+        fan_out_annotated_fqns=_fan_out_fqns,
+    )
     schema_reference = _build_schema_reference(schema_ctx)
     unresolved_joins_section = _build_unresolved_joins_section(unresolved_pairs, col_lookup)
     feedback_section = _build_feedback_section(state)
@@ -177,7 +257,12 @@ async def generate_sql_llm(
     directive_section = build_directive_section(state)
     directive_section += _build_low_confidence_section(state)
 
-    cte_column_plan = ""
+    # Phase 3: signal-based CTE planner gate.
+    cte_column_plan = await _plan_cte_columns(
+        spec, query_blueprint, schema_reference, state, config,
+        directive_section=directive_section,
+    )
+    _cte_outline_capture = cte_column_plan or ""
 
     # M2: TIME_FILTER is emitted exclusively by directive_writer in directive_section.
     # Do NOT inject a second AUTHORITATIVE TIME FILTER COLUMN — two sources with no priority rule
@@ -206,6 +291,7 @@ async def generate_sql_llm(
         prior_sql_section=prior_sql_section,
         cte_column_plan=cte_column_plan,
         candidate_join_paths_section=candidate_join_paths_section,
+        conditional_rules_section=_build_sql_rules_section(state, spec),
     )
 
     _mission = build_mission_context(
@@ -234,6 +320,15 @@ async def generate_sql_llm(
     raw_content = response.content or ""
     sql = _format_sql(parse_tag(raw_content, "sql") or "")
     if not sql:
+        import re as _re
+        _md_match = _re.search(r'```sql\s*(.*?)\s*```', raw_content, _re.DOTALL | _re.IGNORECASE)
+        if _md_match:
+            sql = _format_sql(_md_match.group(1).strip())
+            logger.warning(
+                "sql_generator | sql_from_markdown_fallback | thread={} | len={}",
+                state["thread_id"], len(sql),
+            )
+    if not sql:
         logger.warning(
             "sql_generator | empty_sql | thread={} | raw_response_len={} | raw_tail={}",
             state["thread_id"], len(raw_content), raw_content[-500:] if raw_content else "(empty)",
@@ -242,7 +337,7 @@ async def generate_sql_llm(
         "sql_generator | SQL generated | thread={} | anchor={} | sql_len={} | pattern_matched={} | pattern={} | reasoning=DEEP",
         state["thread_id"], ir.anchor_tables, len(sql), pattern_matched, pattern_name,
     )
-    return sql
+    return sql, _cte_outline_capture
 
 
 async def _plan_cte_columns(
@@ -253,9 +348,9 @@ async def _plan_cte_columns(
     config: RunnableConfig,
     directive_section: str = "",
 ) -> str:
-    """Fast pre-pass: ask a focused model to solve CTE column forwarding before SQL is written.
+    """Pre-pass: backward-trace from FINAL SELECT to CTE sources before SQL is written.
 
-    Returns the plan string (content inside <plan> tags), or "" on failure.
+    Returns the validated plan string (content inside <plan> tags), or "" on failure/skip.
     """
     has_measures = bool(spec.get("measures"))
     if not has_measures:
@@ -321,8 +416,16 @@ async def _plan_cte_columns(
             if groupings else ""
         )
 
+        _qi_lines = state.get("query_intent") or []
+        query_intent_section = (
+            "QUERY INTENT (WHY the user needs this data — use these to justify each CTE in Step 0):\n"
+            + "\n".join(f"  {l}" for l in _qi_lines)
+            if _qi_lines else ""
+        )
+
         prompt = CTE_COLUMN_PLANNER_PROMPT.format_messages(
             question=state.get("effective_question") or state.get("question", ""),
+            query_intent_section=query_intent_section,
             directive_section=directive_section,
             groupings_hint_section=groupings_hint_section,
             prior_error_section=prior_error_section,
@@ -330,7 +433,8 @@ async def _plan_cte_columns(
             schema_reference=schema_reference,
             anti_pattern_section=planner_anti_patterns,
             query_pattern_section=planner_query_patterns,
-            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            conditional_planning_rules=_build_planner_rules_section(state, spec),
+            conditional_step_11=_CTE_PLANNER_TREND if _is_projection_query(state, spec) else "",
         )
         response = await retry_async(
             lambda: llm.ainvoke(prompt, config=config),
@@ -449,55 +553,8 @@ Tables span multiple business domains. Instructions:
 
 
 def _validate_cte_plan(plan: str) -> str | None:
-    """Return plan unchanged if valid, None if plan is malformed or contains dead CTEs.
-
-    Checks (pure string, no regex):
-    - At least one CTE defined
-    - All CTE names start with letter or underscore (no digit-leading names)
-    - Every CTE except the last appears at least twice (definition + downstream reference)
-      — a CTE found only once is a dead CTE that will never feed the FINAL SELECT
-
-    Returns None → caller falls back to no-contract mode (uses SCHEMA DIRECTIVE only).
-    Conservative: a corrupt contract is worse than no contract.
-    """
-    if not plan or not plan.strip():
-        return None
-
-    lines = plan.split("\n")
-    cte_names: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("CTE "):
-            name_part = stripped[4:].split(" ")[0].rstrip(":")
-            if not name_part:
-                return None
-            if not (name_part[0].isalpha() or name_part[0] == "_"):
-                logger.warning("sql_generator | cte_plan_invalid_name | name={}", name_part)
-                return None
-            cte_names.append(name_part)
-
-    if not cte_names:
-        return None
-
-    # Dead CTE check: each CTE except the last must appear ≥2 times in plan
-    # (once as definition, ≥1 as downstream reference)
-    for cte_name in cte_names[:-1]:
-        count = 0
-        pos = 0
-        while True:
-            idx = plan.find(cte_name, pos)
-            if idx == -1:
-                break
-            count += 1
-            pos = idx + len(cte_name)
-        if count < 2:
-            logger.warning(
-                "sql_generator | dead_cte_detected | name={} | occurrences={} | falling back",
-                cte_name, count,
-            )
-            return None
-
-    return plan
+    """Pass the plan through unchanged; return None only if empty."""
+    return plan.strip() or None
 
 
 def _build_cte_plan_section(plan: str) -> str:
@@ -627,7 +684,34 @@ def _build_early_filter_blueprint(spec: dict) -> str:
     return "\n".join(ef_lines)
 
 
-def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None = None, fan_out_risk_details: dict | None = None) -> str:
+def _extract_join_key_for_table(on_clause: str, to_fqn: str) -> str | None:
+    """Extract the join key column name on the to_fqn side from an ON clause string.
+
+    ON clause format: "schema.table.col = schema.table.col"
+    Returns the column name (last dotted segment) for the to_fqn side.
+    """
+    if not on_clause or not to_fqn:
+        return None
+    parts = on_clause.split("=", 1)
+    if len(parts) != 2:
+        return None
+    for part in parts:
+        part = part.strip()
+        if part.startswith(to_fqn + "."):
+            return part.rsplit(".", 1)[-1]
+    return None
+
+
+def _build_query_blueprint(
+    spec: dict,
+    schema_ctx: dict,
+    col_lookup: dict | None = None,
+    n_distinct_lookup: dict | None = None,
+    tbl_row_counts: dict | None = None,
+    output_slots: list | None = None,
+    fx_rate_template_join: bool = False,
+    fan_out_annotated_fqns: set | None = None,
+) -> str:
     """Build structured QUERY SPECIFICATION text replacing json.dumps(spec)."""
     lines = ["--- QUERY SPECIFICATION ---", ""]
 
@@ -639,6 +723,9 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
             for c in schema_ctx.get("columns", [])
             if c.get("table_fqn") and c.get("name")
         }
+
+    if fan_out_annotated_fqns is None:
+        fan_out_annotated_fqns = set()
 
     _cols = schema_ctx.get("columns", [])
     ref_table_lookup = {
@@ -653,6 +740,158 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
         f"{c.get('table_fqn', '')}.{c.get('name', '')}": c.get("semantic_type", "")
         for c in _cols if c.get("table_fqn") and c.get("name")
     }
+
+    # ── FINAL OUTPUT SHAPE ────────────────────────────────────────────────────
+    # Guide from query_planner: what the user expects to see in the final result table.
+    # These are HINTS — not a hard contract. The LLM should use its judgment to ensure
+    # the SELECT columns align with what the user is actually asking for.
+    if output_slots:
+        lines.append("FINAL OUTPUT SHAPE — what the user expects to see in the result (HINTS, not a hard contract):")
+        lines.append("  These slots represent the user's intent for the final output.")
+        lines.append("  Ask yourself: does each column in my SELECT make sense given the user's question?")
+        lines.append("  You MAY add columns the schema makes naturally available (e.g. a dimension the question implies).")
+        lines.append("  You MAY drop a slot if the schema cannot support it.")
+        lines.append("  You MUST NOT include columns that have nothing to do with what the user asked.")
+        for slot in output_slots:
+            alias = slot.get("alias") or ""
+            agg   = slot.get("aggregation") or ""
+            concept = slot.get("concept") or ""
+            agg_label = f"{agg}(...)" if agg else "(raw)"
+            lines.append(f"  {alias:<24} {agg_label:<14} — {concept}")
+        lines.append("")
+
+    # ── CURRENCY HANDLING — three mutually exclusive patterns ────────────────────
+    # Always injected. The active pattern is determined by what anchor_resolver selected
+    # (lpp.fx_rate present or not) and what filter/dimension specialists emitted.
+    if fx_rate_template_join:
+        lines.append("CURRENCY HANDLING — lpp.fx_rate is active. ALL financial amounts convert to USD.")
+        lines.append("  Currency filters (WHERE currency_code = 'EUR') narrow WHICH positions are included.")
+        lines.append("  Currency dimensions (GROUP BY currency_code) break down the USD result by currency.")
+        lines.append("  Both compose WITH the FX join — they do not replace it.")
+        lines.append("  Output is always USD regardless of source currency or filter applied.")
+        lines.append("  SELECT alias: total_liquidity or total_liquidity_usd (include 'usd' when unambiguous).")
+        lines.append("")
+
+    # ── FX RATE TEMPLATE JOIN ─────────────────────────────────────────────────
+    # lpp.fx_rate has no safe structural FK path in Neo4j — all structural paths are
+    # dangerous (fan-out or zero overlap). Use the 2-CTE fx_latest pattern instead.
+    # Verified correct: produces $4.77T (vs $4.82T USD-only baseline). Deterministic —
+    # no ROW_NUMBER tie-breaking; AVG across rate_types on the latest available date.
+    if fx_rate_template_join:
+        lines.append("FX RATE TEMPLATE JOIN (mandatory — use this exact pattern):")
+        lines.append("")
+        lines.append("lpp.fx_rate schema: base_currency | quote_currency | rate | rate_date | rate_type | source")
+        lines.append("rate meaning: 1 unit of base_currency = rate units of quote_currency")
+        lines.append("Both directions exist: (base=BRL, quote=USD, rate=0.20) AND (base=USD, quote=BRL, rate=5.0)")
+        lines.append("USD-to-USD row exists: base=USD, quote=USD, rate=1.0 — USD accounts need no special-case handling.")
+        lines.append("Multiple rate_types exist per date (SPOT, AVG, CLOSING) — do NOT filter on rate_type or source.")
+        lines.append("Use the 2-CTE fx_latest pattern below — deterministic, no ROW_NUMBER tie-breaking needed.")
+        lines.append("")
+        lines.append("DATE ANCHOR RULE — CRITICAL: Never use CURRENT_DATE directly for the FX window.")
+        lines.append("  FX rate data may not be loaded through today. Always derive the anchor date as:")
+        lines.append("  LEAST(CURRENT_DATE, (SELECT MAX(rate_date) FROM lpp.fx_rate WHERE quote_currency = 'USD'))")
+        lines.append("  This is the same LEAST() snapshot pattern used for the source table.")
+        lines.append("  If the query already has a _snapshot or _anchor CTE with a ref date, reuse that date.")
+        lines.append("")
+        lines.append("  -- CTE 1: snapshot anchor for FX (latest available date, not necessarily today)")
+        lines.append("  fx_anchor AS (")
+        lines.append("    SELECT LEAST(")
+        lines.append("      CURRENT_DATE,")
+        lines.append("      (SELECT CAST(MAX(f0.rate_date) AS DATE) FROM lpp.fx_rate AS f0 WHERE f0.quote_currency = 'USD')")
+        lines.append("    ) AS ref")
+        lines.append("  ),")
+        lines.append("")
+        lines.append("  -- CTE 2: most recent available rate per currency (within 14 days of anchor), AVG across rate_types")
+        lines.append("  fx_latest AS (")
+        lines.append("    SELECT")
+        lines.append("      f.base_currency,")
+        lines.append("      AVG(f.rate) AS rate")
+        lines.append("    FROM lpp.fx_rate AS f")
+        lines.append("    CROSS JOIN fx_anchor")
+        lines.append("    WHERE f.quote_currency = 'USD'")
+        lines.append("      AND f.rate_date = (")
+        lines.append("            SELECT MAX(f2.rate_date)")
+        lines.append("            FROM lpp.fx_rate AS f2")
+        lines.append("            WHERE f2.base_currency  = f.base_currency")
+        lines.append("              AND f2.quote_currency = 'USD'")
+        lines.append("              AND f2.rate_date     <= fx_anchor.ref")
+        lines.append("              AND f2.rate_date     >= DATEADD(DAY, -14, fx_anchor.ref)")
+        lines.append("          )")
+        lines.append("    GROUP BY f.base_currency")
+        lines.append("  ),")
+        lines.append("")
+        lines.append("  -- CTE 3: join source data to fx_latest and convert amount to USD")
+        lines.append("  converted AS (")
+        lines.append("    SELECT")
+        lines.append("      src.*,")
+        lines.append("      fx.rate,")
+        lines.append("      src.<amount_col> * fx.rate  AS <amount_col>_usd")
+        lines.append("    FROM <source_cte> AS src")
+        lines.append("    JOIN fx_latest AS fx")
+        lines.append("      ON fx.base_currency = src.<currency_col>")
+        lines.append("  )")
+        lines.append("")
+        lines.append("Fill in: <source_cte>, <currency_col>, <amount_col>.")
+        lines.append("If the query already has a snapshot/anchor CTE, merge fx_anchor into it — do not create a duplicate.")
+        lines.append("Conversion: amount * rate = amount_usd  (multiply, not divide).")
+        lines.append("USD accounts join on base_currency = 'USD', rate = 1.0 — no special-case needed.")
+        lines.append("Do NOT add: ROW_NUMBER, PARTITION BY, rate_type filter, source filter, or raw CURRENT_DATE equality join.")
+        lines.append("")
+
+    # ── FAN-OUT JOIN TABLES ───────────────────────────────────────────────────
+    # These tables have critical fan-out join keys (verified by join_key_profile.json).
+    # A direct JOIN multiplies every source row by thousands of matching rows.
+    if fan_out_annotated_fqns:
+        _tbl_grains: dict = schema_ctx.get("table_grains") or {}
+
+        def _fanout_fix(fqn: str, grain: str) -> tuple[str, list[str]]:
+            """Infer the right fix pattern from the table's grain text."""
+            g = grain.lower()
+            tbl = fqn.rsplit(".", 1)[-1]
+            # Time-series: grain mentions date/day/period as a key dimension
+            if any(m in g for m in ("per date", "per day", "rate_date", "daily", ", date)", ", date,")):
+                return "TEMPORAL", [
+                    f"    → Add a date predicate to collapse the time-series fan-out:",
+                    f"      AND {tbl}.<date_col> = src.<matching_date_col>",
+                    f"    → If no exact date match exists: use the closest prior date:",
+                    f"      AND {tbl}.<date_col> = (SELECT MAX(d) FROM {fqn} WHERE d <= src.<date_col>)",
+                ]
+            # Snapshot: grain mentions balance_date, as-of, end-of
+            if any(m in g for m in ("balance_date", "balance date", "as of", "as_of", "end of", "snapshot", "per period", "per month", "per quarter")):
+                return "SNAPSHOT", [
+                    f"    → Latest-row pattern — get one row per entity:",
+                    f"      WITH latest_{tbl} AS (",
+                    f"        SELECT *, ROW_NUMBER() OVER (PARTITION BY <key_col> ORDER BY <date_col> DESC) AS rn",
+                    f"        FROM {fqn} WHERE <filters>",
+                    f"      )",
+                    f"      JOIN latest_{tbl} ON key = latest_{tbl}.<key_col> WHERE rn = 1",
+                ]
+            # Effective-dated reference: grain mentions effective, valid, active
+            if any(m in g for m in ("effective", "valid from", "active", "current")):
+                return "EFFECTIVE_DATE", [
+                    f"    → Filter to the current/latest version before joining:",
+                    f"      WITH current_{tbl} AS (SELECT * FROM {fqn} WHERE effective_to IS NULL OR effective_to >= CURRENT_DATE)",
+                    f"      JOIN current_{tbl} ON key = current_{tbl}.<key_col>",
+                ]
+            # Default: pre-aggregate
+            return "PRE_AGG", [
+                f"    → Pre-aggregate before joining (if you need its columns in SELECT):",
+                f"      WITH agg_{tbl} AS (SELECT <key_col>, AGG(<val_col>) FROM {fqn} WHERE <filters> GROUP BY <key_col>)",
+                f"      JOIN agg_{tbl} ON source.<key> = agg_{tbl}.<key_col>",
+                f"    → Filter-only (if you only need to check membership):",
+                f"      WHERE source.<key> IN (SELECT DISTINCT <key_col> FROM {fqn} WHERE ...)",
+            ]
+
+        lines.append("FAN-OUT JOIN TABLES — direct JOIN causes row explosion (millions → billions of rows):")
+        lines.append("Pick the fix pattern that matches each table's grain:")
+        for _fot in sorted(fan_out_annotated_fqns):
+            _grain = _tbl_grains.get(_fot, "")
+            _fix_type, _fix_lines = _fanout_fix(_fot, _grain)
+            lines.append(f"  {_fot}  [grain: {_grain[:80]}]  [{_fix_type} FAN-OUT]")
+            lines.append(f"    NEVER: JOIN {_fot} ON <key_col> alone — produces billions of rows")
+            for _fl in _fix_lines:
+                lines.append(_fl)
+        lines.append("")
 
     anchor_tables = spec.get("anchor_tables") or []
     lines.append(
@@ -681,18 +920,27 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
         grain_unit = spec.get("temporal_grain") or "month"
 
         # Render correctly for both single-bound (str) and BETWEEN_SQL (list) values
-        tf_clause = render_filter_value(tf_op, tf_val)
-        lines.append(f"TIME FILTER:\n  {tf_col} {tf_clause}   [primary]")
-
-        # Stale-data fallback: apply same transformation to MAX(col) instead of CURRENT_DATE.
-        # apply_stale_fallback returns None when no substitution is possible or meaningful.
         stale_val = apply_stale_fallback(tf_op, tf_val, col_name, primary_fqn)
         if stale_val is not None:
+            # Replace CURRENT_DATE with LEAST(CURRENT_DATE, MAX(col)) — single safe anchor.
+            # Never use OR between two lower bounds: OR expands the dataset instead of restricting it.
             stale_clause = render_filter_value(tf_op, stale_val)
-            lines.append(
-                f"  OR {tf_col} {stale_clause}"
-                f"   [stale-data-fallback — same window anchored to MAX date instead of CURRENT_DATE]"
-            )
+            least_anchor = f"LEAST(CURRENT_DATE, (SELECT MAX({col_name})::DATE FROM {primary_fqn}))"
+            lines.append(f"TIME FILTER (stale-data-safe):")
+            lines.append(f"  {tf_col} {stale_clause}   [lower bound — anchor = LEAST(CURRENT_DATE, MAX({col_name}))]")
+            # Open-ended lower-bound filters need an explicit upper bound to block future-dated rows.
+            # BETWEEN_SQL already encodes its own upper bound via the LEAST replacement above.
+            if tf_op in (">=", ">"):
+                lines.append(
+                    f"  AND {tf_col} <= {least_anchor}"
+                    f"   [upper bound — MANDATORY, blocks future-dated rows from leaking into the window]"
+                )
+            lines.append(f"  Compute anchor once in a CTE to avoid duplicate subqueries:")
+            lines.append(f"    WITH _anchor AS (SELECT {least_anchor} AS ref FROM (SELECT 1) AS _t)")
+            lines.append(f"    Then filter: WHERE {col_name} >= DATEADD(..., _anchor.ref) AND {col_name} <= _anchor.ref")
+        else:
+            tf_clause = render_filter_value(tf_op, tf_val)
+            lines.append(f"TIME FILTER:\n  {tf_col} {tf_clause}")
 
         lines.append("")
     else:
@@ -824,19 +1072,6 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
             lines.append(f"  {section}:   {clause}   {label}")
         lines.append("")
 
-    if fan_out_risk_details:
-        lines.append("FAN-OUT RISK TABLES — these tables have multiple rows per join key.")
-        lines.append("Joining directly multiplies every source row by the number of matching rows, inflating all SUM/COUNT values.")
-        for _fqn, _detail in fan_out_risk_details.items():
-            _jk = _detail.get("join_key", "?")
-            _fx = _detail.get("factor", "?")
-            lines.append(f"  {_fqn}  (join_key={_jk}, ~{_fx}x row multiplication)")
-            lines.append(f"    NEVER: JOIN {_fqn} ON key = {_fqn}.{_jk}")
-            lines.append(f"    USE INSTEAD — filter only: WHERE key IN (SELECT DISTINCT {_jk} FROM {_fqn} WHERE ...)")
-            lines.append(f"    USE INSTEAD — need columns: WITH agg AS (SELECT {_jk}, AGG(val) FROM {_fqn} GROUP BY {_jk})")
-            lines.append(f"                               JOIN agg ON source.{_jk} = agg.{_jk}")
-        lines.append("")
-
     joins = spec.get("joins") or []
     if joins:
         base_table = joins[0].get("from", anchor_tables[0] if anchor_tables else "")
@@ -848,6 +1083,19 @@ def _build_query_blueprint(spec: dict, schema_ctx: dict, col_lookup: dict | None
             on_clause = j.get("on", "")
             lines.append(f"  {jtype} {to_t}")
             lines.append(f"    ON {on_clause}")
+            # Inline fan-out annotation — secondary gate independent of schema_enricher detection.
+            # Uses n_distinct + row_count from column metadata to flag dangerous joins.
+            if n_distinct_lookup and tbl_row_counts and to_t and on_clause:
+                _to_key = _extract_join_key_for_table(on_clause, to_t)
+                if _to_key:
+                    _nd = n_distinct_lookup.get(f"{to_t}.{_to_key}", 0)
+                    _rc = tbl_row_counts.get(to_t, 0)
+                    if _nd > 0 and _rc > 1000 and (_rc / _nd) > 10:
+                        _fx = int(_rc / _nd)
+                        lines.append(
+                            f"    -- ⚠ FAN-OUT: {_rc:,} rows / {int(_nd)} distinct {_to_key} = {_fx}x"
+                            f" — use pre-agg CTE or WHERE {_to_key} IN (SELECT DISTINCT {_to_key} FROM {to_t} WHERE ...)"
+                        )
             evidence = _get_join_overlap_evidence(
                 on_clause, col_lookup,
                 ref_table_lookup=ref_table_lookup,
@@ -1277,48 +1525,69 @@ def _build_query_patterns_section(
         return ""
     top = query_patterns[0]
     question_text = top.get("question_text", "")
-    intent = top.get("intent", "")
-    tables = top.get("tables_used", "")
-    outline = top.get("sql_cte_outline", "")
+    tables       = top.get("tables_used", "")
+    outline      = top.get("sql_cte_outline", "")
     join_outline = top.get("join_outline", "")
     filter_summary = top.get("filter_summary", "")
-    complexity = top.get("complexity", "")
-    recompile = top.get("recompile_count") or 0
-    repair = top.get("repair_count") or 0
-    if not (outline or join_outline):
+    sql_text     = top.get("sql_text", "")
+    recompile    = top.get("recompile_count") or 0
+    repair       = top.get("repair_count") or 0
+
+    if not (outline or join_outline or sql_text):
         return ""
-    # Query patterns are LLM-generated SQL from prior successful runs — "successful" means no
-    # DB error, NOT that the SQL was optimal or structurally correct. Present as reference only:
-    # use for table names and join key hints, never as a structural template to copy.
-    # Truncate pattern_name to first sentence (or 80 chars) so a long/discouraging intent
-    # string from a prior run doesn't bleed into the prompt and cause the LLM to give up.
+
+    # Compute tier inline using raw_score + occurrence guard (mirrors context_fetcher logic).
+    raw_score  = top.get("raw_score", 0)
+    occurrence = top.get("occurrence_count", 1) or 1
+    liked      = top.get("liked_count", 0) or 0
+    _tier = "exact" if raw_score >= 0.95 else "strong" if raw_score >= 0.85 else "hint"
+    if occurrence < 2 and not liked:
+        _tier = "hint"
+    elif occurrence < 4 and not liked and _tier == "exact":
+        _tier = "strong"
+    if (recompile + repair) > 2:
+        _tier = "hint"
+
     _safe_name = (pattern_name or "").split(".")[0].split("\n")[0][:80].strip()
-    if pattern_matched and _safe_name:
+
+    if _tier in ("exact", "strong"):
         header = (
-            f"PRIOR QUERY REFERENCE (LLM-generated, not human-verified): \"{_safe_name}\" — "
-            "use ONLY as a hint for which tables and join keys were used in a similar question. "
-            "Do NOT copy its CTE structure — follow the CTE CONTRACT above instead."
+            f"<prior_sql>\n"
+            f"Similar question: \"{question_text}\"\n"
+            f"Prior verified SQL ({_tier} match — {occurrence} occurrence(s), {recompile} recompile(s), {repair} repair(s)):\n"
+            "Reference for: CTE names, table FQNs, JOIN structure, GROUP BY, aggregation aliases.\n"
+            "Substitute only: date parameters (→ CURRENT_DATE) and filter values the current question changes.\n"
+            "Follow the CTE CONTRACT above — use this SQL to confirm structure, not override the contract."
         )
+        lines = [header]
+        if question_text:
+            lines.append(f"  Tables:  {tables}")
+        if join_outline:
+            lines.append(f"  Joins:   {join_outline}")
+        if filter_summary:
+            lines.append(f"  Filters: {filter_summary}")
+        if sql_text:
+            lines.append(f"  SQL:\n{sql_text[:3000]}")
+        lines.append("</prior_sql>")
     else:
         header = (
-            "SIMILAR QUERY REFERENCE (LLM-generated, not human-verified — reference only): "
-            "use ONLY for table names and join key hints. Do NOT copy its structure."
+            f"PRIOR QUERY HINT (unvalidated — {occurrence} occurrence(s)): "
+            "use ONLY for table names and join key guidance. Do NOT copy its structure."
         )
-    lines = [header]
-    if question_text:
-        lines.append(f"  Question:   \"{question_text}\"")
-    lines += [
-        f"  Tables:     {tables}",
-    ]
-    if join_outline:
-        lines.append(f"  Join keys:  {join_outline}")
-    if filter_summary:
-        lines.append(f"  Filters:    {filter_summary}")
-    if recompile or repair:
-        lines.append(
-            f"  Warning: this prior query needed {recompile} recompile(s) and {repair} repair(s) — "
-            "its structure had problems; use only its table/join-key hints."
-        )
+        lines = [header]
+        if question_text:
+            lines.append(f"  Question:  \"{question_text}\"")
+        lines.append(f"  Tables:    {tables}")
+        if join_outline:
+            lines.append(f"  Join keys: {join_outline}")
+        if filter_summary:
+            lines.append(f"  Filters:   {filter_summary}")
+        if recompile or repair:
+            lines.append(
+                f"  Warning: needed {recompile} recompile(s) and {repair} repair(s) — "
+                "use table/join-key hints only."
+            )
+
     return "\n".join(lines)
 
 

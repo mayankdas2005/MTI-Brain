@@ -34,6 +34,7 @@ from app.core.logger import logger
 from app.services.agents import neo4j_client
 from app.services.agents.context import column_loader
 from app.services.agents.helpers import merge_neo4j_raw_graph
+from app.services.agents.join_key_filter import filter_join_paths as _jk_filter, is_clause_safe as _jk_clause_safe
 from app.services.agents.state import AnalyticsState
 
 
@@ -251,6 +252,31 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         except Exception as e:
             logger.warning("schema_enricher | anchor join paths lookup failed | error={}", e)
 
+        # ── Profile filter A: block dangerous join paths from Neo4j ──────────────
+        _before_filter = len(anchor_join_paths)
+        anchor_join_paths, _jk_blocked = _jk_filter(anchor_join_paths)
+        for _blk in _jk_blocked:
+            logger.warning(
+                "schema_enricher | profile_filter | BLOCKED {}<->{} | verdict=dead_join | reasons={} | thread={}",
+                _blk.get("from_fqn", "?"), _blk.get("to_fqn", "?"),
+                _blk.get("_blocked_by", []), state["thread_id"],
+            )
+        if _before_filter > 0:
+            _n_safe    = sum(1 for p in anchor_join_paths if p.get("_path_verdict") == "safe")
+            _n_caution = sum(1 for p in anchor_join_paths if p.get("_path_verdict") == "caution")
+            _n_fanout  = sum(1 for p in anchor_join_paths if p.get("_path_verdict") == "fan_out")
+            _n_unknown = sum(1 for p in anchor_join_paths if p.get("_path_verdict") == "unknown")
+            logger.info(
+                "schema_enricher | profile_filter | total={} safe={} caution={} fan_out={} unknown={} dead_join={} | thread={}",
+                _before_filter, _n_safe, _n_caution, _n_fanout, _n_unknown, len(_jk_blocked), state["thread_id"],
+            )
+            for _p in anchor_join_paths:
+                _verdict = (_p.get("_path_verdict") or "unknown").upper()
+                logger.info(
+                    "schema_enricher | profile_filter | {} {}<->{} | clauses={}",
+                    _verdict, _p.get("from_fqn", "?"), _p.get("to_fqn", "?"), _p.get("join_clauses", []),
+                )
+
     # Three-tier join resolution for anchor pairs not covered by explicit JoinPath in Neo4j:
     #   Tier 1 (heuristic):   value-overlap from Redshift DISTINCT probes -> candidate_overlap_joins
     #   Tier 2 (structural):  BFS through already-resolved anchor edges -> anchor_join_paths
@@ -347,8 +373,10 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
                             "join_clauses": list(reversed(transitive["join_clauses"])),
                             "path_tables":  list(reversed(transitive["path_tables"])),
                         }
-                    else:
-                        # Tier 3 (structural Neo4j shortestPath): last resort through non-anchor tables
+                    elif (fqn_a, fqn_b) not in resolved_pairs:
+                        # Tier 3 (structural Neo4j shortestPath): last resort through non-anchor tables.
+                        # Skipped when Tier 1 (value_overlap) already found a heuristic path for this
+                        # pair — a 1-hop heuristic join is better than a 3-hop graph traversal path.
                         try:
                             graph_path = await asyncio.to_thread(
                                 neo4j_client.find_join_via_graph_traversal, fqn_a, fqn_b
@@ -507,13 +535,48 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
             continue  # already has a path
         if _cf not in anchor_set or _ct not in anchor_set:
             continue  # only rescue anchor-to-anchor pairs
-        anchor_join_paths.append({
+        _rescue_clauses = _cand.get("join_clauses") or []
+
+        # ── Profile filter B: block dangerous rescue clauses ──────────────────
+        _safe_rescue = []
+        for _rc in _rescue_clauses:
+            _ok, _reason = _jk_clause_safe(_rc)
+            if _ok:
+                _safe_rescue.append(_rc)
+                logger.debug(
+                    "schema_enricher | rescue_filter | ALLOWED clause={} | {}<->{}",
+                    _rc, _cf, _ct,
+                )
+            else:
+                logger.warning(
+                    "schema_enricher | rescue_filter | BLOCKED clause={} | reason={} | {}<->{} | thread={}",
+                    _rc, _reason, _cf, _ct, state["thread_id"],
+                )
+        if not _safe_rescue:
+            logger.info(
+                "schema_enricher | rescue_blocked_by_profile | all clauses dangerous | {}<->{} | thread={}",
+                _cf, _ct, state["thread_id"],
+            )
+            continue  # don't rescue this pair at all
+
+        _is_categorical = any(
+            any(
+                part.strip().rsplit(".", 1)[-1].lower().endswith(suf)
+                for suf in ("_currency", "_type", "_status", "_code", "_category")
+            )
+            for clause in _safe_rescue
+            for part in clause.split("=")
+        )
+        _rescue_entry: dict = {
             "from_fqn": _cf,
             "to_fqn":   _ct,
-            "join_clauses": _cand.get("join_clauses") or [],
+            "join_clauses": _safe_rescue,
             "path_tables": [_cf, _ct],
             "source": "value_overlap_rescue",
-        })
+        }
+        if _is_categorical:
+            _rescue_entry["join_quality"] = "categorical_overlap"
+        anchor_join_paths.append(_rescue_entry)
         _surviving_pairs.add((_cf, _ct))
         _surviving_pairs.add((_ct, _cf))
         _rescued += 1
@@ -527,6 +590,117 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         logger.info(
             "schema_enricher | rescued {} pairs via value_overlap after null-join pruning | thread={}",
             _rescued, state["thread_id"],
+        )
+
+    # ── Profile filter C: final re-evaluation after all join resolution ───────────
+    # Filter A ran when clauses were mostly empty (raw Neo4j paths → _path_verdict="unknown").
+    # BFS/transitive/graph_traversal has now populated actual join clauses.
+    # Re-run to: (1) log observable verdicts, (2) block newly-found dead_join paths,
+    # (3) annotate fan_out paths so sql_generator uses pre-agg CTE instead of direct JOIN.
+    if anchor_join_paths:
+        _c_allowed, _c_blocked = _jk_filter(anchor_join_paths)
+        for _blk in _c_blocked:
+            logger.warning(
+                "schema_enricher | join_verdict | DEAD_JOIN BLOCKED {}<->{} | clauses={} | reasons={} | thread={}",
+                _blk.get("from_fqn", "?"), _blk.get("to_fqn", "?"),
+                _blk.get("join_clauses", []),
+                _blk.get("_blocked_by", []),
+                state["thread_id"],
+            )
+        for _ap in _c_allowed:
+            _v = (_ap.get("_path_verdict") or "unknown").upper()
+            _ap_clauses = _ap.get("join_clauses") or []
+            if _v == "FAN_OUT":
+                logger.warning(
+                    "schema_enricher | join_verdict | FAN_OUT {}<->{} | clauses={} | pre-agg CTE required | thread={}",
+                    _ap.get("from_fqn", "?"), _ap.get("to_fqn", "?"), _ap_clauses, state["thread_id"],
+                )
+            elif _v in ("CAUTION", "SAFE"):
+                logger.info(
+                    "schema_enricher | join_verdict | {} {}<->{} | clauses={}",
+                    _v, _ap.get("from_fqn", "?"), _ap.get("to_fqn", "?"), _ap_clauses,
+                )
+            else:
+                logger.info(
+                    "schema_enricher | join_verdict | UNKNOWN {}<->{} | clauses={} | not in profile",
+                    _ap.get("from_fqn", "?"), _ap.get("to_fqn", "?"), _ap_clauses,
+                )
+        _c_safe    = sum(1 for p in _c_allowed if p.get("_path_verdict") == "safe")
+        _c_caution = sum(1 for p in _c_allowed if p.get("_path_verdict") == "caution")
+        _c_fanout  = sum(1 for p in _c_allowed if p.get("_path_verdict") == "fan_out")
+        _c_unknown = sum(1 for p in _c_allowed if p.get("_path_verdict") == "unknown")
+        logger.info(
+            "schema_enricher | join_verdicts_final | safe={} caution={} fan_out={} unknown={} dead_join={} | thread={}",
+            _c_safe, _c_caution, _c_fanout, _c_unknown, len(_c_blocked), state["thread_id"],
+        )
+        anchor_join_paths = _c_allowed
+
+    # ── Cascade prune: remove signal-injected tables with no surviving dead-safe path ──
+    # Rules:
+    #   1. LLM-selected tables are NEVER pruned — the LLM chose them for a reason.
+    #      Fan-out paths to LLM-selected tables are annotated; sql_generator handles them.
+    #   2. fx_rate is exempt — it uses a template join, not a structural JOINS_TO path.
+    #   3. Signal-injected tables with ONLY dead_join paths blocked and no remaining paths
+    #      are pruned — joining to them produces 0 rows and they can't answer anything.
+    #   4. Fan-out annotated paths still count as "connected" — the table stays; the join
+    #      annotation tells sql_generator to use pre-agg CTE instead of direct JOIN.
+    _FX_RATE_FQN = "lpp.fx_rate"
+    _llm_selected = set(state.get("llm_selected_anchors") or [])
+    _cascade_exempt: set[str] = _llm_selected.copy()
+    if state.get("fx_rate_template_join"):
+        _cascade_exempt.add(_FX_RATE_FQN)
+
+    if len(anchor_tables) > 1:
+        # All paths (including fan_out annotated) count as connected
+        _path_connected: set[str] = set()
+        for _p in anchor_join_paths:
+            _p_from = _p.get("from_fqn") or ""
+            _p_to   = _p.get("to_fqn") or ""
+            if _p_from:
+                _path_connected.add(_p_from)
+            if _p_to:
+                _path_connected.add(_p_to)
+
+        # Always keep the primary anchor regardless
+        if anchor_tables:
+            _path_connected.add(anchor_tables[0])
+
+        _cascade_pruned = [
+            t for t in anchor_tables
+            if t not in _path_connected and t not in _cascade_exempt
+        ]
+        if _cascade_pruned:
+            logger.warning(
+                "schema_enricher | cascade_prune | removing={} (signal-injected, no surviving join path) | "
+                "keeping={} | thread={}",
+                _cascade_pruned,
+                [t for t in anchor_tables if t not in _cascade_pruned],
+                state["thread_id"],
+            )
+            anchor_tables = [t for t in anchor_tables if t not in _cascade_pruned]
+            anchor_set = set(anchor_tables)
+            anchor_cols = [c for c in anchor_cols if c.get("table_fqn") in anchor_set]
+        else:
+            logger.info(
+                "schema_enricher | cascade_prune | all tables connected, none pruned | thread={}",
+                state["thread_id"],
+            )
+
+    # Surface fan-out annotated joins for sql_generator.
+    # fx_rate is excluded — it has its own dedicated template join block (ROW_NUMBER window)
+    # and doesn't need the generic fan-out warning in the blueprint.
+    _fx_template_exempt: set[str] = {_FX_RATE_FQN} if state.get("fx_rate_template_join") else set()
+    _fan_out_annotated_fqns: set[str] = set()
+    for _p in anchor_join_paths:
+        if _p.get("_join_annotation") == "pre_agg_required":
+            for _side in ("from_fqn", "to_fqn"):
+                _fqn = _p.get(_side) or ""
+                if _fqn and _fqn not in _fx_template_exempt:
+                    _fan_out_annotated_fqns.add(_fqn)
+    if _fan_out_annotated_fqns:
+        logger.warning(
+            "schema_enricher | fan_out_joins | tables={} — need temporal/pre-agg join pattern | thread={}",
+            sorted(_fan_out_annotated_fqns), state["thread_id"],
         )
 
     # For backward compat: join_paths for tier-2 bridge extraction uses anchor_join_paths
@@ -639,84 +813,17 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         if c.get("table_fqn") and c.get("name")
     }
 
-    # ── Layer 5: fan-out risk detection ──────────────────────────────────────
-    # Detects low-cardinality join keys that multiply rows on direct JOIN.
-    # Uses n_distinct as PRIMARY cardinality source (absolute count from PostgreSQL stats,
-    # reliable when positive). Falls back to len(distinct_values) only when n_distinct is 0.
-    # The old `len(distinct_values) >= 100 → safe` shortcut was removed — it missed
-    # cash_balance.account_ref which has exactly 100 sampled values but n_distinct=114 (7,590x fan-out).
-    _FAN_OUT_MIN_ROWS = 1000   # skip tiny tables (bank_account=116, company=24)
-    _FAN_OUT_MIN_FACTOR = 10.0  # 10x threshold — 2.0 was too sensitive for small reference tables
+    # ── Layer 8: table_grains + table_row_counts for specialists ──────────────
     _ctx_tables_seq = semantic_context.get("tables") or []
-    _ctx_tables_map = {t.get("fqn"): t for t in _ctx_tables_seq if t.get("fqn")}
-
-    def _get_join_key_for_target(join_clauses: list[str], to_fqn: str) -> str | None:
-        for fqn, col in _parse_join_col_pairs(join_clauses):
-            if fqn == to_fqn:
-                return col
-        return None
-
-    def _resolve_join_key_cardinality(col_meta: dict) -> int | None:
-        """Resolve cardinality using n_distinct (primary) or len(distinct_values) (fallback).
-
-        n_distinct > 0: absolute count — reliable.
-        n_distinct < 0: PostgreSQL fraction format (high cardinality) — assume safe → None.
-        n_distinct == 0: not estimated → fall back to len(distinct_values).
-        distinct_values list capped at 100 entries — use as last resort only.
-        """
-        n_distinct = col_meta.get("n_distinct")
-        if n_distinct is not None:
-            if n_distinct > 0:
-                return int(n_distinct)
-            if n_distinct < 0:
-                return None  # high-fraction → safe → skip
-        # n_distinct == 0 or missing — fall back to sampled list
-        distinct_vals = col_meta.get("distinct_values") or []
-        if distinct_vals:
-            return len(distinct_vals)
-        if not col_meta.get("has_data"):
-            return None  # NULL join key → 0 rows (N1 prunes this anyway)
-        return None  # no data to assess
-
-    for _path in anchor_join_paths:
-        _to_fqn = _path.get("to_fqn")
-        if not _to_fqn:
-            continue
-        _join_key = _get_join_key_for_target(_path.get("join_clauses") or [], _to_fqn)
-        if not _join_key:
-            continue
-        _col_meta = anchor_lookup.get((_to_fqn, _join_key)) or {}
-        _cardinality = _resolve_join_key_cardinality(_col_meta)
-        if _cardinality is None:
-            continue  # high-fraction or no data → assume safe
-        _tbl_meta = _ctx_tables_map.get(_to_fqn) or {}
-        _row_count = _tbl_meta.get("row_count") or 0
-        if _row_count < _FAN_OUT_MIN_ROWS:
-            continue  # tiny table → no meaningful fan-out
-        _factor = _row_count / max(_cardinality, 1)
-        if _factor > _FAN_OUT_MIN_FACTOR:
-            _path["fan_out_risk"] = True
-            _path["fan_out_factor"] = round(_factor, 1)
-            _path["fan_out_join_key"] = _join_key
-            _path["safe_pattern"] = "IN_SUBQUERY"
-            logger.warning(
-                "schema_enricher | fan_out_risk | {} | join_key={} | cardinality={} | row_count={} | factor={}x",
-                _to_fqn, _join_key, _cardinality, _row_count, round(_factor, 1),
-            )
-
-    _fan_out_risk_fqns: set = {
-        p["to_fqn"] for p in anchor_join_paths if p.get("fan_out_risk") is True
-    }
-    if _fan_out_risk_fqns:
-        logger.warning(
-            "schema_enricher | fan_out_risk_summary | fqns={}", sorted(_fan_out_risk_fqns)
-        )
-
-    # ── Layer 8: table_grains for specialists ─────────────────────────────────
     _table_grains: dict = {
         t.get("fqn"): t.get("grain") or ""
         for t in _ctx_tables_seq
         if t.get("fqn") and t.get("grain")
+    }
+    _table_row_counts: dict = {
+        t.get("fqn"): t.get("row_count") or 0
+        for t in _ctx_tables_seq
+        if t.get("fqn")
     }
 
     # ── enriched_schema: anchor tables ONLY ──────────────────────────────────
@@ -729,6 +836,7 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         "_column_lookup": anchor_lookup,
         "join_critical_cols": list(join_crit_cols),
         "table_grains": _table_grains,
+        "table_row_counts": _table_row_counts,
     }
 
     for t in anchor_tables:
@@ -865,5 +973,5 @@ async def schema_enricher(state: AnalyticsState, config: RunnableConfig) -> dict
         "candidate_overlap_joins": candidate_overlap_joins,
         "concept_mappings": concept_mappings or None,
         "neo4j_raw_graph": neo4j_raw_graph,
-        "fan_out_risk_fqns": _fan_out_risk_fqns,
+        "fan_out_annotated_fqns": sorted(_fan_out_annotated_fqns) if _fan_out_annotated_fqns else None,
     }

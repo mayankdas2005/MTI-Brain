@@ -164,6 +164,35 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         tables_trimmed    = helpers.trim_objects(tables)
         columns_trimmed   = helpers.trim_objects(display_columns, join_critical_cols=join_crit_cols)
 
+        # ── Always inject lpp.fx_rate at position 0 — it lives in fx_and_hedging
+        #    domain so it is never discovered by cash/liquidity vector search.
+        #    Must be first so it is never truncated in the anchor resolver prompt.
+        _FX_FQN = "lpp.fx_rate"
+        if not any(t.get("fqn") == _FX_FQN for t in tables_trimmed):
+            tables_trimmed = [{
+                "fqn":             _FX_FQN,
+                "name":            "fx_rate",
+                "schema":          "lpp",
+                "business_domain": "fx_and_hedging",
+                "description":     (
+                    "Daily foreign exchange rates between currency pairs "
+                    "(Bloomberg, ECB, internal sources). "
+                    "Use to convert multi-currency financial amounts to USD. "
+                    "Both directions stored: base=BRL/quote=USD and base=USD/quote=BRL. "
+                    "USD/USD row exists (rate=1.0) so USD accounts need no special handling."
+                ),
+                "grain":           "One row per currency pair, rate date, and rate type combination.",
+                "natural_measures": ["rate"],
+                "natural_dimensions": [
+                    "base_currency", "quote_currency", "rate_date", "rate_type", "source",
+                ],
+                "row_count":       730475,
+                "column_count":    7,
+                "is_time_series":  False,
+                "is_dimension_hub": False,
+            }] + list(tables_trimmed)
+            logger.debug("context_fetcher | fx_rate_injected | thread={}", state["thread_id"])
+
         # ── Assemble SemanticContext ───────────────────────────────────────────
         semantic_context = {
             "templates":             templates_trimmed,
@@ -193,6 +222,76 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
 
         if not tables_found:
             logger.warning("context_fetcher | NO tables in context | thread={}", state["thread_id"])
+
+        # ── QueryPattern + AntiPattern lookup (early — before specialists run) ──
+        # Patterns fetched here are stored in semantic_context so ALL specialist nodes
+        # can read them without a separate Neo4j round-trip.
+        _MAX_EXECUTION_COST = 2  # repair_count + recompile_count threshold for quality filter
+        try:
+            _all_patterns = await asyncio.to_thread(
+                retry_sync,
+                lambda: neo4j_client.search_query_patterns(embedding, threshold=0.72),
+                service="neo4j",
+            )
+            _quality_patterns = [
+                p for p in _all_patterns
+                if (p.get("repair_count", 0) + p.get("recompile_count", 0)) <= _MAX_EXECUTION_COST
+                and p.get("promotion_status") != "demoted"
+            ]
+            _patterns = _quality_patterns if _quality_patterns else _all_patterns
+            _top = _patterns[0] if _patterns else None
+            if _top:
+                _raw = _top.get("raw_score", 0)
+                _tier = "exact" if _raw >= 0.95 else "strong" if _raw >= 0.85 else "hint"
+                # Stale guard: downgrade if any table the pattern used is absent from current schema
+                _known_fqns = {t["fqn"] for t in tables_trimmed if t.get("fqn")}
+                if any(fqn not in _known_fqns for fqn in (_top.get("tables_used") or [])):
+                    _tier = "hint"
+                # Occurrence guard: a pattern seen only once hasn't been validated by repetition.
+                # Cap at hint until occurrence_count >= 2 OR user has explicitly liked it.
+                # Prevents a single wrong-but-SQL-valid run from becoming a strong guide.
+                _occurrence = _top.get("occurrence_count", 1)
+                _liked = _top.get("liked_count", 0) or 0
+                if _occurrence < 2 and not _liked:
+                    _tier = "hint"
+                elif _occurrence < 4 and not _liked and _tier == "exact":
+                    _tier = "strong"  # exact requires 4+ occurrences or an explicit like
+                semantic_context["_matched_pattern"]      = _top
+                semantic_context["_matched_pattern_tier"] = _tier
+                # Optional corroborating 2nd pattern (same tables, strong tier only)
+                _second = None
+                if _tier == "strong" and len(_patterns) > 1:
+                    _p2 = _patterns[1]
+                    if (_p2.get("raw_score", 0) >= 0.85
+                            and set(_p2.get("tables_used") or []) == set(_top.get("tables_used") or [])):
+                        _second = _p2
+                semantic_context["_matched_pattern_second"] = _second
+                logger.info(
+                    "context_fetcher | pattern_matched | tier={} | raw={:.3f} | repair={} | recompile={} | q={}",
+                    _tier, _raw,
+                    _top.get("repair_count", 0), _top.get("recompile_count", 0),
+                    (_top.get("question_text") or "")[:60],
+                )
+            else:
+                semantic_context["_matched_pattern"]        = None
+                semantic_context["_matched_pattern_tier"]   = None
+                semantic_context["_matched_pattern_second"] = None
+        except Exception as _pe:
+            logger.warning("context_fetcher | pattern_lookup failed | error={}", _pe)
+            semantic_context["_matched_pattern"]        = None
+            semantic_context["_matched_pattern_tier"]   = None
+            semantic_context["_matched_pattern_second"] = None
+
+        try:
+            _anti_patterns = await asyncio.to_thread(
+                retry_sync,
+                lambda: neo4j_client.search_anti_patterns(embedding),
+                service="neo4j",
+            )
+            semantic_context["_matched_anti_patterns"] = (_anti_patterns or [])[:2]
+        except Exception as _ape:
+            logger.warning("context_fetcher | anti_pattern_lookup failed | error={}", _ape)
+            semantic_context["_matched_anti_patterns"] = []
 
         logger.info(
             "context_fetcher DONE | thread={} | is_followup={} | tables={} | cols={} | "

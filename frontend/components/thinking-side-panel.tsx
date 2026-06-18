@@ -129,6 +129,18 @@ export function ThinkingSidePanel() {
                 Reasoning
                 {message.metadata_?.duration_ms != null &&
                   <span className="text-sm font-normal text-muted-foreground ml-2">{(message.metadata_.duration_ms / 1000).toFixed(1)}s</span>}
+                {(() => {
+                  const tok = message.metadata_?.token_usage?.total_tokens
+                    ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                  if (!tok) return null;
+                  const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                  return (
+                    <>
+                      <span className="text-foreground/30">·</span>
+                      <span className="text-xs font-normal text-foreground/50 tabular-nums">{fmt} tokens</span>
+                    </>
+                  );
+                })()}
               </span>
             )}
           </div>
@@ -154,7 +166,7 @@ export function ThinkingSidePanel() {
       >
         {hasContent ? (
           hasSteps ? (
-            <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} />
+            <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} tokenUsage={message.metadata_?.token_usage} />
           ) : (
             <ReasoningContent
               isStreaming={message.isStreaming}

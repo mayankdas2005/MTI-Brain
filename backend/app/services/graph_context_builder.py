@@ -37,7 +37,9 @@ from app.db.session import async_read_session_factory
 from app.models.conversation import MTIBrainMessage
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "graph_explorer_template.html"
-_PLACEHOLDER = "/* GRAPH_DATA_PLACEHOLDER */ []"
+_PLACEHOLDER          = "/* GRAPH_DATA_PLACEHOLDER */ []"
+_SQL_PLACEHOLDER      = '/* SQL_PATH_PLACEHOLDER */ ""'
+_FEEDBACK_PLACEHOLDER = "/* FEEDBACK_OVERLAY_PLACEHOLDER */ {}"
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
@@ -193,6 +195,68 @@ def _inject_layout(records: list[dict], positions: dict[int, tuple[float, float]
 
 # ── join_clause parser ────────────────────────────────────────────────────────
 
+def _parse_sql_path(sql: str) -> tuple[set[str], set[str]]:
+    """Extract table FQNs and column names referenced in the final SQL."""
+    tables = {m.lower() for m in re.findall(r'\blpp\.\w+\b', sql, re.IGNORECASE)}
+    # Extract alias.column and bare column tokens after SELECT / WHERE / GROUP BY
+    cols: set[str] = set()
+    for m in re.finditer(r'\b\w+\.(\w+)\b', sql):
+        cols.add(m.group(1).lower())
+    return tables, cols
+
+
+def _mark_sql_path(records: list[dict], sql_tables: set[str], sql_cols: set[str]) -> None:
+    """Stamp _in_sql_path=True on Table/Column nodes whose FQN/name appears in the SQL."""
+    seen: set[int] = set()
+    for rec in records:
+        for key in ("n", "m"):
+            nd = rec.get(key)
+            if nd is None:
+                continue
+            nid = nd.get("identity")
+            if nid is None or nid in seen:
+                continue
+            seen.add(nid)
+            labels = nd.get("labels") or []
+            props = nd.get("properties") or {}
+            if "Table" in labels:
+                fqn = (props.get("fqn") or "").lower()
+                if fqn in sql_tables:
+                    props["_in_sql_path"] = True
+            elif "Column" in labels:
+                name = (props.get("name") or "").lower()
+                if name in sql_cols:
+                    props["_in_sql_path"] = True
+
+
+async def _build_feedback_overlay(thread_id: str) -> dict:
+    """Return {positive: [fqn, ...], negative: [fqn, ...]} for this thread's feedback."""
+    try:
+        from sqlalchemy import select as sa_select
+        from app.db.session import async_read_session_factory
+        from app.models.conversation import MTIBrainFeedback, MTIBrainMessage
+        async with async_read_session_factory() as db:
+            rows = (await db.execute(
+                sa_select(MTIBrainFeedback.liked, MTIBrainMessage.metadata_)
+                .join(MTIBrainMessage, MTIBrainMessage.id == MTIBrainFeedback.message_id, isouter=True)
+                .where(MTIBrainFeedback.thread_id == thread_id)
+                .order_by(MTIBrainFeedback.created_at.desc())
+                .limit(20)
+            )).all()
+        positive: set[str] = set()
+        negative: set[str] = set()
+        for liked, meta in rows:
+            source_tables = ((meta or {}).get("source_tables") or [])
+            if liked:
+                positive.update(source_tables)
+            else:
+                negative.update(source_tables)
+        return {"positive": list(positive), "negative": list(negative)}
+    except Exception as exc:
+        logger.warning("graph_context_builder | feedback_overlay_failed | err={}", exc)
+        return {"positive": [], "negative": []}
+
+
 def _parse_join_clause_tables(clause: str) -> tuple[str, str] | None:
     """Extract (left_table_fqn, right_table_fqn) from 'schema.t1.col = schema.t2.col'."""
     parts = clause.split("=", 1)
@@ -236,6 +300,8 @@ async def generate_and_store(
 
     meta: dict = asst_msg.metadata_ or {}
     snapshot: dict = meta.get("graph_context") or {}
+    sql_string: str = meta.get("sql") or ""
+    thread_id_str: str = str(asst_msg.thread_id)
 
     # Migration: old snapshot format uses "tables" + "selected_columns" instead of
     # "anchor_tables" + "used_columns". Fall back to legacy builder for those.
@@ -777,11 +843,23 @@ async def generate_and_store(
     # 6. Compute server-side layout and embed positions before serialization
     _inject_layout(records, _compute_layout(records))
 
+    # 6a. Mark nodes that appear in the final SQL
+    if sql_string:
+        sql_tables, sql_cols = _parse_sql_path(sql_string)
+        _mark_sql_path(records, sql_tables, sql_cols)
+
+    # 6b. Build feedback overlay (async, non-blocking on failure)
+    feedback_overlay = await _build_feedback_overlay(thread_id_str)
+
     # 7. Inject into template
     template_html = _TEMPLATE_PATH.read_text(encoding="utf-8")
     if _PLACEHOLDER not in template_html:
         raise RuntimeError("graph_explorer_template.html is missing GRAPH_DATA_PLACEHOLDER")
     html = template_html.replace(_PLACEHOLDER, json.dumps(records, default=str))
+    if _SQL_PLACEHOLDER in template_html:
+        html = html.replace(_SQL_PLACEHOLDER, json.dumps(sql_string, default=str))
+    if _FEEDBACK_PLACEHOLDER in template_html:
+        html = html.replace(_FEEDBACK_PLACEHOLDER, json.dumps(feedback_overlay, default=str))
 
     # 8. Upload to S3
     short_id = str(conversation_id)[:8]

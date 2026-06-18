@@ -104,15 +104,15 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
 
     # Markdown bullet list — rendered by MarkdownRenderer in the pipeline step UI
     if thread_fb_count > 0:
-        _liked_str   = f"{thread_liked} preferred" if thread_liked > 0 else ""
-        _dislike_str = f"{thread_disliked} flagged" if thread_disliked > 0 else ""
+        _liked_str   = f"{thread_liked} liked" if thread_liked > 0 else ""
+        _dislike_str = f"{thread_disliked} disliked" if thread_disliked > 0 else ""
         _detail      = " · ".join(filter(None, [_liked_str, _dislike_str]))
         _lines.append(
-            f"- **This thread:** {thread_fb_count} rating{'s' if thread_fb_count != 1 else ''}"
+            f"- **This thread:** {thread_fb_count} feedback item{'s' if thread_fb_count != 1 else ''}"
             + (f" ({_detail})" if _detail else "")
         )
     else:
-        _lines.append("- **This thread:** no ratings yet")
+        _lines.append("- **This thread:** no feedback yet")
 
     if similar_fb_count > 0:
         _sims = [f["similarity"] for f in (similar_feedback or []) if f.get("similarity")]
@@ -144,7 +144,7 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
         _lines.append("- **Applying:**")
         _lines.extend(_fb_lines)
     else:
-        _lines.append("- **No feedback to apply** — responding without prior preferences")
+        _lines.append("- **No feedback found** — no prior ratings to apply")
     preference_label = "\n".join(_lines)
 
     # ── Terminal visibility ────────────────────────────────────────────────────

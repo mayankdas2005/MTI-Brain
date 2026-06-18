@@ -9,39 +9,19 @@ from __future__ import annotations
 from app.core.logger import logger
 
 
-def detect_fan_out_joins(sql: str, fan_out_risk_fqns: set) -> list[str]:
-    """Return FQNs that appear as a direct JOIN target despite being flagged fan-out-risk.
-
-    fan_out_risk_fqns is derived from schema_enricher state — not hardcoded.
-    Only detects direct JOIN patterns; pre-aggregate CTEs and IN subqueries are fine.
-    """
-    import re
-    sql_lower = sql.lower()
-    hits: list[str] = []
-    for fqn in (fan_out_risk_fqns or set()):
-        parts = fqn.rsplit(".", 1)
-        if len(parts) != 2:
-            continue
-        schema, tbl = parts
-        if re.search(rf'\bjoin\s+{re.escape(schema)}\.{re.escape(tbl)}\b', sql_lower):
-            hits.append(fqn)
-    return hits
-
-
-def validate_sql(sql: str, fan_out_risk_fqns: set | None = None) -> tuple[bool, str]:
+def validate_sql(sql: str) -> tuple[bool, str]:
     """Run all validation gates on the SQL string.
 
     Returns (True, "") on success, (False, error_message) on failure.
-    fan_out_risk_fqns: set of FQNs flagged by schema_enricher as high fan-out risk.
     """
     try:
-        return _run_gates(sql, fan_out_risk_fqns=fan_out_risk_fqns or set())
+        return _run_gates(sql)
     except Exception as e:
         logger.error("sql_validator_logic unexpected error: {}", e)
         return False, f"Validator internal error: {e}"
 
 
-def _run_gates(sql: str, fan_out_risk_fqns: set | None = None) -> tuple[bool, str]:
+def _run_gates(sql: str) -> tuple[bool, str]:
     import sqlglot
 
     # Gate 1 — Statement type (hard reject)
@@ -94,20 +74,6 @@ def _run_gates(sql: str, fan_out_risk_fqns: set | None = None) -> tuple[bool, st
     ok, msg = _check_ambiguous_join_on(stmt)
     if not ok:
         return False, msg
-
-    # Gate 3.8 — Direct JOIN to fan-out-risk table (row multiplication risk)
-    # fan_out_risk_fqns is derived from schema_enricher state — not hardcoded.
-    # Blocks direct JOIN; pre-aggregate CTEs and IN subqueries pass.
-    if fan_out_risk_fqns:
-        _fanout_hits = detect_fan_out_joins(sql, fan_out_risk_fqns)
-        if _fanout_hits:
-            _fqn_list = ", ".join(_fanout_hits)
-            return False, (
-                f"Direct JOIN to fan-out-risk table(s) detected: {_fqn_list}. "
-                "These tables have many rows per join key — direct JOIN multiplies every source row. "
-                "FIX: Replace direct JOIN with (a) WHERE key IN (SELECT DISTINCT key FROM table WHERE ...) "
-                "or (b) WITH agg AS (SELECT key, AGG(val) FROM table GROUP BY key) JOIN agg ON ..."
-            )
 
     # Gate 4 — Cartesian join detection (JOIN without ON)
     # if _has_cartesian_join(sql):

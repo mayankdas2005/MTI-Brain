@@ -24,37 +24,25 @@ _PERFORMANCE_DIRECTIVE = """--- PERFORMANCE DIRECTIVES ---
 If the error is a timeout or the query is slow, rewrite for Redshift performance as a senior DBA.
 Business logic, tables, filters, and metric definitions must stay identical. Apply in order:
   PRE-FLIGHT (always apply regardless of error type):
-  0a. VALUES: FILTER DIRECTIVE DB codes are authoritative — preserve verbatim.
-      Do not substitute human labels ('Active') for DB codes ('OUTSTANDING').
-  0b. JOINS: SCHEMA DIRECTIVE JOIN_CHAIN ON clauses must be preserved. Do not substitute
-      weak joins (company_ref) when the chain specifies a FK join (facility_ref = code).
-  0c. EXECUTE INSTRUCTIONS: COMPUTATION formulas, COMPUTED_FILTER predicates (IS NULL,
-      thresholds), BENCHMARK_RATE_FILTER, and any SQL execution instruction in QUERY DIRECTIVE
-      must be preserved — they are required for semantic correctness.
-  0d. NON-ANCHOR: Remove WHERE/EXISTS on tables tagged [WARNING: non-anchor table] in FILTER
-      DIRECTIVE. These are entity_hint injections for unrelated tables.
-  0e. TABLES: SCHEMA DIRECTIVE ANCHOR_TABLES is the closed set — no extra joins.
-  0f. REDSHIFT DIALECT: INTERVAL with months/years is NOT supported. Fix any occurrence:
-      WRONG: INTERVAL '1 year' / INTERVAL '3 months' / INTERVAL '4 weeks' / date + INTERVAL '...'
+  PF-a. VALUES: FILTER DIRECTIVE DB codes are authoritative — preserve verbatim.
+  PF-b. JOINS: SCHEMA DIRECTIVE JOIN_CHAIN ON clauses must be preserved.
+  PF-c. EXECUTE INSTRUCTIONS: COMPUTATION formulas, COMPUTED_FILTER predicates,
+      BENCHMARK_RATE_FILTER, and SQL execution instructions must be preserved.
+  PF-d. NON-ANCHOR: Remove WHERE/EXISTS on tables tagged [WARNING: non-anchor table].
+  PF-e. TABLES: SCHEMA DIRECTIVE ANCHOR_TABLES is the closed set — no extra joins.
+  PF-f. REDSHIFT DIALECT: INTERVAL with months/years is NOT supported.
+      WRONG: INTERVAL '1 year' / INTERVAL '3 months' / date + INTERVAL '...'
       CORRECT: DATEADD(year,-1,date) / DATEADD(month,-3,date) / DATEADD(week,4,date)
 
-  i. CONDITIONAL — If the error message mentions a subquery, EXISTS, or IN clause AND those
-     tables are not in the ANCHOR TABLES of QUERY INTENT, remove those subqueries as the first
-     action before any other performance fix. Otherwise skip Rule i and proceed to Rule c.
-     When applicable: these are hallucinations that eliminate rows; removing them is correct.
-  c. Drop SELECT * and unused CTE columns.
-  d. Replace DISTINCT with GROUP BY on explicit columns.
-  e. Apply the LIMIT from the original QUERY SPECIFICATION; add LIMIT 100 if absent.
-  f. Flatten CTEs that read the same source into one.
-  g. CRITICAL — do NOT drop any JOIN that resolves an entity name filter. JOINs to reference
-     tables (e.g., lpp.bank, lpp.counterparty, lpp.currency) translate the user's entity name
-     (e.g., 'JPMorgan') into a DB code (e.g., 'BANK_JPM'). Removing them produces wrong data.
+  PERF-i. CONDITIONAL — If the error mentions a subquery, EXISTS, or IN clause AND those
+     tables are not in ANCHOR TABLES, remove those subqueries first. Otherwise skip to PERF-c.
+  PERF-c. Drop SELECT * and unused CTE columns.
+  PERF-d. Replace DISTINCT with GROUP BY on explicit columns.
+  PERF-e. Apply the LIMIT from the original QUERY SPECIFICATION; add LIMIT 100 if absent.
+  PERF-f. Flatten CTEs that read the same source into one.
+  PERF-g. CRITICAL — do NOT drop any JOIN that resolves an entity name filter.
      If ENTITY VALUE MATCHES appears in SCHEMA REFERENCE, those columns MUST remain in the JOIN chain.
-  h. CRITICAL — do NOT change or invent filter values. The QUERY INTENT section lists the
-     RESOLVED filter values — use them verbatim in the rewrite. If QUERY INTENT says
-     balance_type = 'CLOSING', keep exactly 'CLOSING'; never substitute 'Closing Balance' or
-     any other variant. If QUERY INTENT says branch_ref = 'BR_JPM_NY', keep 'BR_JPM_NY'.
-     Never fabricate reference codes that do not appear in QUERY INTENT or SCHEMA REFERENCE."""
+  PERF-h. CRITICAL — do NOT change or invent filter values. Use QUERY INTENT values verbatim."""
 from app.services.agents.sql_validator_logic import validate_sql
 from app.services.agents.state import AnalyticsState
 
@@ -251,6 +239,23 @@ async def attempt_repair(
     from app.services.agents.helpers import build_directive_section, _build_entity_tokens_section
     directive_section = build_directive_section(state)
 
+    _output_slots = (state.get("query_plan") or {}).get("output_slots") or []
+    if _output_slots:
+        _slot_lines = ["FINAL OUTPUT SHAPE — what the user expects to see in the result (HINTS, not a hard contract):"]
+        _slot_lines.append("  These slots represent the user's intent for the final output.")
+        _slot_lines.append("  While fixing the error, ask yourself: does each column in SELECT align with what the user asked?")
+        _slot_lines.append("  You MAY add columns the schema makes naturally available.")
+        _slot_lines.append("  You MAY drop a slot if the schema cannot support it.")
+        _slot_lines.append("  You MUST NOT introduce columns unrelated to the user's question.")
+        for _s in _output_slots:
+            _alias = _s.get("alias") or ""
+            _agg = f"{_s.get('aggregation')}(...)" if _s.get("aggregation") else "(raw)"
+            _concept = _s.get("concept") or ""
+            _slot_lines.append(f"  {_alias:<24} {_agg:<14} — {_concept}")
+        output_shape_section = "---\n\n" + "\n".join(_slot_lines) + "\n"
+    else:
+        output_shape_section = ""
+
     entity_tokens_section = _build_entity_tokens_section(state.get("entity_tokens") or [])
 
     resolved_intent_repair = state.get("resolved_intent") or {}
@@ -376,6 +381,7 @@ async def attempt_repair(
             error_message=emsg,
             prior_attempts_detail=attempts_detail,
             directive_section=directive_section,
+            output_shape_section=output_shape_section,
             feedback_section=feedback_section,
             performance_directive=_perf_directive,
             explain_section=explain_section,

@@ -97,14 +97,19 @@ def search_query_patterns(embedding: list[float], threshold: float = 0.65, limit
                 THEN 1.1 ELSE 1.0 END
          AS boosted_score
     RETURN qp.id AS id, qp.question_text AS question_text,
+           qp.sql_text AS sql_text,
            qp.sql_cte_outline AS sql_cte_outline,
            qp.join_outline AS join_outline,
            qp.filter_summary AS filter_summary,
+           qp.measure_summary AS measure_summary,
+           qp.dimension_summary AS dimension_summary,
+           qp.directive_summary AS directive_summary,
            qp.tables_used AS tables_used,
            qp.intent AS intent, qp.complexity AS complexity,
            qp.recompile_count AS recompile_count,
            qp.repair_count AS repair_count,
            qp.promotion_status AS promotion_status,
+           score AS raw_score,
            boosted_score AS score
     ORDER BY boosted_score DESC
     """
@@ -181,7 +186,8 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
                   AND duration.between(ap.last_seen, datetime()).days < 30
                 THEN 1.1 ELSE 1.0 END
          AS boosted_score
-    RETURN ap.id AS id, ap.error_type AS error_type, coalesce(ap.error_detail, ap.error_summary, '') AS error_summary,
+    RETURN ap.id AS id, ap.question_text AS query_text,
+           ap.error_type AS error_type, coalesce(ap.error_detail, ap.error_summary, '') AS error_summary,
            ap.failing_element AS failing_element, ap.complexity AS complexity,
            ap.occurrence_count AS occurrence_count,
            boosted_score AS score

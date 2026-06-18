@@ -57,6 +57,7 @@ def _is_measurable(c: dict) -> bool:
 def _build_measurable_columns_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
     table_grains = enriched_schema.get("table_grains") or {}
+    table_row_counts = enriched_schema.get("table_row_counts") or {}
     measurable = [c for c in columns if _is_measurable(c)]
     if not measurable:
         return "(no measurable columns found — check anchor table schema)"
@@ -68,8 +69,10 @@ def _build_measurable_columns_section(enriched_schema: dict) -> str:
     lines = []
     for fqn, cols in by_table.items():
         grain = table_grains.get(fqn, "")
+        row_count = table_row_counts.get(fqn, 0)
         grain_note = f"  [grain: {grain[:100]}]" if grain else ""
-        lines.append(f"{fqn}{grain_note}")
+        row_note = f"  rows={row_count:,}" if row_count else ""
+        lines.append(f"{fqn}{grain_note}{row_note}")
         for c in cols:
             name = c.get("name", "")
             sem = c.get("semantic_type") or c.get("data_type", "")
@@ -87,6 +90,69 @@ def _build_measurable_columns_section(enriched_schema: dict) -> str:
     return "\n".join(lines)
 
 
+def _compact_measure_summary(parsed: dict) -> str:
+    parts = []
+    for m in (parsed.get("measures") or []):
+        col   = m.get("column_name", "")
+        agg   = m.get("aggregation", "")
+        alias = m.get("alias", "")
+        tbl   = (m.get("table_fqn") or "").split(".")[-1]
+        if col:
+            parts.append(f"{agg}({tbl}.{col}) → {alias}" if alias else f"{agg}({tbl}.{col})")
+    for d in (parsed.get("derived_measures") or []):
+        alias = d.get("alias", "")
+        expr  = (d.get("expression") or "")[:60]
+        if alias:
+            parts.append(f"{alias} = {expr}")
+    if not parts:
+        directive = (parsed.get("measure_directive") or "")
+        return directive[:200]
+    return " | ".join(parts[:4])
+
+
+def _build_prior_sections_measure(semantic_context: dict) -> tuple[str, str]:
+    pat   = semantic_context.get("_matched_pattern")
+    pat2  = semantic_context.get("_matched_pattern_second")
+    anti  = semantic_context.get("_matched_anti_patterns") or []
+    tier  = semantic_context.get("_matched_pattern_tier")
+
+    if pat and tier in ("exact", "strong") and pat.get("measure_summary"):
+        corroboration = ""
+        if pat2 and pat2.get("measure_summary"):
+            corroboration = f"\nCORROBORATED BY 2nd pattern: {pat2['measure_summary']}"
+        anti_sql_lines = "\n".join(
+            f"Prior SQL error: {a.get('error_type', 'error')} on {a.get('failing_element', 'unknown')}"
+            for a in anti
+        )
+        verb = "EXACT MATCH" if tier == "exact" else "STRONG MATCH"
+        prior_verified_section = (
+            f"<prior_pattern>\n"
+            f"Similar question: \"{pat.get('question_text', '')}\"\n"
+            f"{verb} — Prior verified measure interpretation:\n"
+            f"  {pat['measure_summary']}{corroboration}\n"
+            + (f"Note — similar questions had SQL errors (not interpretation errors):\n{anti_sql_lines}\n" if anti_sql_lines else "")
+            + "Keep this in mind as you fill the DBA TRACE below. "
+            "Adopt if the current question aligns. If different, explain the deviation in <reasoning>.\n"
+            "</prior_pattern>"
+        )
+        prior_trace_row = (
+            f"| **[PRIOR — consider]** {pat['measure_summary']} "
+            f"| (prior verified) | — | — | — | {tier} match — adopt or explain deviation |\n"
+        )
+        return prior_verified_section, prior_trace_row
+
+    anti_sql_lines = "\n".join(
+        f"SQL error: {a.get('error_type', 'error')} on {a.get('failing_element', 'unknown')}"
+        for a in anti if a.get("error_type")
+    )
+    if anti_sql_lines:
+        return (
+            f"<prior_failed>\nSimilar questions previously had SQL errors (interpretation may still be correct):\n{anti_sql_lines}\n</prior_failed>",
+            "",
+        )
+    return "", ""
+
+
 async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("measure_specialist START | thread={}", state.get("thread_id", ""))
 
@@ -98,6 +164,9 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
     else:
         intent_summary = resolved_intent.get("intent_summary", state.get("effective_question") or state.get("question", ""))
 
+    _sc = state.get("semantic_context") or {}
+    prior_verified_section, prior_trace_row = _build_prior_sections_measure(_sc)
+
     prompt = MEASURE_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -108,6 +177,8 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
         concept_mappings_section=_build_concept_mappings_section(state.get("concept_mappings")),
         entity_tokens_section=_build_entity_tokens_section(state.get("entity_tokens") or []),
+        prior_verified_section=prior_verified_section,
+        prior_trace_row=prior_trace_row,
     )
     _mission = build_mission_context(
         state,
@@ -139,6 +210,10 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
     try:
         import json_repair
         parsed = json_repair.loads(json_str)
+        if isinstance(parsed, list):
+            parsed = parsed[0] if parsed else {}
+        if not isinstance(parsed, dict):
+            raise ValueError(f"unexpected type {type(parsed).__name__}")
     except Exception:
         logger.warning("measure_specialist | JSON parse failed | thread={} | raw={}", state.get("thread_id"), raw[:200])
         return {"specialist_outputs": [{"type": "measures", "measures": [], "measure_directive": ""}]}
@@ -148,8 +223,10 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
         "measures": parsed.get("measures", []),
         "measure_directive": parsed.get("measure_directive", ""),
     }
+    output_summary = _compact_measure_summary(parsed)
     logger.info(
-        "measure_specialist DONE | thread={} | measures={}",
+        "measure_specialist DONE | thread={} | measures={} | prior_tier={}",
         state.get("thread_id"), [m.get("column_name") for m in result["measures"]],
+        (_sc.get("_matched_pattern_tier") or "none"),
     )
-    return {"specialist_outputs": [result]}
+    return {"specialist_outputs": [result], "_measure_specialist_output": output_summary}
