@@ -557,7 +557,7 @@
       <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/>
       </svg>
-      <span id="layer-label">Show semantic model</span>
+      <span id="layer-label">Show all nodes</span>
     </button>
 
     <div style="flex:1;"></div>
@@ -799,7 +799,7 @@
       nodesDS.update(nodeUpdates);
       edgesDS.update(edgeUpdates);
       const lbl = document.getElementById('layer-label');
-      if (lbl) lbl.textContent = _showingAll ? 'Hide semantic model' : 'Show semantic model';
+      if (lbl) lbl.textContent = _showingAll ? 'Show semantic model' : 'Show all nodes';
     }
     const nodeById = new Map(allNodes.map(n => [n.id, n]));
 
@@ -1266,7 +1266,7 @@
           ).join('') + '</div>';
       }
       const cols = colGroup('Measures', measures, '#f59e0b') + colGroup('Dimensions', dimensions, '#3b82f6') +
-                   colGroup('Filters', filters, '#8b5cf6') + colGroup('Other', others, '#6b7280');
+                   colGroup('Filters', filters, '#8b5cf6') + colGroup('Columns', others, '#6b7280');
       if (cols) h += `<div style="border-top:1px solid var(--ge-border);padding-top:8px;">${cols}</div>`;
       return h;
     }
@@ -1395,6 +1395,16 @@
     function focusNodeById(id) {
       const node = nodesDS.get(id);
       if (!node) return;
+      // Reveal node if hidden (e.g. non-semantic-model column)
+      if (node.hidden) {
+        nodesDS.update({ id: id, hidden: false });
+        // Also reveal edges connecting to this node
+        const edgeIds = edgesByNode.get(id) || [];
+        edgeIds.forEach(eid => {
+          visibleEdgeIds.add(eid);
+          edgesDS.update({ id: eid, hidden: false });
+        });
+      }
       showDetail('node', node);
       currentClickedNodeId = id;
       currentSelectedCategory = '*';

@@ -814,6 +814,37 @@ def _build_filter_specs(
             filters.append(type_spec)
             continue
 
+        # Tier 0: LLM-suggested db_value — validate against column's known vocabulary before Python matching
+        db_value_hint = (f.get("db_value") or "").strip()
+        if db_value_hint:
+            _lookup = semantic_context.get("_column_lookup") or {}
+            _col_meta = _lookup.get((f["table_fqn"], col_name)) or {}
+            _known: set[str] = {
+                str(v).strip()
+                for v in (
+                    (_col_meta.get("distinct_values") or [])
+                    + (_col_meta.get("value_vocabulary") or [])
+                )
+            }
+            for _alias_str in (_col_meta.get("value_aliases") or []):
+                if " -> " in str(_alias_str):
+                    _known.add(str(_alias_str).split(" -> ")[0].strip())
+            if _known and (db_value_hint in _known or any(k.lower() == db_value_hint.lower() for k in _known)):
+                _enum_guard = len(_known) <= 10
+                _op = "=" if _enum_guard else "ILIKE"
+                _val = db_value_hint if _enum_guard else f"%{db_value_hint}%"
+                filters.append(FilterSpec(
+                    table_fqn=f["table_fqn"],
+                    column_name=col_name,
+                    operator=_op,
+                    value=_val,
+                    raw_user_value=raw_value,
+                    resolved=True,
+                    is_having=is_having,
+                ))
+                continue
+            # db_value not in known vocabulary — discard hint, fall through to existing resolution
+
         already_a_pattern = raw_op in ("LIKE", "ILIKE") and isinstance(raw_value, str) and "%" in raw_value
         if not is_comparison and not already_a_pattern and raw_op in ("=", "IN", "LIKE", "ILIKE") and isinstance(raw_value, str):
             raw_list = [raw_value]

@@ -83,7 +83,6 @@ export default function RootLayout({
           strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: `(function(){try{
-  if("${process.env.NODE_ENV}"==="development")return;
   var bid="${process.env.NEXT_PUBLIC_BUILD_ID}";
   if(!bid)return;
   var key='mti-brain-build-id';

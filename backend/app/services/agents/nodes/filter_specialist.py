@@ -52,8 +52,8 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
     table_row_counts = enriched_schema.get("table_row_counts") or {}
 
     header_lines = [
-        "FILTERABLE COLUMNS — known_values listed are DB enum codes (reference only).",
-        "Your raw_user_value MUST be the user's exact words. The downstream resolver maps them to DB codes.",
+        "FILTERABLE COLUMNS — known_values listed are actual DB codes stored in the database.",
+        "raw_user_value = user's exact words always. db_value = exact DB code from all_values/code_mappings when you can see it; null if uncertain.",
         "",
     ]
     lines = header_lines[:]

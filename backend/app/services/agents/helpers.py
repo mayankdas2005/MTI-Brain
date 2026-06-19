@@ -123,8 +123,10 @@ def render_filter_value(operator: str, value) -> str:
         quoted = ", ".join(f"'{v}'" for v in vals)
         return f"IN ({quoted})"
     v = value if isinstance(value, str) else str(value)
-    if op in ("ILIKE", "LIKE"):
-        return f"~* '{v}'"
+    if op == "ILIKE":
+        return f"ILIKE '{v}'"
+    if op == "LIKE":
+        return f"LIKE '{v}'"
     return f"{operator} {v}"
 
 
