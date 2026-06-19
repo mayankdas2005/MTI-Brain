@@ -2,6 +2,7 @@
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().includes('MAC');
 const modKey = isMac ? '⌘' : 'Ctrl';
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 import { useState, useEffect, useRef, startTransition } from 'react';
 import { useNow } from '@/lib/hooks/use-now';
@@ -624,7 +625,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
           <>
             <div className="flex-1 min-w-0 pl-3">
               <Image
-                src="/milestone-logo-white.png"
+                src={`${basePath}/milestone-logo-white.png`}
                 alt="Milestone"
                 width={98}
                 height={55}

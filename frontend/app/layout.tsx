@@ -13,17 +13,19 @@ const apiOrigin = (() => {
   }
 })();
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 export const metadata: Metadata = {
   title: 'MTI Brain',
   icons: {
     icon: [
-      { url: '/icon-192.png', type: 'image/png', sizes: '192x192' },
-      { url: '/icon-512.png', type: 'image/png', sizes: '512x512' },
+      { url: `${basePath}/icon-192.png`, type: 'image/png', sizes: '192x192' },
+      { url: `${basePath}/icon-512.png`, type: 'image/png', sizes: '512x512' },
     ],
-    apple: '/apple-icon.png',
-    shortcut: '/icon-192.png',
+    apple: `${basePath}/apple-icon.png`,
+    shortcut: `${basePath}/icon-192.png`,
   },
-  manifest: '/manifest.json',
+  manifest: `${basePath}/manifest.json`,
   applicationName: 'MTI Brain',
   appleWebApp: { capable: true, title: 'MTI Brain', statusBarStyle: 'default' },
 };

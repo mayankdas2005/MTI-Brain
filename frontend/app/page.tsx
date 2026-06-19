@@ -11,6 +11,8 @@ import { Eye, EyeOff } from 'lucide-react';
 import { isAuthenticated, login, setLoginGate, setLoginError, consumeLoginError } from '@/lib/auth';
 import { ApiError } from '@/lib/api/client';
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 export default function LoginPage() {
   const router = useRouter();
   const [username, setUsername] = useState('');
@@ -74,7 +76,7 @@ export default function LoginPage() {
           <div className="text-center space-y-8">
             <div className="flex justify-center">
               <Image
-                src="/milestone-logo-black.png"
+                src={`${basePath}/milestone-logo-black.png`}
                 alt="Milestone"
                 width={200}
                 height={113}
@@ -83,7 +85,7 @@ export default function LoginPage() {
                 className="dark:hidden"
               />
               <Image
-                src="/milestone-logo-white.png"
+                src={`${basePath}/milestone-logo-white.png`}
                 alt="Milestone"
                 width={200}
                 height={113}
@@ -157,7 +159,7 @@ export default function LoginPage() {
               className="w-full h-11 rounded-xl text-sm font-medium flex items-center gap-2"
               onClick={() => {}}
             >
-              <Image src="/MSFT.png" alt="Microsoft" width={18} height={18} priority style={{ height: 'auto' }} />
+              <Image src={`${basePath}/MSFT.png`} alt="Microsoft" width={18} height={18} priority style={{ height: 'auto' }} />
               Sign in with Microsoft
             </Button>
           </div>

@@ -48,6 +48,9 @@ logs/
 # Persistent data
 docker_volume/
 
+# Docker Compose local override (not for server deployment)
+docker-compose.override.yml
+
 # Dependencies
 node_modules/
 

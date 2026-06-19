@@ -1,0 +1,12 @@
+# Local development override — exposes services directly, bypassing nginx.
+# This file is auto-loaded by `docker compose up` when present.
+# Do NOT deploy this to the server.
+services:
+  frontend:
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
+  backend:
+    ports:
+      - "8000:8000"

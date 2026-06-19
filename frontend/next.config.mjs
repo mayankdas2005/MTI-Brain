@@ -33,6 +33,7 @@ const APP_VERSION = `${BUILD_DATE.getFullYear()}.${String(BUILD_DATE.getMonth() 
 
 const nextConfig = {
   output: "standalone",
+  basePath: process.env.NEXT_PUBLIC_BASE_PATH || "",
   // Generate a unique build ID per deployment so the client can detect new versions.
   generateBuildId: () => BUILD_ID,
   // Expose build ID and app version to client code.

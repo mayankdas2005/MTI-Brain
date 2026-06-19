@@ -20,6 +20,7 @@ server:
     - "http://localhost:3000"
     - "http://127.0.0.1:3000"
     - "http://100.21.28.155:3000"
+    - "https://ai.milestnapps.com"
 
 auth:
   jwt_algorithm: HS256
