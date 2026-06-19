@@ -67,6 +67,7 @@ async def intent_assembler(state: AnalyticsState) -> dict:
             "column_name": f.get("column_name", ""),
             "operator": f.get("operator", "="),
             "raw_value": f.get("raw_user_value", f.get("value", "")),
+            "db_value": f.get("db_value"),
         }
         for f in filters_raw
     ]

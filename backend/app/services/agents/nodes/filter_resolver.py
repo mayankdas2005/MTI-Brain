@@ -220,7 +220,11 @@ async def _resolve_filter(
 
     if patterns:
         if score == 100.0 and len(patterns) == 1:
-            return [f.model_copy(update={"value": patterns[0], "resolved": True})], False
+            _known_vals = column_meta.get("distinct_values") or column_meta.get("value_vocabulary") or []
+            _is_exhaustive_enum = bool(_known_vals) and len(_known_vals) <= 10
+            _op = "=" if _is_exhaustive_enum else "ILIKE"
+            _val = patterns[0] if _is_exhaustive_enum else f"%{patterns[0]}%"
+            return [f.model_copy(update={"value": _val, "operator": _op, "resolved": True})], False
 
         low_confidence = score < 85
         result_specs = [
@@ -241,10 +245,14 @@ async def _resolve_filter(
         return result_specs, low_confidence
 
     logger.warning(
-        "filter_resolver | value unresolvable | table={} col={} val={} | using raw value",
+        "filter_resolver | value unresolvable | table={} col={} val={} | falling back to ILIKE",
         f.table_fqn, f.column_name, f.raw_user_value,
     )
-    return [f.model_copy(update={"resolved": True})], True
+    return [f.model_copy(update={
+        "value": f"%{f.raw_user_value}%",
+        "operator": "ILIKE",
+        "resolved": True,
+    })], True
 
 
 async def _tier35_temporal_llm(raw_value: str, state: AnalyticsState) -> dict | None:

@@ -45,7 +45,7 @@ def _drop_blank_rows(columns: list[str], rows: list[list]) -> list[list]:
     def _blank(v):
         if v is None: return True
         if isinstance(v, float) and math.isnan(v): return True
-        return v in (0, 0.0, "", "0")
+        return v in (0, 0.0, "", "0", "-")
     n = len(columns)
     return [row for row in rows if any(not _blank(row[i]) for i in range(min(n, len(row))))]
 
@@ -57,7 +57,7 @@ def _drop_blank_columns(columns: list[str], rows: list[list]) -> tuple[list[str]
     def _blank(v):
         if v is None: return True
         if isinstance(v, float) and math.isnan(v): return True
-        return v in (0, 0.0, "", "0")
+        return v in (0, 0.0, "", "0", "-")
     keep = [i for i, _ in enumerate(columns) if any(not _blank(row[i]) for row in rows if i < len(row))]
     if len(keep) == len(columns):
         return columns, rows
@@ -1149,6 +1149,31 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
         return {"chart_spec": None}
 
     persona = state.get("persona", "analyst")
+
+    # Short-circuit: 1-row result → kpi_card directly, no LLM call needed
+    if len(all_rows) == 1:
+        _y_col = all_columns[-1]
+        for _ci, _cn in enumerate(all_columns):
+            try:
+                float(all_rows[0][_ci])
+                _y_col = _cn
+                break
+            except (TypeError, ValueError):
+                continue
+        _y_val = all_rows[0][all_columns.index(_y_col)] if _y_col in all_columns else None
+        _y_fmt = ",.0f"
+        try:
+            _fv = float(_y_val)
+            if _fv != int(_fv):
+                _y_fmt = ",.2f"
+        except (TypeError, ValueError):
+            pass
+        _kpi_plan = {"chart_type": "kpi_card", "y_column": _y_col, "y_value_format": _y_fmt,
+                     "chart_confidence": 100, "alternative_types": []}
+        _kpi_spec = _build_vega_lite_spec("kpi_card", all_columns, all_rows, _kpi_plan)
+        if _validate_spec(_kpi_spec, "kpi_card"):
+            logger.info("chart_agent | 1-row → kpi_card (no LLM) | thread={}", state["thread_id"])
+            return {"chart_spec": _kpi_spec, "chart_type": "kpi_card", "alternative_chart_specs": []}
 
     plan = await _call_chart_llm(all_columns, all_rows, query_summary, state, config, persona)
 

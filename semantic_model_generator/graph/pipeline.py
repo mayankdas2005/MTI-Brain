@@ -94,7 +94,8 @@ def _idx(rows: list[dict], key: str) -> dict:
 
 
 def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
-        reset_templates: bool = False, reset_glossary: bool = False, reset_communities: bool = False):
+        reset_templates: bool = False, reset_glossary: bool = False, reset_communities: bool = False,
+        table_filter: list[str] | None = None):
     run_id = str(uuid.uuid4())
     started_at = _NOW()
     run_meta: dict = {
@@ -148,6 +149,14 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
         tables_meta, columns_meta, sme_edges = parse_yml()
         log.info("YML: %d tables, %d columns (uuid-cols excluded), %d declared FK edges",
                  len(tables_meta), len(columns_meta), len(sme_edges))
+
+        # Scope to specific tables if --tables was given
+        if table_filter:
+            _filter_fqns = set(table_filter)
+            tables_meta  = [tm for tm in tables_meta  if tm.fqn in _filter_fqns]
+            columns_meta = [cm for cm in columns_meta if cm.table_fqn in _filter_fqns]
+            sme_edges    = [e  for e  in sme_edges    if e.from_table in _filter_fqns or e.to_table in _filter_fqns]
+            log.info("TABLE FILTER: scoped to %d tables — %s", len(tables_meta), table_filter)
 
         yml_table_names: set[str] = {tm.name for tm in tables_meta}
         yml_col_names: set[tuple[str, str]] = {
@@ -514,6 +523,27 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
     if "enrich" in steps and not dry_run:
         t = time.time()
         log.info("── ENRICH ───────────────────────────────────────────────")
+
+        # Force re-enrichment for filtered tables: mark stale in Neo4j + purge from checkpoint
+        if table_filter and loader:
+            loader._run("""
+                UNWIND $fqns AS fqn
+                MATCH (t:Table {fqn: fqn})
+                SET t.enrichment_status = 'stale'
+                WITH t
+                MATCH (t)-[:HAS_COLUMN]->(c:Column)
+                SET c.enrichment_status = 'stale'
+            """, fqns=list(table_filter))
+            if _CHECKPOINT_FILE.exists():
+                _cp = _load_checkpoint()
+                for _fqn in table_filter:
+                    _cp.get("tables", {}).pop(_fqn, None)
+                    for _key in list(_cp.get("columns", {}).keys()):
+                        if _key.startswith(_fqn + "."):
+                            _cp["columns"].pop(_key, None)
+                _save_checkpoint(_cp)
+            log.info("TABLE FILTER enrich: marked %d tables/columns stale, cleared from checkpoint.",
+                     len(table_filter))
 
         # C4 — rebuild tables_meta and col_map from Neo4j if INFER was skipped
         if not tables_meta and loader:
@@ -1241,6 +1271,19 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
         t = time.time()
         log.info("── EMBED ────────────────────────────────────────────────")
 
+        # Null out embeddings for filtered tables/columns so embed step re-runs them
+        if table_filter and loader:
+            loader._run("""
+                UNWIND $fqns AS fqn
+                MATCH (t:Table {fqn: fqn})
+                SET t.cohere_embedding = null
+                WITH t
+                MATCH (t)-[:HAS_COLUMN]->(c:Column)
+                SET c.cohere_embedding = null
+            """, fqns=list(table_filter))
+            log.info("TABLE FILTER embed: cleared embeddings for %d tables to force re-embed.",
+                     len(table_filter))
+
         EMBED_BATCH = 50
         bedrock_client = _bedrock_client(bedrock_cfg)
         model_arn = bedrock_cfg.aws_bedrock_cohere_embed_v4_arn
@@ -1459,6 +1502,12 @@ def main():
     parser.add_argument("--reset-templates", action="store_true", help="Clear only the templates cache so templates re-enrich with updated prompt")
     parser.add_argument("--reset-glossary", action="store_true", help="Clear only the glossary cache so glossary re-enriches with updated prompt")
     parser.add_argument("--reset-communities", action="store_true", help="Clear only the community descriptions cache so communities re-enrich")
+    parser.add_argument(
+        "--tables",
+        default=None,
+        help="Comma-separated FQNs to update (e.g. lpp.ap_invoice,lpp.third_party). "
+             "Scopes extract/infer/load/enrich/embed to only these tables.",
+    )
     args = parser.parse_args()
 
     if args.steps.strip().lower() == "all":
@@ -1470,9 +1519,11 @@ def main():
             print(f"Unknown steps: {invalid}. Valid: {_ALL_STEPS}", file=sys.stderr)
             sys.exit(1)
 
+    table_filter = [t.strip() for t in args.tables.split(",")] if args.tables else None
+
     run(steps=steps, dry_run=args.dry_run, reset_checkpoint=args.reset_checkpoint,
         reset_templates=args.reset_templates, reset_glossary=args.reset_glossary,
-        reset_communities=args.reset_communities)
+        reset_communities=args.reset_communities, table_filter=table_filter)
 
 
 if __name__ == "__main__":

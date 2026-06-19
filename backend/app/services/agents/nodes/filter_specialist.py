@@ -46,21 +46,14 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
     if not filterable:
         filterable = columns  # fallback: show all
 
-    # Per-table cap: each anchor table gets at most 6 columns
-    from collections import defaultdict
-    by_table: dict = defaultdict(list)
-    for c in filterable:
-        by_table[c.get("table_fqn", "")].append(c)
-    capped: list = []
-    for tbl_cols in by_table.values():
-        capped.extend(tbl_cols[:6])
+    capped = filterable  # schema_enricher already capped at 25/table with smart bucket selection
 
     table_grains = enriched_schema.get("table_grains") or {}
     table_row_counts = enriched_schema.get("table_row_counts") or {}
 
     header_lines = [
-        "FILTERABLE COLUMNS — known_values listed are DB enum codes (reference only).",
-        "Your raw_user_value MUST be the user's exact words. The downstream resolver maps them to DB codes.",
+        "FILTERABLE COLUMNS — known_values listed are actual DB codes stored in the database.",
+        "raw_user_value = user's exact words always. db_value = exact DB code from all_values/code_mappings when you can see it; null if uncertain.",
         "",
     ]
     lines = header_lines[:]
@@ -97,7 +90,8 @@ def _build_filterable_columns_section(enriched_schema: dict) -> str:
             if distinct_vals:
                 is_exhaustive = len(distinct_vals) > 0 and n_distinct > 0 and len(distinct_vals) >= n_distinct
                 label = "all_values (complete set)" if is_exhaustive else "known_values (may be partial)"
-                lines.append(f"    {label}: {distinct_vals[:20]}")
+                _val_cap = len(distinct_vals) if len(distinct_vals) <= 50 else 50
+                lines.append(f"    {label}: {distinct_vals[:_val_cap]}")
             elif sample_vals:
                 lines.append(f"    sample_values: {sample_vals}")
             else:

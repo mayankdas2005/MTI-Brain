@@ -767,237 +767,6 @@
       "default_aggregation": "SUM",
       "value_aliases": []
     },
-    "lpp.ap_invoice.uuid": {
-      "name": "uuid",
-      "description": "Unique system-generated identifier for each accounts payable invoice record.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "invoice ID",
-        "record ID",
-        "AP invoice key"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.invoice_number": {
-      "name": "invoice_number",
-      "description": "Human-readable business reference number assigned to each accounts payable invoice, formatted as AP-XXXXXXXX.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "AP number",
-        "invoice ref",
-        "invoice reference",
-        "AP invoice number"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.company_ref": {
-      "name": "company_ref",
-      "description": "Code identifying the legal entity or subsidiary within the group that owns the invoice, such as GR_CA for the Canadian entity or GR_TREASURY for the treasury entity.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "legal entity",
-        "company code",
-        "entity code",
-        "subsidiary"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": [
-        "GR_AU -> Australia",
-        "GR_FR -> France",
-        "GR_BR -> Brazil",
-        "GR_DE -> Germany",
-        "GR_JP -> Japan",
-        "GR_GB -> United Kingdom",
-        "GR_MX -> Mexico",
-        "GR_HK -> Hong Kong",
-        "GR_SE -> Sweden",
-        "GR_PL -> Poland",
-        "GR_US_INC -> United States (Inc)",
-        "GR_CA -> Canada",
-        "GR_IT -> Italy",
-        "GR_TREASURY -> Treasury",
-        "GR_HOLDINGS -> Holdings",
-        "GR_KR -> South Korea",
-        "GR_ES -> Spain",
-        "GR_AE -> United Arab Emirates"
-      ]
-    },
-    "lpp.ap_invoice.vendor_ref": {
-      "name": "vendor_ref",
-      "description": "Code identifying the supplier or vendor who issued the invoice, with the prefix indicating the spend category such as CAPEX, IT, or MKTG.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "supplier code",
-        "vendor code",
-        "supplier reference",
-        "supplier ID"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.issue_date": {
-      "name": "issue_date",
-      "description": "The date on which the vendor issued the invoice.",
-      "semantic_type": "date",
-      "synonyms": [
-        "invoice date",
-        "billing date",
-        "invoice raised date"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "day",
-      "default_aggregation": "MIN",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.due_date": {
-      "name": "due_date",
-      "description": "The date by which the invoice must be paid according to agreed payment terms.",
-      "semantic_type": "date",
-      "synonyms": [
-        "payment due date",
-        "maturity date",
-        "invoice due date"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "day",
-      "default_aggregation": "MIN",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.paid_date": {
-      "name": "paid_date",
-      "description": "The date on which the invoice was fully paid; null indicates the invoice has not yet been fully paid.",
-      "semantic_type": "date",
-      "synonyms": [
-        "payment date",
-        "settlement date",
-        "clearance date"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "day",
-      "default_aggregation": "MIN",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.invoice_amount": {
-      "name": "invoice_amount",
-      "description": "The total gross amount billed on the invoice in the invoice currency.",
-      "semantic_type": "amount",
-      "synonyms": [
-        "gross amount",
-        "billed amount",
-        "total invoice value",
-        "invoice total"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "SUM",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.paid_amount": {
-      "name": "paid_amount",
-      "description": "The total amount that has been paid against the invoice to date in the invoice currency.",
-      "semantic_type": "amount",
-      "synonyms": [
-        "amount paid",
-        "payment amount",
-        "settled amount"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "SUM",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.open_amount": {
-      "name": "open_amount",
-      "description": "The remaining unpaid balance on the invoice in the invoice currency.",
-      "semantic_type": "amount",
-      "synonyms": [
-        "outstanding amount",
-        "balance due",
-        "remaining amount",
-        "unpaid amount"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "SUM",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.currency_code": {
-      "name": "currency_code",
-      "description": "The ISO 4217 currency code in which the invoice amounts are denominated, such as USD, EUR, or GBP.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "currency",
-        "invoice currency",
-        "billing currency"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.ap_invoice.status": {
-      "name": "status",
-      "description": "The current payment status of the invoice, indicating whether it is fully paid, open, partially paid, or under dispute.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "invoice status",
-        "payment status",
-        "AP status"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": [
-        "PAID -> Fully Paid",
-        "OPEN -> Open / Unpaid",
-        "PARTIAL -> Partially Paid",
-        "DISPUTED -> Disputed"
-      ]
-    },
-    "lpp.ap_invoice.payment_terms": {
-      "name": "payment_terms",
-      "description": "The agreed payment terms specifying when the invoice is due, such as NET_30 for payment within 30 days or EOM_5 for payment 5 days after end of month.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "terms",
-        "payment conditions",
-        "credit terms",
-        "due terms"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": [
-        "NET_30 -> Net 30 Days",
-        "NET_45 -> Net 45 Days",
-        "NET_60 -> Net 60 Days",
-        "NET_90 -> Net 90 Days",
-        "EOM_5 -> End of Month + 5 Days"
-      ]
-    },
     "lpp.app_user.uuid": {
       "name": "uuid",
       "description": "Universally unique identifier serving as the primary key for each application user record.",
@@ -15610,507 +15379,6 @@
       "default_aggregation": "MAX",
       "value_aliases": []
     },
-    "lpp.third_party.uuid": {
-      "name": "uuid",
-      "description": "Universally unique identifier that serves as the primary key for each third-party record.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "third party ID",
-        "partner UUID",
-        "unique ID"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.third_party.code": {
-      "name": "code",
-      "description": "Business code assigned to each third party, such as a retail consumer aggregate code or a sequentially numbered customer code (e.g., TP_CUST_0001).",
-      "semantic_type": "code",
-      "synonyms": [
-        "partner code",
-        "customer code",
-        "third party code"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": [
-        "RETAIL_CONSUMER -> Aggregated Retail Consumer"
-      ]
-    },
-    "lpp.third_party.third_party_type": {
-      "name": "third_party_type",
-      "description": "Classifies the third party as an organization or another legal entity type.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "entity type",
-        "party type",
-        "counterparty type"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": [
-        "ORGANIZATION -> Organization"
-      ]
-    },
-    "lpp.third_party.name": {
-      "name": "name",
-      "description": "Full display name of the third party, such as a retail partner or aggregated consumer group (e.g., 'Macys Partner 1', 'Aggregated Retail Consumer').",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "partner name",
-        "company name",
-        "third party name",
-        "counterparty name"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.third_party.name2": {
-      "name": "name2",
-      "description": "Secondary or alternative name for the third party, used when a second legal or trading name is required.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "alternate name",
-        "second name",
-        "trading name"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.first_name": {
-      "name": "first_name",
-      "description": "First name of the individual contact associated with the third party, applicable when the party is a person rather than an organization.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "given name",
-        "forename"
-      ],
-      "is_pii": true,
-      "pii_type": "NAME",
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.last_name": {
-      "name": "last_name",
-      "description": "Last name or surname of the individual contact associated with the third party.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "surname",
-        "family name"
-      ],
-      "is_pii": true,
-      "pii_type": "NAME",
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.birth_date": {
-      "name": "birth_date",
-      "description": "Date of birth of the individual associated with the third party record, applicable for person-type parties.",
-      "semantic_type": "date",
-      "synonyms": [
-        "date of birth",
-        "DOB",
-        "birthday"
-      ],
-      "is_pii": true,
-      "pii_type": "DATE_OF_BIRTH",
-      "temporal_grain": "day",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.hidden": {
-      "name": "hidden",
-      "description": "Flag indicating whether the third party is hidden from standard user-facing views or lookups.",
-      "semantic_type": "flag",
-      "synonyms": [
-        "is hidden",
-        "hidden flag",
-        "visibility flag"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.third_party.closure_date": {
-      "name": "closure_date",
-      "description": "Date on which the third party relationship was officially closed or deactivated.",
-      "semantic_type": "date",
-      "synonyms": [
-        "closing date",
-        "termination date",
-        "deactivation date"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "day",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.creditor": {
-      "name": "creditor",
-      "description": "Flag indicating whether the third party acts as a creditor (i.e., the company owes money to this party).",
-      "semantic_type": "flag",
-      "synonyms": [
-        "is creditor",
-        "supplier flag",
-        "payable party"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.third_party.debtor": {
-      "name": "debtor",
-      "description": "Flag indicating whether the third party acts as a debtor (i.e., this party owes money to the company).",
-      "semantic_type": "flag",
-      "synonyms": [
-        "is debtor",
-        "customer flag",
-        "receivable party"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.third_party.non_resident": {
-      "name": "non_resident",
-      "description": "Flag indicating whether the third party is classified as a non-resident entity for regulatory or tax purposes.",
-      "semantic_type": "flag",
-      "synonyms": [
-        "is non-resident",
-        "foreign party flag",
-        "non-resident flag"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.third_party.corp_id_code": {
-      "name": "corp_id_code",
-      "description": "Corporate identification code assigned to the third party, such as a company registration or legal entity identifier.",
-      "semantic_type": "code",
-      "synonyms": [
-        "company ID",
-        "corporate ID",
-        "legal entity code",
-        "registration number"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.other_identifier": {
-      "name": "other_identifier",
-      "description": "Flexible structured field storing additional identifiers for the third party in a semi-structured format.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "additional identifier",
-        "extra ID",
-        "alternate identifier"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.creditor_tax_id": {
-      "name": "creditor_tax_id",
-      "description": "Tax identification number used when the third party is acting as a creditor for tax reporting purposes.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "tax ID",
-        "TIN",
-        "VAT number",
-        "fiscal ID"
-      ],
-      "is_pii": true,
-      "pii_type": "TAX_ID",
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.creditor_tax_registration_id": {
-      "name": "creditor_tax_registration_id",
-      "description": "Tax registration identifier for the third party in its role as a creditor, used for official tax filings.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "tax registration number",
-        "VAT registration ID",
-        "fiscal registration ID"
-      ],
-      "is_pii": true,
-      "pii_type": "TAX_ID",
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.creditor_tax_type": {
-      "name": "creditor_tax_type",
-      "description": "Classification of the tax regime or tax type applicable to the third party in its creditor role.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "tax category",
-        "tax classification",
-        "VAT type"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "COUNT",
-      "value_aliases": []
-    },
-    "lpp.third_party.creditor_agent_instruction": {
-      "name": "creditor_agent_instruction",
-      "description": "Special handling or payment instruction provided for the creditor's agent when processing transactions.",
-      "semantic_type": "free_text",
-      "synonyms": [
-        "payment instruction",
-        "agent instruction",
-        "creditor instruction"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.link_number_ref": {
-      "name": "link_number_ref",
-      "description": "Reference code linking the third party to an associated account or record in an external system.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "link number",
-        "link reference",
-        "external link"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.portfolio_ref": {
-      "name": "portfolio_ref",
-      "description": "Reference to the portfolio to which this third party is assigned for grouping or management purposes.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "portfolio reference",
-        "portfolio code",
-        "portfolio ID"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.folder_ref": {
-      "name": "folder_ref",
-      "description": "Reference to an organizational folder or category used to group third parties in the system.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "folder reference",
-        "folder code",
-        "category reference"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.limit_currency_ref": {
-      "name": "limit_currency_ref",
-      "description": "Currency code used as the reference currency for evaluating transaction limits applied to the third party (e.g., EUR).",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "limit currency",
-        "reference currency",
-        "exposure currency"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.transaction_entry_limit": {
-      "name": "transaction_entry_limit",
-      "description": "Maximum monetary amount allowed per individual transaction entry for this third party, expressed in the limit currency.",
-      "semantic_type": "amount",
-      "synonyms": [
-        "transaction limit",
-        "entry limit",
-        "single transaction cap"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "MAX",
-      "value_aliases": []
-    },
-    "lpp.third_party.transaction_max_number": {
-      "name": "transaction_max_number",
-      "description": "Maximum number of transactions permitted for this third party within a defined control period.",
-      "semantic_type": "measure",
-      "synonyms": [
-        "max transaction count",
-        "transaction count limit",
-        "transaction cap"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "MAX",
-      "value_aliases": []
-    },
-    "lpp.third_party.company_selection": {
-      "name": "company_selection",
-      "description": "Defines the scope of companies that can access or transact with this third party record.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "company scope",
-        "entity selection",
-        "company access"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.used_by_company_ref": {
-      "name": "used_by_company_ref",
-      "description": "Reference to the specific company that has primary usage or ownership of this third party record.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "owning company",
-        "company reference",
-        "using entity"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.used_by_companies": {
-      "name": "used_by_companies",
-      "description": "Structured list of all companies that are permitted to use or reference this third party record.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "associated companies",
-        "company list",
-        "permitted companies"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.company_ownership_ref": {
-      "name": "company_ownership_ref",
-      "description": "Reference identifying the company that owns or is legally responsible for this third party record.",
-      "semantic_type": "identifier",
-      "synonyms": [
-        "owning entity",
-        "ownership reference",
-        "legal owner"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.address": {
-      "name": "address",
-      "description": "Structured address information for the third party, including street, city, country and postal details.",
-      "semantic_type": "free_text",
-      "synonyms": [
-        "mailing address",
-        "postal address",
-        "business address"
-      ],
-      "is_pii": true,
-      "pii_type": "ADDRESS",
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.contact": {
-      "name": "contact",
-      "description": "Structured contact details for the third party, such as phone numbers and email addresses.",
-      "semantic_type": "free_text",
-      "synonyms": [
-        "contact details",
-        "contact information",
-        "communication details"
-      ],
-      "is_pii": true,
-      "pii_type": "CONTACT_INFO",
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.memo": {
-      "name": "memo",
-      "description": "Free-text notes or remarks recorded against the third party for internal reference purposes.",
-      "semantic_type": "free_text",
-      "synonyms": [
-        "notes",
-        "remarks",
-        "comments",
-        "annotation"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
-    "lpp.third_party.user_zones": {
-      "name": "user_zones",
-      "description": "Structured field storing user-defined zone or segmentation attributes associated with the third party.",
-      "semantic_type": "dimension",
-      "synonyms": [
-        "custom zones",
-        "user segments",
-        "user-defined fields"
-      ],
-      "is_pii": false,
-      "pii_type": null,
-      "temporal_grain": "none",
-      "default_aggregation": "NONE",
-      "value_aliases": []
-    },
     "lpp.third_party_bank_account.uuid": {
       "name": "uuid",
       "description": "Unique system-generated identifier for each third-party bank account record.",
@@ -17781,6 +17049,727 @@
       "value_aliases": [
         "USD -> US Dollar"
       ]
+    },
+    "lpp.ap_invoice.uuid": {
+      "name": "uuid",
+      "description": "Unique system-generated identifier for each accounts payable invoice record.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "invoice ID",
+        "AP invoice key",
+        "record ID"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.invoice_number": {
+      "name": "invoice_number",
+      "description": "Human-readable reference number assigned to each accounts payable invoice, formatted with an 'AP-' prefix followed by a sequential numeric code.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "AP number",
+        "invoice reference",
+        "invoice ID",
+        "AP invoice number"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.company_ref": {
+      "name": "company_ref",
+      "description": "Code identifying the legal entity or subsidiary of the company that received and owns the invoice, representing different country operations and holding structures.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "legal entity",
+        "company code",
+        "entity code",
+        "subsidiary"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": [
+        "GR_AU -> Australia",
+        "GR_FR -> France",
+        "GR_BR -> Brazil",
+        "GR_DE -> Germany",
+        "GR_JP -> Japan",
+        "GR_GB -> United Kingdom",
+        "GR_MX -> Mexico",
+        "GR_HK -> Hong Kong",
+        "GR_SE -> Sweden",
+        "GR_PL -> Poland",
+        "GR_US_INC -> United States (Inc)",
+        "GR_CA -> Canada",
+        "GR_IT -> Italy",
+        "GR_TREASURY -> Treasury",
+        "GR_HOLDINGS -> Holdings",
+        "GR_KR -> South Korea",
+        "GR_ES -> Spain",
+        "GR_AE -> United Arab Emirates"
+      ]
+    },
+    "lpp.ap_invoice.vendor_ref": {
+      "name": "vendor_ref",
+      "description": "Code identifying the supplier or vendor who issued the invoice, grouped by spend category such as CAPEX, IT, and Marketing.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "supplier code",
+        "vendor code",
+        "supplier reference",
+        "payee"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.issue_date": {
+      "name": "issue_date",
+      "description": "The date on which the invoice was issued by the vendor.",
+      "semantic_type": "date",
+      "synonyms": [
+        "invoice date",
+        "billing date",
+        "invoice creation date"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "day",
+      "default_aggregation": "MIN",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.due_date": {
+      "name": "due_date",
+      "description": "The date by which payment on the invoice is contractually required.",
+      "semantic_type": "date",
+      "synonyms": [
+        "payment due date",
+        "maturity date",
+        "deadline"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "day",
+      "default_aggregation": "MIN",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.paid_date": {
+      "name": "paid_date",
+      "description": "The date on which the invoice was fully or partially paid; null when no payment has been made yet.",
+      "semantic_type": "date",
+      "synonyms": [
+        "payment date",
+        "settlement date",
+        "clearance date"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "day",
+      "default_aggregation": "MIN",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.invoice_amount": {
+      "name": "invoice_amount",
+      "description": "The total gross amount billed on the invoice in the invoice currency.",
+      "semantic_type": "amount",
+      "synonyms": [
+        "billed amount",
+        "gross amount",
+        "invoice total",
+        "invoice value"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "SUM",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.paid_amount": {
+      "name": "paid_amount",
+      "description": "The total amount that has been paid against the invoice to date in the invoice currency.",
+      "semantic_type": "amount",
+      "synonyms": [
+        "amount paid",
+        "payment amount",
+        "settled amount"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "SUM",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.open_amount": {
+      "name": "open_amount",
+      "description": "The remaining unpaid balance on the invoice in the invoice currency.",
+      "semantic_type": "amount",
+      "synonyms": [
+        "outstanding balance",
+        "unpaid amount",
+        "remaining balance",
+        "balance due"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "SUM",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.currency_code": {
+      "name": "currency_code",
+      "description": "The ISO 4217 currency code in which the invoice amounts are denominated.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "currency",
+        "billing currency",
+        "invoice currency"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": []
+    },
+    "lpp.ap_invoice.status": {
+      "name": "status",
+      "description": "The current payment status of the invoice, indicating whether it is fully paid, open, partially paid, or under dispute.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "invoice status",
+        "payment status",
+        "AP status"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": [
+        "PAID -> Paid",
+        "OPEN -> Open",
+        "PARTIAL -> Partially Paid",
+        "DISPUTED -> Disputed"
+      ]
+    },
+    "lpp.ap_invoice.payment_terms": {
+      "name": "payment_terms",
+      "description": "The agreed payment terms specifying the number of days or end-of-month schedule within which the invoice must be paid.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "terms",
+        "payment conditions",
+        "net terms",
+        "credit terms"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": [
+        "NET_30 -> Net 30 Days",
+        "NET_45 -> Net 45 Days",
+        "NET_60 -> Net 60 Days",
+        "NET_90 -> Net 90 Days",
+        "EOM_5 -> End of Month + 5 Days"
+      ]
+    },
+    "lpp.third_party.uuid": {
+      "name": "uuid",
+      "description": "Universally unique identifier that serves as the primary key for each third-party record.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "third party ID",
+        "party UUID",
+        "unique ID"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": []
+    },
+    "lpp.third_party.code": {
+      "name": "code",
+      "description": "Business code uniquely identifying a third party, such as a customer or apparel manufacturer (e.g., RETAIL_CONSUMER, TP_CUST_0001).",
+      "semantic_type": "code",
+      "synonyms": [
+        "party code",
+        "customer code",
+        "third party reference"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": []
+    },
+    "lpp.third_party.third_party_type": {
+      "name": "third_party_type",
+      "description": "Classification of the third party indicating whether it is an individual or an organization; currently all records are of type ORGANIZATION.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "party type",
+        "entity type",
+        "counterparty type"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": [
+        "ORGANIZATION -> Organization"
+      ]
+    },
+    "lpp.third_party.name": {
+      "name": "name",
+      "description": "Full display name of the third party, such as a retail partner or manufacturer (e.g., Macys Partner 1, Casablanca Apparel Mfg 80).",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "party name",
+        "company name",
+        "counterparty name"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "COUNT",
+      "value_aliases": []
+    },
+    "lpp.third_party.name2": {
+      "name": "name2",
+      "description": "Secondary or alternate name for the third party, used when a single name field is insufficient.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "alternate name",
+        "secondary name",
+        "trade name"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.first_name": {
+      "name": "first_name",
+      "description": "First name of the individual contact associated with the third party, applicable when the party represents a person.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "given name",
+        "forename"
+      ],
+      "is_pii": true,
+      "pii_type": "name",
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.last_name": {
+      "name": "last_name",
+      "description": "Last name or surname of the individual contact associated with the third party.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "surname",
+        "family name"
+      ],
+      "is_pii": true,
+      "pii_type": "name",
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.birth_date": {
+      "name": "birth_date",
+      "description": "Date of birth of the individual associated with the third party, applicable for person-type parties.",
+      "semantic_type": "date",
+      "synonyms": [
+        "date of birth",
+        "DOB"
+      ],
+      "is_pii": true,
+      "pii_type": "date_of_birth",
+      "temporal_grain": "day",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.hidden": {
+      "name": "hidden",
+      "description": "Flag indicating whether the third party is hidden from standard views or user interfaces.",
+      "semantic_type": "flag",
+      "synonyms": [
+        "hidden flag",
+        "visibility flag",
+        "suppressed"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.closure_date": {
+      "name": "closure_date",
+      "description": "Date on which the third party account or relationship was officially closed.",
+      "semantic_type": "date",
+      "synonyms": [
+        "closing date",
+        "termination date",
+        "end date"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "day",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.creditor": {
+      "name": "creditor",
+      "description": "Flag indicating whether the third party acts as a creditor (i.e., the company owes money to this party).",
+      "semantic_type": "flag",
+      "synonyms": [
+        "is creditor",
+        "supplier flag",
+        "payable party"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.debtor": {
+      "name": "debtor",
+      "description": "Flag indicating whether the third party acts as a debtor (i.e., this party owes money to the company).",
+      "semantic_type": "flag",
+      "synonyms": [
+        "is debtor",
+        "customer flag",
+        "receivable party"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.non_resident": {
+      "name": "non_resident",
+      "description": "Flag indicating whether the third party is classified as a non-resident entity for tax or regulatory purposes.",
+      "semantic_type": "flag",
+      "synonyms": [
+        "foreign entity",
+        "non-resident flag",
+        "offshore party"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.corp_id_code": {
+      "name": "corp_id_code",
+      "description": "Corporate identification code assigned to the third party, such as a company registration number.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "company registration number",
+        "corporate ID",
+        "business ID"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.other_identifier": {
+      "name": "other_identifier",
+      "description": "Additional structured identifiers for the third party stored as a flexible key-value object.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "additional IDs",
+        "extra identifiers",
+        "supplementary references"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.creditor_tax_id": {
+      "name": "creditor_tax_id",
+      "description": "Tax identification number of the third party when acting as a creditor, used for fiscal reporting.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "tax ID",
+        "VAT number",
+        "fiscal ID"
+      ],
+      "is_pii": true,
+      "pii_type": "tax_id",
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.creditor_tax_registration_id": {
+      "name": "creditor_tax_registration_id",
+      "description": "Tax registration identifier of the third party as a creditor, which may differ from the tax ID in certain jurisdictions.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "tax registration number",
+        "fiscal registration ID"
+      ],
+      "is_pii": true,
+      "pii_type": "tax_id",
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.creditor_tax_type": {
+      "name": "creditor_tax_type",
+      "description": "Classification of the tax regime or type applicable to the third party as a creditor.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "tax category",
+        "tax classification",
+        "fiscal type"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.creditor_agent_instruction": {
+      "name": "creditor_agent_instruction",
+      "description": "Special payment or processing instructions associated with the creditor third party for use by payment agents.",
+      "semantic_type": "free_text",
+      "synonyms": [
+        "payment instruction",
+        "agent note",
+        "creditor instruction"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.link_number_ref": {
+      "name": "link_number_ref",
+      "description": "Reference code linking this third party to an external or related record in another system.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "link reference",
+        "external link number",
+        "cross-reference"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.portfolio_ref": {
+      "name": "portfolio_ref",
+      "description": "Reference to the portfolio grouping to which this third party belongs.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "portfolio code",
+        "portfolio reference"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.folder_ref": {
+      "name": "folder_ref",
+      "description": "Reference to the folder or organizational grouping used to categorize this third party.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "folder code",
+        "filing reference",
+        "category folder"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.limit_currency_ref": {
+      "name": "limit_currency_ref",
+      "description": "Currency in which transaction limits for this third party are expressed (e.g., EUR).",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "limit currency",
+        "currency code",
+        "transaction limit currency"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.transaction_entry_limit": {
+      "name": "transaction_entry_limit",
+      "description": "Maximum monetary amount allowed per transaction entry for this third party, expressed in the limit currency.",
+      "semantic_type": "amount",
+      "synonyms": [
+        "entry limit",
+        "transaction cap",
+        "max transaction amount"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "MAX",
+      "value_aliases": []
+    },
+    "lpp.third_party.transaction_max_number": {
+      "name": "transaction_max_number",
+      "description": "Maximum number of transactions permitted for this third party within a defined period.",
+      "semantic_type": "measure",
+      "synonyms": [
+        "max transaction count",
+        "transaction volume limit"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "MAX",
+      "value_aliases": []
+    },
+    "lpp.third_party.company_selection": {
+      "name": "company_selection",
+      "description": "Rule or criteria that determines which companies within the organization can interact with this third party.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "company filter",
+        "entity selection",
+        "company scope"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.used_by_company_ref": {
+      "name": "used_by_company_ref",
+      "description": "Reference to the primary company that uses or manages this third party relationship.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "owning company",
+        "managing company reference"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.used_by_companies": {
+      "name": "used_by_companies",
+      "description": "Structured list of companies that are authorized to use or transact with this third party.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "authorized companies",
+        "company list",
+        "associated entities"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.company_ownership_ref": {
+      "name": "company_ownership_ref",
+      "description": "Reference to the company that owns or has primary accountability for this third party record.",
+      "semantic_type": "identifier",
+      "synonyms": [
+        "owning entity",
+        "ownership reference",
+        "responsible company"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.address": {
+      "name": "address",
+      "description": "Structured address information for the third party, stored as a flexible object with fields such as street, city, and country.",
+      "semantic_type": "free_text",
+      "synonyms": [
+        "postal address",
+        "mailing address",
+        "business address"
+      ],
+      "is_pii": true,
+      "pii_type": "address",
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.contact": {
+      "name": "contact",
+      "description": "Contact details for the third party, such as phone number or email, stored as a structured object.",
+      "semantic_type": "free_text",
+      "synonyms": [
+        "contact details",
+        "contact information",
+        "communication details"
+      ],
+      "is_pii": true,
+      "pii_type": "contact_info",
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.memo": {
+      "name": "memo",
+      "description": "Free-text notes or remarks entered by users to provide additional context about the third party.",
+      "semantic_type": "free_text",
+      "synonyms": [
+        "notes",
+        "remarks",
+        "comments"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
+    },
+    "lpp.third_party.user_zones": {
+      "name": "user_zones",
+      "description": "Custom user-defined zone attributes associated with the third party, stored as a flexible structured object.",
+      "semantic_type": "dimension",
+      "synonyms": [
+        "custom zones",
+        "user attributes",
+        "user-defined fields"
+      ],
+      "is_pii": false,
+      "pii_type": null,
+      "temporal_grain": "none",
+      "default_aggregation": "NONE",
+      "value_aliases": []
     }
   },
   "tables": {
@@ -17838,20 +17827,6 @@
         "Acquirer KPIs",
         "Payment Processor Scorecard",
         "Acquirer Daily Stats"
-      ]
-    },
-    "lpp.ap_invoice": {
-      "fqn": "lpp.ap_invoice",
-      "description": "This table records accounts payable invoices received from vendors across all legal entities in the group, tracking the full payment lifecycle from issuance through to settlement. One row represents a single vendor invoice, with amounts split across total billed, paid, and open balances along with payment status and terms. Key identifiers include uuid (primary key), invoice_number, vendor_ref, and company_ref.",
-      "business_domain": "working_capital",
-      "table_type_override": "fact",
-      "grain": "One row per accounts payable invoice issued by a vendor to a company legal entity.",
-      "synonyms": [
-        "Vendor Invoices",
-        "Supplier Invoices",
-        "AP Invoices",
-        "Purchase Invoices",
-        "Payables"
       ]
     },
     "lpp.app_user": {
@@ -19044,20 +19019,6 @@
         "Concentration Rules"
       ]
     },
-    "lpp.third_party": {
-      "fqn": "lpp.third_party",
-      "description": "This table represents external counterparties (vendors, suppliers, retail partners, or customers) that the organization transacts with. One row represents a single third-party entity, which may act as a creditor, debtor, or both, and may be an organization or an individual. Key identifiers are uuid (primary key) and code (business code such as TP_CUST_0001 or RETAIL_CONSUMER), with name providing the display label.",
-      "business_domain": "reference",
-      "table_type_override": "dimension",
-      "grain": "One row per third-party entity (vendor, supplier, customer, or counterparty) registered in the system.",
-      "synonyms": [
-        "Counterparty Master",
-        "Vendor Master",
-        "Supplier Directory",
-        "Customer Register",
-        "Third Party Master"
-      ]
-    },
     "lpp.third_party_bank_account": {
       "fqn": "lpp.third_party_bank_account",
       "description": "This table stores bank account details for external third parties such as vendors, suppliers, or counterparties used for payment processing. One row represents a single bank account associated with a specific third party, identified by a combination of uuid and third_party_code, with currency and branch context. It supports payment routing by flagging the default account per third party.",
@@ -19252,6 +19213,34 @@
         "cash conversion cycle report",
         "AR AP metrics by entity",
         "working capital scorecard"
+      ]
+    },
+    "lpp.ap_invoice": {
+      "fqn": "lpp.ap_invoice",
+      "description": "This table represents accounts payable invoices received from external vendors across the company's legal entities. Each row captures a single invoice with its full lifecycle \u2014 from issuance through payment \u2014 including amounts billed, paid, and outstanding. Key identifiers are uuid (system key), invoice_number (business reference), company_ref (legal entity), and vendor_ref (supplier).",
+      "business_domain": "working_capital",
+      "table_type_override": "fact",
+      "grain": "One row per accounts payable invoice issued by a vendor to a company entity.",
+      "synonyms": [
+        "Supplier Invoices",
+        "Vendor Bills",
+        "AP Ledger",
+        "Purchase Invoices",
+        "Payables Register"
+      ]
+    },
+    "lpp.third_party": {
+      "fqn": "lpp.third_party",
+      "description": "This table is a master reference of all external counterparties the organization interacts with, including customers, vendors, and retail partners. Each row represents a single third-party organization (or person), capturing its identity, role (creditor/debtor), tax details, transaction limits, and contact information. Key identifiers are uuid (system key) and code (business reference such as TP_CUST_0001 or TP_APPAREL_0080).",
+      "business_domain": "reference",
+      "table_type_override": "dimension",
+      "grain": "One row per third-party counterparty (customer, vendor, or partner) known to the organization.",
+      "synonyms": [
+        "Counterparty Master",
+        "Vendor Master",
+        "Customer Master",
+        "Business Partner Directory",
+        "Third-Party Registry"
       ]
     }
   },

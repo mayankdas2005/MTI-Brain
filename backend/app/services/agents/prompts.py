@@ -1786,7 +1786,7 @@ RULES:
 - data_quality_concern: set to null UNLESS you are actively flagging a genuine anomaly. Populate only when: a single-entity/account balance (not an aggregated portfolio total) exceeds $1T, a percentage exceeds 10,000%, a count is negative, or a date falls outside 1990-2035. Aggregated portfolio totals of any size are normal — return null, not an explanation. If your conclusion is "this looks fine" or "no flag warranted", the field MUST be null. Never populate this field to explain why you are NOT flagging something.
 - key_finding: must contain the direct answer with a specific number. If no_data=YES, explain why in plain terms.
 - findings: max 5. Each observation must quote a specific value (number, entity, or date) from the data. If depth is "single_value", 1-2 findings maximum.
-- implication: business language only — never mention columns, tables, filters, or system mechanics.
+- implication: business language only — never mention columns, tables, filters, or system mechanics. Never describe data issues as "pipeline failure", "system failure", or "processing failure" — these are internal technical terms. Use instead: "data mapping gap", "missing data linkage", "data configuration issue", or simply "data gap".
 - what_if: only populate when a specific data value supports a plausible "if X then Y" scenario. Leave null if speculative.
 - data_gaps: only populate if a column is all-NULL or a key field is missing that would change the analysis.
 - staleness_note: populate only if TEMPORAL CONTEXT shows data older than 30 days. Format: "Positions as of [date], [N] days old."
@@ -2156,6 +2156,7 @@ LANGUAGE RULES:
   - Recommendations: imperative verb + named functional owner + expected outcome.
   - "May indicate" only when you state what data would confirm it.
   - Every recommendation has a "what if we don't" — cost, risk, or deadline.
+  - NEVER describe a data quality or data linkage issue as a "pipeline failure", "system failure", or "processing failure". These are internal technical terms that belong to engineering, not to a business briefing. Rephrase as: "data mapping gap", "data linkage issue", "data configuration gap", or similar business-facing language.
 
 ---
 
@@ -2491,39 +2492,32 @@ Do NOT summarise the SQL queries themselves — only the intent and findings.
 # ─── Confidence Grounding Judge ──────────────────────────────────────────────
 
 CONFIDENCE_JUDGE_PROMPT = """\
-Write one sentence explaining the reliability of this analytical result to a non-technical business user.
+You are verifying whether an analytical answer actually addresses the user's question.
 
-Confidence score: {score}/100 ({label})
+User question: {question}
 
-Question: {question}
+Answer: {answer}
 
-{data_profile}
+TASK: Score 0–100 how completely this answer addresses the question. Then write one plain-English sentence summarising what the result covers and any key caveat.
 
-DATA QUALITY SIGNALS (use these to inform the explanation — do not quote them verbatim):
-{business_signals}
+Scoring:
+- 80–100: Answer directly and completely addresses the question
+- 60–79: Answer addresses the question but with minor gaps or approximations
+- 40–59: Answer is partially relevant but misses key aspects of the question
+- 0–39: Answer does not address the question or contains no relevant data
 
-Answer excerpt: {answer}
-
-TASK: Write one sentence that tells the user:
-  1. What the result covers (direct answer, approximate match, or no data)
-  2. Whether they should verify before acting — and if so, what specifically to check
-
-RULES:
-- Never mention: SQL, queries, repairs, schema, joins, filters, database, or any technical term
-- Never start with "Confidence" or reference the score number
-- Write for a business user who just wants to know if they can trust this result
-- If score >= 80: focus on what it covers (positive framing)
-- If score 60-79: note the caveat and what to verify
-- If score < 60: name the specific limitation in plain business terms and recommend verification
+Sentence rules:
+- No technical terms (SQL, schema, query, database, joins)
+- Do not mention the score or use the word "confidence"
+- Write for a business user — one sentence, no bullet points
 
 Return ONLY valid JSON — no markdown:
-{{"explanation": "..."}}
+{{"score": <integer 0-100>, "explanation": "..."}}
 
 EXAMPLES:
-  {{"explanation": "Balance figures are current and directly answer your question."}}
-  {{"explanation": "Activity data may cover a slightly broader window than requested — verify the date range if precision matters."}}
-  {{"explanation": "All returned balances are $0 and account purpose is missing — confirm with treasury operations before acting on this."}}
-  {{"explanation": "No matching records found for the requested date; closest available period is shown instead."}}
+  {{"score": 92, "explanation": "Balance figures are current and directly answer your question."}}
+  {{"score": 68, "explanation": "Activity data may cover a slightly broader window than requested — verify the date range if precision matters."}}
+  {{"score": 30, "explanation": "No matching records found for the requested criteria — the result may be incomplete."}}
 """
 
 # ─── Temporal Expression Resolver (Tier 3.5) ─────────────────────────────────
@@ -2952,8 +2946,18 @@ Q4 "does this treasury position require action" -> measures=[] (judgment query, 
 
 
 FILTER_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
-    """You are a schema-bound filter extractor. You map user words to database columns — you never guess what a column's enum values are. The enum values are listed in the schema below; if a value is not there, you write the user's exact words as raw_user_value and let the downstream resolver handle it.
-Your single failure mode to avoid: emitting a WHERE clause with a value you invented from the question text. "USD" might be stored as "US Dollar", "INFLOW" might be stored as "IN". You never know — only the schema knows.
+    """You are a schema-bound filter extractor. You map user words to database columns.
+
+Two output fields exist for every filter:
+  raw_user_value: ALWAYS the user's exact words — never a DB code. Audit trail only.
+  db_value: the ACTUAL DB value from this column's metadata, when you are confident:
+    - User's term appears (case-insensitive) in all_values or known_values → emit that DB value exactly as listed
+    - User's term matches a human label in code_mappings (DB_CODE -> human name) → emit the DB_CODE (left side)
+    - Column all_values is a closed small enum AND one value clearly corresponds to the user's intent → emit it
+    - Otherwise: null. The downstream resolver handles it from raw_user_value.
+  Do NOT invent db_values. Only emit what you can directly see in the column metadata shown below.
+
+Your single failure mode to avoid: emitting a WHERE clause with a value you invented from the question text. "USD" might be stored as "US Dollar", "INFLOW" might be stored as "IN". You never know — only the schema knows. When you see the exact DB value in the metadata, use it via db_value. When you don't, leave db_value null.
 
 You identify FILTER CONDITIONS from the user's question.
 
@@ -3064,9 +3068,9 @@ GATE 2 — TIME DIRECTION PROOF:
   | CORRECT because | [projection needs historical data / user wants current/future data / etc.] |
 
 FILTER TABLE:
-  | Filter | Column exists in filterable_columns? | Column name | data_type check | Operator | raw_user_value |
-  |---|---|---|---|---|---|
-  | [entity/value] | YES — cite description / NO | [col] | [correct type?] | [op] | [exact user words] |
+  | Filter | Column exists in filterable_columns? | Column name | data_type check | Operator | raw_user_value | db_value visible in metadata? |
+  |---|---|---|---|---|---|---|
+  | [entity/value] | YES — cite description / NO | [col] | [correct type?] | [op] | [exact user words] | [DB value from all_values/code_mappings, or null] |
 
 DATE COLUMN SELECTION:
   | Field | Answer |
@@ -3096,7 +3100,7 @@ If a TIME_INPUT line exists in MISSION: use that window as the data read timefra
 <output>
 {{
   "filters": [
-    {{"table_fqn": "lpp.table", "column_name": "col", "operator": "=", "raw_user_value": "user's exact words"}}
+    {{"table_fqn": "lpp.table", "column_name": "col", "operator": "=", "raw_user_value": "user's exact words", "db_value": "EUROPE"}}
   ],
   "timeframe": "last_30_days | null",
   "temporal_grains": [],

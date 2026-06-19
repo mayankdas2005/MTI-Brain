@@ -361,6 +361,15 @@ async def stream_pipeline(
                                 "data": {"node": node, "tokens": _node_token_totals[_vk]},
                             }
 
+            # Capture state from ALL nodes regardless of UI visibility.
+            # query_compiler and filter_resolver have label:null so they're not in NODE_MESSAGE,
+            # but they're the only nodes that write semantic_ir_list — needed by
+            # _build_graph_context_snapshot and the done event's tables_used/complexity fields.
+            if kind == "on_chain_end" and node and ev.get("name") == node:
+                _early_out = ev.get("data", {}).get("output")
+                if isinstance(_early_out, dict):
+                    state.update({k: v for k, v in _early_out.items() if k in _STATE_KEYS})
+
             if node not in NODE_MESSAGE:
                 continue
 
