@@ -160,6 +160,7 @@ def _build_deep_analysis_sections(
     sensitivity_table: list[dict] | None,
     denominator_context: dict | None,
     temporal_projection: dict | None,
+    tribal_facts: list[dict] | None = None,
 ) -> str:
     """Build the deep analysis supplementary sections string injected into SYNTHESIS_PROMPT."""
     parts: list[str] = []
@@ -231,6 +232,18 @@ def _build_deep_analysis_sections(
         parts.append(
             "\n\n<details>\n<summary>Assumptions & Scope</summary>\n\n"
             + bullet_list
+            + "\n</details>"
+        )
+
+    # Tribal knowledge sources — list documents used so the reader can trace citations
+    if tribal_facts:
+        citation_lines = [
+            f"- **{f.get('label', 'Document')}**"
+            for f in tribal_facts[:6]
+        ]
+        parts.append(
+            "\n\n<details>\n<summary>Knowledge Sources</summary>\n\n"
+            + "\n".join(citation_lines)
             + "\n</details>"
         )
 
@@ -346,7 +359,21 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     )
 
     tribal_facts = state.get("tribal_facts") or []
-    if tribal_facts:
+    if tribal_facts and state.get("deep_analysis"):
+        fact_blocks = []
+        for f in tribal_facts[:6]:
+            label = f.get("label", "Document")
+            value = str(f.get("value", "")).strip()
+            fact_blocks.append(f"Document: {label}\n{value[:600]}")
+        tribal_facts_section = (
+            "TRIBAL KNOWLEDGE CONTEXT — WEAVE INTO YOUR NARRATIVE:\n"
+            "The following internal documents were retrieved because they are directly relevant "
+            "to this query. Explicitly reference specific thresholds, commitments, and decisions "
+            "from these documents where they contextualise or challenge the data findings. "
+            "Cite by document name (e.g. 'per Group Treasury Policy', 'per CFO meeting notes of 2026-05-29').\n\n"
+            + "\n\n---\n\n".join(fact_blocks)
+        )
+    elif tribal_facts:
         facts_text = "\n".join(
             f"  [{f.get('type', '')}] {f.get('label', '')} — {f.get('value', '')} (status: {f.get('status', 'active')})"
             for f in tribal_facts
@@ -442,6 +469,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         sensitivity_table=state.get("sensitivity_table") if is_deep else None,
         denominator_context=state.get("denominator_context") if is_deep else None,
         temporal_projection=state.get("temporal_projection") if is_deep else None,
+        tribal_facts=tribal_facts if is_deep else None,
     ) if is_deep else ""
 
     # ── Phase 2: Answer Writing (Sonnet — quality, insight-facing) ───────────
