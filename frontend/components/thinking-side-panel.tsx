@@ -118,24 +118,36 @@ export function ThinkingSidePanel() {
       </div>
 
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <Brain className="w-4 h-4 text-primary shrink-0" />
+      <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-border shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Brain className="w-[18px] h-[18px] text-primary shrink-0" />
           <div className="min-w-0 truncate">
             {message.isStreaming ? (
               <ThinkingWords label={activeLabel} />
             ) : (
-              <span className="text-sm font-medium text-foreground">
+              <span className="text-base font-semibold tracking-[-0.02em] text-foreground">
                 Reasoning
                 {message.metadata_?.duration_ms != null &&
-                  ` · ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+                  <span className="text-sm font-normal text-muted-foreground ml-2">{(message.metadata_.duration_ms / 1000).toFixed(1)}s</span>}
+                {(() => {
+                  const tok = message.metadata_?.token_usage?.total_tokens
+                    ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                  if (!tok) return null;
+                  const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                  return (
+                    <>
+                      <span className="text-foreground/30">·</span>
+                      <span className="text-xs font-normal text-foreground/50 tabular-nums">{fmt} tokens</span>
+                    </>
+                  );
+                })()}
               </span>
             )}
           </div>
         </div>
         <button
           onClick={closePanel}
-          className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+          className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
           aria-label="Close thinking panel"
         >
           <X className="w-4 h-4" />
@@ -154,7 +166,7 @@ export function ThinkingSidePanel() {
       >
         {hasContent ? (
           hasSteps ? (
-            <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} />
+            <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} tokenUsage={message.metadata_?.token_usage} />
           ) : (
             <ReasoningContent
               isStreaming={message.isStreaming}

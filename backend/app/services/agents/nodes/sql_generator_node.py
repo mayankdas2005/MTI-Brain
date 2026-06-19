@@ -30,20 +30,23 @@ async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
         return {"sql_list": [], "error": "No IR to generate SQL from"}
 
     sql_list: list[str] = []
+    _cte_outline: str = ""
 
     for ir_dict in ir_list:
         ir = SemanticIR(**ir_dict)
         try:
-            sql = await generate_sql_llm(ir, semantic_context, state, config)
+            sql, cte_plan = await generate_sql_llm(ir, semantic_context, state, config)
             if not sql:
                 raise ValueError("LLM returned empty SQL")
             sql_list.append(sql)
+            if cte_plan and not _cte_outline:
+                _cte_outline = cte_plan
         except Exception as e:
             logger.error("sql_generator | LLM SQL generation failed | thread={} | error={}", state["thread_id"], e)
             sql_list.append("")
 
     first_sql = next((s for s in sql_list if s), None)
-    logger.info("sql_generator DONE | thread={} | sql_len={}", state["thread_id"], len(first_sql or ""))
+    logger.info("sql_generator DONE | thread={} | sql_len={} | cte_outline_len={}", state["thread_id"], len(first_sql or ""), len(_cte_outline))
 
     _pattern_nodes: list[dict] = []
     for _ap in (semantic_context.get("anti_patterns") or []):
@@ -64,6 +67,8 @@ async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
         result["neo4j_raw_graph"] = _neo4j_raw_graph
     if first_sql:
         result["prior_sql"] = first_sql
+    if _cte_outline:
+        result["_cte_outline"] = _cte_outline
     # Persist intra-turn caches so LangGraph keeps them across recompile invocations.
     if state.get("_sql_schema_ctx_cache") is not None:
         result["_sql_schema_ctx_cache"] = state["_sql_schema_ctx_cache"]

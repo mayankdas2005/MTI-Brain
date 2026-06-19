@@ -34,7 +34,7 @@ def _build_llm(model_arn: str) -> ChatBedrock:
         api_key=settings.AWS_BEARER_TOKEN_BEDROCK or None,
         region=region,
         streaming=True,
-        model_kwargs={"temperature": 0.0, "max_tokens": 8192},
+        model_kwargs={"temperature": 0.0, "max_tokens": 16384},
     )
 
 

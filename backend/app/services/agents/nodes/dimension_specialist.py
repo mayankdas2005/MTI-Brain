@@ -56,6 +56,7 @@ def _is_dimension(c: dict) -> bool:
 def _build_groupable_columns_section(enriched_schema: dict) -> str:
     columns = enriched_schema.get("columns") or []
     table_grains = enriched_schema.get("table_grains") or {}
+    table_row_counts = enriched_schema.get("table_row_counts") or {}
     groupable = [c for c in columns if _is_dimension(c)]
     if not groupable:
         return "(no groupable columns found)"
@@ -67,8 +68,10 @@ def _build_groupable_columns_section(enriched_schema: dict) -> str:
     lines = []
     for fqn, cols in by_table.items():
         grain = table_grains.get(fqn, "")
+        row_count = table_row_counts.get(fqn, 0)
         grain_note = f"  [grain: {grain[:100]}]" if grain else ""
-        lines.append(f"{fqn}{grain_note}")
+        row_note = f"  rows={row_count:,}" if row_count else ""
+        lines.append(f"{fqn}{grain_note}{row_note}")
         for c in cols:
             name = c.get("name", "")
             sem = c.get("semantic_type") or c.get("data_type", "")
@@ -114,6 +117,49 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
     _explicit = _query_plan.get("explicit_entities") or []
     _effective_entity_tokens = _explicit if _explicit else (state.get("entity_tokens") or [])
 
+    # ── Prior pattern injection ─────────────────────────────────────────────────
+    _sc   = state.get("semantic_context") or {}
+    _pat  = _sc.get("_matched_pattern")
+    _pat2 = _sc.get("_matched_pattern_second")
+    _anti = _sc.get("_matched_anti_patterns") or []
+    _tier = _sc.get("_matched_pattern_tier")
+
+    prior_verified_section = ""
+    prior_trace_row = ""
+
+    if _pat and _tier in ("exact", "strong") and _pat.get("dimension_summary"):
+        _corroboration = ""
+        if _pat2 and _pat2.get("dimension_summary"):
+            _corroboration = f"\nCORROBORATED BY 2nd pattern: {_pat2['dimension_summary']}"
+        _anti_sql_lines = "\n".join(
+            f"Prior SQL error: {a.get('error_type', 'error')} on {a.get('failing_element', 'unknown')}"
+            for a in _anti if a.get("error_type")
+        )
+        verb = "EXACT MATCH" if _tier == "exact" else "STRONG MATCH"
+        prior_verified_section = (
+            f"<prior_pattern>\n"
+            f"Similar question: \"{_pat.get('question_text', '')}\"\n"
+            f"{verb} — Prior verified dimension interpretation:\n"
+            f"  {_pat['dimension_summary']}{_corroboration}\n"
+            + (f"Note — similar questions had SQL errors (not interpretation errors):\n{_anti_sql_lines}\n" if _anti_sql_lines else "")
+            + "Keep this in mind as you fill the DBA TRACE below. "
+            "Adopt if the current question aligns. If different, explain the deviation in <reasoning>.\n"
+            "</prior_pattern>"
+        )
+        prior_trace_row = (
+            f"| **[PRIOR — consider]** {_pat['dimension_summary']} "
+            f"| — | — | — | {_tier} match — adopt or explain deviation |\n"
+        )
+    elif _anti:
+        _anti_sql_lines = "\n".join(
+            f"SQL error: {a.get('error_type', 'error')} on {a.get('failing_element', 'unknown')}"
+            for a in _anti if a.get("error_type")
+        )
+        if _anti_sql_lines:
+            prior_verified_section = (
+                f"<prior_failed>\nSimilar questions previously had SQL errors (interpretation may still be correct):\n{_anti_sql_lines}\n</prior_failed>"
+            )
+
     prompt = DIMENSION_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -124,6 +170,8 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         measures_summary=measures_summary,
         query_plan_section=_build_query_plan_section(state.get("query_plan")),
         entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
+        prior_verified_section=prior_verified_section,
+        prior_trace_row=prior_trace_row,
     )
     _mission = build_mission_context(
         state,
@@ -155,6 +203,10 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
     try:
         import json_repair
         parsed = json_repair.loads(json_str)
+        if isinstance(parsed, list):
+            parsed = parsed[0] if parsed else {}
+        if not isinstance(parsed, dict):
+            raise ValueError(f"unexpected type {type(parsed).__name__}")
     except Exception:
         logger.warning("dimension_specialist | JSON parse failed | thread={} | raw={}", state.get("thread_id"), raw[:200])
         return {"specialist_outputs": [{"type": "dimensions", "dimensions": []}]}
@@ -164,8 +216,15 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         "dimensions": parsed.get("dimensions", []),
         "dimension_directive": parsed.get("dimension_directive", ""),
     }
+    dim_cols = [d.get("column_name") for d in result["dimensions"]]
+    dim_summary = " | ".join(
+        f"{(d.get('table_fqn') or '').split('.')[-1]}.{d.get('column_name')} → {d.get('alias', '')}"
+        for d in result["dimensions"] if d.get("column_name")
+    ) or (parsed.get("dimension_directive") or "none")[:200]
+
     logger.info(
-        "dimension_specialist DONE | thread={} | dimensions={}",
-        state.get("thread_id"), [d.get("column_name") for d in result["dimensions"]],
+        "dimension_specialist DONE | thread={} | dimensions={} | prior_tier={}",
+        state.get("thread_id"), dim_cols,
+        (_sc.get("_matched_pattern_tier") or "none"),
     )
-    return {"specialist_outputs": [result]}
+    return {"specialist_outputs": [result], "_dimension_specialist_output": dim_summary}

@@ -59,10 +59,13 @@ def _build_tables_section(semantic_context: dict) -> str:
         _col = col_summary.get(fqn) or {}
         _measures = _col.get("measure_cols") or []
         _dates = _col.get("date_cols") or []
+        _row_count = t.get("row_count") or 0
         if _measures:
             line += f"\n    measures: {', '.join(_measures)}"
         if _dates:
             line += f"\n    dates: {', '.join(_dates)}"
+        if _row_count:
+            line += f"\n    row_count: {_row_count:,}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -94,79 +97,12 @@ def _build_entity_hints_section(semantic_context: dict) -> str:
 
 
 _COMPLEXITY_CAPS = {
-    "simple":   {"llm": 4, "bt": 3, "intent": 2, "domain": 1},
-    "complex":  {"llm": 7, "bt": 4, "intent": 3, "domain": 2},
-    "advanced": {"llm": 8, "bt": 5, "intent": 4, "domain": 2},
+    "simple":   {"llm": 2, "bt": 1, "intent": 1, "domain": 1},
+    "complex":  {"llm": 3, "bt": 2, "intent": 1, "domain": 1},
+    "advanced": {"llm": 4, "bt": 2, "intent": 2, "domain": 1},
 }
 
 
-def _existing_anchors_have_dates(existing_fqns: set, candidate_col_summary: dict) -> bool:
-    for fqn in existing_fqns:
-        if candidate_col_summary.get(fqn, {}).get("date_cols"):
-            return True
-    return False
-
-
-def _has_unique_measures(candidate_fqn: str, existing_fqns: set, candidate_col_summary: dict) -> bool:
-    candidate_measures = set(candidate_col_summary.get(candidate_fqn, {}).get("measure_cols") or [])
-    if not candidate_measures:
-        return False
-    existing_measures: set = set()
-    for fqn in existing_fqns:
-        existing_measures.update(candidate_col_summary.get(fqn, {}).get("measure_cols") or [])
-    return bool(candidate_measures - existing_measures)
-
-
-_PERIODIC_GRAIN_MARKERS = (
-    "balance date", "balance_date",
-    "period date", "period_date",
-    "reporting date", "reporting_date",
-    "effective date", "effective_date",
-    "as of date", "as_of_date",
-    "per period",
-    "end of period",
-    "end of month",
-    "end of quarter",
-    "snapshot",
-)
-
-
-def _is_periodic_grain(fqn: str, table_meta: dict) -> bool:
-    """True when the table stores one row per entity per period (not per event).
-
-    Checks typical_join_role first; falls back to grain text keyword matching so tables
-    with role='anchor' or other non-standard roles (e.g. cash_balance) are still caught.
-    """
-    t = table_meta.get(fqn) or {}
-    role = (t.get("typical_join_role") or t.get("table_type") or "").lower()
-    if role in ("aggregate", "snapshot", "periodic"):
-        return True
-    grain = (t.get("grain") or "").lower()
-    return any(m in grain for m in _PERIODIC_GRAIN_MARKERS)
-
-
-_FANOUT_MIN_ROWS = 1000
-_FANOUT_MIN_FACTOR = 10.0
-
-
-def _is_fanout_join(fqn: str, candidate_col_summary: dict, table_meta: dict) -> bool:
-    """True when joining this table on its identifier column would multiply rows >= 10x.
-
-    Uses n_distinct from identifier columns (absolute cardinality count from PostgreSQL stats).
-    Only fires for tables with > 1000 rows — ignores tiny reference tables.
-    Independent of grain-gate: catches any high-fan-out table regardless of typical_join_role.
-    """
-    identifier_cols = candidate_col_summary.get(fqn, {}).get("identifier_cols") or []
-    if not identifier_cols:
-        return False
-    row_count = (table_meta.get(fqn) or {}).get("row_count") or 0
-    if row_count < _FANOUT_MIN_ROWS:
-        return False
-    for col_info in identifier_cols:
-        n_dist = col_info.get("n_distinct") or 0
-        if n_dist > 0 and row_count / n_dist > _FANOUT_MIN_FACTOR:
-            return True
-    return False
 
 
 def _inject_signal_tables(
@@ -242,27 +178,6 @@ def _inject_signal_tables(
                 break
             if fqn and fqn not in valid_anchors and fqn not in to_add:
                 if _joinable(fqn):
-                    _all_selected = set(valid_anchors) | set(to_add)
-                    if (_existing_anchors_have_dates(_all_selected, candidate_col_summary) and
-                            not _has_unique_measures(fqn, _all_selected, candidate_col_summary)):
-                        logger.info(
-                            "anchor_resolver | col_gate_blocked | fqn={} | signal=bt | reason=dates_covered_no_unique_measures",
-                            fqn,
-                        )
-                        continue
-                    if (_existing_anchors_have_dates(_all_selected, candidate_col_summary) and
-                            _is_periodic_grain(fqn, table_meta)):
-                        logger.info(
-                            "anchor_resolver | grain_gate_blocked | fqn={} | signal=bt | role={}",
-                            fqn, (table_meta.get(fqn) or {}).get("typical_join_role", ""),
-                        )
-                        continue
-                    if _is_fanout_join(fqn, candidate_col_summary, table_meta):
-                        logger.info(
-                            "anchor_resolver | fanout_gate_blocked | fqn={} | signal=bt",
-                            fqn,
-                        )
-                        continue
                     to_add.append(fqn)
                     bt_added += 1
                     logger.info("anchor_resolver | bt_injected | {} from '{}'", fqn, term.get("term"))
@@ -276,27 +191,6 @@ def _inject_signal_tables(
             break
         if fqn and fqn not in valid_anchors and fqn not in to_add:
             if _joinable(fqn):
-                _all_selected = set(valid_anchors) | set(to_add)
-                if (_existing_anchors_have_dates(_all_selected, candidate_col_summary) and
-                        not _has_unique_measures(fqn, _all_selected, candidate_col_summary)):
-                    logger.info(
-                        "anchor_resolver | col_gate_blocked | fqn={} | signal=intent | reason=dates_covered_no_unique_measures",
-                        fqn,
-                    )
-                    continue
-                if (_existing_anchors_have_dates(_all_selected, candidate_col_summary) and
-                        _is_periodic_grain(fqn, table_meta)):
-                    logger.info(
-                        "anchor_resolver | grain_gate_blocked | fqn={} | signal=intent | role={}",
-                        fqn, (table_meta.get(fqn) or {}).get("typical_join_role", ""),
-                    )
-                    continue
-                if _is_fanout_join(fqn, candidate_col_summary, table_meta):
-                    logger.info(
-                        "anchor_resolver | fanout_gate_blocked | fqn={} | signal=intent",
-                        fqn,
-                    )
-                    continue
                 to_add.append(fqn)
                 intent_added += 1
                 logger.info("anchor_resolver | intent_injected | {}", fqn)
@@ -310,27 +204,6 @@ def _inject_signal_tables(
             break
         if fqn and fqn not in valid_anchors and fqn not in to_add:
             if _joinable(fqn):
-                _all_selected = set(valid_anchors) | set(to_add)
-                if (_existing_anchors_have_dates(_all_selected, candidate_col_summary) and
-                        not _has_unique_measures(fqn, _all_selected, candidate_col_summary)):
-                    logger.info(
-                        "anchor_resolver | col_gate_blocked | fqn={} | signal=domain | reason=dates_covered_no_unique_measures",
-                        fqn,
-                    )
-                    continue
-                if (_existing_anchors_have_dates(_all_selected, candidate_col_summary) and
-                        _is_periodic_grain(fqn, table_meta)):
-                    logger.info(
-                        "anchor_resolver | grain_gate_blocked | fqn={} | signal=domain | role={}",
-                        fqn, (table_meta.get(fqn) or {}).get("typical_join_role", ""),
-                    )
-                    continue
-                if _is_fanout_join(fqn, candidate_col_summary, table_meta):
-                    logger.info(
-                        "anchor_resolver | fanout_gate_blocked | fqn={} | signal=domain",
-                        fqn,
-                    )
-                    continue
                 to_add.append(fqn)
                 domain_added += 1
                 logger.info("anchor_resolver | domain_injected | {}", fqn)
@@ -355,27 +228,8 @@ def _inject_signal_tables(
                 rel = b.get("rel") or {}
                 hub_fqn = rel.get("hub_table_fqn")
                 if hub_fqn and hub_fqn not in result and rel.get("join_safe", True):
-                    _current_set = set(result)
-                    if (_existing_anchors_have_dates(_current_set, candidate_col_summary) and
-                            not _has_unique_measures(hub_fqn, _current_set, candidate_col_summary)):
-                        logger.info(
-                            "anchor_resolver | col_gate_blocked | fqn={} | signal=bridge | reason=dates_covered_no_unique_measures",
-                            hub_fqn,
-                        )
-                    elif (_existing_anchors_have_dates(_current_set, candidate_col_summary) and
-                            _is_periodic_grain(hub_fqn, table_meta)):
-                        logger.info(
-                            "anchor_resolver | grain_gate_blocked | fqn={} | signal=bridge | role={}",
-                            hub_fqn, (table_meta.get(hub_fqn) or {}).get("typical_join_role", ""),
-                        )
-                    elif _is_fanout_join(hub_fqn, candidate_col_summary, table_meta):
-                        logger.info(
-                            "anchor_resolver | fanout_gate_blocked | fqn={} | signal=bridge",
-                            hub_fqn,
-                        )
-                    else:
-                        result.append(hub_fqn)
-                        logger.info("anchor_resolver | community_bridge_injected | {} between communities {}", hub_fqn, distinct_communities)
+                    result.append(hub_fqn)
+                    logger.info("anchor_resolver | community_bridge_injected | {} between communities {}", hub_fqn, distinct_communities)
                 _raw_bridge_edges.append({
                     "_type": "BRIDGES_TO",
                     "from_community_id": b.get("from_id", ""),
@@ -389,8 +243,6 @@ def _inject_signal_tables(
         logger.warning("anchor_resolver | community_bridge_fetch failed | {} — skipping", e)
 
     # Signal 6: entity-FTS-pinned tables — tables pinned during context_fetcher per-entity FTS
-    # Col-gate + grain-gate applied: entity tokens often include domain/temporal terms (e.g. "quarterly")
-    # that match periodic tables — block those if dates are already covered.
     entity_pinned = semantic_context.get("entity_pinned_fqns") or set()
     ent_cap = 2
     ent_added = 0
@@ -403,27 +255,6 @@ def _inject_signal_tables(
             continue
         if not _joinable(fqn):
             logger.info("anchor_resolver | signal_rejected_not_joinable | fqn={} | signal=entity", fqn)
-            continue
-        _current_set = set(result)
-        if (_existing_anchors_have_dates(_current_set, candidate_col_summary) and
-                not _has_unique_measures(fqn, _current_set, candidate_col_summary)):
-            logger.info(
-                "anchor_resolver | col_gate_blocked | fqn={} | signal=entity | reason=dates_covered_no_unique_measures",
-                fqn,
-            )
-            continue
-        if (_existing_anchors_have_dates(_current_set, candidate_col_summary) and
-                _is_periodic_grain(fqn, table_meta)):
-            logger.info(
-                "anchor_resolver | grain_gate_blocked | fqn={} | signal=entity | role={}",
-                fqn, (table_meta.get(fqn) or {}).get("typical_join_role", ""),
-            )
-            continue
-        if _is_fanout_join(fqn, candidate_col_summary, table_meta):
-            logger.info(
-                "anchor_resolver | fanout_gate_blocked | fqn={} | signal=entity",
-                fqn,
-            )
             continue
         result.append(fqn)
         result_set.add(fqn)
@@ -446,6 +277,39 @@ def _build_intents_section(semantic_context: dict) -> str:
         f"  {i.get('name', '')}: {(i.get('description') or '')[:100]}"
         for i in intents
     )
+
+
+def _build_prior_anchor_section(semantic_context: dict) -> str:
+    pat  = semantic_context.get("_matched_pattern")
+    tier = semantic_context.get("_matched_pattern_tier")
+    if not pat or not tier or not pat.get("tables_used"):
+        return ""
+    tables   = pat.get("tables_used") or []
+    question = (pat.get("question_text") or pat.get("intent") or "")[:100]
+    if tier == "exact":
+        return (
+            f"<prior_anchor>\n"
+            f"EXACT MATCH — Similar question: \"{question}\"\n"
+            f"Prior verified anchor tables — use these unless a [business-term] or [entity] marker explicitly overrides:\n"
+            f"  {', '.join(tables)}\n"
+            f"</prior_anchor>"
+        )
+    elif tier == "strong":
+        return (
+            f"<prior_anchor>\n"
+            f"Similar question: \"{question}\"\n"
+            f"Prior verified anchor tables for a closely related question — start with these unless a DOMAIN line or entity marker points elsewhere:\n"
+            f"  {', '.join(tables)}\n"
+            f"</prior_anchor>"
+        )
+    else:
+        return (
+            f"<prior_anchor>\n"
+            f"Similar question: \"{question}\"\n"
+            f"A loosely similar question previously used these tables — consider them as candidates:\n"
+            f"  {', '.join(tables)}\n"
+            f"</prior_anchor>"
+        )
 
 
 async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict:
@@ -475,6 +339,8 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         if _query_intent_lines else ""
     )
 
+    _prior_anchor_section = _build_prior_anchor_section(semantic_context)
+
     anchor_prompt = ANCHOR_RESOLVER_PROMPT.format_messages(
         question=question,
         tables_section=_build_tables_section(semantic_context),
@@ -483,6 +349,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         intents_section=_build_intents_section(semantic_context),
         query_intent_section=query_intent_section,
+        prior_anchor_section=_prior_anchor_section,
     )
     _mission = build_mission_context(
         state,
@@ -539,6 +406,10 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     try:
         import json_repair
         parsed = json_repair.loads(json_str)
+        if isinstance(parsed, list):
+            parsed = parsed[0] if parsed else {}
+        if not isinstance(parsed, dict):
+            raise ValueError(f"unexpected type {type(parsed).__name__}")
     except Exception:
         logger.warning("anchor_resolver | JSON parse failed | thread={} | raw={}", state["thread_id"], raw[:200])
         return {"anchor_tables_resolved": [], "error": "anchor_resolver JSON parse failed"}
@@ -567,9 +438,12 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         query_plan.get("explicit_entities"),
     )
 
-    # Validate against known tables — drop hallucinated names
-    valid_anchors = [t for t in anchor_tables if t in valid_tables]
-    invalid = [t for t in anchor_tables if t not in valid_tables]
+    # Validate against known tables — drop hallucinated names.
+    # lpp.fx_rate is exempt: it has no FK path in Neo4j so it never appears in valid_tables,
+    # but the prompt rule tells the LLM to select it for any financial-amount question.
+    _FX_RATE_FQN = "lpp.fx_rate"
+    valid_anchors = [t for t in anchor_tables if t in valid_tables or t == _FX_RATE_FQN]
+    invalid = [t for t in anchor_tables if t not in valid_tables and t != _FX_RATE_FQN]
     if invalid:
         logger.warning("anchor_resolver | invalid_tables_dropped | {} | thread={}", invalid, state["thread_id"])
 
@@ -580,10 +454,20 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         complexity = "simple"
     llm_cap = _COMPLEXITY_CAPS[complexity]["llm"]
 
+    # Deterministic sort before cap: business-term tables first, then by row_count desc, then FQN alpha.
+    # Same LLM output always produces the same cap slice regardless of list order.
+    _bt_fqns    = {fqn for t in (semantic_context.get("business_terms") or []) for fqn in (t.get("related_table_fqns") or [])}
+    _row_counts = {t["fqn"]: t.get("row_count", 0) for t in (semantic_context.get("tables") or []) if t.get("fqn")}
+    valid_anchors = sorted(valid_anchors, key=lambda f: (0 if f in _bt_fqns else 1, -_row_counts.get(f, 0), f))
+    # lpp.fx_rate does not count against the cap — it's a conversion table, not a primary anchor.
+    # Save selection before cap, apply cap to non-fx tables only, then restore.
+    _llm_selected_fx = _FX_RATE_FQN in valid_anchors
+    _non_fx = [t for t in valid_anchors if t != _FX_RATE_FQN]
     # Hard cap on LLM selection — complexity-tiered: simple=4, complex=7, advanced=8
-    valid_anchors = valid_anchors[:llm_cap]
+    valid_anchors = _non_fx[:llm_cap] + ([_FX_RATE_FQN] if _llm_selected_fx else [])
 
     logger.info("anchor_resolver | llm_selected | tables={} | complexity={}", valid_anchors, complexity)
+    _llm_selected_anchors = list(valid_anchors)  # snapshot before signal injection
 
     # K2: for multi-domain queries (≥3 DOMAIN lines), expand domain_cap to cover all named domains
     _domain_lines = [l for l in (state.get("query_intent") or []) if l.startswith("DOMAIN:")]
@@ -601,9 +485,30 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         domain_cap_override=_domain_cap_override,
     )
 
+    # ── FX rate template join: Python reads the LLM's selection ─────────────────
+    # lpp.fx_rate has no JOINS_TO edge in Neo4j, but the prompt rule tells the LLM
+    # to always include it for monetary questions. The join is via the 2-CTE
+    # fx_latest template in sql_generator, not through any Neo4j path.
+    _fx_template_join = _FX_RATE_FQN in valid_anchors
+    if _fx_template_join:
+        _qi = list(state.get("query_intent") or [])
+        _fx_line = (
+            "FX: lpp.fx_rate required — "
+            "use 2-CTE pattern: fx_anchor (LEAST(CURRENT_DATE, MAX(rate_date)) AS ref) + fx_latest (AVG rate per base_currency within 14 days of ref); "
+            "join ON fx_latest.base_currency = src.<currency_col>; "
+            "both directions exist in the table; USD-to-USD row (rate=1.0) exists so USD accounts need no special handling; "
+            "rate_date filter: rate_date <= LEAST(CURRENT_DATE, MAX(rate_date)) anchor — never use CURRENT_DATE directly or ROW_NUMBER; "
+            "conversion: amount * rate = amount_usd (multiply); "
+            "do NOT filter on rate_type or source"
+        )
+        if not any("FX:" in l for l in _qi):
+            _qi.append(_fx_line)
+            state["query_intent"] = _qi
+        logger.info("anchor_resolver | fx_rate_template_join | thread={}", state["thread_id"])
+
     logger.info(
-        "anchor_resolver DONE | thread={} | complexity={} | llm_cap={} | anchor_tables={} | result_shape={} | intent={}",
-        state["thread_id"], complexity, llm_cap, valid_anchors, result_shape, intent_summary[:60],
+        "anchor_resolver DONE | thread={} | complexity={} | llm_cap={} | anchor_tables={} | fx_required={} | result_shape={} | intent={}",
+        state["thread_id"], complexity, llm_cap, valid_anchors, _fx_template_join, result_shape, intent_summary[:60],
     )
 
     # Accumulate STRUCTURALLY_SIMILAR edges for anchor tables (new query, read-only)
@@ -633,4 +538,6 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         "query_plan": query_plan,
         "resolved_intent": {**existing_resolved, "result_shape": result_shape, "anchor_tables": valid_anchors},
         "neo4j_raw_graph": neo4j_raw_graph,
+        "fx_rate_template_join": _fx_template_join,
+        "llm_selected_anchors": _llm_selected_anchors,
     }

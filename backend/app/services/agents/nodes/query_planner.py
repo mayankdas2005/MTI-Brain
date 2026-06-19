@@ -36,6 +36,8 @@ async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
     prompt = QUERY_PLANNER_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        available_tables_section="",
+        entity_tokens_section="",
     )
 
     @llm_breaker
@@ -61,17 +63,23 @@ async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
     try:
         import json_repair
         plan = json_repair.loads(json_str)
+        if isinstance(plan, list):
+            plan = plan[0] if plan else {}
+        if not isinstance(plan, dict):
+            raise ValueError(f"unexpected type {type(plan).__name__}")
     except Exception:
         logger.warning("query_planner | JSON parse failed (non-fatal) | thread={} | raw={}", state["thread_id"], raw[:200])
         return {"query_plan": None}
 
     logger.info(
-        "query_planner DONE | thread={} | output_cols={} | groupings={} | time_period={} | is_detail={} | entities={}",
+        "query_planner DONE | thread={} | output_cols={} | groupings={} | time_period={} | is_detail={} | entities={} | fx_required={} | output_slots={}",
         state["thread_id"],
         plan.get("expected_output_cols"),
         plan.get("required_groupings"),
         plan.get("required_time_period"),
         plan.get("is_detail_request"),
         plan.get("explicit_entities"),
+        plan.get("fx_required"),
+        plan.get("output_slots"),
     )
     return {"query_plan": plan}

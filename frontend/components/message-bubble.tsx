@@ -225,9 +225,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       );
     }
 
-    const messageDate = new Date(message.created_at);
-    const timeStr = `${messageDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${messageDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-
     return (
       <div className="flex flex-col items-end px-4 py-1 group">
         {/* Persistent version pill - always visible when this turn has alternates */}
@@ -339,14 +336,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
           }}
         >
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <p className="text-[11px] opacity-40 mt-1.5 text-right cursor-default">{timeStr}</p>
-            </TooltipTrigger>
-            <TooltipContent side="left">
-              {messageDate.toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
-            </TooltipContent>
-          </Tooltip>
         </div>
       </div>
     );
@@ -370,7 +359,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const dashTimedOut = dashStatus === 'pending' && !!dashEntry && (Date.now() - dashEntry.queuedAt) > DASHBOARD_TIMEOUT_MS;
   // Only assistant messages can have dashboards; user messages never do.
   const showDashEntry  = !!convId && message.role === 'assistant' && !!message.content;
-  const showDashButton = showDashEntry && (rowCount ?? 0) >= 2;
+  const showDashButton = showDashEntry && (rowCount ?? 0) > 0;
 
   // On mount: sync dashboard state with server.
   // Runs for both 'idle' (restore) and 'ready'/'failed' (verify still exists).
@@ -472,12 +461,19 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors py-1.5 px-2 rounded-md hover:bg-muted/50 w-fit"
             >
               <Brain className="w-3.5 h-3.5" />
-              <span>
+              <span className="flex items-center gap-1">
                 {message.isStreaming ? 'Show reasoning' : (
                   <>
                     Show reasoning
                     {message.metadata_?.duration_ms != null &&
                       ` · ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+                    {(() => {
+                      const tok = message.metadata_?.token_usage?.total_tokens
+                        ?? (message.streamingSteps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                      if (!tok) return null;
+                      const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                      return <span className="text-muted-foreground/60">· {fmt} tokens</span>;
+                    })()}
                   </>
                 )}
               </span>
@@ -822,7 +818,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                             </DropdownMenuItem>
                           </div>
                         </TooltipTrigger>
-                        <TooltipContent side="right">Requires at least 2 rows of data</TooltipContent>
+                        <TooltipContent side="right">No data available to build a report</TooltipContent>
                       </Tooltip>
                     )
                   )}
@@ -961,12 +957,27 @@ function ReasoningPanel({
                   />
                 </span>
               )}
+              {(() => {
+                const tok = (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                if (!tok) return null;
+                const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                return <span className="text-foreground/40 text-[10px] tabular-nums">{fmt} tokens</span>;
+              })()}
             </span>
           ) : (
-            <span>
-              Thought
-              {message.metadata_?.duration_ms != null &&
-                ` for ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+            <span className="flex items-center justify-between w-full pr-1">
+              <span>
+                Thought
+                {message.metadata_?.duration_ms != null &&
+                  ` for ${(message.metadata_.duration_ms / 1000).toFixed(1)}s`}
+              </span>
+              {(() => {
+                const tok = message.metadata_?.token_usage?.total_tokens
+                  ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                if (!tok) return null;
+                const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                return <span className="text-foreground/40 text-[10px] tabular-nums">{fmt} tokens</span>;
+              })()}
             </span>
           )}
         </AccordionTrigger>
@@ -980,7 +991,7 @@ function ReasoningPanel({
             }}
           >
             {hasSteps ? (
-              <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} />
+              <PipelineTimeline steps={steps!} isStreaming={!!message.isStreaming} tokenUsage={message.metadata_?.token_usage} />
             ) : legacyReasoning ? (
               <ReasoningContent
                 ref={reasoningRef}

@@ -19,6 +19,9 @@ graph TD;
 	sql_validator(sql_validator)
 	executor(executor)
 	data_quality_checker(data_quality_checker)
+	deep_sensitivity(deep_sensitivity)
+	deep_denominator(deep_denominator)
+	deep_projection(deep_projection)
 	synthesis(synthesis)
 	chart_agent(chart_agent)
 	error_response(error_response)
@@ -32,12 +35,16 @@ graph TD;
 	compress -.-> intent_assembler;
 	context_fetcher -.-> error_response;
 	context_fetcher -. &nbsp;anchor_resolver&nbsp; .-> tribal_retrieval;
-	data_quality_checker --> synthesis;
+	data_quality_checker --> deep_sensitivity;
+	deep_denominator --> deep_projection;
+	deep_projection --> synthesis;
+	deep_sensitivity --> deep_denominator;
 	dimension_specialist --> intent_assembler;
 	directive_writer --> schema_gap_resolver;
 	error_response -.-> __end__;
 	error_response -.-> compress;
 	executor -.-> data_quality_checker;
+	executor -.-> deep_sensitivity;
 	executor -.-> intent_resolver;
 	executor -.-> sql_validator;
 	filter_resolver -.-> sql_generator;

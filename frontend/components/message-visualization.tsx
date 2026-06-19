@@ -384,9 +384,10 @@ function fmtKpi(value: unknown, valueFormat?: string): string {
   if (value === null || value === undefined) return '—';
   const n = Number(value);
   if (!isNaN(n)) {
-    if (Math.abs(n) >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
-    if (Math.abs(n) >= 1_000_000)     return `${(n / 1_000_000).toFixed(2)}M`;
-    if (Math.abs(n) >= 1_000)         return `${(n / 1_000).toFixed(1)}K`;
+    if (Math.abs(n) >= 1_000_000_000_000) return `${(n / 1_000_000_000_000).toFixed(2)}T`;
+    if (Math.abs(n) >= 1_000_000_000)     return `${(n / 1_000_000_000).toFixed(2)}B`;
+    if (Math.abs(n) >= 1_000_000)         return `${(n / 1_000_000).toFixed(2)}M`;
+    if (Math.abs(n) >= 1_000)             return `${(n / 1_000).toFixed(1)}K`;
     if (valueFormat?.endsWith('%'))    return `${(n * 100).toFixed(1)}%`;
     if (n % 1 === 0)                   return n.toLocaleString();
     if (Math.abs(n) < 0.1)            return n.toFixed(4);

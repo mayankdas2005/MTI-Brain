@@ -16,7 +16,7 @@ import {
   ScrollText,
   ExternalLink,
   ShieldCheck,
-  Brain,
+  MessageSquare,
   ThumbsUp,
   ThumbsDown,
 } from 'lucide-react';
@@ -184,9 +184,9 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Section>
           )}
 
-          {/* Preferences — feedback and memory applied to this response */}
+          {/* Feedback — ratings and memory applied to this response */}
           {m?.preference_summary && (
-            <Section title="Preferences Applied" icon={Brain}>
+            <Section title="Feedback" icon={MessageSquare}>
               {/* Status banner */}
               <div className={`mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-xs font-medium ${
                 m.preference_summary.feedback_applied
@@ -197,8 +197,8 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                   m.preference_summary.feedback_applied ? 'bg-emerald-500' : 'bg-muted-foreground/40'
                 }`} />
                 {m.preference_summary.feedback_applied
-                  ? 'Feedback preferences applied to this response'
-                  : 'No actionable preferences found — responded without feedback context'}
+                  ? 'Prior feedback applied to this response'
+                  : 'No prior feedback found — responded without feedback context'}
               </div>
 
               {/* Signal breakdown grid — only show columns that have data */}

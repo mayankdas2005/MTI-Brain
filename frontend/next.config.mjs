@@ -27,8 +27,16 @@ const fromEnv = (process.env.NEXT_DEV_ORIGINS || "")
 const allowedDevOrigins = Array.from(new Set([...autoDetected, ...fromEnv]));
 
 /** @type {import('next').NextConfig} */
+const BUILD_ID = `build-${Date.now()}`;
+const BUILD_DATE = new Date();
+const APP_VERSION = `${BUILD_DATE.getFullYear()}.${String(BUILD_DATE.getMonth() + 1).padStart(2, '0')}.${String(BUILD_DATE.getDate()).padStart(2, '0')}`;
+
 const nextConfig = {
   output: "standalone",
+  // Generate a unique build ID per deployment so the client can detect new versions.
+  generateBuildId: () => BUILD_ID,
+  // Expose build ID and app version to client code.
+  env: { NEXT_PUBLIC_BUILD_ID: BUILD_ID, NEXT_PUBLIC_APP_VERSION: APP_VERSION },
   typescript: {
     // Was true. Flipped to false after a clean tsc --noEmit pass; keep
     // it strict so future regressions fail the build instead of shipping.

@@ -175,6 +175,8 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
         state["thread_id"], state["question"][:80],
     )
 
+    from app.services.agents.nodes.lt_memory_retriever import lt_memory_retriever
+
     question = state["question"]
     prior_analytics = _prior_was_analytics(state)
 
@@ -185,9 +187,20 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
             "intake_classifier | fast_path | type={} | thread={}",
             quick_result, state["thread_id"],
         )
-        return {"question_type": quick_result, "specialist_outputs": [{"__reset__": True}]}
+        memory_output = await lt_memory_retriever(state, config)
+        classification_line = f"Classified as **{quick_result}** (fast path)"
+        preference_label = _build_combined_label(memory_output, classification_line)
+        return {
+            "question_type": quick_result,
+            "specialist_outputs": [{"__reset__": True}],
+            **_extract_memory_keys(memory_output),
+            "preference_label": preference_label,
+        }
 
     # Layer 2: LLM classifier with domain/intent context from Neo4j
+    # Run feedback retrieval concurrently with LLM classification
+    memory_task = asyncio.create_task(lt_memory_retriever(state, config))
+
     ctx = _get_classifier_context()
     conversation_context = _format_conversation(
         state.get("messages", []), state.get("summary") or ""
@@ -204,25 +217,60 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
     result = await _call_llm(prompt, config)
     question_type, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent = _parse_intake(result)
 
+    # Derive query_type from structured query_intent signals
+    query_type = _derive_query_type(query_intent)
+
     # Combine current search_terms with prior turn's terms for follow-up queries
     prior_search_terms = list(state.get("search_terms") or [])
     combined_search_terms = _combine_search_terms(search_terms, prior_search_terms, is_followup)
 
+    # Await feedback retrieval
+    memory_output = await memory_task
+
+    classification_line = f"Classified as **{question_type}** — {complexity}"
+    if is_followup:
+        classification_line += " (follow-up)"
+    preference_label = _build_combined_label(memory_output, classification_line)
+
     logger.info(
-        "intake_classifier DONE | thread={} | type={} | is_followup={} | complexity={} | entity_tokens={} | search_terms={} | combined={} | prior_analytics={} | query_intent_lines={} | query_intent={}",
+        "intake_classifier DONE | thread={} | type={} | is_followup={} | complexity={} | entity_tokens={} | search_terms={} | combined={} | prior_analytics={} | query_intent_lines={} | query_intent={} | query_type={}",
         state["thread_id"], question_type, is_followup, complexity, entity_tokens,
-        search_terms, combined_search_terms, prior_analytics, len(query_intent), query_intent,
+        search_terms, combined_search_terms, prior_analytics, len(query_intent), query_intent, query_type,
     )
     return {
         "question_type": question_type,
         "is_followup": is_followup,
         "complexity": complexity,
+        "query_type": query_type,
         "entity_tokens": entity_tokens or None,
         "search_terms": combined_search_terms or None,
         "search_variants": search_variants or entity_tokens or None,
         "query_intent": query_intent or None,
         "specialist_outputs": [{"__reset__": True}],
+        **_extract_memory_keys(memory_output),
+        "preference_label": preference_label,
     }
+
+
+# ── Memory + label helpers ────────────────────────────────────────────────────
+
+def _extract_memory_keys(memory_output: dict) -> dict:
+    """Extract state keys produced by lt_memory_retriever."""
+    return {
+        "lt_memory_context":  memory_output.get("lt_memory_context", ""),
+        "feedback_context":   memory_output.get("feedback_context", ""),
+        "preference_summary": memory_output.get("preference_summary"),
+    }
+
+
+def _build_combined_label(memory_output: dict, classification_line: str) -> str:
+    """Combine feedback markdown and classification reasoning into one label."""
+    feedback_label = memory_output.get("preference_label") or ""
+    parts = []
+    if feedback_label:
+        parts.append(feedback_label)
+    parts.append(f"\n{classification_line}")
+    return "\n".join(parts)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -270,8 +318,35 @@ def _parse_intake(raw: str) -> tuple[str, bool, str, list[str], list[str], list[
             if str(line).strip() and any(str(line).strip().startswith(lbl) for lbl in _VALID_LABELS)
         ][:12]
         return qtype, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent
-    except Exception:
+    except Exception as _e:
+        logger.warning("intake_classifier | parse_failed | error={} | raw={}", _e, (raw or "")[:300])
         return "analytics", False, "simple", [], [], [], []  # Layer 3 fallback
+
+
+def _derive_query_type(query_intent: list[str]) -> str | None:
+    """Derive query_type from structured query_intent signals.
+
+    Returns: lookup | aggregate | trend | comparison | ratio | None
+    """
+    if not query_intent:
+        return None
+    intent_text = " ".join(query_intent).lower()
+    # TIME_INPUT signals projection/trend
+    if any("TIME_INPUT" in line for line in query_intent):
+        return "trend"
+    # COMPUTATION with trend/OLS/slope keywords
+    for line in query_intent:
+        if line.startswith("GOAL:") or line.startswith("OUTPUT:"):
+            ll = line.lower()
+            if any(w in ll for w in ("trend", "slope", "ols", "projection", "forecast", "extrapolat")):
+                return "trend"
+            if any(w in ll for w in ("ratio", "rate", "spread", "percentage of")):
+                return "ratio"
+    # COMPARISON line present
+    if any(line.startswith("COMPARISON:") for line in query_intent):
+        return "comparison"
+    # Default: aggregate (most common analytics query)
+    return "aggregate"
 
 
 def _combine_search_terms(

@@ -45,11 +45,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <link rel="preconnect" href="https://fonts.cdnfonts.com" crossOrigin="anonymous" />
-        <link rel="stylesheet" href="https://fonts.cdnfonts.com/css/alliance-no1" />
         <link rel="preconnect" href="https://fonts.googleapis.com" crossOrigin="anonymous" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" />
         {apiOrigin ? (
           <>
             <link rel="preconnect" href={apiOrigin} />
@@ -78,6 +76,27 @@ export default function RootLayout({
               "window.addEventListener('appinstalled',function(){" +
               "window.__mtiBrainPwaPrompt=null;window.__mtiBrainPwaInstalled=true;" +
               "});",
+          }}
+        />
+        <Script
+          id="mti-brain-cache-buster"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{
+  if("${process.env.NODE_ENV}"==="development")return;
+  var bid="${process.env.NEXT_PUBLIC_BUILD_ID}";
+  if(!bid)return;
+  var key='mti-brain-build-id';
+  var prev=localStorage.getItem(key);
+  if(prev&&prev!==bid){
+    localStorage.clear();
+    sessionStorage.clear();
+    if(indexedDB.databases){indexedDB.databases().then(function(dbs){dbs.forEach(function(d){if(d.name)indexedDB.deleteDatabase(d.name)})})}
+    if('caches' in window){caches.keys().then(function(ks){ks.forEach(function(k){caches.delete(k)})})}
+    localStorage.setItem(key,bid);
+    location.reload();
+  }else if(!prev){localStorage.setItem(key,bid)}
+}catch(e){}})()`
           }}
         />
       </head>

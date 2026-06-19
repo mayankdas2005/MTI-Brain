@@ -123,7 +123,7 @@
 
     .hdr {
       background:
-        linear-gradient(160deg, #184476 0%, var(--navy-500) 30%, var(--navy-700) 65%, var(--navy-900) 100%);
+        linear-gradient(160deg, var(--navy-900) 0%, var(--navy-700) 35%, var(--navy-500) 70%, #184476 100%);
       color: #fff;
       padding: 32px 44px 0;
       position: relative;
@@ -280,8 +280,8 @@
        ────────────────────────────────────────────────────────────────── */
 
     .exec-summary {
-      background: #eff6ff;
-      color: var(--ink-2);
+      background: linear-gradient(135deg, var(--navy-800) 0%, var(--navy-600) 100%);
+      color: rgba(255, 255, 255, .88);
       padding: 22px 44px;
       font-size: 13.5px;
       line-height: 1.75;
@@ -291,7 +291,7 @@
     }
 
     .exec-summary strong {
-      color: var(--navy-900);
+      color: #fff;
       font-weight: 700;
     }
 
@@ -1004,14 +1004,14 @@
     .hdr {
       background:
         linear-gradient(160deg,
-          #1B76B8 0%,
-          #184476 15%,
-          #0e2a52 30%,
-          #0a1f3d 45%,
-          #07172e 60%,
-          #040e1d 75%,
-          #03080f 90%,
-          #00111F 100%);
+          #00111F 0%,
+          #03080f 8%,
+          #040e1d 20%,
+          #07172e 35%,
+          #0a1f3d 50%,
+          #0e2a52 65%,
+          #184476 80%,
+          #1B76B8 100%);
       padding: 40px 48px 0;
     }
 
@@ -1100,14 +1100,27 @@
 
     /* ── Executive Summary: richer gradient ── */
     .exec-summary {
-      background: #eff6ff;
-      color: var(--ink-2);
+      background: linear-gradient(135deg,
+        var(--navy-800) 0%,
+        var(--navy-700) 40%,
+        var(--navy-600) 100%);
       padding: 26px 48px;
       font-size: 14px;
       line-height: 1.8;
-      font-weight: 400;
-      border-left: 4px solid var(--accent);
-      border-bottom: 1px solid var(--border);
+      border-bottom: 3px solid transparent;
+      border-image: linear-gradient(90deg, var(--accent), var(--accent-lt), var(--navy-400)) 1;
+      position: relative;
+    }
+
+    .exec-summary::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, .012) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, .012) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
     }
 
     /* ── Enhanced Section styling ── */
@@ -1957,11 +1970,10 @@
     <div class="pg-footer-l">
       <strong class="pg-footer-brand">MTI Brain</strong> &nbsp;·&nbsp;
       AI-Generated Executive Intelligence &nbsp;·&nbsp;
-      Jun 17, 2026
+      ${generatedDate}
     </div>
     <span class="conf-badge">Confidential &amp; Proprietary</span>
   </div>
 
 </body>
-
 </html>

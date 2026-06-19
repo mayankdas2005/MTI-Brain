@@ -1,29 +1,30 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Check, X, ChevronDown } from 'lucide-react';
 import { MarkdownRenderer } from './markdown-renderer';
 import type { StreamingStep } from '@/lib/store/threads';
+import type { TokenUsage } from '@/lib/types/api';
 import React from 'react';
 
 // ─── Step reasoning content ───
 
 export function StepReasoning({ text, active }: { text: string; active: boolean }) {
   return (
-    <div className="mt-1.5 pr-1 text-xs leading-relaxed text-foreground/80">
+    <div className="mt-3 pr-2 text-sm leading-[1.7] text-foreground/75 reasoning-prose">
       <MarkdownRenderer content={text} />
       {active && <span className="streaming-cursor" aria-hidden />}
     </div>
   );
 }
 
-// ─── Legacy reasoning content (italic, dim) ───
+// ─── Legacy reasoning content ───
 
 export const ReasoningContent = React.forwardRef<HTMLDivElement, { isStreaming?: boolean; content: string }>(
   ({ isStreaming, content }, ref) => {
     const active = !!(isStreaming && content);
     return (
-      <div ref={ref} className="px-3 pb-2 border-t border-border/40 pt-2 text-sm text-foreground/75 leading-relaxed italic">
+      <div ref={ref} className="px-5 py-4 text-sm leading-[1.7] text-foreground/75 reasoning-prose">
         <MarkdownRenderer content={content} />
         {active && <span className="streaming-cursor" aria-hidden />}
       </div>
@@ -34,7 +35,15 @@ ReasoningContent.displayName = 'ReasoningContent';
 
 // ─── Vertical step timeline ───
 
-export function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[]; isStreaming?: boolean }) {
+export function PipelineTimeline({
+  steps,
+  isStreaming,
+  tokenUsage,
+}: {
+  steps: StreamingStep[];
+  isStreaming?: boolean;
+  tokenUsage?: TokenUsage | null;
+}) {
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
 
   useEffect(() => {
@@ -49,10 +58,28 @@ export function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[
     });
   }, []);
 
+  // Backfill missing per-step total_tokens from tokenUsage.by_node for older messages
+  const enrichedSteps = useMemo(() => {
+    if (!tokenUsage?.by_node?.length) return steps;
+    const byNode: Record<string, number[]> = {};
+    for (const n of tokenUsage.by_node) {
+      if (!byNode[n.node]) byNode[n.node] = [];
+      byNode[n.node].push(n.total_tokens);
+    }
+    const visitIdx: Record<string, number> = {};
+    return steps.map(s => {
+      if (s.total_tokens) return s;
+      const idx = visitIdx[s.node] ?? 0;
+      visitIdx[s.node] = idx + 1;
+      const tok = byNode[s.node]?.[idx];
+      return tok ? { ...s, total_tokens: tok } : s;
+    });
+  }, [steps, tokenUsage]);
+
   return (
     <div className="px-4 pb-3 pt-1 border-t border-border/40">
-      {steps.map((step, i) => {
-        const isLast = i === steps.length - 1;
+      {enrichedSteps.map((step, i) => {
+        const isLast = i === enrichedSteps.length - 1;
         const isActive = step.status === 'active';
         const isDone = step.status === 'done';
         const isSkipped = step.status === 'skipped';
@@ -67,79 +94,99 @@ export function PipelineTimeline({ steps, isStreaming }: { steps: StreamingStep[
 
         const showDuration =
           step.duration_ms != null && step.duration_ms >= 0
-            ? `${(step.duration_ms / 1000).toFixed(1)}s`
+            ? `${(step.duration_ms / 1000).toFixed(1).padStart(4, '0')}s`
             : isActive
             ? 'live'
+            : '';
+
+        const showTokens =
+          step.total_tokens && step.total_tokens > 0
+            ? step.total_tokens >= 1000
+              ? `${parseFloat((step.total_tokens / 1000).toFixed(2))}K`
+              : `${step.total_tokens}`
             : '';
 
         const isExpandable = (isDone || isError) && !!cleanedReasoning;
         const isExpanded = isActive || expandedSteps.has(i);
 
         return (
-          <div key={step.node + i} className="relative pl-6 pt-2.5">
+          <div key={step.node + i} className="relative pl-8" style={{ paddingTop: i === 0 ? 0 : '1rem' }}>
             {/* Connector line */}
             {!isLast && (
-              <span className="absolute left-[7px] top-[1.3rem] w-px bg-border" style={{ bottom: '-0.625rem' }} />
+              <span className="absolute left-[9px] top-[1.5rem] w-px bg-border/60" style={{ bottom: 0 }} />
             )}
 
-            {/* Status dot */}
-            <span
-              className={`absolute left-0 top-[9px] flex items-center justify-center w-3.5 h-3.5 rounded-full transition-colors ${
-                isActive
-                  ? 'bg-primary step-active'
-                  : isDone
-                  ? 'bg-primary/30 dark:bg-primary/50'
-                  : isError
-                  ? 'bg-destructive/20 dark:bg-destructive/40'
-                  : 'bg-muted'
-              }`}
-              aria-hidden="true"
-            >
-              {isDone  && <Check className="w-2 h-2 text-primary dark:text-primary/90" strokeWidth={3.5} />}
-              {isError && <X className="w-2 h-2 text-destructive" strokeWidth={3} />}
-            </span>
-
-            {/* Step label + duration + optional expand chevron */}
+            {/* Step row: dot + label aligned together */}
             <div
-              className={`flex items-center justify-between gap-3 ${isExpandable ? 'cursor-pointer select-none' : ''}`}
+              className={`flex items-center justify-between gap-3 ${isExpandable ? 'cursor-pointer select-none group' : ''}`}
               onClick={isExpandable ? () => toggleStep(i) : undefined}
             >
-              <span
-                className={`text-xs leading-none ${
-                  isActive
-                    ? 'text-foreground font-medium'
-                    : isError
-                    ? 'text-destructive font-medium'
-                    : isSkipped
-                    ? 'text-foreground/35 line-through'
-                    : 'text-foreground/70'
-                }`}
-              >
-                {step.message || step.node}
-              </span>
-              <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                {/* Status dot */}
+                <span
+                  className={`absolute left-0 flex items-center justify-center w-[18px] h-[18px] rounded-full shrink-0 transition-colors ${
+                    isActive
+                      ? 'bg-primary step-active'
+                      : isDone
+                      ? 'bg-primary/20 dark:bg-primary/40'
+                      : isError
+                      ? 'bg-destructive/20 dark:bg-destructive/40'
+                      : 'bg-muted'
+                  }`}
+                  aria-hidden="true"
+                >
+                  {isDone  && <Check className="w-2.5 h-2.5 text-primary dark:text-primary/90" strokeWidth={3} />}
+                  {isError && <X className="w-2.5 h-2.5 text-destructive" strokeWidth={3} />}
+                </span>
+
+                {/* Step label */}
+                <span
+                  className={`text-[0.9rem] leading-[18px] tracking-[-0.01em] ${
+                    isActive
+                      ? 'text-foreground font-semibold'
+                      : isError
+                      ? 'text-destructive font-semibold'
+                      : isSkipped
+                      ? 'text-foreground/35 line-through'
+                      : isDone
+                      ? 'text-foreground/80 font-medium'
+                      : 'text-foreground/60'
+                  }`}
+                >
+                  {step.message || step.node}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
                 {showDuration && (
                   <span
-                    className={`text-[10px] tabular-nums ${
-                      isActive ? 'text-primary' : isError ? 'text-destructive/70' : 'text-foreground/45'
+                    className={`text-xs font-medium tabular-nums ${
+                      isActive ? 'text-primary' : isError ? 'text-destructive/70' : 'text-foreground/40'
                     }`}
                   >
                     {showDuration}
                   </span>
                 )}
-                {isExpandable && (
-                  <ChevronDown
-                    className={`w-3 h-3 text-foreground/40 transition-transform duration-150 ${
-                      expandedSteps.has(i) ? 'rotate-180' : ''
-                    }`}
-                  />
-                )}
+                <span className="w-3.5 h-3.5 flex items-center justify-center">
+                  {isExpandable && (
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 text-foreground/30 group-hover:text-foreground/60 transition-transform duration-200 ${
+                        expandedSteps.has(i) ? 'rotate-180' : ''
+                      }`}
+                    />
+                  )}
+                </span>
               </div>
             </div>
 
             {/* Per-step reasoning */}
             {cleanedReasoning && isExpanded && (
-              <StepReasoning text={cleanedReasoning} active={isActive} />
+              <>
+                {showTokens && (
+                  <p className="mt-1.5 text-[11px] tabular-nums text-foreground/35">{showTokens} tokens</p>
+                )}
+                <StepReasoning text={cleanedReasoning} active={isActive} />
+              </>
             )}
           </div>
         );

@@ -1,6 +1,7 @@
 """Node G: general_chat — conversational response for non-analytics questions."""
 
 from __future__ import annotations
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -61,7 +62,10 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
     follow_ups = _parse_follow_ups(raw)
 
     logger.info("general_chat DONE | thread={} | answer_len={} | follow_ups={}", state["thread_id"], len(answer), len(follow_ups))
-    return {"answer": answer, "follow_ups": follow_ups}
+    result: dict = {"answer": answer, "follow_ups": follow_ups}
+    if not state.get("is_retry"):
+        result["messages"] = [HumanMessage(content=state["question"]), AIMessage(content=answer)]
+    return result
 
 
 def _parse_follow_ups(raw: str) -> list[str]:
