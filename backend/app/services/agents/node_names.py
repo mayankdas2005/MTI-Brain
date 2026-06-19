@@ -78,7 +78,6 @@ NODE_STREAM: dict[str, str | tuple | None] = {
 # ── Backward-compatible module-level exports ──────────────────────────────────
 # Use string IDs directly so these never break if N attribute naming changes.
 
-LT_MEMORY_RETRIEVER  = _id_map["lt_memory_retriever"]
 INTAKE               = _id_map["intake_classifier"]
 GENERAL_CHAT         = _id_map["general_chat"]
 CONTEXT_FETCHER      = _id_map["context_fetcher"]
@@ -100,6 +99,9 @@ SQL_GENERATOR        = _id_map["sql_generator"]
 SQL_VALIDATOR        = _id_map["sql_validator"]
 EXECUTOR             = _id_map["executor"]
 DATA_QUALITY_CHECKER = _id_map["data_quality_checker"]
+DEEP_SENSITIVITY     = _id_map["deep_sensitivity"]
+DEEP_DENOMINATOR     = _id_map["deep_denominator"]
+DEEP_PROJECTION      = _id_map["deep_projection"]
 SYNTHESIS            = _id_map["synthesis"]
 CHART_AGENT          = _id_map["chart_agent"]
 ERROR_RESPONSE       = _id_map["error_response"]

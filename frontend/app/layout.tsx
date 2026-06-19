@@ -78,6 +78,27 @@ export default function RootLayout({
               "});",
           }}
         />
+        <Script
+          id="mti-brain-cache-buster"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{
+  if("${process.env.NODE_ENV}"==="development")return;
+  var bid="${process.env.NEXT_PUBLIC_BUILD_ID}";
+  if(!bid)return;
+  var key='mti-brain-build-id';
+  var prev=localStorage.getItem(key);
+  if(prev&&prev!==bid){
+    localStorage.clear();
+    sessionStorage.clear();
+    if(indexedDB.databases){indexedDB.databases().then(function(dbs){dbs.forEach(function(d){if(d.name)indexedDB.deleteDatabase(d.name)})})}
+    if('caches' in window){caches.keys().then(function(ks){ks.forEach(function(k){caches.delete(k)})})}
+    localStorage.setItem(key,bid);
+    location.reload();
+  }else if(!prev){localStorage.setItem(key,bid)}
+}catch(e){}})()`
+          }}
+        />
       </head>
       <body className="font-sans antialiased" suppressHydrationWarning>
         <Providers>

@@ -214,7 +214,11 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
         return result
 
     combined_error = "; ".join(errors)
-    logger.warning("sql_validator | validation failed | thread={} | failed_indices={} | error={}", state["thread_id"], failed_indices, combined_error)
+    failed_sqls = {i: fixed_sql_list[i][:500] for i in failed_indices if i < len(fixed_sql_list)}
+    logger.warning(
+        "sql_validator | validation failed | thread={} | failed_indices={} | error={} | failed_sql={}",
+        state["thread_id"], failed_indices, combined_error, failed_sqls,
+    )
 
     return {"error": combined_error, "recompile_count": recompile_count + 1, "failed_sql_indices": failed_indices}
 

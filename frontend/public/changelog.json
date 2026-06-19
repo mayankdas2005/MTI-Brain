@@ -1,22 +1,27 @@
 [
   {
-    "version": "2026.05.0",
-    "date": "2026-05-18",
+    "version": "2026.06.19",
+    "date": "2026-06-19",
     "entries": [
       {
         "type": "new",
-        "title": "Export conversation as a shareable dashboard",
-        "body": "Every conversation can now be exported as a standalone visual dashboard — one click from any answer. The dashboard captures your charts, data summaries, and key findings in a format ready to drop into a board presentation or share directly with your team. No copy-pasting required."
+        "title": "Export conversation as a shareable report",
+        "body": "Every conversation can now be exported as a standalone visual report — one click from any answer. The report captures your charts, data summaries, and key findings in a format ready to drop into a board presentation or share directly with your team. No copy-pasting required."
+      },
+      {
+        "type": "new",
+        "title": "Build graph context",
+        "body": "Visualize the knowledge graph subgraph that powered your answer. See exactly which tables, columns, join paths, and business terms the AI used — full transparency into how your query was resolved."
+      },
+      {
+        "type": "new",
+        "title": "Reasoning placement options",
+        "body": "Choose where thinking steps appear: inline above the response, or in a dedicated side panel beside the conversation. Switch anytime from Settings."
       },
       {
         "type": "improvement",
-        "title": "Charts now show the correct labels",
-        "body": "Bar and line charts were sometimes displaying blank axis labels — for example, a currency distribution chart would show bars without the currency names underneath. This is now fixed. Every chart shows the data dimensions you asked about, exactly as expected."
-      },
-      {
-        "type": "improvement",
-        "title": "MTI Brain learns from your feedback over time",
-        "body": "A thumbs-up or thumbs-down now shapes how MTI Brain responds to you and to colleagues asking similar questions in the future — even when you don't leave a written comment. Feedback from several months ago fades naturally so only recent preferences guide answers, keeping the experience current as your priorities evolve."
+        "title": "Sidebar navigation redesign",
+        "body": "The sidebar has been reorganized for faster access to threads, projects, and starred conversations. Cleaner grouping, smoother transitions, and better keyboard navigation throughout."
       }
     ]
   }

@@ -25,7 +25,8 @@ from app.services.agents.node_names import (
     COMPRESS as N_COMPRESS,
     ERROR_RESPONSE as N_ERROR_RESPONSE,
     EXECUTOR as N_EXECUTOR,
-    LT_MEMORY_RETRIEVER as N_LT_MEMORY_RETRIEVER,
+    CONTEXT_FETCHER as N_CONTEXT_FETCHER,
+    INTAKE as N_INTAKE,
     SYNTHESIS as N_SYNTHESIS,
 )
 from app.services.agents.nodes.audit import write_query_pattern, write_schema_gaps
@@ -214,7 +215,6 @@ async def stream_pipeline(
         "thread_id": thread_id,
         "persona": persona or "analyst",
         "question": question,
-        "question_type": "",
         "needs_clarification": False,
         "clarification_count": 0,
         "clarification_reason": None,
@@ -441,10 +441,15 @@ async def stream_pipeline(
                 # Emit a synthetic reasoning.delta for deterministic nodes that have a
                 # natural language label to show in the UI pipeline timeline.
                 _preference_label = ""
-                if node == N_LT_MEMORY_RETRIEVER and isinstance(output, dict):
+                _context_label = ""
+                if node == N_INTAKE and isinstance(output, dict):
                     _preference_label = output.get("preference_label") or ""
                     if _preference_label:
                         yield {"event": "reasoning.delta", "data": {"node": node, "text": _preference_label}}
+                elif node == N_CONTEXT_FETCHER and isinstance(output, dict):
+                    _context_label = output.get("context_fetch_label") or ""
+                    if _context_label:
+                        yield {"event": "reasoning.delta", "data": {"node": node, "text": _context_label}}
 
                 _node_visit_count[node] = visit_before + 1
                 visit_key  = f"{node}:{visit_before}"
@@ -468,9 +473,9 @@ async def stream_pipeline(
                         "".join(_reasoning_entries[i]["tokens"])
                         for i in _step_reasoning_idx.get(visit_key, [])
                     )
-                    # For deterministic nodes with a synthetic label (e.g. lt_memory_retriever),
-                    # persist the label as step reasoning so it survives reload.
-                    step["reasoning"] = llm_reasoning or _preference_label
+                    # For deterministic nodes with a synthetic label (e.g. intake_classifier,
+                    # context_fetcher), persist the label as step reasoning so it survives reload.
+                    step["reasoning"] = llm_reasoning or _preference_label or _context_label
                     yield {
                         "event": "node.done",
                         "data": {
@@ -645,6 +650,10 @@ async def stream_pipeline(
                     "search_terms":      state.get("search_terms") or [],
                     "is_followup":       state.get("is_followup", False),
                     "preference_summary": state.get("preference_summary"),
+                    "sensitivity_table":  state.get("sensitivity_table"),
+                    "denominator_context": state.get("denominator_context"),
+                    "temporal_projection": state.get("temporal_projection"),
+                    "deep_analysis":      state.get("deep_analysis", False),
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

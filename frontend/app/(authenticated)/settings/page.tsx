@@ -941,7 +941,7 @@ function AboutBlock() {
         onMouseLeave={() => setHovered(false)}
         className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors cursor-default"
       >
-        {hovered ? <span className="italic">{quote}</span> : 'Version 2026.05.0'}
+        {hovered ? <span className="italic">{quote}</span> : `Version ${process.env.NEXT_PUBLIC_APP_VERSION}`}
       </p>
     </div>
   );

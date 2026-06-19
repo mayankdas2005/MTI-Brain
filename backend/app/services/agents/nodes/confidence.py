@@ -18,17 +18,18 @@ import json_repair
 
 from langchain_core.messages import HumanMessage
 
+from app.core.config import settings
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import _build_data_profile
 from app.services.agents.prompts import CONFIDENCE_JUDGE_PROMPT
 
 
 def _label(score: int) -> str:
-    if score >= 80:
+    if score >= 75:
         return "High"
-    if score >= 60:
+    if score >= 55:
         return "Medium"
-    if score >= 40:
+    if score >= 35:
         return "Low"
     return "Very Low"
 
@@ -39,16 +40,20 @@ def _compute_score(state: dict) -> int:
     Two-layer model:
 
     Layer 1 — Planning confidence (schema coverage before execution):
-      If directive_writer emitted CONFIDENCE_NOTE -> use it as base (already encodes
-      schema gaps + feasibility). Skip the schema/join deductions — they're in the base.
-      If no CONFIDENCE_NOTE -> base 75, then deduct schema gaps and unresolved joins.
+      If directive_writer emitted CONFIDENCE_NOTE -> use it × 80 as base.
+      If no CONFIDENCE_NOTE -> base 60, then deduct schema gaps and unresolved joins.
 
     Layer 2 — Execution confidence (applied on top regardless):
-      Low-conf filter resolutions: -8 each (max -24)
-      SQL repairs required:        -10 each (max -20)
-      No data returned:            -15
+      Low-conf filter resolutions: -10 each (cap -25)
+      SQL repairs required:        -12 each (cap -25)
+      No data returned:            -25
+      Data quality flag (when enabled): -15
 
-    Floor / Ceiling: 5 / 95
+    Bonus (earned, not assumed):
+      Clean run (0 repairs + has data + 0 low-conf): +15
+      Has data + 0 repairs (partial clean): +5
+
+    Floor / Ceiling: 5 / 85
     """
     ir = (state.get("semantic_ir_list") or [{}])[0]
 
@@ -56,26 +61,36 @@ def _compute_score(state: dict) -> int:
     m = re.search(r"CONFIDENCE_NOTE:\s*([\d.]+)", intent_context, re.IGNORECASE)
     if m:
         try:
-            score = int(round(float(m.group(1)) * 100))
+            score = int(round(float(m.group(1)) * 80))
         except (ValueError, TypeError):
-            score = 75
+            score = 60
     else:
-        # No directive base — derive from schema signals
-        score = 75
+        score = 60
         schema_gaps = ir.get("schema_gaps") or []
-        score -= min(len(schema_gaps) * 8, 30)
+        score -= min(len(schema_gaps) * 8, 28)
         unresolved = ir.get("unresolved_join_pairs") or []
         score -= min(len(unresolved) * 15, 30)
 
     # Execution-time signals — always applied
     low_conf = state.get("low_confidence_filters") or []
-    score -= min(len(low_conf) * 8, 24)
+    score -= min(len(low_conf) * 10, 25)
     repair_count = int(state.get("repair_count") or 0)
-    score -= min(repair_count * 10, 20)
+    score -= min(repair_count * 12, 25)
     if state.get("no_data"):
+        score -= 25
+
+    # Data quality signal — only when checker is enabled
+    if settings.DATA_QUALITY_CHECKER_ENABLED and state.get("data_quality_flag"):
         score -= 15
 
-    return max(5, min(95, score))
+    # Execution bonus — earned by clean runs
+    has_data = not state.get("no_data")
+    if repair_count == 0 and has_data and not low_conf:
+        score += 15
+    elif has_data and repair_count == 0:
+        score += 5
+
+    return max(5, min(85, score))
 
 
 def _build_business_signals(state: dict) -> str:
@@ -104,6 +119,11 @@ def _build_business_signals(state: dict) -> str:
 
     if state.get("no_data"):
         lines.append("- No matching records were found for the requested criteria")
+
+    if settings.DATA_QUALITY_CHECKER_ENABLED:
+        dq_reason = state.get("data_quality_reason")
+        if dq_reason:
+            lines.append(f"- Data quality issue detected: {dq_reason}")
 
     reliability_flags = state.get("reliability_flags") or []
     _flag_map = {

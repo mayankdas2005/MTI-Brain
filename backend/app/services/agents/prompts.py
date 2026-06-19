@@ -400,45 +400,10 @@ Step 11B — FORECAST CHECK: If TIME_OUTPUT exists in QUERY INTENT or COMPUTATIO
   HARDCODED RATES ARE FORBIDDEN: never use * 1.05 or any fixed multiplier.
   OLS slope is forbidden here — this is a rates-based projection, not a regression."""
 
-# ─── Prompt ownership table ──────────────────────────────────────────────────
-#
-# Prompt                    | Node file                  | Decides
-# INTAKE_CLASSIFY           | intake_classifier.py       | question type, entity tokens, query_intent
-# GENERAL_CHAT              | general_chat.py            | conversational response
-# ANCHOR_RESOLVER           | anchor_resolver.py         | anchor tables, result_shape
-# QUERY_PLANNER             | query_planner.py           | output_slots (suggestions only)
-# MEASURE_SPECIALIST        | measure_specialist.py      | measures + aggregation functions
-# FILTER_SPECIALIST         | filter_specialist.py       | filters (raw_user_value), thresholds, time_filter_col
-# DIMENSION_SPECIALIST      | dimension_specialist.py    | dimensions for GROUP BY
-# DIRECTIVE_WRITER          | directive_writer.py        | COMPUTATION, TIME_FILTER, SCHEMA_GAP_* directives
-# SCHEMA_GAP_DETECTOR       | directive_writer.py (Ph.2) | SCHEMA_GAP_* lines (Haiku sub-call)
-# CTE_COLUMN_PLANNER        | sql_generator.py (pre)     | CTE contract (names, exports, sources)
-# SQL_GENERATE              | sql_generator.py           | Redshift SQL
-# REPAIR / REPAIR_SYNTAX /  | repair.py                  | SQL fix
-#   REPAIR_STRUCTURE /       |                            |
-#   REPAIR_PERFORMANCE       |                            |
-# INTENT_RESOLVE            | intent_resolver.py         | fallback intent resolution
-# INSIGHT_EXTRACTOR         | synthesis.py (Phase 1)     | structured insights from data
-# SYNTHESIS                 | synthesis.py (Phase 2)     | narrative answer
-# CHART_AGENT               | chart_agent.py             | chart type + bindings + labels
-# COMPRESS                  | compress.py                | conversation summary
-# CONFIDENCE_JUDGE          | confidence.py              | confidence explanation
-# TEMPORAL_RESOLVE          | filter_resolver.py         | temporal → SQL date range
-# FILTER_DISAMBIGUATE       | filter_resolver.py         | ambiguous filter → DB code
-# ZERO_ROW_PROBE            | zero_row_probe.py          | diagnostic SQL for 0-row results
-# DATA_QUALITY_CHECKER      | data_quality_checker.py    | implausible value flags
-# CLARIFICATION             | clarification.py           | targeted question
-#
-# Aggregation chain: query_planner (suggests) → measure_specialist (decides) → intent_resolver (null)
-# Filter chain: filter_specialist (raw_user_value) → filter_resolver (DB codes) → sql_generator
-# TIME_FILTER: exclusively from directive_writer (M2 rule)
-# result_shape: exclusively from anchor_resolver
-# ─────────────────────────────────────────────────────────────────────────────
-
 # ─── Node 0: Intake Classifier ───────────────────────────────────────────────
 
-INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_template(
-    """You classify financial analytics questions and extract entity tokens for graph search.
+INTAKE_CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You classify financial analytics questions and extract entity tokens for graph search.
 
 SYSTEM SCOPE — this assistant queries organizational financial data in these domains:
   {domain_list}
@@ -455,10 +420,7 @@ is_followup=true. Consider the full semantic meaning, not just surface keywords.
 TIEBREAKER: When ambiguous, default to "analytics". A failed query returns "no data found"; a misclassified
 data question silently disappears.
 
-Conversation context:
-{conversation_context}
-
-User question: "{question}"
+Respond with ONLY the JSON inside an <output> block. No explanation, no preamble.
 
 <output>
 {{
@@ -542,8 +504,13 @@ Other examples:
 <output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["JPMorgan", "operating", "balance"], "search_terms": ["JPMorgan operating account", "closing balance", "cash balance bank"], "search_variants": ["JPMorgan", "JP Morgan", "operating"], "query_intent": ["GOAL: Retrieve closing balance for JPMorgan operating account", "TIME: Last 7 days", "OUTPUT: Daily balance trend"]}}</output>
 <output>{{"type": "analytics", "is_followup": false, "complexity": "simple", "entity_tokens": ["ACH"], "search_terms": ["ACH receipts payment", "ACH volume", "payment receipts"], "search_variants": ["ACH", "automated clearing house"], "query_intent": ["GOAL: Total ACH receipts for the period", "TIME: Yesterday — point-in-time", "OUTPUT: Single total value"]}}</output>
 <output>{{"type": "analytics", "is_followup": false, "complexity": "complex", "entity_tokens": ["FX", "hedges"], "search_terms": ["FX hedge notional", "foreign exchange exposure", "derivative hedge", "FX hedge position"], "search_variants": ["FX", "foreign exchange", "hedge", "FX hedge"], "query_intent": ["GOAL: Report total notional of outstanding FX hedges by currency", "DOMAIN: FX hedging", "OUTPUT: Summary table by currency pair"]}}</output>
-<output>{{"type": "general_chat", "is_followup": false, "complexity": "simple", "entity_tokens": [], "search_terms": [], "search_variants": [], "query_intent": []}}</output>"""
-)
+<output>{{"type": "general_chat", "is_followup": false, "complexity": "simple", "entity_tokens": [], "search_terms": [], "search_variants": [], "query_intent": []}}</output>"""),
+    ("human", """Conversation context:
+{conversation_context}
+
+User question: "{question}"
+"""),
+])
 
 # ─── Node G: General Chat ────────────────────────────────────────────────────
 
@@ -1606,6 +1573,35 @@ S3b. FILTER SYNTAX (3 tiers — when operator not already given by FILTER DIRECT
    a. Column marked [enum: ...] -> EXACT match only. ILIKE FORBIDDEN on enum columns.
    b. [exact] tag -> use = 'VALUE'. [exact — multiple values, use IN] -> use IN ('V1', 'V2').
    c. [fuzzy — use ~* regex] tag -> use case-insensitive regex.
+S3c. NEVER infer or guess enum values for a column by analogy from other columns or tables.
+   Only these three sources authorise a filter value:
+   a. The column's own distinct_values or sample_values listed in SCHEMA REFERENCE.
+   b. A resolved value from FILTER DIRECTIVE for that exact column.
+   c. ENTITY VALUE MATCHES for that exact column.
+   If none of these exist: DO NOT write a WHERE/HAVING filter for that column. Instead emit:
+     -- UNRESOLVED FILTER: <table.column> — no known values in schema; cannot apply filter
+   Example violation: lpp.bank.risk_tier_ref has TIER_1/TIER_2 but that does NOT authorise
+   using category_code = 'TIER_2' on a different table — those are unrelated columns.
+S3d. NULL-SAFE JOIN KEYS — for EVERY table involved in any JOIN (fact, dimension, bridge, hub, cross-domain):
+   In the CTE that reads from that table, add WHERE <join_column> IS NOT NULL before the JOIN.
+   A NULL join key silently drops every row from the JOIN — producing 0 results with no error, on ANY table type.
+   Apply to both sides of the join key if either side can be NULL.
+   This is always safe: a NULL join key can never produce a match anyway.
+   WRONG (bridge/fact join):
+     net60_vendors AS (SELECT DISTINCT ai.vendor_ref FROM lpp.ap_invoice ai WHERE ...)
+     JOIN lpp.third_party tp ON tp.code = ai.vendor_ref
+   RIGHT:
+     net60_vendors AS (SELECT DISTINCT ai.vendor_ref FROM lpp.ap_invoice ai
+                       WHERE ai.vendor_ref IS NOT NULL AND ...)
+     JOIN lpp.third_party tp ON tp.code = ai.vendor_ref
+   WRONG (dimension join):
+     invoices AS (SELECT i.entity_ref, SUM(i.amount) FROM lpp.ap_invoice i GROUP BY i.entity_ref)
+     JOIN lpp.entity e ON e.code = invoices.entity_ref
+   RIGHT:
+     invoices AS (SELECT i.entity_ref, SUM(i.amount) FROM lpp.ap_invoice i
+                  WHERE i.entity_ref IS NOT NULL GROUP BY i.entity_ref)
+     JOIN lpp.entity e ON e.code = invoices.entity_ref
+   Apply to every JOIN column regardless of datatype or table type.
 S10b. SCHEMA REFERENCE filter_values are vocabulary hints only — NOT pre-resolved filter values.
     All actual filter values come from FILTER DIRECTIVE and QUERY SPECIFICATION only.
 
@@ -1809,6 +1805,8 @@ SELF-CHECK before emitting insights:
 1. DATA GROUNDING: For every "observation" you write, point to the specific number or value in the data rows that supports it. If you cannot point to a row, remove the observation.
 2. TREND GATE: Do not describe a trend from fewer than 3 data points. Two values is a comparison, not a trend.
 3. IMPLICATION CHECK: Does each "implication" follow logically from the observation, or does it require outside knowledge? If it requires inference beyond the data, hedge it ("may indicate", "warrants investigation") rather than stating it as fact.
+
+{deep_analysis_extraction}
 
 <insights>
 {{ JSON here }}
@@ -2278,6 +2276,7 @@ Answer for the {persona}. #### headers, **bold key numbers in every bullet**, no
 If insights.data_quality_concern is non-null: begin with > [!WARNING] blockquote callout (see DATA QUALITY RULE).
 Otherwise begin directly with the persona's first section header.
 Never open with "Let me analyze", "Based on the results", "The data shows", or any meta-commentary.
+{deep_analysis_sections}
 </answer>
 <follow_ups>
 ["question 1", "question 2", "question 3"]

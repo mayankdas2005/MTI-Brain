@@ -27,6 +27,63 @@ from app.services.agents.state import AnalyticsState
 from . import helpers, table_discovery, column_loader, cross_domain
 
 
+def _build_context_label(semantic_context: dict) -> str:
+    lines = []
+
+    tables = semantic_context.get("tables") or []
+    table_fqns = [t["fqn"] for t in tables if t.get("fqn")]
+    n_tables = len(table_fqns)
+    if n_tables:
+        fqn_preview = ", ".join(table_fqns[:5])
+        suffix = f" + {n_tables - 5} more" if n_tables > 5 else ""
+        lines.append(f"- **Tables found:** {n_tables} — {fqn_preview}{suffix}")
+    else:
+        lines.append("- **Tables found:** 0 — no tables matched")
+
+    col_lookup = semantic_context.get("_column_lookup") or {}
+    n_cols = len(col_lookup)
+    n_with_values = sum(
+        1 for v in col_lookup.values()
+        if v.get("distinct_values") or v.get("sample_values")
+    )
+    lines.append(f"- **Columns loaded:** {n_cols} ({n_with_values} with known values)")
+
+    domains = list(dict.fromkeys(t.get("business_domain") for t in tables if t.get("business_domain")))
+    if domains:
+        cross_tag = " (cross-domain)" if semantic_context.get("is_cross_domain") else ""
+        lines.append(f"- **Domain:** {', '.join(domains[:2])}{cross_tag}")
+
+    business_terms = semantic_context.get("business_terms") or []
+    terms = [bt.get("term", "") for bt in business_terms[:3] if bt.get("term")]
+    if terms:
+        lines.append(f"- **Business terms:** {', '.join(repr(t) for t in terms)}")
+
+    entity_hints = semantic_context.get("entity_hints") or []
+    hint_strs = [
+        f'"{eh.get("token")}" → {eh.get("table_fqn")}.{eh.get("column")}'
+        for eh in entity_hints[:3]
+        if eh.get("token") and eh.get("table_fqn") and eh.get("column")
+    ]
+    if hint_strs:
+        lines.append(f"- **Entity hints:** {', '.join(hint_strs)}")
+
+    intents = semantic_context.get("intents") or []
+    if intents and intents[0].get("name"):
+        lines.append(f"- **Query intent:** {intents[0]['name']}")
+
+    _pattern = semantic_context.get("_matched_pattern")
+    _tier = semantic_context.get("_matched_pattern_tier")
+    if _pattern and _tier:
+        _raw = _pattern.get("raw_score", 0) or 0
+        _q = (_pattern.get("question_text") or "")[:60]
+        lines.append(f"- **Prior pattern:** {_tier} match ({_raw:.2f}) — \"{_q}\"")
+
+    if semantic_context.get("is_followup"):
+        lines.append("- **Follow-up detected**")
+
+    return "\n".join(lines)
+
+
 async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict:
     entity_tokens = state.get("entity_tokens") or None
     # search_variants are corrected/expanded entity tokens from intake_classifier (abbrev expansions,
@@ -340,6 +397,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             "effective_question": effective_question,
             "error": None,
             "neo4j_raw_graph": neo4j_raw_graph,
+            "context_fetch_label": _build_context_label(semantic_context),
         }
 
     except Exception as e:
