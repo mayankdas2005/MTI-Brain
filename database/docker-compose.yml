@@ -317,31 +317,29 @@ services:
       retries: 5
       start_period: 10s
 
-  pgadmin:
-    image: dpage/pgadmin4:9
-    container_name: pgadmin
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:latest
+    container_name: cloudbeaver
     restart: unless-stopped
     env_file: .env
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:?PGADMIN_DEFAULT_EMAIL is required}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?PGADMIN_DEFAULT_PASSWORD is required}
+      CB_SERVER_NAME: ${CLOUDBEAVER_SERVER_NAME:-mti-brain-cloudbeaver}
+      CB_ADMIN_NAME: ${CLOUDBEAVER_ADMIN_NAME:-admin}
+      CB_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD:-admin}
     volumes:
-      - pgadmin_data:/var/lib/pgadmin
+      - cloudbeaver_data:/opt/cloudbeaver/workspace
     ports:
-      - "${PGADMIN_PORT:-5050}:80"
+      - "${CLOUDBEAVER_PORT:-5050}:8978"
     networks:
       - db_net
     deploy:
       resources:
         limits:
-          memory: ${PGADMIN_MEMORY_LIMIT:-256M}
-          cpus: "${PGADMIN_CPU_LIMIT:-0.5}"
+          memory: ${CLOUDBEAVER_MEMORY_LIMIT:-1024M}
+          cpus: "${CLOUDBEAVER_CPU_LIMIT:-1.0}"
         reservations:
-          memory: ${PGADMIN_MEMORY_RESERVATION:-64M}
-          cpus: "${PGADMIN_CPU_RESERVATION:-0.1}"
+          memory: ${CLOUDBEAVER_MEMORY_RESERVATION:-256M}
+          cpus: "${CLOUDBEAVER_CPU_RESERVATION:-0.25}"
 
 networks:
   db_net:
@@ -349,4 +347,4 @@ networks:
     name: db_net
 
 volumes:
-  pgadmin_data:
+  cloudbeaver_data:
