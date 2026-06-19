@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { X, Brain, GripVertical } from 'lucide-react';
+import { X, Brain, GripVertical, Loader2 } from 'lucide-react';
 import { useUIStore } from '@/lib/store/ui';
 import { useThreadStore, type Message } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
@@ -102,6 +102,7 @@ export function ThinkingSidePanel() {
     .trim();
 
   const hasContent = hasSteps || !!legacyReasoning;
+  const waitingForReasoning = (message.isStreaming || isStreaming) && !hasContent;
 
   return (
     <div
@@ -173,6 +174,13 @@ export function ThinkingSidePanel() {
               content={legacyReasoning}
             />
           )
+        ) : waitingForReasoning ? (
+          <div className="flex h-full items-center justify-center px-4">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <span>Loading reasoning steps...</span>
+            </div>
+          </div>
         ) : (
           <div className="flex items-center justify-center h-full px-4">
             <p className="text-sm text-muted-foreground text-center">

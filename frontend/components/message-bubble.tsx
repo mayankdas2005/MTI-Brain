@@ -23,7 +23,7 @@ import {
 import { SqlBlock } from './sql-block';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
-import { copyText } from '@/lib/utils';
+import { copyText, cn } from '@/lib/utils';
 import { generateDashboard, getDashboard, downloadDashboard } from '@/lib/api/dashboard';
 import { useDashboardStore, DASHBOARD_TIMEOUT_MS } from '@/lib/store/dashboard';
 import { generateGraphContext, getGraphContext, downloadGraphContext } from '@/lib/api/graph_context';
@@ -445,6 +445,101 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     (s) => s.node === 'synthesis' && s.status === 'done'
   ) ?? false;
 
+  const graphContextLabel = gcStatus === 'ready'
+    ? 'View Graph Context'
+    : gcStatus === 'pending' && !gcTimedOut
+      ? 'Generating…'
+      : gcStatus === 'failed' || gcTimedOut
+        ? 'Rebuild Graph Context'
+        : 'Build Graph Context';
+
+  const reportLabel = dashStatus === 'ready'
+    ? 'View Report'
+    : dashStatus === 'pending' && !dashTimedOut
+      ? 'Generating…'
+      : dashStatus === 'failed' || dashTimedOut
+        ? 'Rebuild Report'
+        : 'Build Report';
+
+  const handleGraphContextAction = () => {
+    if (gcStatus === 'ready') {
+      void getGraphContext(convId).then((res) => {
+        if (res.url) {
+          window.open(res.url, '_blank', 'noopener');
+          void downloadGraphContext(convId).then(({ blob, filename }) => {
+            const blobUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(blobUrl);
+          }).catch(() => {});
+        } else {
+          removeGC(convId);
+          toast.info('These sources have expired — click to reload.');
+        }
+      }).catch(() => {
+        removeGC(convId);
+        toast.info('These sources have expired — click to reload.');
+      });
+      return;
+    }
+
+    setGC(convId, { status: 'pending', url: null, queuedAt: Date.now() });
+    toast.info('Fetching query sources…', {
+      id: `gc-${convId}`,
+      description: 'Looking up the data behind your answer.',
+    });
+    void generateGraphContext(convId).catch((err: unknown) => {
+      setGC(convId, { status: 'failed', url: null, queuedAt: Date.now() });
+      toast.warning(err instanceof Error ? err.message : 'Couldn\'t fetch the query sources.', { id: `gc-${convId}` });
+    });
+  };
+
+  const handleDashboardAction = () => {
+    if (dashStatus === 'ready') {
+      // Always fetch a fresh presigned URL — cached URL expires after 7 days
+      void getDashboard(convId).then((res) => {
+        if (res.url) {
+          // Open to display in new tab
+          window.open(res.url, '_blank', 'noopener');
+          // Download via backend (includes auth, avoids S3 CORS)
+          void downloadDashboard(convId).then(({ blob, filename }) => {
+            const blobUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(blobUrl);
+          }).catch(() => {});
+        } else {
+          // DB record gone — clear stale state, let user regenerate
+          removeDash(convId);
+          toast.info('This report has expired — click to rebuild.');
+        }
+      }).catch(() => {
+        // 404 — DB record deleted, reset to idle
+        removeDash(convId);
+        toast.info('This report has expired — click to rebuild.');
+      });
+      return;
+    }
+
+    setDash(convId, { status: 'pending', url: null, queuedAt: Date.now() });
+    toast.info('Building your report…', {
+      id: `dash-${convId}`,
+      description: 'We\'re putting this together as an executive report.',
+    });
+    void generateDashboard(convId).catch((err: unknown) => {
+      setDash(convId, { status: 'failed', url: null, queuedAt: Date.now() });
+      toast.warning(err instanceof Error ? err.message : 'Couldn\'t build the report.', { id: `dash-${convId}` });
+    });
+  };
+
   return (
     <div
       id={`msg-${message.id}`}
@@ -596,7 +691,65 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
       )}
       {!message.isStreaming && message.role === 'assistant' && !!message.content &&
         !!(message.metadata_ as Record<string, unknown> | null)?.sql && (
-        <RefineInput threadId={threadId} conversationId={message.conversation_id} />
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <RefineInput threadId={threadId} conversationId={message.conversation_id} className="mt-0" />
+
+          {showGCButton ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={gcStatus === 'pending' && !gcTimedOut}
+              onClick={handleGraphContextAction}
+              className="h-7 px-2.5 text-xs gap-1.5"
+            >
+              {gcStatus === 'pending' && !gcTimedOut
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <Network className="w-3.5 h-3.5" />
+              }
+              {graphContextLabel}
+            </Button>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <Button variant="outline" size="sm" disabled className="h-7 px-2.5 text-xs gap-1.5 pointer-events-none">
+                    <Network className="w-3.5 h-3.5" />
+                    Build Graph Context
+                  </Button>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="top">No knowledge graph query for this answer</TooltipContent>
+            </Tooltip>
+          )}
+
+          {showDashEntry && (showDashButton ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={dashStatus === 'pending' && !dashTimedOut}
+              onClick={handleDashboardAction}
+              className="h-7 px-2.5 text-xs gap-1.5"
+            >
+              {dashStatus === 'pending' && !dashTimedOut
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <LayoutDashboard className="w-3.5 h-3.5" />
+              }
+              {reportLabel}
+            </Button>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <Button variant="outline" size="sm" disabled className="h-7 px-2.5 text-xs gap-1.5 pointer-events-none">
+                    <LayoutDashboard className="w-3.5 h-3.5" />
+                    Build Report
+                  </Button>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="top">No data available to build a report</TooltipContent>
+            </Tooltip>
+          ))}
+        </div>
       )}
 
       {/* Trust strip — only for SQL-backed answers. Only shown after streaming
@@ -687,140 +840,6 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                       <Pin className="w-4 h-4" />
                       Pin to home
                     </DropdownMenuItem>
-                  )}
-                  {/* Knowledge Graph Context */}
-                  {message.role === 'assistant' && !!message.content && (
-                    showGCButton ? (
-                      <DropdownMenuItem
-                        disabled={gcStatus === 'pending' && !gcTimedOut}
-                        onClick={() => {
-                          if (gcStatus === 'ready') {
-                            void getGraphContext(convId).then((res) => {
-                              if (res.url) {
-                                window.open(res.url, '_blank', 'noopener');
-                                void downloadGraphContext(convId).then(({ blob, filename }) => {
-                                  const blobUrl = URL.createObjectURL(blob);
-                                  const a = document.createElement('a');
-                                  a.href = blobUrl;
-                                  a.download = filename;
-                                  document.body.appendChild(a);
-                                  a.click();
-                                  document.body.removeChild(a);
-                                  URL.revokeObjectURL(blobUrl);
-                                }).catch(() => {});
-                              } else {
-                                removeGC(convId);
-                                toast.info('These sources have expired — click to reload.');
-                              }
-                            }).catch(() => {
-                              removeGC(convId);
-                              toast.info('These sources have expired — click to reload.');
-                            });
-                            return;
-                          }
-                          setGC(convId, { status: 'pending', url: null, queuedAt: Date.now() });
-                          toast.info('Fetching query sources…', {
-                            id: `gc-${convId}`,
-                            description: 'Looking up the data behind your answer.',
-                          });
-                          void generateGraphContext(convId).catch((err: unknown) => {
-                            setGC(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-                            toast.warning(err instanceof Error ? err.message : 'Couldn\'t fetch the query sources.', { id: `gc-${convId}` });
-                          });
-                        }}
-                        className="gap-2"
-                      >
-                        {gcStatus === 'pending' && !gcTimedOut
-                          ? <Loader2 className="w-4 h-4 animate-spin" />
-                          : <Network className="w-4 h-4" />
-                        }
-                        {gcStatus === 'ready'                     ? 'View Graph Context'    :
-                         gcStatus === 'pending' && !gcTimedOut    ? 'Generating…'           :
-                         gcStatus === 'failed'  || gcTimedOut     ? 'Rebuild Graph Context' :
-                                                                    'Build Graph Context'}
-                      </DropdownMenuItem>
-                    ) : (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="cursor-not-allowed">
-                            <DropdownMenuItem disabled className="gap-2 pointer-events-none">
-                              <Network className="w-4 h-4" />
-                              Build Graph Context
-                            </DropdownMenuItem>
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent side="right">No knowledge graph query for this answer</TooltipContent>
-                      </Tooltip>
-                    )
-                  )}
-                  {showDashEntry && (
-                    showDashButton ? (
-                      <DropdownMenuItem
-                        disabled={dashStatus === 'pending' && !dashTimedOut}
-                        onClick={() => {
-                          if (dashStatus === 'ready') {
-                            // Always fetch a fresh presigned URL — cached URL expires after 7 days
-                            void getDashboard(convId).then((res) => {
-                              if (res.url) {
-                                // Open to display in new tab
-                                window.open(res.url, '_blank', 'noopener');
-                                // Download via backend (includes auth, avoids S3 CORS)
-                                void downloadDashboard(convId).then(({ blob, filename }) => {
-                                  const blobUrl = URL.createObjectURL(blob);
-                                  const a = document.createElement('a');
-                                  a.href = blobUrl;
-                                  a.download = filename;
-                                  document.body.appendChild(a);
-                                  a.click();
-                                  document.body.removeChild(a);
-                                  URL.revokeObjectURL(blobUrl);
-                                }).catch(() => {});
-                              } else {
-                                // DB record gone — clear stale state, let user regenerate
-                                removeDash(convId);
-                                toast.info('This report has expired — click to rebuild.');
-                              }
-                            }).catch(() => {
-                              // 404 — DB record deleted, reset to idle
-                              removeDash(convId);
-                              toast.info('This report has expired — click to rebuild.');
-                            });
-                            return;
-                          }
-                          setDash(convId, { status: 'pending', url: null, queuedAt: Date.now() });
-                          toast.info('Building your report…', {
-                            id: `dash-${convId}`,
-                            description: 'We\'re putting this together as an executive report.',
-                          });
-                          void generateDashboard(convId).catch((err: unknown) => {
-                            setDash(convId, { status: 'failed', url: null, queuedAt: Date.now() });
-                            toast.warning(err instanceof Error ? err.message : 'Couldn\'t build the report.', { id: `dash-${convId}` });
-                          });
-                        }}
-                        className="gap-2"
-                      >
-                        {dashStatus === 'pending' && !dashTimedOut
-                          ? <Loader2 className="w-4 h-4 animate-spin" />
-                          : <LayoutDashboard className="w-4 h-4" />
-                        }
-                        {dashStatus === 'ready'                     ? 'View Report'       :
-                         dashStatus === 'pending' && !dashTimedOut  ? 'Generating…'       :
-                         dashStatus === 'failed' || dashTimedOut    ? 'Rebuild Report'    :
-                                                    'Build Report'}
-                      </DropdownMenuItem>
-                    ) : (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="cursor-not-allowed">
-                            <DropdownMenuItem disabled className="gap-2 pointer-events-none">
-                              <LayoutDashboard className="w-4 h-4" />
-                              Build Report
-                            </DropdownMenuItem>
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent side="right">No data available to build a report</TooltipContent>
-                      </Tooltip>
-                    )
                   )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleOpenAbout} className="gap-2">
@@ -1022,7 +1041,15 @@ function StreamingContent({ isStreaming, hasContent, children }: { isStreaming?:
 
 import { SlidersHorizontal, ArrowUp } from 'lucide-react';
 
-function RefineInput({ threadId, conversationId }: { threadId: string; conversationId: string }) {
+function RefineInput({
+  threadId,
+  conversationId,
+  className,
+}: {
+  threadId: string;
+  conversationId: string;
+  className?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1053,7 +1080,11 @@ function RefineInput({ threadId, conversationId }: { threadId: string; conversat
     return (
       <button
         onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 0); }}
-        className={`flex items-center gap-1.5 mt-2 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-[colors,opacity] duration-150 ${isStreaming ? 'opacity-0 pointer-events-none' : ''}`}
+        className={cn(
+          'flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-[colors,opacity] duration-150',
+          className,
+          isStreaming && 'opacity-0 pointer-events-none',
+        )}
       >
         <SlidersHorizontal className="w-3 h-3" />
         Refine this query
@@ -1062,7 +1093,7 @@ function RefineInput({ threadId, conversationId }: { threadId: string; conversat
   }
 
   return (
-    <div className="flex items-center gap-2 mt-2">
+    <div className={cn('flex items-center gap-2', className)}>
       <input
         ref={inputRef}
         value={text}

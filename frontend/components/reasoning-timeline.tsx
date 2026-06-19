@@ -110,10 +110,13 @@ export function PipelineTimeline({
         const isExpanded = isActive || expandedSteps.has(i);
 
         return (
-          <div key={step.node + i} className="relative pl-8" style={{ paddingTop: i === 0 ? 0 : '1rem' }}>
+          <div key={step.node + i} className="relative pl-10" style={{ paddingTop: i === 0 ? 0 : '1.35rem' }}>
             {/* Connector line */}
             {!isLast && (
-              <span className="absolute left-[9px] top-[1.5rem] w-px bg-border/60" style={{ bottom: 0 }} />
+              <span
+                className="absolute left-[11px] w-[2px] bg-border/60"
+                style={{ top: i === 0 ? '1.75rem' : 0, bottom: 0 }}
+              />
             )}
 
             {/* Step row: dot + label aligned together */}
@@ -124,7 +127,7 @@ export function PipelineTimeline({
               <div className="flex items-center gap-3 min-w-0">
                 {/* Status dot */}
                 <span
-                  className={`absolute left-0 flex items-center justify-center w-[18px] h-[18px] rounded-full shrink-0 transition-colors ${
+                  className={`absolute left-0 flex items-center justify-center w-[22px] h-[22px] rounded-full shrink-0 transition-colors ${
                     isActive
                       ? 'bg-primary step-active'
                       : isDone
@@ -135,21 +138,21 @@ export function PipelineTimeline({
                   }`}
                   aria-hidden="true"
                 >
-                  {isDone  && <Check className="w-2.5 h-2.5 text-primary dark:text-primary/90" strokeWidth={3} />}
-                  {isError && <X className="w-2.5 h-2.5 text-destructive" strokeWidth={3} />}
+                  {isDone  && <Check className="w-3.5 h-3.5 text-primary dark:text-primary/90" strokeWidth={3} />}
+                  {isError && <X className="w-3.5 h-3.5 text-destructive" strokeWidth={3} />}
                 </span>
 
                 {/* Step label */}
                 <span
-                  className={`text-[0.9rem] leading-[18px] tracking-[-0.01em] ${
+                  className={`text-[1rem] leading-[22px] tracking-[-0.01em] font-bold ${
                     isActive
-                      ? 'text-foreground font-semibold'
+                      ? 'text-foreground'
                       : isError
-                      ? 'text-destructive font-semibold'
+                      ? 'text-destructive'
                       : isSkipped
                       ? 'text-foreground/35 line-through'
                       : isDone
-                      ? 'text-foreground/80 font-medium'
+                      ? 'text-foreground/80'
                       : 'text-foreground/60'
                   }`}
                 >
