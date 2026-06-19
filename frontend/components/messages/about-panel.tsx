@@ -19,6 +19,8 @@ import {
   MessageSquare,
   ThumbsUp,
   ThumbsDown,
+  BookOpen,
+  BrainCircuit,
 } from 'lucide-react';
 import {
   Sheet,
@@ -161,6 +163,21 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 }
               />
             )}
+            {m?.deep_analysis != null && (
+              <KV
+                label="Deep Analysis"
+                value={
+                  <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                    m.deep_analysis
+                      ? 'bg-primary/10 text-primary'
+                      : 'bg-muted text-muted-foreground'
+                  }`}>
+                    <BrainCircuit className="w-3 h-3" />
+                    {m.deep_analysis ? 'True' : 'False'}
+                  </span>
+                }
+              />
+            )}
           </Section>
 
           {/* Interpretation - only when we have something interpretive to show. */}
@@ -182,6 +199,24 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 <KV label="Filters" value={m.resolved_filters} wrap />
               )}
             </Section>
+          )}
+
+          {/* Tribal Knowledge — only shown when deep analysis retrieved facts */}
+          {(m?.tribal_facts?.length ?? 0) > 0 && (
+            <Collapsible title="Tribal Knowledge" icon={BookOpen}>
+              <div className="space-y-3">
+                {m!.tribal_facts!.map((fact, i) => (
+                  <div key={i} className="rounded-md border border-border/40 bg-muted/10 p-2.5">
+                    <p className="text-xs font-semibold text-foreground/80 mb-1 truncate">
+                      {fact.label}
+                    </p>
+                    <p className="text-xs text-foreground/55 leading-relaxed line-clamp-4">
+                      {fact.value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </Collapsible>
           )}
 
           {/* Feedback — ratings and memory applied to this response */}

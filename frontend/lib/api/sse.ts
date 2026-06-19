@@ -36,6 +36,7 @@ export interface SSEHandlers {
   onVizSkip?: () => void;
   onFollowUps?: (data: { questions: string[] }) => void;
   onConfidence?: (data: { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string }) => void;
+  onTribalFacts?: (data: { facts: Array<{ type: string; label: string; value: string; status: string }> }) => void;
   onStopped?: (data: { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number }) => void;
   onDone?: (data: Record<string, unknown>) => void;
   onError?: (data: { message: string; conversation_id?: string }) => void;
@@ -178,6 +179,9 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       break;
     case 'confidence':
       handlers.onConfidence?.(data as { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string });
+      break;
+    case 'tribal_facts':
+      handlers.onTribalFacts?.(data as { facts: Array<{ type: string; label: string; value: string; status: string }> });
       break;
     case 'stopped':
       handlers.onStopped?.(data as { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number });

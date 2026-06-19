@@ -168,6 +168,7 @@ def _build_sse_generator(
                 "denominator_context": save_data.get("denominator_context"),
                 "temporal_projection": save_data.get("temporal_projection"),
                 "deep_analysis":      save_data.get("deep_analysis", False),
+                "tribal_facts":       save_data.get("tribal_facts") or [],
             }),
         )
         _conf = save_data.get("confidence")

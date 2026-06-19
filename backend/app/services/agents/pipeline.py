@@ -28,6 +28,7 @@ from app.services.agents.node_names import (
     CONTEXT_FETCHER as N_CONTEXT_FETCHER,
     INTAKE as N_INTAKE,
     SYNTHESIS as N_SYNTHESIS,
+    TRIBAL_RETRIEVAL as N_TRIBAL_RETRIEVAL,
 )
 from app.services.agents.nodes.audit import write_query_pattern, write_schema_gaps
 from app.services.agents.neo4j.template_search import find_canonical_pattern_id
@@ -53,6 +54,7 @@ _STATE_KEYS = {
     "query_intent", "entity_tokens", "search_terms", "is_followup", "complexity",
     "preference_summary", "neo4j_raw_graph",
     "_measure_specialist_output", "_dimension_specialist_output", "_directive_summary", "_cte_outline",
+    "tribal_facts",
 }
 
 
@@ -374,6 +376,11 @@ async def stream_pipeline(
                 continue
 
             if kind == "on_chain_start" and ev.get("name") == node:
+                # tribal_retrieval is a deep-analysis-only step — suppress it from
+                # the timeline entirely when deep_analysis is False so the step
+                # never appears in the thinking panel for standard queries.
+                if node == N_TRIBAL_RETRIEVAL and not state.get("deep_analysis"):
+                    continue
                 visit      = _node_visit_count.get(node, 0)
                 visit_key  = f"{node}:{visit}"
                 is_retry   = visit > 0
@@ -451,6 +458,7 @@ async def stream_pipeline(
                 # natural language label to show in the UI pipeline timeline.
                 _preference_label = ""
                 _context_label = ""
+                _tribal_label = ""
                 if node == N_INTAKE and isinstance(output, dict):
                     _preference_label = output.get("preference_label") or ""
                     if _preference_label:
@@ -459,6 +467,21 @@ async def stream_pipeline(
                     _context_label = output.get("context_fetch_label") or ""
                     if _context_label:
                         yield {"event": "reasoning.delta", "data": {"node": node, "text": _context_label}}
+                elif node == N_TRIBAL_RETRIEVAL and isinstance(output, dict):
+                    facts = output.get("tribal_facts") or []
+                    if facts:
+                        lines = [
+                            f"**{f.get('label', 'unknown')}**\n{str(f.get('value', ''))[:200].strip()}…"
+                            for f in facts
+                        ]
+                        _tribal_label = (
+                            f"**Tribal Knowledge:** {len(facts)} document(s) retrieved\n\n"
+                            + "\n\n---\n\n".join(lines)
+                        )
+                        yield {"event": "reasoning.delta", "data": {"node": node, "text": _tribal_label}}
+                        # Dedicated event so the frontend can update the thinking panel
+                        # immediately during streaming (before the done event fires).
+                        yield {"event": "tribal_facts", "data": {"facts": facts}}
 
                 _node_visit_count[node] = visit_before + 1
                 visit_key  = f"{node}:{visit_before}"
@@ -484,7 +507,7 @@ async def stream_pipeline(
                     )
                     # For deterministic nodes with a synthetic label (e.g. intake_classifier,
                     # context_fetcher), persist the label as step reasoning so it survives reload.
-                    step["reasoning"] = llm_reasoning or _preference_label or _context_label
+                    step["reasoning"] = llm_reasoning or _preference_label or _context_label or _tribal_label
                     yield {
                         "event": "node.done",
                         "data": {
@@ -663,6 +686,7 @@ async def stream_pipeline(
                     "denominator_context": state.get("denominator_context"),
                     "temporal_projection": state.get("temporal_projection"),
                     "deep_analysis":      state.get("deep_analysis", False),
+                    "tribal_facts":       state.get("tribal_facts") or [],
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

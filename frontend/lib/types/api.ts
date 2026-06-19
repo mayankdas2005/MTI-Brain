@@ -37,6 +37,13 @@ export interface TokenUsage {
   cache_creation_tokens: number;
 }
 
+export interface TribalFact {
+  type: string;
+  label: string;
+  value: string;
+  status: string;
+}
+
 export interface PreferenceFeedbackItem {
   liked: boolean;
   comment: string | null;
@@ -95,6 +102,8 @@ export interface MessageMetadata {
     explanation: string;
   };
   preference_summary?: PreferenceSummary;
+  tribal_facts?: TribalFact[];
+  deep_analysis?: boolean;
 }
 
 // ─── Response Types ───

@@ -32,7 +32,7 @@ nodes:
     stream: null
 
   - id: tribal_retrieval
-    label: null
+    label: "Tribal Knowledge Retrieval"
     tier: none
     stream: null
 

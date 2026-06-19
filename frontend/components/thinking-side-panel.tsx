@@ -87,6 +87,8 @@ export function ThinkingSidePanel() {
     return null;
   }
 
+  const tribalFacts = message.metadata_?.tribal_facts ?? [];
+
   const steps = message.streamingSteps;
   const hasSteps = !!steps && steps.length > 0;
   const activeStep = steps?.slice().reverse().find((s) => s.status === 'active');
@@ -154,6 +156,23 @@ export function ThinkingSidePanel() {
           <X className="w-4 h-4" />
         </button>
       </div>
+
+      {/* Tribal Knowledge section — pinned above pipeline steps when deep analysis returned facts */}
+      {tribalFacts.length > 0 && (
+        <div className="px-5 pt-4 pb-3 border-b border-border/40 shrink-0">
+          <p className="text-[11px] font-semibold text-foreground/40 uppercase tracking-wider mb-3">
+            Tribal Knowledge
+          </p>
+          <div className="space-y-3">
+            {tribalFacts.map((fact, i) => (
+              <div key={i}>
+                <p className="text-xs font-semibold text-foreground/75 mb-0.5 truncate">{fact.label}</p>
+                <p className="text-xs text-foreground/50 leading-relaxed line-clamp-3">{fact.value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       <div

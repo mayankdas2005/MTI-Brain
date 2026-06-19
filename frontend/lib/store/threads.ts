@@ -1122,6 +1122,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             : m,
         );
       },
+      onTribalFacts: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, metadata_: { ...m.metadata_, tribal_facts: data.facts } }
+            : m,
+        );
+      },
       onVizSkip: () => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, chartReady: true } : m,
@@ -1186,6 +1193,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
                 intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
                 preference_summary: (data.preference_summary as PreferenceSummary | undefined) ?? m.metadata_?.preference_summary,
+                tribal_facts: (data.tribal_facts as import('../types/api').TribalFact[] | undefined) ?? m.metadata_?.tribal_facts,
+                deep_analysis: (data.deep_analysis as boolean | undefined) ?? m.metadata_?.deep_analysis,
               },
             };
           }
@@ -1502,6 +1511,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, confidence: data } } : m,
         );
       },
+      onTribalFacts: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, tribal_facts: data.facts } } : m,
+        );
+      },
       onVizSkip: () => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, chartReady: true } : m,
@@ -1562,6 +1576,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
                 langfuse_trace_url: (data.langfuse_trace_url as string | undefined) ?? m.metadata_?.langfuse_trace_url,
                 intent: (data.intent as string | undefined) ?? m.metadata_?.intent,
                 preference_summary: (data.preference_summary as PreferenceSummary | undefined) ?? m.metadata_?.preference_summary,
+                tribal_facts: (data.tribal_facts as import('../types/api').TribalFact[] | undefined) ?? m.metadata_?.tribal_facts,
+                deep_analysis: (data.deep_analysis as boolean | undefined) ?? m.metadata_?.deep_analysis,
               },
             };
           }
@@ -1823,6 +1839,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onConfidence: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, confidence: data } } : m,
+        );
+      },
+      onTribalFacts: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, tribal_facts: data.facts } } : m,
         );
       },
       onVizSkip: () => {
