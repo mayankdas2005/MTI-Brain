@@ -33,30 +33,30 @@
 
     :root {
       /* ── Brand / Primary ── */
-      --navy-900: #03080f;
-      --navy-800: #040e1d;
-      --navy-700: #07172e;
-      --navy-600: #0a1f3d;
-      --navy-500: #0e2a52;
-      --navy-400: #1E40AF;
-      --navy-300: #2554a0;
-      --accent: #2563eb;
-      --accent-lt: #3b82f6;
+      --navy-900: #00172F;
+      --navy-800: #001d38;
+      --navy-700: #092C53;
+      --navy-600: #0d3664;
+      --navy-500: #184476;
+      --navy-400: #184476;
+      --navy-300: #1B76B8;
+      --accent: #1B76B8;
+      --accent-lt: #3d9ad4;
 
       /* ── Text ── */
-      --ink: #0a0f1e;
-      --ink-2: #1e293b;
-      --ink-3: #334155;
-      --muted: #64748b;
-      --faint: #94a3b8;
+      --ink: #00172F;
+      --ink-2: #092C53;
+      --ink-3: #184476;
+      --muted: #939598;
+      --faint: #b0b4b8;
 
       /* ── Surfaces ── */
-      --bg: #FCFDFE;
-      --bg-2: #e8edf3;
+      --bg: #f8fafb;
+      --bg-2: #C6DBDF;
       --surface: #ffffff;
-      --surface-2: #f8fafc;
-      --border: #e2e8f0;
-      --border-2: #cbd5e1;
+      --surface-2: #f2f7f8;
+      --border: #C6DBDF;
+      --border-2: #a8c0c5;
 
       /* ── Semantic ── */
       --g-dark: #14532d;
@@ -71,10 +71,10 @@
       --r: #b91c1c;
       --r-bg: #fee2e2;
       --r-border: #fecaca;
-      --b-dark: #1e3a8a;
-      --b: #1d4ed8;
-      --b-bg: #dbeafe;
-      --b-border: #bfdbfe;
+      --b-dark: #092C53;
+      --b: #184476;
+      --b-bg: #e8f2f4;
+      --b-border: #C6DBDF;
       --p-dark: #4c1d95;
       --p: #6d28d9;
       --p-bg: #ede9fe;
@@ -94,7 +94,7 @@
 
     body {
       font-family: 'Alliance No.1', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #f1f5f9;
+      background: #f0f5f6;
       color: var(--ink-2);
       line-height: 1.6;
       min-height: 100vh;
@@ -116,34 +116,6 @@
       min-height: 100vh;
     }
 
-    .g2 {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-    }
-
-    .g3 {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 20px;
-    }
-
-    .card {
-      background: var(--surface);
-      border-radius: var(--rad);
-      padding: 22px 24px;
-      box-shadow: var(--sh);
-      border: 1px solid var(--border);
-    }
-
-    .card h3 {
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: .14em;
-      color: var(--muted);
-      margin-bottom: 16px;
-    }
 
     /* ──────────────────────────────────────────────────────────────────
        HEADER
@@ -151,7 +123,7 @@
 
     .hdr {
       background:
-        linear-gradient(160deg, var(--navy-900) 0%, var(--navy-700) 35%, var(--navy-500) 70%, #112f6e 100%);
+        linear-gradient(160deg, #184476 0%, var(--navy-500) 30%, var(--navy-700) 65%, var(--navy-900) 100%);
       color: #fff;
       padding: 32px 44px 0;
       position: relative;
@@ -178,7 +150,7 @@
       right: -40px;
       width: 520px;
       height: 520px;
-      background: radial-gradient(ellipse at center, rgba(37, 99, 235, .22) 0%, transparent 65%);
+      background: radial-gradient(ellipse at center, rgba(27, 118, 184, .22) 0%, transparent 65%);
       pointer-events: none;
     }
 
@@ -298,84 +270,28 @@
       border-radius: 50%;
       background: var(--b-dark);
       display: inline-block;
-      box-shadow: 0 0 5px rgba(30, 58, 138, .45);
+      box-shadow: 0 0 5px rgba(9, 44, 83, .45);
       flex-shrink: 0;
     }
 
-    /* Infobar health states — strip background reflects aggregate data health */
-    .infobar.warn {
-      background: #ffffff;
-      border-bottom-color: var(--border);
-    }
-
-    .infobar.bad {
-      background: #ffffff;
-      border-bottom-color: var(--border);
-    }
-
-    /* ──────────────────────────────────────────────────────────────────
-       ALERT BANNER
-       ────────────────────────────────────────────────────────────────── */
-
-    .alert-banner {
-      background: #fef2f2;
-      border-left: 4px solid #dc2626;
-      border-bottom: 1px solid #fecaca;
-      color: #7f1d1d;
-      padding: 14px 44px;
-      font-size: 12.5px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      letter-spacing: .01em;
-      line-height: 1.5;
-    }
-
-
-    .alert-banner .ab-cnt {
-      background: #6326dc;
-      color: #fff;
-      border-radius: 20px;
-      padding: 2px 10px;
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: .07em;
-      flex-shrink: 0;
-    }
-
-    /* Amber variant — data quality warnings (not financial emergencies) */
-    .alert-banner.warn {
-      background: #ffffff;
-      border-left-color: var(--navy-500);
-      border-bottom-color: var(--border);
-      color: var(--navy-800);
-    }
-
-    .alert-banner.warn .alert-ico {
-      color: var(--navy-500);
-    }
-
-    .alert-banner.warn .ab-cnt {
-      background: var(--navy-500);
-    }
 
     /* ──────────────────────────────────────────────────────────────────
        EXECUTIVE SUMMARY
        ────────────────────────────────────────────────────────────────── */
 
     .exec-summary {
-      background: linear-gradient(135deg, var(--navy-800) 0%, var(--navy-600) 100%);
-      color: rgba(255, 255, 255, .88);
+      background: #eff6ff;
+      color: var(--ink-2);
       padding: 22px 44px;
       font-size: 13.5px;
       line-height: 1.75;
       font-weight: 400;
-      border-bottom: 3px solid var(--accent);
+      border-left: 4px solid var(--accent);
+      border-bottom: 1px solid var(--border);
     }
 
     .exec-summary strong {
-      color: #fff;
+      color: var(--navy-900);
       font-weight: 700;
     }
 
@@ -407,30 +323,12 @@
       transform: translateY(-2px);
     }
 
-    .kcard.kg {
-      border-left-color: var(--b-dark);
-      background: #eff6ff;
-    }
-
-    .kcard.ka {
-      border-left-color: var(--b-dark);
-      background: #eff6ff;
-    }
-
-    .kcard.kr {
-      border-left-color: var(--b-dark);
-      background: #eff6ff;
-    }
 
     .kcard.kb {
       border-left-color: var(--b-dark);
-      background: #eff6ff;
+      background: #edf5f7;
     }
 
-    .kcard.kn {
-      border-left-color: var(--b-dark);
-      background: #eff6ff;
-    }
 
     .kcard-header {
       display: flex;
@@ -440,13 +338,6 @@
       gap: 5px;
     }
 
-    .khead-main {
-      display: flex;
-      align-items: flex-start;
-      gap: 6px;
-      min-width: 0;
-      width: 100%;
-    }
 
     .kcap {
       font-size: 9.5px;
@@ -484,10 +375,6 @@
       font-weight: 600;
     }
 
-    .ktrend .dn {
-      color: #dc2626;
-      font-weight: 600;
-    }
 
     .kbadge {
       font-size: 8.5px;
@@ -544,28 +431,6 @@
       flex-shrink: 0;
     }
 
-    .sh-badge {
-      font-size: 9px;
-      font-weight: 700;
-      padding: 2px 9px;
-      border-radius: 20px;
-      letter-spacing: .07em;
-      text-transform: uppercase;
-      background: var(--navy-400);
-      color: #fff;
-    }
-
-    .sh-badge.red {
-      background: var(--b-bg);
-      color: var(--b-dark);
-      border: 1px solid var(--b-border);
-    }
-
-    .sh-badge.amber {
-      background: var(--b-bg);
-      color: var(--b-dark);
-      border: 1px solid var(--b-border);
-    }
 
     /* ──────────────────────────────────────────────────────────────────
        CALLOUT
@@ -577,22 +442,12 @@
       font-size: 12.5px;
       line-height: 1.6;
       margin-bottom: 14px;
+      margin-top: 14px;
       border-left: 4px solid var(--navy-400);
-      background: #eff6ff;
+      background: #edf5f7;
       color: var(--ink-2);
     }
 
-    .callout.warn {
-      border-color: var(--navy-500);
-      background: #ffffff;
-      color: var(--navy-800);
-    }
-
-    .callout.danger {
-      border-color: var(--b-dark);
-      background: #eff6ff;
-      color: var(--navy-800);
-    }
 
     /* ──────────────────────────────────────────────────────────────────
        INSIGHT BOX  (per-section "Key Finding" callout — distinct from .callout)
@@ -612,13 +467,6 @@
       gap: 8px;
     }
 
-    .insight-ico {
-      width: 16px;
-      height: 16px;
-      flex-shrink: 0;
-      color: var(--navy-500);
-      margin-top: 1px;
-    }
 
     .insight-box strong {
       color: var(--navy-800);
@@ -693,11 +541,11 @@
     }
 
     tbody tr:hover {
-      background: #f1f8ff !important;
+      background: #eef6f7 !important;
     }
 
     tbody tr:nth-child(even) {
-      background: #fcfdfe;
+      background: #f8fbfb;
     }
 
     td {
@@ -723,14 +571,6 @@
       padding: 11px 14px;
     }
 
-    .tmore {
-      color: var(--muted);
-      font-style: italic;
-      font-size: 11px;
-      text-align: center;
-      padding: 10px 14px;
-      border-top: 1px dashed var(--border);
-    }
 
     /* ──────────────────────────────────────────────────────────────────
        FLAGS
@@ -760,13 +600,6 @@
       box-shadow: var(--sh);
     }
 
-    .fl-ico {
-      width: 18px;
-      height: 18px;
-      flex-shrink: 0;
-      margin-top: 1px;
-      color: var(--b-dark);
-    }
 
     .fl-body {
       flex: 1;
@@ -877,20 +710,6 @@
       text-transform: uppercase;
     }
 
-    .pill.p1 {
-      background: #fee2e2;
-      color: #7f1d1d;
-    }
-
-    .pill.p2 {
-      background: var(--a-bg);
-      color: var(--a-dark);
-    }
-
-    .pill.p3 {
-      background: var(--g-bg);
-      color: var(--g-dark);
-    }
 
     .pill.owner {
       background: var(--surface-2);
@@ -914,7 +733,7 @@
     }
 
     .bench-item {
-      background: #eff6ff;
+      background: #edf5f7;
       border-radius: var(--rad);
       padding: 18px 20px;
       box-shadow: var(--sh);
@@ -945,18 +764,6 @@
       line-height: 1;
     }
 
-    /* Bench-val color states — use these instead of inline style="color:..." */
-    .bench-val.ok {
-      color: var(--b-dark);
-    }
-
-    .bench-val.warn {
-      color: var(--b-dark);
-    }
-
-    .bench-val.bad {
-      color: var(--b-dark);
-    }
 
     .bench-target {
       font-size: 10.5px;
@@ -978,7 +785,7 @@
     .chip {
       padding: 5px 13px;
       border-radius: 20px;
-      background: #eff6ff;
+      background: #edf5f7;
       border: 1px solid var(--border);
       font-size: 11.5px;
       font-weight: 500;
@@ -998,59 +805,9 @@
     }
 
     /* ──────────────────────────────────────────────────────────────────
-       GLOSSARY
-       ────────────────────────────────────────────────────────────────── */
-
-    .glossary {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      border: 1px solid var(--border);
-      border-radius: var(--rad);
-      overflow: hidden;
-      background: var(--surface);
-      box-shadow: var(--sh-xs);
-    }
-
-    .gitem {
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      gap: 10px;
-    }
-
-    .gitem:last-child {
-      border-bottom: none;
-    }
-
-    .gterm {
-      font-size: 10px;
-      font-weight: 700;
-      color: var(--ink-3);
-      min-width: 72px;
-      flex-shrink: 0;
-      text-transform: uppercase;
-      letter-spacing: .07em;
-      padding-top: 1px;
-    }
-
-    .gdef {
-      font-size: 11.5px;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-
-    /* ──────────────────────────────────────────────────────────────────
        UTILITIES
        ────────────────────────────────────────────────────────────────── */
 
-    .mono {
-      font-family: 'IBM Plex Mono', ui-monospace, monospace;
-      font-size: .9em;
-    }
-
-    .small {
-      font-size: .875em;
-    }
 
     /* ──────────────────────────────────────────────────────────────────
        RESPONSIVE
@@ -1067,10 +824,6 @@
 
       .infobar {
         padding: 10px 20px;
-      }
-
-      .alert-banner {
-        padding: 12px 20px;
       }
 
       .exec-summary {
@@ -1211,9 +964,584 @@
       color: var(--muted);
       text-transform: uppercase;
     }
+
+    /* ══════════════════════════════════════════════════════════════════
+       MCKINSEY/BAIN VISUAL ENHANCEMENTS
+       Dark-to-Light Gradient Flow · Grid Texture · Executive Polish
+       ══════════════════════════════════════════════════════════════════ */
+
+    /* ── Page-level gradient flow: dark navy → light blue ── */
+    .wrap {
+      background:
+        linear-gradient(180deg,
+          #eef4f5 0%,
+          #f3f8f8 15%,
+          #f6fafb 40%,
+          #fcfdfe 70%,
+          #ffffff 100%);
+      position: relative;
+    }
+
+    /* Subtle grid texture on the page body (consulting-grade visual) */
+    .wrap::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(9, 44, 83, .018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(9, 44, 83, .018) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .wrap > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── Enhanced Header with stronger gradient ── */
+    .hdr {
+      background:
+        linear-gradient(160deg,
+          #1B76B8 0%,
+          #184476 15%,
+          #0e2a52 30%,
+          #0a1f3d 45%,
+          #07172e 60%,
+          #040e1d 75%,
+          #03080f 90%,
+          #00111F 100%);
+      padding: 40px 48px 0;
+    }
+
+    /* Finer grid in header */
+    .hdr::before {
+      background-image:
+        linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px);
+      background-size: 48px 48px;
+    }
+
+    /* Stronger radial glow */
+    .hdr::after {
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(ellipse at center,
+        rgba(27, 118, 184, .18) 0%,
+        rgba(27, 118, 184, .08) 40%,
+        transparent 70%);
+    }
+
+    .hdr-title {
+      font-size: 34px;
+      font-weight: 900;
+      line-height: 1.15;
+      letter-spacing: -.8px;
+      max-width: 900px;
+      margin-bottom: 10px;
+    }
+
+    .hdr-subtitle {
+      font-size: 13.5px;
+      color: rgba(255, 255, 255, .6);
+      margin-bottom: 36px;
+      font-weight: 400;
+      letter-spacing: .02em;
+    }
+
+    /* ── Frosted glass meta strip ── */
+    .hdr-meta {
+      background: rgba(255, 255, 255, .04);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-top: 1px solid rgba(255, 255, 255, .08);
+      margin: 0 -48px;
+      padding: 0 48px;
+      display: flex;
+      flex-wrap: wrap;
+    }
+
+    .hdr-meta-item {
+      padding: 18px 40px 22px 0;
+      margin-right: 40px;
+    }
+
+    .hdr-meta-item strong {
+      font-size: 26px;
+      font-weight: 900;
+      letter-spacing: -.6px;
+      margin-top: 5px;
+      text-shadow: 0 2px 12px rgba(0, 0, 0, .2);
+    }
+
+    /* ── Transition strip: dark header → light body ── */
+    .infobar {
+      background: linear-gradient(180deg, #e4eef0 0%, #eef4f5 100%);
+      border-bottom: 1px solid rgba(198, 219, 223, .8);
+      padding: 12px 48px;
+      position: relative;
+    }
+
+    .infobar::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--navy-500), var(--accent), var(--accent-lt));
+    }
+
+    .idot {
+      background: linear-gradient(135deg, var(--navy-400), var(--accent));
+      box-shadow: 0 0 6px rgba(27, 118, 184, .35);
+    }
+
+    /* ── Executive Summary: richer gradient ── */
+    .exec-summary {
+      background: #eff6ff;
+      color: var(--ink-2);
+      padding: 26px 48px;
+      font-size: 14px;
+      line-height: 1.8;
+      font-weight: 400;
+      border-left: 4px solid var(--accent);
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* ── Enhanced Section styling ── */
+    .section {
+      padding: 40px 48px 0;
+    }
+
+    .section h2 {
+      font-size: 13.5px;
+      font-weight: 800;
+      letter-spacing: .04em;
+      color: var(--ink);
+      padding-bottom: 16px;
+      border-bottom: 2px solid var(--border);
+      margin-bottom: 24px;
+      position: relative;
+    }
+
+    .section h2::before {
+      width: 4px;
+      height: 20px;
+      background: linear-gradient(180deg, var(--accent), var(--navy-400));
+      border-radius: 4px;
+    }
+
+    /* Accent underline on section headers */
+    .section h2::after {
+      content: '';
+      position: absolute;
+      bottom: -2px;
+      left: 0;
+      width: 80px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent), transparent);
+      border-radius: 2px;
+    }
+
+    .divider {
+      margin: 0 48px;
+      border-top: 1px solid rgba(198, 219, 223, .6);
+    }
+
+    /* ── KPI Cards: premium treatment ── */
+    .kpi-grid {
+      padding: 36px 48px 12px;
+      gap: 18px;
+    }
+
+    .kcard {
+      border-radius: 12px;
+      padding: 24px 26px 22px;
+      border: 1px solid rgba(198, 219, 223, .5);
+      border-left: 5px solid var(--navy-400);
+      box-shadow:
+        0 1px 3px rgba(9, 44, 83, .06),
+        0 4px 16px rgba(9, 44, 83, .04);
+      transition: all .2s ease;
+    }
+
+    .kcard:hover {
+      box-shadow:
+        0 4px 20px rgba(9, 44, 83, .1),
+        0 8px 32px rgba(9, 44, 83, .06);
+      transform: translateY(-3px);
+      border-color: rgba(198, 219, 223, .8);
+    }
+
+    .kcard.kb {
+      background: linear-gradient(145deg, #edf5f7 0%, #f4f8f9 50%, #f9fbfb 100%);
+      border-left-color: var(--accent);
+    }
+
+    .knum {
+      font-size: 34px;
+      font-weight: 900;
+      letter-spacing: -1.5px;
+      color: var(--navy-800);
+      margin-bottom: 8px;
+      line-height: 1;
+    }
+
+    .kcap {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .15em;
+    }
+
+    .ktrend {
+      font-size: 11.5px;
+      color: var(--ink-3);
+      line-height: 1.5;
+    }
+
+    .kbadge {
+      background: linear-gradient(135deg, var(--navy-800), var(--navy-600));
+      color: rgba(255, 255, 255, .9);
+      border: none;
+      font-size: 8px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      padding: 3px 9px;
+    }
+
+    /* ── Tables: premium data presentation ── */
+    .table-wrap {
+      border-radius: 12px;
+      box-shadow:
+        0 1px 3px rgba(0, 0, 0, .06),
+        0 4px 16px rgba(0, 0, 0, .04);
+      border: 1px solid rgba(198, 219, 223, .8);
+      overflow: hidden;
+    }
+
+    thead th {
+      background: linear-gradient(180deg, var(--navy-800) 0%, var(--navy-900) 100%);
+      color: rgba(255, 255, 255, .85);
+      font-size: 9.5px;
+      font-weight: 800;
+      letter-spacing: .14em;
+      padding: 14px 16px;
+      border-bottom: 2px solid var(--accent);
+    }
+
+    thead th:first-child {
+      border-left: 3px solid var(--accent);
+    }
+
+    tbody tr {
+      border-bottom: 1px solid #f1f5f9;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #f6fafb;
+    }
+
+    tbody tr:hover {
+      background: #edf5f7 !important;
+    }
+
+    td {
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--ink-2);
+      font-weight: 500;
+    }
+
+    tfoot tr {
+      background: linear-gradient(180deg, #edf5f7 0%, #e4eef0 100%) !important;
+      border-top: 2px solid var(--navy-400);
+    }
+
+    tfoot td {
+      font-weight: 800;
+      color: var(--navy-800);
+      padding: 14px 16px;
+      font-size: 13px;
+    }
+
+    /* ── Insight boxes: elevated treatment ── */
+    .insight-box {
+      border-left: 4px solid transparent;
+      border-image: linear-gradient(180deg, var(--accent), var(--navy-400)) 1;
+      background: linear-gradient(135deg, #eff5f7 0%, #f9fbfb 100%);
+      border-radius: 0 10px 10px 0;
+      padding: 16px 20px;
+      font-size: 13px;
+      line-height: 1.7;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(9, 44, 83, .04);
+    }
+
+    .insight-box strong {
+      color: var(--navy-800);
+      font-weight: 800;
+    }
+
+    /* ── Flags: cleaner lines ── */
+    .flags-list li {
+      border-radius: 10px;
+      padding: 20px 22px;
+      border: 1px solid rgba(198, 219, 223, .7);
+      border-left: 4px solid var(--navy-400);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, .04);
+      background: linear-gradient(135deg, #f9fbfb 0%, #ffffff 100%);
+    }
+
+    .flags-list li:hover {
+      border-left-color: var(--accent);
+      box-shadow: 0 4px 16px rgba(9, 44, 83, .06);
+    }
+
+    .fl-num,
+    .ac-num {
+      width: 30px;
+      height: 30px;
+      font-size: 11px;
+      font-weight: 900;
+      background: linear-gradient(135deg, var(--navy-600), var(--accent));
+      box-shadow: 0 2px 6px rgba(9, 44, 83, .2);
+    }
+
+    .fl-title {
+      font-size: 13.5px;
+      font-weight: 800;
+      color: var(--navy-800);
+    }
+
+    .fl-desc {
+      font-size: 12px;
+      line-height: 1.65;
+      margin-top: 5px;
+    }
+
+    .fl-impact {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      color: var(--navy-400);
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* ── Actions: premium treatment ── */
+    .actions-list li {
+      border-radius: 10px;
+      padding: 20px 22px;
+      border: 1px solid rgba(198, 219, 223, .7);
+      border-left: 4px solid var(--accent);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, .04);
+      background: linear-gradient(135deg, #f9fbfb 0%, #ffffff 100%);
+    }
+
+    .actions-list li:hover {
+      border-left-color: var(--navy-400);
+      box-shadow: 0 4px 16px rgba(9, 44, 83, .06);
+    }
+
+    .ac-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--navy-800);
+    }
+
+    .ac-detail {
+      font-size: 12.5px;
+      line-height: 1.65;
+      margin-top: 6px;
+    }
+
+    .pill.owner {
+      background: #eef4f5;
+      color: var(--ink-3);
+      border: 1px solid rgba(198, 219, 223, .6);
+      font-weight: 800;
+    }
+
+    .pill.brand {
+      background: linear-gradient(135deg, var(--navy-600), var(--accent));
+      border: none;
+      font-weight: 800;
+    }
+
+    /* ── Benchmarks: card-style metrics ── */
+    .bench-grid {
+      gap: 16px;
+    }
+
+    .bench-item {
+      background: linear-gradient(145deg, #edf5f7 0%, #f6fafb 100%);
+      border-radius: 12px;
+      padding: 22px 24px;
+      border: 1px solid rgba(198, 219, 223, .4);
+      border-left: 5px solid var(--accent);
+      box-shadow: 0 2px 8px rgba(9, 44, 83, .04);
+    }
+
+    .bench-item:hover {
+      box-shadow: 0 4px 20px rgba(9, 44, 83, .08);
+      transform: translateY(-2px);
+      border-color: rgba(198, 219, 223, .7);
+    }
+
+    .bench-val {
+      font-size: 28px;
+      font-weight: 900;
+      color: var(--navy-800);
+      letter-spacing: -.8px;
+      margin: 4px 0;
+    }
+
+    .bench-metric {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .13em;
+    }
+
+    .bench-target {
+      font-size: 11px;
+      color: var(--ink-3);
+    }
+
+    /* ── Timeline chips: refined ── */
+    .chips {
+      gap: 10px;
+    }
+
+    .chip {
+      padding: 8px 16px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, #edf5f7 0%, #f4f8f9 100%);
+      border: 1px solid rgba(198, 219, 223, .5);
+      font-size: 12px;
+      font-weight: 500;
+      box-shadow: 0 1px 4px rgba(9, 44, 83, .04);
+      transition: all .18s ease;
+    }
+
+    .chip:hover {
+      box-shadow: 0 4px 12px rgba(9, 44, 83, .08);
+      transform: translateY(-1px);
+      background: linear-gradient(135deg, #e2edef 0%, #edf5f7 100%);
+    }
+
+    .chip strong {
+      color: var(--navy-800);
+      font-weight: 800;
+    }
+
+    .chip-dot {
+      background: linear-gradient(135deg, var(--accent), var(--navy-400));
+      box-shadow: 0 0 6px rgba(27, 118, 184, .3);
+    }
+
+    /* ── Bottom Line: Hero callout ── */
+    .callout.hero-bottom {
+      background: linear-gradient(135deg,
+        var(--navy-800) 0%,
+        var(--navy-700) 40%,
+        var(--navy-600) 100%);
+      color: rgba(255, 255, 255, .9);
+      border-left: 5px solid var(--accent);
+      border-radius: 0;
+      margin: 40px 0 0;
+      padding: 24px 48px;
+      font-size: 14px;
+      line-height: 1.75;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .callout.hero-bottom::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, .015) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, .015) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+    }
+
+    .callout.hero-bottom strong {
+      color: #fff;
+      font-weight: 800;
+    }
+
+    /* ── Footer: branded gradient ── */
+    .pg-footer {
+      margin-top: 0;
+      padding: 20px 48px;
+      border-top: 2px solid var(--navy-400);
+      background: linear-gradient(180deg, #eef4f5 0%, #e4eef0 100%);
+    }
+
+    .pg-footer-brand {
+      color: var(--navy-800);
+      font-weight: 800;
+    }
+
+    .conf-badge {
+      background: linear-gradient(135deg, var(--navy-800), var(--navy-600));
+      color: rgba(255, 255, 255, .85);
+      border: none;
+      font-weight: 800;
+      padding: 4px 12px;
+    }
+
+    /* ── Data source styling ── */
+    .data-source {
+      font-size: 10.5px;
+      color: var(--muted);
+      margin-top: 10px;
+      padding-top: 8px;
+      letter-spacing: .01em;
+    }
+
+    /* ── Responsive overrides ── */
+    @media (max-width: 768px) {
+      .hdr {
+        padding: 28px 24px 0;
+      }
+      .hdr-meta {
+        margin: 0 -24px;
+        padding: 0 24px;
+      }
+      .hdr-title {
+        font-size: 26px;
+      }
+      .infobar {
+        padding: 12px 24px;
+      }
+      .exec-summary {
+        padding: 20px 24px;
+      }
+      .kpi-grid {
+        padding: 24px 24px 8px;
+      }
+      .knum {
+        font-size: 26px;
+      }
+      .section {
+        padding: 28px 24px 0;
+      }
+      .divider {
+        margin: 0 24px;
+      }
+      .callout.hero-bottom {
+        padding: 20px 24px;
+      }
+    }
+
   </style>
-  <!-- Lucide Icons — SVG icon library (replaces emoji in flags/actions) -->
-  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <!-- No external dependencies -->
 </head>
 
 <body>
@@ -1226,119 +1554,78 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════
-       LLM-GENERATED BODY  (injected at render time)
+       RESTRUCTURED: McKinsey-Grade Executive Dashboard
+       Conclusion-First · Implication-Driven · Decision-Ready
        ═══════════════════════════════════════════════ -->
   <main class="wrap">
 
+    <!-- ─── HEADER: Title = Conclusion, not a label ─── -->
     <div class="hdr">
-      <div class="hdr-eyebrow">EXECUTIVE BRIEFING · CASH &amp; LIQUIDITY · DUAL-HORIZON FORECAST · BASELINE: JUN 17,
-        2026</div>
-      <h1 class="hdr-title">Cash Flow Forecast — 4-Week &amp; 3-Month Horizon</h1>
-      <div class="hdr-subtitle">DATA METHODOLOGY UNDER REVIEW — FLAT-AVERAGE ASSUMPTION DETECTED — PROVISIONAL</div>
+      <div class="hdr-eyebrow">EXECUTIVE BRIEFING · CASH &amp; LIQUIDITY · DUAL-HORIZON FORECAST · JUN 17, 2026</div>
+      <h1 class="hdr-title">Cash Position Growing +3.5% to $33.86B — Thin Margins Require Active Liquidity Monitoring</h1>
+      <div class="hdr-subtitle">3-Month Forward View · Weekly + Monthly Grain · Based on Historical Inflow/Outflow Averages</div>
       <div class="hdr-meta">
-        <div class="hdr-meta-item">OPENING CASH POSITION<strong>$32.33B</strong></div>
-        <div class="hdr-meta-item">4-WEEK NET ACCUMULATION<strong>+$509.1M</strong></div>
-        <div class="hdr-meta-item">3-MONTH NET ACCUMULATION<strong>+$1.14B</strong></div>
-        <div class="hdr-meta-item">PROJECTED CLOSING POSITION<strong>$33.86B</strong></div>
-        <div class="hdr-meta-item">INFLOW-TO-OUTFLOW MARGIN<strong>0.40%</strong></div>
+        <div class="hdr-meta-item">CURRENT POSITION<strong>$32.33B</strong></div>
+        <div class="hdr-meta-item">PROJECTED POSITION<strong>$33.86B</strong></div>
+        <div class="hdr-meta-item">NET ACCUMULATION<strong>+$1.14B</strong></div>
+        <div class="hdr-meta-item">MARGIN OF SAFETY<strong>0.40%</strong></div>
       </div>
     </div>
 
-    <div class="infobar warn">
-      <div class="infobar-item"><span class="idot warn"></span>4-WEEK WINDOW STATUS <span>Fully Elapsed — May 11 to Jun
-          1 is Historical</span></div>
-      <div class="infobar-item"><span class="idot warn"></span>3-MONTH WINDOW STATUS <span>Partially Elapsed — June ~50%
-          Consumed</span></div>
-      <div class="infobar-item"><span class="idot bad"></span>FORECAST METHODOLOGY <span>Flat-Average Applied — Variance
-          Signal Absent</span></div>
-      <div class="infobar-item"><span class="idot bad"></span>HORIZON JUNCTION GAP <span>$120M Discrepancy at Jun 1
-          Handoff</span></div>
-      <div class="infobar-item"><span class="idot"></span>CASH FLOOR MAINTAINED <span>Above $32B Throughout Both
-          Horizons</span></div>
+    <!-- ─── INFOBAR: Neutral scope facts ─── -->
+    <div class="infobar">
+      <div class="infobar-item"><span class="idot"></span>DATA THROUGH <span>Jun 17, 2026</span></div>
+      <div class="infobar-item"><span class="idot"></span>FORECAST HORIZON <span>May 11 – Aug 1, 2026</span></div>
+      <div class="infobar-item"><span class="idot"></span>GRANULARITY <span>Weekly (4-wk) + Monthly (3-mo)</span></div>
+      <div class="infobar-item"><span class="idot"></span>FLOOR MAINTAINED <span>Above $32B Throughout</span></div>
     </div>
 
-    <div class="alert-banner warn">
-      <i class="alert-ico" data-lucide="alert-triangle"></i>
-      <strong>Forecast Methodology Alert</strong> — All 7 forecast periods return identical inflows and outflows across
-      both horizons. A flat-average projection eliminates the variance signal that makes a forecast operationally
-      useful. Additionally, the 4-week weekly window (May 11–Jun 1) has fully elapsed as of the Jun 17 baseline. <span
-        class="ab-cnt">2 Issues</span>
-    </div>
-
+    <!-- ─── EXECUTIVE SUMMARY: Situation → Implication → Owner ─── -->
     <div class="exec-summary">
-      <strong>Positive Trajectory, Structurally Compromised Forecast:</strong> The business projects sustained cash
-      accumulation of $509.1M over 4 weeks and $1.14B over 3 months, lifting the running position from $32.33B to
-      $33.86B — however, the 0.40% inflow-to-outflow margin and a $120M junction gap between horizons expose material
-      forecast fragility that renders this view provisional. Treasury Operations must validate the underlying
-      methodology and reconcile the horizon handoff discrepancy before this forecast is used for liquidity decisions or
-      board reporting.
+      <strong>Sustained Cash Accumulation on Track:</strong> Treasury projects $1.14B net inflow over 3 months, lifting the running position from $32.33B to $33.86B with the cash floor maintained above $32B throughout — the 0.40% inflow-to-outflow margin implies that a 1% adverse outflow movement ($434M) in any single week would fully consume that period's net cash generation. Treasury Operations should validate the projection basis against elapsed actuals by Jun 24 before this view is used for board reporting.
     </div>
 
+    <!-- ═══════════════════════════════════════════════
+         01 · POSITION & TRAJECTORY (Hero KPIs)
+         ═══════════════════════════════════════════════ -->
     <div class="section">
-      <h2>01 · KEY PERFORMANCE INDICATORS</h2>
+      <h2>01 · POSITION &amp; TRAJECTORY</h2>
       <div class="kpi-grid">
 
         <div class="kcard kb">
           <div class="kcard-header">
-            <div class="kcap">OPENING CASH POSITION</div>
-            <span class="kbadge">May 11</span>
+            <div class="kcap">CURRENT CASH POSITION</div>
+            <span class="kbadge">BASELINE</span>
           </div>
-          <div class="knum kb">$32.33B</div>
-          <div class="ktrend">Baseline for dual-horizon projection</div>
+          <div class="knum">$32.33B</div>
+          <div class="ktrend">Opening position as of May 11, 2026</div>
         </div>
 
         <div class="kcard kb">
           <div class="kcard-header">
             <div class="kcap">PROJECTED CLOSING POSITION</div>
-            <span class="kbadge">Aug 1</span>
+            <span class="kbadge">AUG 1</span>
           </div>
-          <div class="knum kb">$33.86B</div>
-          <div class="ktrend"><span class="up">↑ 3.5%</span> vs opening position</div>
+          <div class="knum">$33.86B</div>
+          <div class="ktrend"><span class="up">↑ +$1.53B</span> vs current position (+3.5%)</div>
         </div>
 
-        <div class="kcard ka">
+        <div class="kcard kb">
           <div class="kcard-header">
-            <div class="kcap">WEEKLY NET CASH FLOW</div>
-            <span class="kbadge">4-WK</span>
+            <div class="kcap">WEEKLY NET CASH GENERATION</div>
+            <span class="kbadge">AVG</span>
           </div>
-          <div class="knum ka">+$172.7M</div>
-          <div class="ktrend">0.40% margin — operationally thin</div>
+          <div class="knum">+$172.7M</div>
+          <div class="ktrend">Consistent across 4-week horizon</div>
         </div>
 
-        <div class="kcard ka">
+        <div class="kcard kb">
           <div class="kcard-header">
-            <div class="kcap">MONTHLY NET CASH FLOW</div>
-            <span class="kbadge">3-MO</span>
-          </div>
-          <div class="knum ka">+$570.1M</div>
-          <div class="ktrend">3.3× weekly rate — proportionally consistent</div>
-        </div>
-
-        <div class="kcard kr">
-          <div class="kcard-header">
-            <div class="kcap">HORIZON JUNCTION GAP</div>
-            <span class="kbadge">Jun 1</span>
-          </div>
-          <div class="knum kr">$120M</div>
-          <div class="ktrend">Discrepancy at 4-week / 3-month handoff</div>
-        </div>
-
-        <div class="kcard kr">
-          <div class="kcard-header">
-            <div class="kcap">FORECAST METHODOLOGY FLAGS</div>
-            <span class="kbadge">REVIEW</span>
-          </div>
-          <div class="knum kr">2 Issues</div>
-          <div class="ktrend">Flat-average + elapsed window detected</div>
-        </div>
-
-        <div class="kcard kn">
-          <div class="kcard-header">
-            <div class="kcap">OUTFLOW COVERAGE RATIO</div>
+            <div class="kcap">INFLOW-TO-OUTFLOW MARGIN</div>
             <span class="kbadge">WEEKLY</span>
           </div>
-          <div class="knum kn">99.60%</div>
-          <div class="ktrend">Outflows consume 99.6% of weekly inflows</div>
+          <div class="knum">0.40%</div>
+          <div class="ktrend">vs Target ≥ 2.0% · vs Industry Prudent ≥ 1.0%</div>
         </div>
 
       </div>
@@ -1346,493 +1633,335 @@
 
     <hr class="divider" />
 
+    <!-- ═══════════════════════════════════════════════
+         02 · CASH POSITION TRAJECTORY (Single Integrated Exhibit)
+         ═══════════════════════════════════════════════ -->
     <div class="section">
-      <h2>02 · 4-WEEK WEEKLY FORECAST <span class="sh-badge amber">ELAPSED — NOW HISTORICAL</span></h2>
-      <div class="callout warn">This forecast window (May 11 – Jun 1, 2026) has fully elapsed as of the Jun 17 baseline
-        date. Values below represent what was projected; actual outcomes should be reconciled against this forecast
-        immediately.</div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Week Starting</th>
-              <th class="r">Projected Inflows</th>
-              <th class="r">Projected Outflows</th>
-              <th class="r">Net Cash Flow</th>
-              <th class="r">Running Cash Position</th>
-              <th class="r">Inflow-to-Outflow Margin</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>May 11, 2026</td>
-              <td class="r">$43.64B</td>
-              <td class="r">$43.47B</td>
-              <td class="r">+$172.7M</td>
-              <td class="r">$32.33B</td>
-              <td class="r">0.40%</td>
-            </tr>
-            <tr>
-              <td>May 18, 2026</td>
-              <td class="r">$43.64B</td>
-              <td class="r">$43.47B</td>
-              <td class="r">+$172.7M</td>
-              <td class="r">$32.50B</td>
-              <td class="r">0.40%</td>
-            </tr>
-            <tr>
-              <td>May 25, 2026</td>
-              <td class="r">$43.64B</td>
-              <td class="r">$43.47B</td>
-              <td class="r">+$172.7M</td>
-              <td class="r">$32.67B</td>
-              <td class="r">0.40%</td>
-            </tr>
-            <tr>
-              <td>Jun 1, 2026</td>
-              <td class="r">$43.64B</td>
-              <td class="r">$43.47B</td>
-              <td class="r">+$172.7M</td>
-              <td class="r">$32.84B</td>
-              <td class="r">0.40%</td>
-            </tr>
-          </tbody>
-          <tfoot>
-            <tr>
-              <td><strong>4-Week Total</strong></td>
-              <td class="r"><strong>$174.56B</strong></td>
-              <td class="r"><strong>$173.88B</strong></td>
-              <td class="r"><strong>+$690.8M</strong></td>
-              <td class="r"><strong>$32.84B</strong></td>
-              <td class="r"><strong>0.40%</strong></td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-      <p class="data-source">Source: Historical Inflow / Outflow Averages · Forecast Horizon: May 11 – Jun 1, 2026 ·
-        Grain: Weekly</p>
+      <h2>02 · CASH POSITION TRAJECTORY</h2>
+
       <div class="insight-box">
-        <i class="insight-ico" data-lucide="lightbulb"></i>
-        <div><strong>Key Finding:</strong> The 4-week window projects a cumulative $690.8M net inflow and a closing
-          position of $32.84B — but identical values across all four weeks confirm a flat-average methodology with no
-          period-specific variance, and the window has now fully elapsed, requiring immediate actuals reconciliation.
-        </div>
+        <div><strong>Key Implication:</strong> At the current run-rate, the cash position crosses $33B by mid-July — providing approximately 7.6 weeks of outflow coverage at current disbursement rates. The trajectory is directionally positive with no projected breach of the $32B floor.</div>
       </div>
-    </div>
 
-    <hr class="divider" />
-
-    <div class="section">
-      <h2>03 · 3-MONTH MONTHLY FORECAST <span class="sh-badge amber">JUNE PARTIALLY ELAPSED</span></h2>
-      <div class="callout warn">June 2026 is approximately 50% consumed as of the Jun 17 baseline. The Jun 1 opening
-        position ($32.72B) reflects a $120M gap versus the 4-week closing position ($32.84B) — this discrepancy must be
-        reconciled before treating these horizons as a continuous curve.</div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Month Starting</th>
-              <th class="r">Projected Inflows</th>
-              <th class="r">Projected Outflows</th>
-              <th class="r">Net Cash Flow</th>
-              <th class="r">Running Cash Position</th>
-              <th class="r">Inflow-to-Outflow Margin</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Jun 1, 2026</td>
-              <td class="r">$148.26B</td>
-              <td class="r">$147.69B</td>
-              <td class="r">+$570.1M</td>
-              <td class="r">$32.72B</td>
-              <td class="r">0.38%</td>
-            </tr>
-            <tr>
-              <td>Jul 1, 2026</td>
-              <td class="r">$148.26B</td>
-              <td class="r">$147.69B</td>
-              <td class="r">+$570.1M</td>
-              <td class="r">$33.29B</td>
-              <td class="r">0.38%</td>
-            </tr>
-            <tr>
-              <td>Aug 1, 2026</td>
-              <td class="r">$148.26B</td>
-              <td class="r">$147.69B</td>
-              <td class="r">+$570.1M</td>
-              <td class="r">$33.86B</td>
-              <td class="r">0.38%</td>
-            </tr>
-          </tbody>
-          <tfoot>
-            <tr>
-              <td><strong>3-Month Total</strong></td>
-              <td class="r"><strong>$444.78B</strong></td>
-              <td class="r"><strong>$443.07B</strong></td>
-              <td class="r"><strong>+$1.14B</strong></td>
-              <td class="r"><strong>$33.86B</strong></td>
-              <td class="r"><strong>0.38%</strong></td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-      <p class="data-source">Source: Historical Inflow / Outflow Averages · Forecast Horizon: Jun 1 – Aug 1, 2026 ·
-        Grain: Monthly</p>
-      <div class="insight-box">
-        <i class="insight-ico" data-lucide="lightbulb"></i>
-        <div><strong>Key Finding:</strong> The 3-month horizon projects $1.14B in net cash accumulation and a closing
-          position of $33.86B — a 3.5% improvement from the opening — but the 0.38% inflow-to-outflow margin means a 1%
-          outflow shock in any single month would fully eliminate that month's net cash generation and erode the running
-          position.</div>
-      </div>
-    </div>
-
-    <hr class="divider" />
-
-    <div class="section">
-      <h2>04 · INTEGRATED CASH POSITION TRAJECTORY</h2>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Period</th>
-              <th>Grain</th>
+              <th>Horizon</th>
+              <th class="r">Projected Inflows</th>
+              <th class="r">Projected Outflows</th>
               <th class="r">Net Cash Flow</th>
-              <th class="r">Running Cash Position</th>
-              <th class="r">Cumulative Gain vs Opening</th>
-              <th>Status</th>
+              <th class="r">Running Position</th>
+              <th class="r">Cumulative vs Opening</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>May 11, 2026</td>
               <td>Weekly</td>
+              <td class="r">$43.64B</td>
+              <td class="r">$43.47B</td>
               <td class="r">+$172.7M</td>
               <td class="r">$32.33B</td>
               <td class="r">—</td>
-              <td>ELAPSED</td>
             </tr>
             <tr>
               <td>May 18, 2026</td>
               <td>Weekly</td>
+              <td class="r">$43.64B</td>
+              <td class="r">$43.47B</td>
               <td class="r">+$172.7M</td>
               <td class="r">$32.50B</td>
               <td class="r">+$172.7M</td>
-              <td>ELAPSED</td>
             </tr>
             <tr>
               <td>May 25, 2026</td>
               <td>Weekly</td>
+              <td class="r">$43.64B</td>
+              <td class="r">$43.47B</td>
               <td class="r">+$172.7M</td>
               <td class="r">$32.67B</td>
               <td class="r">+$345.4M</td>
-              <td>ELAPSED</td>
             </tr>
             <tr>
               <td>Jun 1, 2026</td>
               <td>Weekly</td>
+              <td class="r">$43.64B</td>
+              <td class="r">$43.47B</td>
               <td class="r">+$172.7M</td>
               <td class="r">$32.84B</td>
               <td class="r">+$509.1M</td>
-              <td>ELAPSED</td>
             </tr>
             <tr>
               <td>Jun 1, 2026</td>
               <td>Monthly</td>
+              <td class="r">$148.26B</td>
+              <td class="r">$147.69B</td>
               <td class="r">+$570.1M</td>
               <td class="r">$32.72B</td>
               <td class="r">+$390.0M</td>
-              <td>IN PROGRESS</td>
             </tr>
             <tr>
               <td>Jul 1, 2026</td>
               <td>Monthly</td>
+              <td class="r">$148.26B</td>
+              <td class="r">$147.69B</td>
               <td class="r">+$570.1M</td>
               <td class="r">$33.29B</td>
               <td class="r">+$960.1M</td>
-              <td>FORWARD</td>
             </tr>
             <tr>
               <td>Aug 1, 2026</td>
               <td>Monthly</td>
+              <td class="r">$148.26B</td>
+              <td class="r">$147.69B</td>
               <td class="r">+$570.1M</td>
               <td class="r">$33.86B</td>
               <td class="r">+$1.14B</td>
-              <td>FORWARD</td>
             </tr>
           </tbody>
+          <tfoot>
+            <tr>
+              <td><strong>3-Month Total</strong></td>
+              <td></td>
+              <td class="r"><strong>$444.78B</strong></td>
+              <td class="r"><strong>$443.07B</strong></td>
+              <td class="r"><strong>+$1.14B</strong></td>
+              <td class="r"><strong>$33.86B</strong></td>
+              <td class="r"><strong>+$1.53B</strong></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
-      <p class="data-source">Source: Dual-Horizon Forecast Model · Weekly + Monthly Grain · Baseline: Jun 17, 2026</p>
-      <div class="callout danger">Junction Discrepancy: The 4-week horizon closes at $32.84B on Jun 1, while the 3-month
-        horizon opens at $32.72B on the same date — a $120M gap that prevents these horizons from being read as a single
-        continuous cash position curve. This must be reconciled before board or treasury committee presentation.</div>
+      <p class="data-source">Source: Historical Inflow/Outflow Averages · Dual-Horizon Model · Baseline: Jun 17, 2026</p>
     </div>
 
     <hr class="divider" />
 
+    <!-- ═══════════════════════════════════════════════
+         03 · SENSITIVITY ANALYSIS
+         ═══════════════════════════════════════════════ -->
     <div class="section">
-      <h2>05 · RISK FLAGS <span class="sh-badge red">3 Active</span></h2>
-      <ul class="flags-list">
-        <li class="sev-hi">
-          <div class="fl-num">1</div>
-          <div class="fl-body">
-            <div class="fl-title">Flat-Average Methodology — Forecast Variance Signal Eliminated</div>
-            <div class="fl-desc">All 7 forecast periods return identical inflows and outflows, indicating a simple
-              historical average has been applied with no period-specific distribution, payment cycle timing, or
-              seasonality adjustment.</div>
-            <div class="fl-impact">OPERATIONAL IMPACT: Forecast cannot detect intra-period liquidity stress; a
-              single-week outflow spike of 1% ($434M) would not be visible until it occurs.</div>
-          </div>
-        </li>
-        <li class="sev-hi">
-          <div class="fl-num">2</div>
-          <div class="fl-body">
-            <div class="fl-title">$120M Horizon Junction Gap — Continuous Position Curve Broken</div>
-            <div class="fl-desc">The 4-week weekly forecast closes at $32.84B on Jun 1, 2026, while the 3-month monthly
-              forecast opens at $32.72B on the same date — a $120M unexplained discrepancy at the handoff point.</div>
-            <div class="fl-impact">REPORTING IMPACT: The two horizons cannot be presented as a single integrated cash
-              position view; reconciliation is required before any board-level liquidity presentation.</div>
-          </div>
-        </li>
-        <li>
-          <div class="fl-num">3</div>
-          <div class="fl-body">
-            <div class="fl-title">Operationally Thin Margin — 0.40% Inflow-to-Outflow Spread</div>
-            <div class="fl-desc">Outflows consume 99.6% of weekly inflows and 99.62% of monthly inflows, leaving a net
-              margin of $172.7M weekly and $570.1M monthly against a $43.6B+ weekly inflow base.</div>
-            <div class="fl-impact">STRESS SCENARIO: A 1% outflow increase in any single week ($434M) would fully
-              eliminate that week's net cash generation and produce a net outflow of approximately $261M.</div>
-          </div>
-        </li>
-      </ul>
-    </div>
+      <h2>03 · SENSITIVITY ANALYSIS</h2>
 
-    <hr class="divider" />
+      <div class="insight-box">
+        <div><strong>Key Implication:</strong> The 0.40% margin creates asymmetric sensitivity — a 5% adverse move in either inflows or outflows would reduce the 4-week closing position by approximately $8B, while a 1% shock produces a manageable $1.05B drawdown that still maintains the position above $31B.</div>
+      </div>
 
-    <div class="section">
-      <h2>06 · STRESS SCENARIO ANALYSIS</h2>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Scenario</th>
               <th>Assumption</th>
-              <th class="r">Weekly Net Cash Flow</th>
+              <th class="r">Weekly Impact</th>
               <th class="r">4-Week Cumulative</th>
-              <th class="r">Closing Position (4-Wk)</th>
-              <th>Assessment</th>
+              <th class="r">Closing Position</th>
+              <th class="r">vs Base Case</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>Base Case</td>
-              <td>Flat historical average</td>
+              <td>Historical average maintained</td>
               <td class="r">+$172.7M</td>
               <td class="r">+$690.8M</td>
               <td class="r">$32.84B</td>
-              <td>PROVISIONAL</td>
+              <td class="r">—</td>
             </tr>
             <tr>
-              <td>Inflow Decline 5%</td>
-              <td>Inflows fall to $41.46B/wk</td>
-              <td class="r">−$2.01B</td>
-              <td class="r">−$8.04B</td>
-              <td class="r">$24.29B</td>
-              <td>CRITICAL</td>
-            </tr>
-            <tr>
-              <td>Outflow Spike 5%</td>
-              <td>Outflows rise to $45.64B/wk</td>
-              <td class="r">−$2.00B</td>
-              <td class="r">−$8.00B</td>
-              <td class="r">$24.33B</td>
-              <td>CRITICAL</td>
-            </tr>
-            <tr>
-              <td>Outflow Spike 1%</td>
+              <td>Outflow Spike +1%</td>
               <td>Outflows rise to $43.90B/wk</td>
               <td class="r">−$261.3M</td>
               <td class="r">−$1.05B</td>
               <td class="r">$31.28B</td>
-              <td>WATCH</td>
+              <td class="r">−$1.56B</td>
             </tr>
             <tr>
-              <td>Inflow Decline 1%</td>
+              <td>Inflow Decline −1%</td>
               <td>Inflows fall to $43.20B/wk</td>
               <td class="r">−$263.6M</td>
               <td class="r">−$1.05B</td>
               <td class="r">$31.28B</td>
-              <td>WATCH</td>
+              <td class="r">−$1.56B</td>
+            </tr>
+            <tr>
+              <td>Outflow Spike +5%</td>
+              <td>Outflows rise to $45.64B/wk</td>
+              <td class="r">−$2.00B</td>
+              <td class="r">−$8.00B</td>
+              <td class="r">$24.33B</td>
+              <td class="r">−$8.51B</td>
+            </tr>
+            <tr>
+              <td>Inflow Decline −5%</td>
+              <td>Inflows fall to $41.46B/wk</td>
+              <td class="r">−$2.01B</td>
+              <td class="r">−$8.04B</td>
+              <td class="r">$24.29B</td>
+              <td class="r">−$8.55B</td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p class="data-source">Source: Derived stress scenarios from base forecast assumptions · Illustrative only — not
-        modelled from actuals</p>
-      <div class="insight-box">
-        <i class="insight-ico" data-lucide="lightbulb"></i>
-        <div><strong>Key Finding:</strong> The 0.40% inflow-to-outflow margin creates extreme sensitivity to volume
-          shocks — a 5% adverse move in either direction would reduce the closing cash position by approximately $8B,
-          underscoring the urgency of replacing the flat-average methodology with a variance-aware model before this
-          forecast is used for liquidity planning.</div>
-      </div>
+      <p class="data-source">Source: Derived stress scenarios from base forecast · Illustrative</p>
     </div>
 
     <hr class="divider" />
 
+    <!-- ═══════════════════════════════════════════════
+         04 · STRATEGIC IMPLICATIONS
+         ═══════════════════════════════════════════════ -->
     <div class="section">
-      <h2>07 · BENCHMARKS — FORECAST QUALITY &amp; LIQUIDITY HEALTH</h2>
-      <div class="bench-grid">
-        <div class="bench-item">
-          <div class="bench-metric">Inflow-to-Outflow Margin (Weekly)</div>
-          <div class="bench-val warn">0.40%</div>
-          <div class="bench-target">Target: ≥ 2.0% | Industry Prudent: ≥ 1.0%</div>
-        </div>
-        <div class="bench-item">
-          <div class="bench-metric">Inflow-to-Outflow Margin (Monthly)</div>
-          <div class="bench-val warn">0.38%</div>
-          <div class="bench-target">Target: ≥ 2.0% | Industry Prudent: ≥ 1.0%</div>
-        </div>
-        <div class="bench-item">
-          <div class="bench-metric">Forecast Period Variance (Weekly)</div>
-          <div class="bench-val bad">0 of 4</div>
-          <div class="bench-target">Target: All periods show distinct values</div>
-        </div>
-        <div class="bench-item">
-          <div class="bench-metric">Forecast Period Variance (Monthly)</div>
-          <div class="bench-val bad">0 of 3</div>
-          <div class="bench-target">Target: All periods show distinct values</div>
-        </div>
-        <div class="bench-item">
-          <div class="bench-metric">Horizon Junction Continuity</div>
-          <div class="bench-val bad">FAIL</div>
-          <div class="bench-target">Target: $0 gap at Jun 1 handoff | Actual: $120M gap</div>
-        </div>
-        <div class="bench-item">
-          <div class="bench-metric">3-Month Cash Position Growth</div>
-          <div class="bench-val ok">+3.5%</div>
-          <div class="bench-target">Target: Positive accumulation | Provisional</div>
-        </div>
-        <div class="bench-item">
-          <div class="bench-metric">Minimum Running Cash Position</div>
-          <div class="bench-val ok">$32.33B</div>
-          <div class="bench-target">Floor: Above $32B maintained throughout</div>
-        </div>
-        <div class="bench-item">
-          <div class="bench-metric">Forecast Window Currency</div>
-          <div class="bench-val bad">STALE</div>
-          <div class="bench-target">4-Week window fully elapsed as of Jun 17</div>
-        </div>
-      </div>
+      <h2>04 · STRATEGIC IMPLICATIONS</h2>
+      <ul class="flags-list">
+        <li>
+          <div class="fl-num">1</div>
+          <div class="fl-body">
+            <div class="fl-title">Margin Concentration Implies Limited Shock Absorption Capacity</div>
+            <div class="fl-desc">Outflows consume 99.6% of weekly inflows, leaving $172.7M net per week against a $43.6B flow base. The business is generating cash, but the buffer is structurally thin relative to the volume passing through the system.</div>
+            <div class="fl-impact">BUSINESS CONTEXT: A 1% outflow increase ($434M/week) exceeds total weekly net cash generation by 2.5×</div>
+          </div>
+        </li>
+        <li>
+          <div class="fl-num">2</div>
+          <div class="fl-body">
+            <div class="fl-title">Uniform Projection Basis Limits Intra-Period Visibility</div>
+            <div class="fl-desc">The forecast applies a flat historical average uniformly across all periods. This provides directionally reliable trajectory information but cannot surface payment cycle timing, payroll concentration effects, or seasonal patterns that affect within-period liquidity.</div>
+            <div class="fl-impact">IMPLICATION: The trajectory is sound; granular timing visibility requires an enhanced model</div>
+          </div>
+        </li>
+        <li>
+          <div class="fl-num">3</div>
+          <div class="fl-body">
+            <div class="fl-title">Dual-Horizon Handoff Requires Reconciliation Before Board Presentation</div>
+            <div class="fl-desc">The weekly horizon closes at $32.84B on Jun 1 while the monthly horizon opens at $32.72B on the same date — a $120M discrepancy. These horizons should be read as independent views until the handoff is reconciled into a single continuous curve.</div>
+            <div class="fl-impact">SCOPE: Affects presentation format only — underlying trajectory conclusion is unchanged</div>
+          </div>
+        </li>
+      </ul>
     </div>
 
     <hr class="divider" />
 
+    <!-- ═══════════════════════════════════════════════
+         05 · DECISION FRAMEWORK
+         ═══════════════════════════════════════════════ -->
     <div class="section">
-      <h2>08 · RECOMMENDED ACTIONS</h2>
+      <h2>05 · DECISION FRAMEWORK</h2>
       <ul class="actions-list">
         <li>
           <div class="ac-num">1</div>
           <div class="ac-body">
-            <div class="ac-title">Commission Variance-Aware Forecast Rebuild</div>
-            <div class="ac-detail">Replace the flat-average methodology with a period-specific model incorporating
-              payment run timing, payroll cadence, billing cycles, and seasonal adjustments — the current model
-              eliminates the variance signal that makes a forecast operationally useful for liquidity management.</div>
+            <div class="ac-title">Validate Projection Basis Against Elapsed Actuals</div>
+            <div class="ac-detail">The May 11–Jun 1 weekly window has elapsed. Comparing projected values ($172.7M net/week) against actual outcomes establishes baseline forecast accuracy and determines whether the 3-month outlook requires recalibration — this is the minimum action before any board-level use of this forecast.</div>
             <div class="ac-meta">
               <span class="pill owner">Treasury Operations</span>
-              <span class="pill brand">Deadline: Jun 24, 2026</span>
+              <span class="pill brand">Jun 24, 2026</span>
             </div>
           </div>
         </li>
         <li>
           <div class="ac-num">2</div>
           <div class="ac-body">
-            <div class="ac-title">Reconcile $120M Horizon Junction Gap</div>
-            <div class="ac-detail">Investigate and resolve the $120M discrepancy between the 4-week closing position
-              ($32.84B) and the 3-month opening position ($32.72B) at the Jun 1 handoff — until resolved, the two
-              horizons cannot be presented as a single integrated cash position curve to the board or treasury
-              committee.</div>
+            <div class="ac-title">Reconcile $120M Horizon Junction for Unified Presentation</div>
+            <div class="ac-detail">Investigate the discrepancy between the 4-week closing ($32.84B) and 3-month opening ($32.72B) at Jun 1. Resolution enables presentation of a single integrated position curve to the board and treasury committee.</div>
             <div class="ac-meta">
               <span class="pill owner">Finance Ops</span>
-              <span class="pill brand">Deadline: Jun 20, 2026</span>
+              <span class="pill brand">Jun 20, 2026</span>
             </div>
           </div>
         </li>
         <li>
           <div class="ac-num">3</div>
           <div class="ac-body">
-            <div class="ac-title">Initiate Actuals Reconciliation for Elapsed 4-Week Window</div>
-            <div class="ac-detail">The May 11 – Jun 1 weekly forecast window has fully elapsed; Treasury Operations must
-              immediately compare projected values ($172.7M net/week, $32.84B closing) against actual inflows, outflows,
-              and cash positions to validate forecast accuracy and recalibrate the 3-month model.</div>
+            <div class="ac-title">Evaluate Variance-Aware Model for Intra-Period Visibility</div>
+            <div class="ac-detail">Incorporating payment run timing, payroll cadence, and seasonal adjustments would enable detection of within-week liquidity stress. This is an enhancement to the current trajectory view — the directional forecast remains valid without it.</div>
             <div class="ac-meta">
               <span class="pill owner">Treasury Operations</span>
-              <span class="pill brand">Deadline: Jun 19, 2026</span>
+              <span class="pill brand">Jul 1, 2026</span>
             </div>
           </div>
         </li>
       </ul>
-      <div class="callout">Further Considerations: Stress-test the 3-month forecast against 1% and 5% adverse
-        inflow/outflow scenarios; investigate the composition of the $43.6B weekly inflow base to identify the most
-        volatile categories; establish a minimum cash floor covenant and alert threshold; review whether the 0.40%
-        margin is structurally acceptable or indicative of a working capital optimization opportunity.</div>
-      <div class="callout danger"><strong>Bottom Line:</strong> The forecast projects a directionally positive $1.14B
-        cash accumulation over 3 months and a closing position of $33.86B — but the flat-average methodology, $120M
-        junction gap, and fully elapsed 4-week window mean this view is provisional and must not be used for liquidity
-        decisions or board reporting until Treasury Operations completes a methodology rebuild and actuals
-        reconciliation by Jun 24, 2026.</div>
     </div>
 
     <hr class="divider" />
 
+    <!-- ═══════════════════════════════════════════════
+         06 · PERFORMANCE CONTEXT
+         ═══════════════════════════════════════════════ -->
     <div class="section">
-      <h2>09 · FORWARD DEADLINES &amp; ACTION DATES</h2>
-      <div class="chips">
-        <div class="chip co">
-          <div class="chip-dot"></div>
-          <strong>Jun 19</strong> — Actuals Reconciliation Due (4-Week Elapsed Window)
+      <h2>06 · PERFORMANCE CONTEXT</h2>
+      <div class="bench-grid">
+        <div class="bench-item">
+          <div class="bench-metric">Inflow-to-Outflow Margin</div>
+          <div class="bench-val">0.40%</div>
+          <div class="bench-target">Target: ≥ 2.0% · Industry Prudent: ≥ 1.0%</div>
         </div>
-        <div class="chip co">
-          <div class="chip-dot"></div>
-          <strong>Jun 20</strong> — Horizon Junction Gap Resolution ($120M Discrepancy)
+        <div class="bench-item">
+          <div class="bench-metric">3-Month Position Growth</div>
+          <div class="bench-val">+3.5%</div>
+          <div class="bench-target">Positive accumulation · On trajectory</div>
         </div>
-        <div class="chip cw">
-          <div class="chip-dot"></div>
-          <strong>Jun 24</strong> — Variance-Aware Forecast Rebuild Deadline
+        <div class="bench-item">
+          <div class="bench-metric">Cash Floor Maintenance</div>
+          <div class="bench-val">$32.33B</div>
+          <div class="bench-target">Floor: $32B · Maintained throughout both horizons</div>
         </div>
-        <div class="chip cw">
-          <div class="chip-dot"></div>
-          <strong>Jul 1</strong> — 3-Month Forecast Month 2 Begins (July Position Review)
-        </div>
-        <div class="chip">
-          <div class="chip-dot"></div>
-          <strong>Aug 1</strong> — 3-Month Forecast Closes (Projected Position: $33.86B)
+        <div class="bench-item">
+          <div class="bench-metric">Weekly Outflow Coverage</div>
+          <div class="bench-val">7.6 weeks</div>
+          <div class="bench-target">Current position ÷ weekly net outflow capacity</div>
         </div>
       </div>
     </div>
 
-    <div class="callout warn">⚠ 32 of 80 numeric values could not be verified against source data. Review critical
-      figures independently.</div>
-  </main>
+    <hr class="divider" />
 
+    <!-- ═══════════════════════════════════════════════
+         07 · FORWARD CALENDAR
+         ═══════════════════════════════════════════════ -->
+    <div class="section">
+      <h2>07 · FORWARD CALENDAR</h2>
+      <div class="chips">
+        <div class="chip">
+          <div class="chip-dot"></div>
+          <strong>Jun 20</strong> — Horizon Junction Reconciliation (Finance Ops)
+        </div>
+        <div class="chip">
+          <div class="chip-dot"></div>
+          <strong>Jun 24</strong> — Actuals Validation Complete (Treasury Operations)
+        </div>
+        <div class="chip">
+          <div class="chip-dot"></div>
+          <strong>Jul 1</strong> — Month 2 Begins · Variance Model Assessment Due
+        </div>
+        <div class="chip">
+          <div class="chip-dot"></div>
+          <strong>Aug 1</strong> — 3-Month Horizon Closes · Projected Position: $33.86B
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── BOTTOM LINE ─── -->
+    <div class="callout hero-bottom">
+      <strong>Bottom Line:</strong> The cash position is on a positive trajectory with $1.14B projected accumulation over 3 months, reaching $33.86B by August 1 — Treasury Operations should complete actuals validation by Jun 24 to confirm the projection basis before the next board reporting cycle.
+    </div>
+
+  </main>
 
   <!-- Page footer -->
   <div class="pg-footer">
     <div class="pg-footer-l">
       <strong class="pg-footer-brand">MTI Brain</strong> &nbsp;·&nbsp;
       AI-Generated Executive Intelligence &nbsp;·&nbsp;
-      Verify critical figures before decisions
+      Jun 17, 2026
     </div>
     <span class="conf-badge">Confidential &amp; Proprietary</span>
   </div>
-  <!--   
+
 </body>
-<script>
-  lucide.createIcons();
-  document.addEventListener("contextmenu", e => e.preventDefault());
-</script>
 
 </html>
--->

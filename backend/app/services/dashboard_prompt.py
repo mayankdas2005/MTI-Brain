@@ -167,27 +167,27 @@ LAYOUT
   .divider       — <hr class="divider"> visual separator between major sections
 
 HEADER  (always include first)
-  .hdr                      — full-width dark navy gradient header
+  .hdr                      — full-width gradient header (gradient transitions from lighter blue on the left to dark navy on the right)
   .hdr-eyebrow              — small uppercase label: "EXECUTIVE BRIEFING · [DOMAIN] · [DATE RANGE]"
   .hdr-title                — h1 with the dashboard title
   .hdr-subtitle             — optional one-liner below the title
   .hdr-meta                 — flex row of 3–5 top-line stats
   .hdr-meta-item            — stat item: raw uppercase label text + <strong>VALUE</strong>
-  .infobar                  — light grey status strip immediately after .hdr (always include)
-  .infobar-item             — label + <span>value</span> inside infobar · use .idot for status dots
-  .idot                     — green status dot · .idot.warn = amber · .idot.bad = red
+  .infobar                  — status strip immediately after .hdr (always include; white background with grey borders)
+  .infobar-item             — bold status label text + <span>regular value description</span> inside infobar (status label is bold, description inside span is grey and not bold) · use .idot for status dots (which render as dark blue status dots)
+  .idot                     — status dot (styled as dark blue; use .idot, .idot.warn, or .idot.bad)
 
   Example .hdr-meta-item HTML:
     <div class="hdr-meta-item">GROSS VOLUME<strong>$14.2M</strong></div>
 
 ALERT BANNER  (only when ≥ 1 hygiene flag)
   .alert-banner             — red-tinted full-width alert strip (light red background, red left-border)
-  .alert-banner.warn        — amber variant for data-quality-only alerts (not financial emergencies)
+  .alert-banner.warn        — warning variant for data-quality-only alerts (white background, navy text and left-border)
   .alert-ico                — Lucide icon inside banner, e.g. <i data-lucide="alert-triangle" class="alert-ico"></i>
   .ab-cnt                   — pill inside banner showing alert count
 
 EXECUTIVE SUMMARY  (ALWAYS include — immediately after .infobar or .alert-banner, before KPI grid)
-  .exec-summary             — dark navy full-width paragraph block
+  .exec-summary             — soft blue full-width paragraph block
   Structure:
     <div class="exec-summary">
       <strong>[3–5 word status phrase]:</strong> [2-sentence maximum.
@@ -200,15 +200,15 @@ EXECUTIVE SUMMARY  (ALWAYS include — immediately after .infobar or .alert-bann
 
 KPI CARDS  (only when ≥ 3 metrics are computable from data)
   .kpi-grid                 — auto-fit grid of KPI cards; always wrap in a .section div with an h2 label
-  .kcard                    — base card; left-border accent + optional status background tint
-    .kcard.kg               — green left-border, light green background (on-target / healthy)
-    .kcard.ka               — amber border (watch / approaching threshold)
-    .kcard.kr               — red border (breach / action required)
-    .kcard.kb               — blue border (informational)
-    .kcard.kn               — slate border (neutral volume metric)
+  .kcard                    — base card (all use a light blue background gradient, soft border, dark blue left border, and rounded corners)
+    .kcard.kg               — green variant style (still renders light blue background gradient and dark blue left-border var(--b-dark))
+    .kcard.ka               — amber variant style (still renders light blue background gradient and dark blue left-border var(--b-dark))
+    .kcard.kr               — red variant style (still renders light blue background gradient and dark blue left-border var(--b-dark))
+    .kcard.kb               — blue variant style (still renders light blue background gradient and dark blue left-border var(--b-dark))
+    .kcard.kn               — slate variant style (still renders light blue background gradient and dark blue left-border var(--b-dark))
   RED FATIGUE RULE: maximum 3 KPI cards may use .kr. If more than 3 metrics are failing or critical,
   consolidate the excess into ONE .kcard.kr with .kcap = "Critical Issues" and .knum = the count ("5 Issues").
-  Informational metrics (counts, currencies, date ranges, scope labels) MUST use .kb or .kn — NEVER .kr.
+  All KPI card numeric values (.knum) default to a uniform dark blue display (var(--b-dark) / #1e3a8a).
   .kcard-header             — flex row at top of .kcard holding .kcap (left) and .kbadge (right)
   .kcap                     — card label (9.5px uppercase)
   .knum                     — large metric value
@@ -223,7 +223,7 @@ KPI CARDS  (only when ≥ 3 metrics are computable from data)
         <div class="kcap">METRIC LABEL</div>
         <span class="kbadge">YTD</span>
       </div>
-      <div class="knum kg">$14.2M</div>
+      <div class="knum">$14.2M</div>
       <div class="ktrend"><span class="up">↑ 3.2%</span> vs prior period</div>
     </div>
 
@@ -250,13 +250,8 @@ TABLES
 
 RISK FLAGS  (only when hygiene conditions are triggered)
   .flags-list               — <ul> of risk flags
-  .flags-list li            — single flag; add .sev-hi (red) or .sev-lo (blue); default = amber
-  .fl-ico                   — Lucide SVG icon; use <i data-lucide="[name]" class="fl-ico"></i>
-  Icon map:
-    sev-hi (red)     → data-lucide="alert-triangle"
-    amber (default)  → data-lucide="alert-circle"
-    sev-lo (blue)    → data-lucide="info"
-    time-sensitive   → data-lucide="clock"
+  .flags-list li            — single flag card (styled like Recommended Actions: white background, standard thin border, no thick left-border accent); add .sev-hi (red) or .sev-lo (blue) classes
+  .fl-num                   — numbered circle (1, 2, 3...) replacing icons (styled like .ac-num in the same color)
   .fl-body                  — wrapper for title + desc + impact
   .fl-title                 — bold flag headline
   .fl-desc                  — one-sentence description
@@ -264,7 +259,7 @@ RISK FLAGS  (only when hygiene conditions are triggered)
 
   Example flag:
     <li class="sev-hi">
-      <i data-lucide="alert-triangle" class="fl-ico"></i>
+      <div class="fl-num">1</div>
       <div class="fl-body">
         <div class="fl-title">Chargeback Ratio Exceeds 1.0% — Program Risk</div>
         <div class="fl-desc">Mastercard monitoring threshold breached; escalation required within 72 hours.</div>
@@ -280,27 +275,27 @@ ACTIONS LIST  (when issues or flags exist)
   .ac-title                 — action headline (use verbs: Initiate / Escalate / Negotiate)
   .ac-detail                — one-sentence implementation guidance
   .ac-meta                  — flex row of pills
-  .pill.p1 / .pill.p2 / .pill.p3   — priority: red / amber / green
   .pill.owner               — owner tag ("Treasury Ops", "Finance Ops")
-  .pill.brand               — brand-colored pill
+  .pill.brand               — brand-colored pill (e.g. deadline information)
+  NO PRIORITY PILLS: do NOT include Priority pills (.pill.p1, p2, p3) under action items anymore.
   ACTIONS CAP: maximum 3 action items. Select the 3 highest urgency × highest impact actions.
   All remaining considerations consolidate into a single .callout after the list:
   <div class="callout">Further Considerations: [brief comma-separated list]</div>
 
 BENCHMARKS  (when domain thresholds apply)
   .bench-grid               — auto-fit grid of benchmark tiles
-  .bench-item               — single tile
+  .bench-item               — single tile (styled exactly like a KPI card: light blue background gradient, rounded corners, thick dark-blue left border, and translateY hover transition)
   .bench-metric             — metric label
-  .bench-val                — current value (large)
-    .bench-val.ok           — green value (at/above target)
-    .bench-val.warn         — amber value (approaching threshold)
-    .bench-val.bad          — red value (below threshold / failure)
-    Use these classes — NEVER use inline style="color:..." on .bench-val
+  .bench-val                — current value (large; styled in dark blue)
+    .bench-val.ok           — ok variant (styled in dark blue)
+    .bench-val.warn         — warn variant (styled in dark blue)
+    .bench-val.bad          — bad variant (styled in dark blue)
+    Use these classes — they will all render in dark blue
   .bench-target             — benchmark/target line
   Benchmarks show metric label, value with color class, and target text only — no progress bars.
 
 TIMELINE CHIPS  (when ≥ 3 FUTURE dates/deadlines exist)
-  .chips > .chip[.cw / .co] > .chip-dot    — date chips (.cw = amber warn, .co = red overdue)
+  .chips > .chip > .chip-dot    — date chips (all use uniform light blue gradient, grey border, and dark blue dots)
   FORWARD-LOOKING ONLY: chips represent future deadlines and action dates. Never use historical
   data timestamps, observation dates, or reporting-period dates as chips — those belong in .infobar.
 
@@ -308,6 +303,7 @@ CALLOUT BOX  (contextual notes)
   .callout             — default (blue border)
   .callout.warn        — amber
   .callout.danger      — red; use when a critical condition applies broadly
+  .callout.hero-bottom — premium bottom-line hero callout (dark navy gradient background, left accent border, and white text)
 
 INSIGHT BOX  (per-section "Key Finding" — use after each data section)
   .insight-box         — blue-accented box for the single most important takeaway from a section
@@ -334,7 +330,7 @@ BODY STRUCTURE — FOLLOW THIS ORDER
  9. RISK FLAGS                — if ≥ 2 hygiene conditions triggered
 10. ACTIONS                   — if any flags; max 3 items, then:
     <div class="callout">Further Considerations: [brief list]</div>
-    end with: <div class="callout"><strong>Bottom Line:</strong> [one-sentence executive conclusion with dollar impact and action owner]</div>
+    end with: <div class="callout hero-bottom"><strong>Bottom Line:</strong> [one-sentence executive conclusion with dollar impact and action owner]</div>
 11. BENCHMARKS                — if thresholds apply to the domain
 12. TIMELINE CHIPS            — if ≥ 3 FUTURE deadline dates exist (NOT historical timestamps)
     </main>
