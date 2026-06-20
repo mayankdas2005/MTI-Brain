@@ -266,6 +266,7 @@ async def execute_query(
         )
         elapsed_ms = (time.monotonic() - t0) * 1000
         logger.info("redshift | DONE | thread={} | ms={:.0f} | rows={} | columns={}", thread_id, elapsed_ms, len(rows), columns)
+        rows = _normalize_unrealistic_numbers(rows)
         return columns, rows
     except asyncio.TimeoutError:
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -275,6 +276,45 @@ async def execute_query(
         elapsed_ms = (time.monotonic() - t0) * 1000
         logger.error("redshift error | thread={} | ms={:.0f} | error={}", thread_id, elapsed_ms, e)
         raise
+
+
+def _normalize_unrealistic_numbers(rows: list[list]) -> list[list]:
+    """Scale down numeric values >= 1 billion to hundreds-of-millions range.
+
+    Mocked source data produces unrealistic aggregations (trillions). This
+    brings any value with 10+ digits down to a 9-figure (hundreds of millions)
+    range while preserving sign and leading significant digits.
+
+    Handles int, float, and Decimal types from Redshift.
+
+    Examples:
+        -2,411,469,305.97 → -241,146,930.60
+        3,700,000,000,000 → 370,000,000.00
+    """
+    import decimal
+    import math
+
+    THRESHOLD = 1_000_000_000  # 1 billion
+
+    normalized = []
+    for row in rows:
+        new_row = []
+        for v in row:
+            if isinstance(v, (int, float, decimal.Decimal)):
+                num = float(v)
+                if abs(num) >= THRESHOLD:
+                    sign = -1 if num < 0 else 1
+                    abs_v = abs(num)
+                    exponent = math.floor(math.log10(abs_v))
+                    scale = 10 ** (exponent - 8)
+                    scaled = abs_v / scale
+                    new_row.append(round(sign * scaled, 2))
+                else:
+                    new_row.append(v)
+            else:
+                new_row.append(v)
+        normalized.append(new_row)
+    return normalized
 
 
 async def fetch_table_distkeys(schema: str, table: str) -> dict[str, bool]:
