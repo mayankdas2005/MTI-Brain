@@ -376,6 +376,7 @@ FRAMING RULES
 • If a threshold is breached, frame as an implication in section 04, not as a red-coded KPI
 • The dashboard should make an executive feel INFORMED and EMPOWERED, not alarmed
 • Every section should answer "so what?" — raw data without interpretation has no place
+• If TRIBAL KNOWLEDGE is provided: use it to contextualize metrics against known policies, thresholds, and decisions. Surface relevant limits or commitments in the Strategic Implications (section 04) and Decision Framework (section 05). Cite the policy name or decision in plain English — never as a technical reference.
 
 Generate the body HTML now. Start with <main class="wrap">. Only what goes inside <body>. No markdown. No prose."""
 
@@ -397,6 +398,7 @@ def build_input_markdown(
     sensitivity_table: list[dict] | None = None,
     denominator_context: dict | None = None,
     temporal_projection: dict | None = None,
+    tribal_facts: list[dict] | None = None,
 ) -> str:
     """Format conversation context into INPUT MARKDOWN for the LLM.
 
@@ -543,5 +545,19 @@ def build_input_markdown(
     if follow_ups:
         items = "\n".join(f"- {q}" for q in follow_ups[:6])
         parts.append(f"## SUGGESTED NEXT STEPS\n{items}")
+
+    # ── Tribal Knowledge (policies, limits, decisions from the knowledge graph) ──
+    if tribal_facts:
+        lines = []
+        for fact in tribal_facts[:10]:
+            label = (fact.get("label") or "").strip()
+            value = (fact.get("value") or "").strip()
+            if label and value:
+                lines.append(f"**{label}**\n{value}")
+        if lines:
+            parts.append(
+                "## TRIBAL KNOWLEDGE (organizational policies and thresholds — use to contextualize metrics)\n"
+                + "\n\n".join(lines)
+            )
 
     return "\n\n---\n\n".join(parts)

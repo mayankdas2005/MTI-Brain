@@ -791,7 +791,15 @@ def _build_vega_lite_spec(
     # ── KPI card ──────────────────────────────────────────────────────────────
     if chart_type == "kpi_card":
         base["type"] = "kpi_card"
-        base["values"] = [dict(zip(columns, row)) for row in rows[:3]]
+        kpi_cols = plan.get("kpi_columns")
+        if kpi_cols and isinstance(kpi_cols, list):
+            allowed = set(kpi_cols)
+            base["values"] = [
+                {k: v for k, v in dict(zip(columns, row)).items() if k in allowed}
+                for row in rows[:3]
+            ]
+        else:
+            base["values"] = [dict(zip(columns, row)) for row in rows[:3]]
         base["value_format"] = safe_y_fmt
         return base
 
@@ -1152,14 +1160,20 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     # Short-circuit: 1-row result → kpi_card directly, no LLM call needed
     if len(all_rows) == 1:
+        _ID_SUFFIXES = ("_id", "_key", "_ref", "_uuid", "_hash")
+        _numeric_cols: list[str] = []
         _y_col = all_columns[-1]
         for _ci, _cn in enumerate(all_columns):
+            if any(_cn.lower().endswith(s) for s in _ID_SUFFIXES):
+                continue
             try:
                 float(all_rows[0][_ci])
-                _y_col = _cn
-                break
+                if not _numeric_cols:
+                    _y_col = _cn
+                _numeric_cols.append(_cn)
             except (TypeError, ValueError):
                 continue
+        _kpi_cols = _numeric_cols[:3] if _numeric_cols else None
         _y_val = all_rows[0][all_columns.index(_y_col)] if _y_col in all_columns else None
         _y_fmt = ",.0f"
         try:
@@ -1169,10 +1183,13 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
         except (TypeError, ValueError):
             pass
         _kpi_plan = {"chart_type": "kpi_card", "y_column": _y_col, "y_value_format": _y_fmt,
-                     "chart_confidence": 100, "alternative_types": []}
+                     "kpi_columns": _kpi_cols, "chart_confidence": 100, "alternative_types": []}
         _kpi_spec = _build_vega_lite_spec("kpi_card", all_columns, all_rows, _kpi_plan)
         if _validate_spec(_kpi_spec, "kpi_card"):
-            logger.info("chart_agent | 1-row → kpi_card (no LLM) | thread={}", state["thread_id"])
+            logger.info(
+                "chart_agent | 1-row → kpi_card (no LLM) | cols={} | thread={}",
+                _kpi_cols, state["thread_id"],
+            )
             return {"chart_spec": _kpi_spec, "chart_type": "kpi_card", "alternative_chart_specs": []}
 
     plan = await _call_chart_llm(all_columns, all_rows, query_summary, state, config, persona)

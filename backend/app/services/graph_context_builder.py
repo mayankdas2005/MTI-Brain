@@ -686,6 +686,7 @@ async def generate_and_store(
             _ckey = f"{_ctable}.{_cname}"
             if _ckey in _seen_col_keys:
                 continue
+            _seen_col_keys.add(_ckey)
             _cid_val = col_id(_ckey)
             records.append(_triplet(
                 _node(table_id(_ctable), ["Table"],
@@ -812,6 +813,11 @@ async def generate_and_store(
             return (f"COM:{fc}", f"COM:{tc}") if fc and tc else None
         return None
 
+    _seen_raw_edges: set[tuple[int, int, str]] = {
+        (_rec["r"]["start"], _rec["r"]["end"], _rec["r"]["type"])
+        for _rec in records
+        if _rec.get("r")
+    }
     _raw_edge_count = 0
     for _re in raw_graph.get("edges") or []:
         _endpoints = _resolve_raw_edge_endpoints(_re)
@@ -825,6 +831,10 @@ async def generate_and_store(
         _src_id = ids._map[_src_key]
         _tgt_id = ids._map[_tgt_key]
         _rel_type = _re.get("_type", "RELATED_TO")
+        _edge_key = (_src_id, _tgt_id, _rel_type)
+        if _edge_key in _seen_raw_edges:
+            continue
+        _seen_raw_edges.add(_edge_key)
         _eprops = {k: v for k, v in _re.items() if not k.startswith("_")}
         _eprops["_retrieved_only"] = True
         # Emit edge-only triplet: addNode(None) is null-safe in the template.

@@ -85,12 +85,7 @@ export function PipelineTimeline({
         const isSkipped = step.status === 'skipped';
         const isError = step.status === 'error';
 
-        const cleanedReasoning = (step.reasoning || '')
-          .replace(/^#{1,6}\s+/gm, '')
-          .replace(/^\*\*[^*]+\*\*\s*$/gm, '')
-          .replace(/\n---\n/g, '\n')
-          .replace(/\n{3,}/g, '\n\n')
-          .trim();
+        const cleanedReasoning = (step.reasoning || '').trim();
 
         const showDuration =
           step.duration_ms != null && step.duration_ms >= 0

@@ -35,6 +35,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { SqlBlock } from '@/components/sql-block';
+import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { copyText } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { formatRelativeTime } from '@/lib/utils/relative-time';
@@ -204,18 +205,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
           {/* Tribal Knowledge — only shown when deep analysis retrieved facts */}
           {(m?.tribal_facts?.length ?? 0) > 0 && (
             <Collapsible title="Tribal Knowledge" icon={BookOpen}>
-              <div className="space-y-3">
-                {m!.tribal_facts!.map((fact, i) => (
-                  <div key={i} className="rounded-md border border-border/40 bg-muted/10 p-2.5">
-                    <p className="text-xs font-semibold text-foreground/80 mb-1 truncate">
-                      {fact.label}
-                    </p>
-                    <p className="text-xs text-foreground/55 leading-relaxed line-clamp-4">
-                      {fact.value}
-                    </p>
-                  </div>
-                ))}
-              </div>
+              <TribalKnowledgeList facts={m!.tribal_facts!} />
             </Collapsible>
           )}
 
@@ -574,14 +564,47 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 </button>
               }
             >
-              <div className="rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto overflow-x-hidden">
-                <MarkdownText>{message.reasoning!}</MarkdownText>
+              <div className="rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto">
+                <MarkdownRenderer content={message.reasoning!} />
               </div>
             </Collapsible>
           )}
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+const TRIBAL_VISIBLE_DEFAULT = 3;
+
+type TribalFact = { label: string; value: string };
+
+function TribalKnowledgeList({ facts }: { facts: TribalFact[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? facts : facts.slice(0, TRIBAL_VISIBLE_DEFAULT);
+  const hidden = facts.length - TRIBAL_VISIBLE_DEFAULT;
+
+  return (
+    <div className="space-y-3">
+      {visible.map((fact, i) => (
+        <div key={i} className="rounded-md border border-border/40 bg-muted/10 p-2.5 overflow-hidden min-w-0">
+          <p className="text-xs font-semibold text-foreground/80 mb-1.5 truncate">
+            {fact.label}
+          </p>
+          <div className="text-xs text-foreground/70 leading-relaxed prose prose-xs dark:prose-invert max-w-none [overflow-wrap:anywhere] [&_strong]:font-semibold [&_em]:italic [&_ul]:list-disc [&_ul]:pl-4 [&_li]:my-0.5 [&_h1]:text-xs [&_h2]:text-xs [&_h3]:text-xs [&_p]:my-1 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{fact.value}</ReactMarkdown>
+          </div>
+        </div>
+      ))}
+      {hidden > 0 && (
+        <button
+          onClick={() => setExpanded(e => !e)}
+          className="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1.5 border border-dashed border-border/40 rounded-md transition-colors"
+        >
+          {expanded ? 'Show less' : `Show ${hidden} more source${hidden !== 1 ? 's' : ''}`}
+        </button>
+      )}
+    </div>
   );
 }
 

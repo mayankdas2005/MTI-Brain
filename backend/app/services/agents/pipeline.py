@@ -483,6 +483,7 @@ async def stream_pipeline(
                         # immediately during streaming (before the done event fires).
                         yield {"event": "tribal_facts", "data": {"facts": facts}}
 
+
                 _node_visit_count[node] = visit_before + 1
                 visit_key  = f"{node}:{visit_before}"
                 node_dur   = time.perf_counter() - _visit_timers.get(visit_key, pipeline_start)

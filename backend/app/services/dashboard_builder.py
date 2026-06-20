@@ -398,13 +398,15 @@ async def generate_and_store(
     sensitivity_table: list | None   = meta.get("sensitivity_table") or None
     denominator_context: dict | None = meta.get("denominator_context") or None
     temporal_projection: dict | None = meta.get("temporal_projection") or None
+    tribal_facts: list | None        = meta.get("tribal_facts") or None
 
     logger.info(
         f"[dashboard] STEP 1 — messages loaded | conv={conversation_id} "
         f"| user_msg={'yes' if user_msg else 'no'} | asst_msg=yes "
         f"| row_count={row_count} | cols={len(columns) if columns else 0} "
         f"| was_truncated={was_truncated} | true_total_rows={true_total_rows} "
-        f"| sample_rows={len(sample_rows_raw)} | query_col_stats={len(query_col_stats)}"
+        f"| sample_rows={len(sample_rows_raw)} | query_col_stats={len(query_col_stats)} "
+        f"| tribal_facts={len(tribal_facts) if tribal_facts else 0}"
     )
 
     # ── 2. Smart data sampling — avoids context bloat for large result sets ──
@@ -452,6 +454,7 @@ async def generate_and_store(
         sensitivity_table=sensitivity_table,
         denominator_context=denominator_context,
         temporal_projection=temporal_projection,
+        tribal_facts=tribal_facts,
     )
     logger.info(f"[dashboard] STEP 3 — input_md length={len(input_md)} chars")
 

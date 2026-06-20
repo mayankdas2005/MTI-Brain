@@ -288,26 +288,29 @@ def _build_sse_generator(
                     _partial_answer.append(data.get("text", ""))
 
                 # ── Terminal events ───────────────────────────────────────────
+                # Await the DB commit BEFORE yielding the terminal event so
+                # any fetchThread call triggered by the frontend sees the
+                # saved message immediately (no blank-thread race condition).
                 if event_name == "stopped":
                     _saved = _build_partial_save()
                     data = {**data, "conversation_id": str(conversation_id), "duration_ms": _saved["duration_ms"]}
+                    await _save_assistant_message(_saved)
                     yield {"event": event_name, "data": json.dumps(data, default=_json_serial)}
-                    asyncio.create_task(_save_assistant_message(_saved))
                     break
 
                 if event_name == "done":
                     data = {**data, "conversation_id": str(conversation_id)}
+                    await _save_assistant_message(data)
                     yield {"event": event_name, "data": json.dumps(data, default=_json_serial)}
-                    asyncio.create_task(_save_assistant_message(data))
                     break
 
                 yield {"event": event_name, "data": json.dumps(data, default=_json_serial)}
 
                 if event_name == "error":
                     _partial = "".join(_partial_answer)
-                    asyncio.create_task(_save_assistant_message(
+                    await _save_assistant_message(
                         _build_partial_save(_partial or data.get("message", "Something went wrong. Please try again."))
-                    ))
+                    )
                     break
 
         except Exception as e:

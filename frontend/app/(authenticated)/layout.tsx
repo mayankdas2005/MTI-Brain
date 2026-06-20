@@ -116,16 +116,8 @@ export default function AuthenticatedLayout({
       if (user?.user_id) {
         usePreferencesStore.getState().rehydrateForUser(user.user_id);
       }
-      const FRESH_MS = 30_000;
-      const now = Date.now();
-      const tStore = useThreadStore.getState();
-      if (now - (tStore.threadsLastFetched || 0) > FRESH_MS) {
-        tStore.fetchRecents();
-      }
-      const pStore = useProjectStore.getState();
-      if (now - (pStore.lastFetched || 0) > FRESH_MS) {
-        pStore.fetchProjects();
-      }
+      useThreadStore.getState().fetchRecents();
+      useProjectStore.getState().fetchProjects();
       // Fire in parallel with threads + projects so pinned-metrics is ready
       // by the time the user lands on /new, instead of waiting for WelcomeState
       // to mount and trigger it sequentially.

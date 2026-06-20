@@ -2332,7 +2332,13 @@ QUERY INTENT:
 ---
 
 CHART TYPE OPTIONS:
-  kpi_card    — single scalar KPI; only when result is 1–3 summary rows with no meaningful grouping
+  kpi_card    — single scalar KPI; only when result is 1–3 summary rows with no meaningful grouping.
+                Column selection (MANDATORY): emit "kpi_columns": ["col1", "col2", ...] listing at most 4 columns.
+                ALWAYS include the primary measure the question explicitly asks for.
+                PREFER numeric/financial columns that directly answer the question.
+                SKIP: ID/key columns (ending in _id, _key, _ref, _uuid, _code), timestamp/date columns
+                      not mentioned in the question, redundant subtotals, row_count (unless the question
+                      is about volume). If ≤ 4 meaningful columns exist, include all of them.
   bar         — categorical comparison; default for string x-axis
   line        — metric over time or ordered sequence; supports multiple series via color
   grouped_bar — side-by-side bars; requires x string + color string (Distinct ≤ 3) + y numeric
@@ -2438,6 +2444,7 @@ CHART CONFIDENCE (start 100, deduct):
   "agg_function": "none",
   "sort_by": "x_column",
   "sort_order": "ascending",
+  "kpi_columns": null,
   "chart_confidence": 85,
   "alternative_types": [
     {{

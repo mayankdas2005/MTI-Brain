@@ -818,20 +818,42 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
                 ) : (
                   <>
                     {(() => {
+                      const starredThreads = threads.filter((t) => t.starred);
                       const recents = threads.filter((t) => !t.starred).slice(0, 5);
                       const groups = groupByRecencyBucket(
                         recents,
                         (t) => t.updated_at,
                         sidebarNow,
                       );
-                      return groups.map(({ bucket, label, items }) => (
-                        <div key={bucket} className="space-y-[var(--density-list-gap)]">
-                          <p className="text-[10px] uppercase tracking-widest font-medium text-sidebar-foreground/40 px-2 pt-2 pb-1">
-                            {label}
-                          </p>
-                          {items.map(renderThread)}
-                        </div>
-                      ));
+                      return (
+                        <>
+                          {starredThreads.length > 0 && (
+                            <div className="space-y-[var(--density-list-gap)]">
+                              <p className="text-[10px] uppercase tracking-widest font-medium text-sidebar-foreground/40 px-2 pt-2 pb-1 flex items-center gap-1">
+                                <Star className="w-2.5 h-2.5 fill-[var(--color-star)] text-[var(--color-star)]" />
+                                Starred
+                              </p>
+                              {starredThreads.map(renderThread)}
+                              <button
+                                onClick={() => { closeOnNav(); router.push('/starred'); }}
+                                onMouseEnter={() => router.prefetch('/starred')}
+                                className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
+                              >
+                                <span>See all starred</span>
+                                <ChevronRight className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
+                          {groups.map(({ bucket, label, items }) => (
+                            <div key={bucket} className="space-y-[var(--density-list-gap)]">
+                              <p className="text-[10px] uppercase tracking-widest font-medium text-sidebar-foreground/40 px-2 pt-2 pb-1">
+                                {label}
+                              </p>
+                              {items.map(renderThread)}
+                            </div>
+                          ))}
+                        </>
+                      );
                     })()}
                   </>
                 )}
@@ -868,28 +890,18 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
 
       <ScrollArea className="flex-1 min-h-0">
         {isOpen && (<div className="sidebar-content-enter">
-        {/* Starred Section - starred projects + starred threads, capped at 5 */}
+        {/* Starred Projects section — threads are now shown inside the Chats collapsible */}
         {(() => {
           const STARRED_LIMIT = 5;
           const starredProjects = projects.filter((p) => p.starred);
-          const starredThreads = threads.filter((t) => t.starred);
-          if (starredProjects.length === 0 && starredThreads.length === 0) return null;
-          const totalStarred = starredProjects.length + starredThreads.length;
-          // Sidebar always shows up to STARRED_LIMIT; overflow links out to
-          // /starred (the full saved/important surface) instead of expanding
-          // inline. Keeps the sidebar scannable and gives the user a real
-          // browse view when they have many.
+          if (starredProjects.length === 0) return null;
           const starredProjectsVisible = starredProjects.slice(0, STARRED_LIMIT);
-          const starredThreadsVisible = starredThreads.slice(
-            0,
-            Math.max(0, STARRED_LIMIT - starredProjectsVisible.length),
-          );
-          const starredOverflow = totalStarred > STARRED_LIMIT;
+          const starredOverflow = starredProjects.length > STARRED_LIMIT;
           return (
             <>
               <div className="px-3 pb-1">
                 <p className="text-[13px] font-semibold tracking-tight text-sidebar-foreground/55 py-1">
-                  Starred
+                  Starred Projects
                 </p>
               </div>
               <div className="px-2 pb-1 space-y-[var(--density-list-gap)]">
@@ -913,18 +925,16 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
                     </button>
                   </ProjectContextMenu>
                 ))}
-                {starredThreadsVisible.map(renderThread)}
-                {/* Always show "See all starred" so users have a clear path
-                    to the full /starred page, not only when the sidebar
-                    truncates. Matches the Recents footer pattern below. */}
-                <button
-                  onClick={() => { closeOnNav(); router.push('/starred'); }}
-                  onMouseEnter={() => router.prefetch('/starred')}
-                  className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
-                >
-                  <span>{starredOverflow ? `See all ${totalStarred} starred` : 'See all starred'}</span>
-                  <ChevronRight className="w-3 h-3" />
-                </button>
+                {starredOverflow && (
+                  <button
+                    onClick={() => { closeOnNav(); router.push('/starred'); }}
+                    onMouseEnter={() => router.prefetch('/starred')}
+                    className="w-full text-left text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground px-2 py-[var(--density-pad-y-tight)] rounded-lg hover:bg-sidebar-accent transition-colors flex items-center gap-1"
+                  >
+                    <span>See all {starredProjects.length} starred projects</span>
+                    <ChevronRight className="w-3 h-3" />
+                  </button>
+                )}
               </div>
               <div className="px-3 py-1">
                 <div className="border-t border-sidebar-border" />
