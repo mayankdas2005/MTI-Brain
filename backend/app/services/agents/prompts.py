@@ -2345,10 +2345,8 @@ CHART TYPE OPTIONS:
   donut       — part-of-whole; max 5 slices; no negative values
   scatter     — two numeric axes; correlation
   waterfall   — incremental bridge / ± deltas summing to a total; max 20 rows
-  heatmap     — two categorical axes + numeric intensity
-
 DO NOT USE: dual_axis (confusing scales), bubble (adds size dimension that is rarely meaningful),
-  pie (donut is always better). These chart types are not available.
+  heatmap (use grouped_bar or bar instead), pie (donut is always better). These chart types are not available.
 
 ---
 

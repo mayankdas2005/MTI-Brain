@@ -48,22 +48,24 @@ import {
  *  When a timing anchor from the backend is available, elapsed time
  *  is derived from the server's clock so it matches the persisted
  *  duration_ms on completion. */
-function LiveTimer({ startTime, anchor }: {
+export function LiveTimer({ startTime, anchor }: {
   startTime: number;
   anchor?: { serverElapsedMs: number; clientReceivedAt: number };
 }) {
   const [elapsed, setElapsed] = useState(0);
+  const anchorRef = useRef(anchor);
+  anchorRef.current = anchor;
   useEffect(() => {
     const id = setInterval(() => {
-      if (anchor) {
-        // server elapsed at receipt + time since receipt
-        setElapsed(anchor.serverElapsedMs + (Date.now() - anchor.clientReceivedAt));
+      const a = anchorRef.current;
+      if (a) {
+        setElapsed(a.serverElapsedMs + (Date.now() - a.clientReceivedAt));
       } else {
         setElapsed(Date.now() - startTime);
       }
     }, 100);
     return () => clearInterval(id);
-  }, [startTime, anchor]);
+  }, [startTime]);
   return <span>{(elapsed / 1000).toFixed(1)}s</span>;
 }
 import {
@@ -557,7 +559,22 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
             >
               <Brain className="w-3.5 h-3.5" />
               <span className="flex items-center gap-1">
-                {message.isStreaming ? 'Show reasoning' : (
+                {message.isStreaming ? (
+                  <>
+                    Show reasoning
+                    {' · '}
+                    <LiveTimer
+                      startTime={new Date(message.created_at).getTime()}
+                      anchor={message._timingAnchor}
+                    />
+                    {(() => {
+                      const tok = (message.streamingSteps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                      if (!tok) return null;
+                      const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                      return <span className="text-muted-foreground/60"> · {fmt} tokens</span>;
+                    })()}
+                  </>
+                ) : (
                   <>
                     Show reasoning
                     {message.metadata_?.duration_ms != null &&
@@ -567,7 +584,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                         ?? (message.streamingSteps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
                       if (!tok) return null;
                       const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
-                      return <span className="text-muted-foreground/60">· {fmt} tokens</span>;
+                      return <span className="text-muted-foreground/60"> · {fmt} tokens</span>;
                     })()}
                   </>
                 )}

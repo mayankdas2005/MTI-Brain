@@ -1,8 +1,6 @@
 'use client';
 
 import Image from 'next/image';
-
-const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 import { Sidebar } from '@/components/sidebar';
 import { Topbar } from '@/components/topbar';
 import { SearchModal } from '@/components/search-modal';
@@ -118,8 +116,16 @@ export default function AuthenticatedLayout({
       if (user?.user_id) {
         usePreferencesStore.getState().rehydrateForUser(user.user_id);
       }
-      useThreadStore.getState().fetchRecents();
-      useProjectStore.getState().fetchProjects();
+      const FRESH_MS = 10_000;
+      const now = Date.now();
+      const tStore = useThreadStore.getState();
+      if (now - (tStore.threadsLastFetched || 0) > FRESH_MS) {
+        tStore.fetchRecents();
+      }
+      const pStore = useProjectStore.getState();
+      if (now - (pStore.lastFetched || 0) > FRESH_MS) {
+        pStore.fetchProjects();
+      }
       // Fire in parallel with threads + projects so pinned-metrics is ready
       // by the time the user lands on /new, instead of waiting for WelcomeState
       // to mount and trigger it sequentially.
@@ -323,7 +329,7 @@ export default function AuthenticatedLayout({
         {/* Brand logo - gentle breathe */}
         <div className="relative z-10 animate-brand-pulse">
           <Image
-            src={`${basePath}/milestone-logo-black.png`}
+            src="/milestone-logo-black.png"
             alt="Milestone"
             width={180}
             height={101}
@@ -333,7 +339,7 @@ export default function AuthenticatedLayout({
             draggable={false}
           />
           <Image
-            src={`${basePath}/milestone-logo-white.png`}
+            src="/milestone-logo-white.png"
             alt="Milestone"
             width={180}
             height={101}

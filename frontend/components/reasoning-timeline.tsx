@@ -105,12 +105,21 @@ export function PipelineTimeline({
         const isExpanded = isActive || expandedSteps.has(i);
 
         return (
-          <div key={step.node + i} className="relative pl-10" style={{ paddingTop: i === 0 ? 0 : '1.35rem' }}>
-            {/* Connector line */}
-            {!isLast && (
+          <div key={step.node + i} className={`relative pl-10 ${
+            !isLast ? 'pb-[1.35rem]' : isActive ? 'pb-10' : ''
+          }`}>
+            {/* Connector line: always show for active (even when last), otherwise only for non-last.
+                Active-last gets pb-10 so the line has visible height to animate over. */}
+            {(!isLast || isActive) && (
               <span
-                className="absolute left-[11px] w-[2px] bg-border/60"
-                style={{ top: i === 0 ? '1.75rem' : 0, bottom: 0 }}
+                className={`absolute ${
+                  isDone
+                    ? 'left-[11px] w-[2px] bg-emerald-400/60 dark:bg-emerald-500/50 transition-colors duration-500'
+                    : isActive
+                    ? 'left-[10px] w-[3px] line-flow-active'
+                    : 'left-[11px] w-[2px] bg-border/60 transition-colors duration-500'
+                }`}
+                style={{ top: '22px', bottom: 0 }}
               />
             )}
 
@@ -120,20 +129,20 @@ export function PipelineTimeline({
               onClick={isExpandable ? () => toggleStep(i) : undefined}
             >
               <div className="flex items-center gap-3 min-w-0">
-                {/* Status dot */}
+                {/* Status dot — top-0 so circle sits at container top; line starts at top:22px so they never overlap */}
                 <span
-                  className={`absolute left-0 flex items-center justify-center w-[22px] h-[22px] rounded-full shrink-0 transition-colors ${
+                  className={`absolute left-0 top-0 flex items-center justify-center w-[22px] h-[22px] rounded-full shrink-0 transition-colors ${
                     isActive
                       ? 'bg-primary step-active'
                       : isDone
-                      ? 'bg-primary/20 dark:bg-primary/40'
+                      ? 'bg-emerald-500/20 dark:bg-emerald-500/30'
                       : isError
                       ? 'bg-destructive/20 dark:bg-destructive/40'
                       : 'bg-muted'
                   }`}
                   aria-hidden="true"
                 >
-                  {isDone  && <Check className="w-3.5 h-3.5 text-primary dark:text-primary/90" strokeWidth={3} />}
+                  {isDone  && <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" strokeWidth={3} />}
                   {isError && <X className="w-3.5 h-3.5 text-destructive" strokeWidth={3} />}
                 </span>
 

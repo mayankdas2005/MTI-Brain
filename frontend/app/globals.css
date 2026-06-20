@@ -559,6 +559,18 @@ html[data-density="compact"] {
   animation: step-active 2s ease-in-out infinite;
 }
 
+/* Active connector line — gradient flows from the active dot (bright) toward the next step (dim),
+   pulsing to reinforce that work is in progress. */
+@keyframes line-flow {
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 1; }
+}
+
+.line-flow-active {
+  background: linear-gradient(to bottom, hsl(var(--primary)) 0%, hsl(var(--primary) / 0.25) 100%);
+  animation: line-flow 1.4s ease-in-out infinite;
+}
+
 /* Reasoning prose - elegant typography for reasoning display */
 .reasoning-prose {
   font-weight: 400;

@@ -13,12 +13,13 @@
  */
 
 const NOTIFICATION_TAG = 'mti-brain-completion';
+const _basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 // ─── Ping audio ───────────────────────────────────────────────────────────────
 // Shared singleton so every hook that needs to play the ping reuses the same
 // Audio element that was already primed by use-stream-completion-notice.
 
-const PING_SRC = '/notify.mp3';
+const PING_SRC = `${_basePath}/notify.mp3`;
 let _pingAudio: HTMLAudioElement | null = null;
 
 function _ensurePingAudio(): HTMLAudioElement | null {
@@ -111,8 +112,8 @@ export function notify(title: string, opts: NotifyOptions = {}): void {
     //   otherwise, hiding follow-up completions).
     const n = new Notification(title, {
       body: opts.body,
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
+      icon: `${_basePath}/icon-192.png`,
+      badge: `${_basePath}/icon-192.png`,
       tag: NOTIFICATION_TAG,
       silent: opts.silent ?? false,
       requireInteraction: true,

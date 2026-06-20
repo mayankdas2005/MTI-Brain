@@ -16,7 +16,7 @@ from app.services.agents.state import AnalyticsState
 
 _VALID_CHART_TYPES = {
     "kpi_card", "bar", "grouped_bar", "line",
-    "donut", "scatter", "heatmap", "waterfall",
+    "donut", "scatter", "waterfall",
 }
 
 _WATERFALL_MAX_ROWS = 20
@@ -971,27 +971,6 @@ def _build_vega_lite_spec(
             enc["tooltip"].append({"field": c_col, "type": "nominal"})
         return {**base, "mark": {"type": "point", "filled": True}, "encoding": enc}
 
-    # ── Heatmap ───────────────────────────────────────────────────────────────
-    if chart_type == "heatmap":
-        y2_col = c_col or next((c for c in columns if c != x_col and c != y_col), y_col)
-        data_rows = _aggregate_rows(rows, columns, [x_col, y2_col], y_col, agg_fn)
-        return {
-            **base,
-            "data": {"values": [dict(zip(columns, r)) for r in data_rows]},
-            "mark": {"type": "rect"},
-            "encoding": {
-                "x":     {"field": x_col,  "type": x_type,         "sort": None, "axis": {"title": x_title}},
-                "y":     {"field": y2_col, "type": "nominal",       "axis": {"title": leg_ttl or _snake_to_title(y2_col)}},
-                "color": {"field": y_col,  "type": "quantitative",  "scale": {"scheme": "blues"},
-                          "legend": {"title": y_title, "format": safe_y_fmt}},
-                "tooltip": [
-                    {"field": x_col,  "type": x_type},
-                    {"field": y2_col, "type": "nominal"},
-                    {"field": y_col,  "type": "quantitative", "format": safe_y_fmt},
-                ],
-            },
-        }
-
     # ── Waterfall ─────────────────────────────────────────────────────────────
     if chart_type == "waterfall":
         if x_col in columns and y_col in columns:
@@ -1087,7 +1066,7 @@ def _validate_spec(spec: dict, chart_type: str) -> bool:
             return False
     if chart_type in ("pie", "donut"):
         return bool(enc.get("theta"))
-    if chart_type not in ("pie", "donut", "kpi_card", "heatmap", "waterfall"):
+    if chart_type not in ("pie", "donut", "kpi_card", "waterfall"):
         if not enc.get("x") or not enc.get("y"):
             return False
     return True

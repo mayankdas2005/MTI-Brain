@@ -54,7 +54,7 @@ export const useUIStore = create<UIStore>((set) => ({
   stopTourReplay: () => set({ tourReplay: false }),
   thinkingPanelOpen: false,
   thinkingPanelMessageId: null,
-  thinkingPanelWidth: 380,
+  thinkingPanelWidth: 440,
   openThinkingPanel: (messageId) => set({ thinkingPanelOpen: true, thinkingPanelMessageId: messageId }),
   closeThinkingPanel: () => set({ thinkingPanelOpen: false }),
   setThinkingPanelWidth: (width) => set({ thinkingPanelWidth: width }),

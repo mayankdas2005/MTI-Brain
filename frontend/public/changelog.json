@@ -1,12 +1,12 @@
 [
   {
-    "version": "2026.06.19",
-    "date": "2026-06-19",
+    "version": "2026.06.21",
+    "date": "2026-06-21",
     "entries": [
       {
         "type": "new",
         "title": "Export conversation as a shareable report",
-        "body": "Every conversation can now be exported as a standalone visual report — one click from any answer. The report captures your charts, data summaries, and key findings in a format ready to drop into a board presentation or share directly with your team. No copy-pasting required."
+        "body": "Every conversation can now be exported as a standalone visual report — one click from any answer. The report captures data summaries, and key findings in a format ready to drop into a board presentation or share directly with your team. No copy-pasting required."
       },
       {
         "type": "new",

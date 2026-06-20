@@ -625,7 +625,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
           <>
             <div className="flex-1 min-w-0 pl-3">
               <Image
-                src={`${basePath}/milestone-logo-white.png`}
+                src="/milestone-logo-white.png"
                 alt="Milestone"
                 width={98}
                 height={55}
@@ -653,7 +653,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
             aria-label="Open sidebar"
           >
             <Image
-              src="/milestone-icon.png"
+              src={`${basePath}/milestone-icon.png`}
               alt="Milestone"
               width={0}
               height={0}

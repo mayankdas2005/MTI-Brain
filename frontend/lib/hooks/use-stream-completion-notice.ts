@@ -13,7 +13,7 @@ import {
 import { toast } from '@/lib/toast';
 
 const BASE_TITLE = 'MTI Brain';
-const PING_SRC = '/notify.mp3';
+const PING_SRC = `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/notify.mp3`;
 
 // Audio priming is the key to playing custom sounds when the tab is hidden.
 // Browsers throttle `Audio.play()` in background tabs UNLESS the audio element

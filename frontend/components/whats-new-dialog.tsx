@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 import {
   Dialog,
   DialogContent,
@@ -40,7 +42,7 @@ let cachedChangelog: ChangelogRelease[] | null = null;
 export async function fetchChangelog(): Promise<ChangelogRelease[]> {
   if (cachedChangelog) return cachedChangelog;
   try {
-    const res = await fetch('/changelog.json', { cache: 'no-store' });
+    const res = await fetch(`${basePath}/changelog.json`, { cache: 'no-store' });
     if (!res.ok) return [];
     const data: ChangelogRelease[] = await res.json();
     cachedChangelog = data;

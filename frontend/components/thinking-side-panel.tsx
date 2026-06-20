@@ -7,9 +7,10 @@ import { useThreadStore, type Message } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { ThinkingWords } from './thinking-words';
 import { PipelineTimeline, ReasoningContent } from './reasoning-timeline';
+import { LiveTimer } from './message-bubble';
 
-const MIN_WIDTH = 280;
-const MAX_WIDTH = 600;
+const MIN_WIDTH = 320;
+const MAX_WIDTH = 680;
 
 export function ThinkingSidePanel() {
   const thinkingPlacement = usePreferencesStore((s) => s.thinkingPlacement);
@@ -121,36 +122,53 @@ export function ThinkingSidePanel() {
       </div>
 
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-border shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <Brain className="w-[18px] h-[18px] text-primary shrink-0" />
-          <div className="min-w-0 truncate">
-            {message.isStreaming ? (
-              <ThinkingWords label={activeLabel} />
-            ) : (
-              <span className="text-base font-semibold tracking-[-0.02em] text-foreground">
-                Reasoning
-                {message.metadata_?.duration_ms != null &&
-                  <span className="text-sm font-normal text-muted-foreground ml-2">{(message.metadata_.duration_ms / 1000).toFixed(1)}s</span>}
-                {(() => {
-                  const tok = message.metadata_?.token_usage?.total_tokens
-                    ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
-                  if (!tok) return null;
-                  const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
-                  return (
-                    <>
-                      <span className="text-foreground/30">·</span>
-                      <span className="text-xs font-normal text-foreground/50 tabular-nums">{fmt} tokens</span>
-                    </>
-                  );
-                })()}
-              </span>
-            )}
-          </div>
+      <div className="flex items-center gap-2 px-4 py-3.5 border-b border-border shrink-0">
+        <Brain className="w-[18px] h-[18px] text-primary shrink-0" />
+
+        {/* Label — truncates when narrow */}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          {message.isStreaming ? (
+            <ThinkingWords label={activeLabel} />
+          ) : (
+            <span className="text-sm font-semibold tracking-[-0.02em] text-foreground truncate block">
+              Reasoning
+            </span>
+          )}
         </div>
+
+        {/* Timer + tokens — always visible, never truncated */}
+        <div className="flex items-center gap-1.5 shrink-0 text-xs tabular-nums text-foreground/50">
+          {message.isStreaming ? (
+            <>
+              <LiveTimer
+                startTime={new Date(message.created_at).getTime()}
+                anchor={message._timingAnchor}
+              />
+              {(() => {
+                const tok = (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                if (!tok) return null;
+                const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                return <span className="text-foreground/40">· {fmt} tokens</span>;
+              })()}
+            </>
+          ) : (
+            <>
+              {message.metadata_?.duration_ms != null &&
+                <span>{(message.metadata_.duration_ms / 1000).toFixed(1)}s</span>}
+              {(() => {
+                const tok = message.metadata_?.token_usage?.total_tokens
+                  ?? (steps || []).reduce((s, st) => s + (st.total_tokens || 0), 0);
+                if (!tok) return null;
+                const fmt = tok >= 1000 ? `${parseFloat((tok / 1000).toFixed(2))}K` : `${tok}`;
+                return <span className="text-foreground/40">· {fmt} tokens</span>;
+              })()}
+            </>
+          )}
+        </div>
+
         <button
           onClick={closePanel}
-          className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+          className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors shrink-0"
           aria-label="Close thinking panel"
         >
           <X className="w-4 h-4" />
