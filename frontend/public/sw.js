@@ -9,8 +9,11 @@
 
 /* eslint-disable no-restricted-globals */
 
-const CACHE_VERSION = 'mti-brain-v3';
-const APP_SHELL = ['/', '/manifest.json', '/icon-192.png', '/favicon.ico'];
+const CACHE_VERSION = 'mti-brain-v5';
+// Derive the base path from the SW's own URL so we don't hardcode it.
+// e.g. /mti-brain/sw.js → "/mti-brain", /sw.js → ""
+const BASE_PATH = self.location.pathname.replace(/\/sw\.js$/, '');
+const APP_SHELL = [`${BASE_PATH}/`, `${BASE_PATH}/manifest.webmanifest`, `${BASE_PATH}/icon-192.png`, `${BASE_PATH}/favicon.ico`];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -41,12 +44,12 @@ self.addEventListener('fetch', (event) => {
   // Defense in depth - even if a navigation lands on these paths, never
   // intercept. Covers Next.js dev (Turbopack `_next/`), API routes, and
   // SSE streams that Next 16 occasionally classifies as navigations.
-  if (url.pathname.startsWith('/_next/')) return;
-  if (url.pathname.startsWith('/api/')) return;
+  if (url.pathname.startsWith(`${BASE_PATH}/_next/`)) return;
+  if (url.pathname.startsWith(`${BASE_PATH}/api/`)) return;
 
   event.respondWith(
     fetch(req).catch(() =>
-      caches.match(req).then((cached) => cached || caches.match('/')),
+      caches.match(req).then((cached) => cached || caches.match(`${BASE_PATH}/`)),
     ),
   );
 });
@@ -64,9 +67,9 @@ self.addEventListener('push', (event) => {
   const title = payload.title || 'MTI Brain';
   const options = {
     body: payload.body,
-    icon: '/icon-192.png',
-    badge: '/icon-192.png',
-    data: { url: payload.url || '/' },
+    icon: `${BASE_PATH}/icon-192.png`,
+    badge: `${BASE_PATH}/icon-192.png`,
+    data: { url: payload.url || `${BASE_PATH}/` },
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

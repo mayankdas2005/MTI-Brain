@@ -625,7 +625,7 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
           <>
             <div className="flex-1 min-w-0 pl-3">
               <Image
-                src="/milestone-logo-white.png"
+                src={`${basePath}/milestone-logo-white.png`}
                 alt="Milestone"
                 width={98}
                 height={55}

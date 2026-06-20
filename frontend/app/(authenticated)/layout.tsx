@@ -1,6 +1,8 @@
 'use client';
 
 import Image from 'next/image';
+
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 import { Sidebar } from '@/components/sidebar';
 import { Topbar } from '@/components/topbar';
 import { SearchModal } from '@/components/search-modal';
@@ -329,7 +331,7 @@ export default function AuthenticatedLayout({
         {/* Brand logo - gentle breathe */}
         <div className="relative z-10 animate-brand-pulse">
           <Image
-            src="/milestone-logo-black.png"
+            src={`${basePath}/milestone-logo-black.png`}
             alt="Milestone"
             width={180}
             height={101}
@@ -339,7 +341,7 @@ export default function AuthenticatedLayout({
             draggable={false}
           />
           <Image
-            src="/milestone-logo-white.png"
+            src={`${basePath}/milestone-logo-white.png`}
             alt="Milestone"
             width={180}
             height={101}

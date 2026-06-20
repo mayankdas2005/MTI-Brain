@@ -25,7 +25,7 @@ export const metadata: Metadata = {
     apple: `${basePath}/apple-icon.png`,
     shortcut: `${basePath}/icon-192.png`,
   },
-  manifest: `${basePath}/manifest.json`,
+  manifest: `${basePath}/manifest.webmanifest`,
   applicationName: 'MTI Brain',
   appleWebApp: { capable: true, title: 'MTI Brain', statusBarStyle: 'default' },
 };

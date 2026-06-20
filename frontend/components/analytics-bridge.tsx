@@ -38,8 +38,9 @@ export function AnalyticsBridge() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!('serviceWorker' in navigator)) return;
+    const base = process.env.NEXT_PUBLIC_BASE_PATH || '';
     const onLoad = () => {
-      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {
+      navigator.serviceWorker.register(`${base}/sw.js`, { scope: `${base}/` }).catch(() => {
         // Registration failures are silent; PWA install just won't be offered.
       });
     };

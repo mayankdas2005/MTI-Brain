@@ -4,7 +4,7 @@
  * and most OS taskbars even when the tab is muted/scrolled.
  */
 
-const DEFAULT_FAVICON = '/favicon.ico';
+const DEFAULT_FAVICON = `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/favicon.ico`;
 let originalHref: string | null = null;
 let lastAppliedKey = '';
 
