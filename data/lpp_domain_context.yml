@@ -1,0 +1,603 @@
+version: '1.0'
+schema: lpp
+database: dev
+host: mti-brain-rs-dev-wg.295790629637.us-west-2.redshift-serverless.amazonaws.com
+generated_at: '2026-06-19T12:09:44Z'
+document: lpp_semantic_context_vol2
+title: LPP Treasury Analytics - Semantic Context Pack, Volume 2
+dialect: redshift
+description: |-
+  Extends the base Context Pack with: **(A)** deeper metric formulas & edge cases,
+  **(B)** natural-language phrasing → entity/synonym maps, **(C)** worked SQL
+  templates for all test prompts. SQL is **Amazon Redshift** dialect (the schema
+  uses `super`, dist/sort keys, column encodings). Replace `:params` at runtime.
+metric_edge_cases:
+- id: A.1
+  title: Resolving the time grain
+  notes: |-
+    - **"Latest / current / now"** → for period tables use `MAX(period_date)` *within
+      the requested `period_type`*; for daily snapshots use `MAX(date) ≤ today`. Never
+      hard-code a date.
+    - **TTM (trailing twelve months)** for **flow** metrics (revenue, EBITDA, FCF,
+      interest, COGS) = SUM of the **4 most recent `period_type='Q'` rows per entity**.
+      Do **not** mix a TTM flow with an `FY` row (double counts). For **stock** metrics
+      (debt, cash, equity, shares) TTM is meaningless — use the latest point-in-time row.
+    - **YoY** = same `period_type`, `period_date` vs `period_date - INTERVAL '1 year'`.
+      Edge case: fiscal calendars may not land on natural quarter-ends — match on the
+      *ranked* period (lag 4 quarters), not literal date arithmetic, if dates are irregular.
+    - **YTD** = `period_date >= date_trunc('year', current fiscal year start)`. If the
+      fiscal year ≠ calendar year, derive FY start from the FY rows present.
+- id: A.2
+  title: 'Consolidation & FX translation (the #1 source of wrong totals)'
+  notes: |-
+    - `company_financial_metric` is **per legal entity**, each in its own
+      `reporting_currency`. To get a **global consolidated** figure you must either
+      (a) use the pre-consolidated `GR_HOLDINGS` rows if present, or (b) translate each
+      entity to USD with `fx_rate` (`rate_type='SPOT'`, `rate_date = period_date`) and sum.
+    - **Do not double count**: if `GR_HOLDINGS` already represents the consolidated
+      group, do **not** also add the subsidiary rows. Decide one or the other.
+    - **Intercompany eliminations**: summing subsidiary `revenue`/`debt` overstates the
+      group because intercompany balances (`intercompany_transaction`) aren't netted at
+      entity level. Prefer the consolidated `GR_HOLDINGS` row for true group totals;
+      use entity sums only for *operational* (already-external) measures like cash.
+    - **Stock vs flow translation**: translate stock metrics at the **period-end spot**;
+      flow metrics are ideally average-rate translated, but with only spot available,
+      period-end spot is the documented approximation — state it.
+- id: A.3
+  title: Cash — avoiding the multi-view trap
+  notes: |-
+    - `cash_balance` has **one row per `(account_ref, balance_date, date_basis,
+      includes_actual, includes_intraday, includes_confirmed, includes_estimated)`**.
+      Selecting without pinning the flags **multiplies** the same account's cash across
+      views. Canonical positions:
+      - *Ledger/actual EOD cash*: `date_basis='VALUE_DATE' AND includes_actual AND
+        includes_confirmed AND NOT includes_intraday AND NOT includes_estimated`.
+      - *Available/projected cash*: also allow `includes_estimated` and `includes_intraday`
+        per the question ("projected", "available", "intraday").
+    - Reconcile to bank truth via `bank_statement_balance` `balance_type='CLOSING'`
+      (filter `quality_status` to clean rows).
+    - **Operating cash floor** ("usable" vs "trapped") comes from `liquidity_policy`
+      (`policy_type` in MIN_CASH/OPERATING_FLOOR), scoped by `company_ref`/`company_group_ref`.
+- id: A.4
+  title: Debt, net debt & leverage
+  notes: |-
+    - **Outstanding debt bottom-up** = SUM `borrowing.principal_amount` where
+      `status='OUTSTANDING'` (exclude REPAID). Split ST/LT by `repayment_date` ≤/ > 12 months.
+    - **Net debt** = total_debt − cash_and_equivalents (some definitions also subtract
+      `short_term_investments`). Report which subtraction you used.
+    - **Debt/EBITDA (TTM)** = total_debt(latest) ÷ Σ EBITDA(4 latest Q). The stored
+      `debt_to_ebitda` is *period-specific* (often annualized single-quarter) — when the
+      user says "TTM", recompute the denominator; show the stored value as a check.
+    - **Undrawn committed facility** = `commitment_amount` − Σ outstanding
+      `borrowing.principal_amount` for that `facility_ref`. Count only **committed**
+      types (`REVOLVING`, `TERM_LOAN`); exclude `OVERDRAFT`/uncommitted lines from
+      "committed liquidity". Watch currency: facility ccy vs draw ccy → translate.
+- id: A.5
+  title: Cost of debt / capital
+  notes: |-
+    - **WACD bottom-up** = Σ(`all_in_rate` × `principal_amount`) ÷ Σ`principal_amount`
+      over `status='OUTSTANDING'`, weighting in a common currency (→USD principal).
+      For *forward* cost of undrawn, use `credit_facility.spread_bps` + current
+      `benchmark_rate` of the facility's `benchmark_code`/tenor.
+    - Floating-rate all-in today = latest `benchmark_rate(benchmark_code, tenor)` +
+      `spread_bps`/100. Fixed draws carry their booked `all_in_rate`.
+- id: A.6
+  title: FX hedge ratio — netting & alignment
+  notes: |-
+    - Ratio = hedged notional ÷ forecast exposure, **per currency and aligned tenor**.
+    - Exposure denominator: `fx_exposure_forecast.gross_exposure_amount` for the
+      `exposure_currency`, **latest `snapshot_date`**, summed over the requested
+      `forecast_period`/`tenor_bucket`. Net `direction` (LONG−SHORT) if the question is
+      about *net* exposure; use gross if "gross exposure".
+    - Hedged numerator: prefer `hedge_relationship.notional_amount` where `status='ACTIVE'`
+      and `hedged_currency = C` (this respects hedge-accounting designation). Using raw
+      `fx_forward` legs instead counts economic (not designated) hedges — state which.
+    - Cap the ratio display at sensible bounds; >100% means over-hedged for that bucket.
+- id: A.7
+  title: Counterparty exposure
+  notes: |-
+    - `counterparty_exposure` is **already USD** and pre-aggregates deposits +
+      investments + derivative MTM into `total_exposure` with `pct_of_total`. Use the
+      latest `as_of_date`. Compare `total_exposure` to `bank.cash_exposure_limit_amount`
+      for limit breaches; group by `bank.risk_tier_ref` for tiered concentration.
+- id: A.8
+  title: Working capital decomposition
+  notes: |-
+    - `CCC = DSO + DIO − DPO`. ΔCCC between periods decomposes additively into ΔDSO,
+      ΔDIO, −ΔDPO. Dollarize a driver as `Δdays × (revenue_ttm or cogs_ttm / 365)`:
+      DSO/AR uses revenue_ttm; DPO & DIO use cogs_ttm.
+    - **No inventory-balance table**: DIO is only available as `dio_days`; implied
+      inventory ≈ `dio_days × cogs_ttm / 365`. Flag as derived.
+    - "By business segment" → there is no segment dimension; map to **entity**
+      (`company_ref`) or **region** (`gen_company_region.region`).
+- id: A.9
+  title: Share-of-wallet & bank fees
+  notes: |-
+    - Share of wallet = Σ`bank_fee.charged_amount` by `bank_ref` ÷ grand total over the
+      window (→USD). "Fee leakage" = Σ`overage_amount` or `charged_amount − expected_amount`
+      where `flagged`. Optionally weight by `bank_service_type.category`.
+- id: A.10
+  title: Snapshot/vintage hygiene
+  notes: |-
+    - `forecast_cash_flow`/`forecast_vs_actual` carry multiple `snapshot_id`s; pin to one
+      (latest `forecast_snapshot.snapshot_date`) unless explicitly comparing vintages.
+    - `fx_exposure_forecast.snapshot_date` likewise — never sum across snapshots.
+- id: A.11
+  title: Modeled answers (label assumptions)
+  notes: |-
+    Prompts asking to *optimize*, *stress*, *recommend*, or *project beyond stored
+    horizons* combine stored series with scenario logic. Always: (1) pull the stored
+    baseline, (2) state the assumption set, (3) keep modeled outputs visibly separate
+    from queried facts.
+
+    ---
+synonym_maps:
+- id: B.1
+  title: Metric synonyms → canonical source
+  columns:
+    from: User says
+    to: Canonical field(s)
+  entries:
+  - from: '"cash", "cash on hand", "cash position"'
+    to: '`company_financial_metric.cash_and_equivalents`; `cash_balance.amount` (EOD-actual)'
+  - from: '"liquidity", "available liquidity", "dry powder"'
+    to: cash + `short_term_investments` + undrawn committed facilities
+  - from: '"investments", "marketable securities", "portfolio"'
+    to: '`investment_position.market_value`, `investment_instrument`'
+  - from: '"debt", "borrowings", "leverage"'
+    to: '`total_debt`, `borrowing.principal_amount`; ratios `debt_to_ebitda`/`leverage_ratio`'
+  - from: '"net debt"'
+    to: '`net_debt` (= debt − cash)'
+  - from: '"cost of debt", "blended rate", "all-in rate"'
+    to: '`weighted_avg_cost_of_debt_pct`; `borrowing.all_in_rate`'
+  - from: '"cost of capital", "WACC", "hurdle rate"'
+    to: '`wacc_pct`'
+  - from: '"EBITDA", "operating earnings"'
+    to: '`ebitda` (TTM = 4 Q)'
+  - from: '"free cash flow", "FCF", "cash generation"'
+    to: '`free_cash_flow` (= CFO − capex)'
+  - from: '"interest cover", "coverage"'
+    to: '`interest_coverage`'
+  - from: '"ratings", "credit rating", "Moody''s/S&P/Fitch"'
+    to: '`credit_rating` (`is_current=true`)'
+  - from: '"facilities", "RCF", "revolver", "term loan", "undrawn", "headroom"'
+    to: '`credit_facility` − `borrowing`'
+  - from: '"maturities", "maturity wall", "refi", "upcoming maturities"'
+    to: '`credit_facility.maturity_date`, `borrowing.repayment_date`'
+  - from: '"hedge ratio", "coverage", "hedged %"'
+    to: '`hedge_relationship.notional_amount` ÷ `fx_exposure_forecast.gross_exposure_amount`'
+  - from: '"FX exposure", "currency exposure"'
+    to: '`fx_exposure_forecast`; translation vs transaction via `source`'
+  - from: '"MTM", "mark-to-market", "derivative value"'
+    to: '`derivative_mtm.mtm_amount` (USD)'
+  - from: '"counterparty exposure", "concentration", "bank risk"'
+    to: '`counterparty_exposure`, `bank.risk_tier_ref`, limits'
+  - from: '"share of wallet", "bank spend", "bank fees"'
+    to: '`bank_fee.charged_amount` by `bank_ref`'
+  - from: '"DSO/DPO/DIO/CCC", "working capital", "cash conversion"'
+    to: '`working_capital_metric`'
+  - from: '"AR/receivables", "AP/payables", "aging"'
+    to: '`ar_invoice` / `ap_invoice` (open_amount, due_date)'
+  - from: '"supplier financing", "SCF", "dynamic discounting", "DPO extension"'
+    to: '`wcf_document`'
+  - from: '"buyback", "repurchase", "dividend", "capital return"'
+    to: '`equity_action`; `capital_allocation_actual`'
+  - from: '"capital allocation", "framework", "capex/M&A/dividends/paydown"'
+    to: '`capital_allocation_actual` (bucket vs framework_target_pct)'
+  - from: '"pension", "funded status", "OBL/PBO", "OCI"'
+    to: '`pension_valuation`'
+  - from: '"forecast", "projection", "outlook", "plan vs actual"'
+    to: '`forecast_cash_flow`, `forecast_vs_actual`, `forecast_snapshot`'
+  - from: '"stress test", "downside", "scenario", "breach"'
+    to: '`stress_scenario`, `stress_run_result`'
+  - from: '"rates", "SOFR/SONIA/ESTR", "benchmark"'
+    to: '`benchmark_rate`'
+  - from: '"macro", "oil/Brent", "geopolitical", "CPI", "Fed funds", "FX vol"'
+    to: '`macro_indicator`'
+  - from: '"peers", "vs Walmart/Home Depot/Amazon", "benchmark"'
+    to: '`peer_company`, `peer_company_metric`'
+  - from: '"payments", "rails", "ACH/WIRE/SEPA/RTP", "STP"'
+    to: '`payment_hub_throughput`, `transfer`, `payment_transaction`'
+  - from: '"membership", "members", "membership fee"'
+    to: '`membership_fee`'
+  - from: '"same-store sales", "POS", "store sales"'
+    to: '`pos_transaction`'
+- id: B.2
+  title: Entity / scope phrasing → filter
+  columns:
+    from: User says
+    to: Resolution
+  entries:
+  - from: '"globally", "consolidated", "group", "enterprise-wide", "total company"'
+    to: all entities → USD, **or** `GR_HOLDINGS` consolidated row (pick per A.2)
+  - from: '"the US", "North America", "AMER"'
+    to: '`gen_company_region.region=''AMER''` (US entity ≈ `GR_US_INC`)'
+  - from: '"EMEA / Europe"'
+    to: '`region=''EMEA''` or `company_group_code=''GROUP_EMEA''`'
+  - from: '"APAC", "Asia"'
+    to: '`region=''APAC''` / `GROUP_APAC`'
+  - from: '"LATAM", "Latin America"'
+    to: '`region=''LATAM''` / `GROUP_LATAM`'
+  - from: '"Middle East", "MENA"'
+    to: '`region=''MENA''` (e.g. `GR_AE`)'
+  - from: '"by region"'
+    to: group by `gen_company_region.region`
+  - from: '"by entity / subsidiary / legal entity"'
+    to: group by `company_ref`
+  - from: '"the holding company", "parent"'
+    to: '`GR_HOLDINGS`'
+  - from: '"treasury", "in-house bank", "IHB"'
+    to: '`GR_TREASURY`; IHB accounts `IHB_*`, branch `BR_IHB_LDN`'
+  - from: '"our banks", "banking partners", "relationship banks"'
+    to: '`bank` (exclude `intercompany=true`/IHB for *external* banks)'
+  - from: '"Tier-1 banks"'
+    to: '`bank.risk_tier_ref=''TIER_1''`'
+- id: B.3
+  title: Time phrasing → predicate
+  columns:
+    from: User says
+    to: Predicate
+  entries:
+  - from: '"now / current / latest"'
+    to: '`MAX(period_date)` (in period_type) or `MAX(as_of_date/balance_date/snapshot_date)`'
+  - from: '"this quarter / most recent quarter"'
+    to: '`period_type=''Q''` and `period_date = MAX(...)`'
+  - from: '"TTM / trailing twelve months / last 12 months"'
+    to: SUM of 4 latest `Q` rows (flows)
+  - from: '"this year / FY / full year"'
+    to: '`period_type=''FY''` latest, or SUM 4 Q'
+  - from: '"YTD"'
+    to: '`>=` fiscal-year start'
+  - from: '"YoY / year over year / vs last year"'
+    to: lag 4 quarters / −1 FY
+  - from: '"over 8 quarters / trend"'
+    to: 8 latest `Q` `period_date`, ordered
+  - from: '"last 12 months" (transactions)'
+    to: '`date >= current_date - 365` (or trailing 12 month-ends)'
+  - from: '"next 6 months / 3 years / 18/24 months"'
+    to: forward horizon on `forecast_date`/`maturity_date`/projection years
+- id: B.4
+  title: Agency / currency / instrument code hints
+  notes: |-
+    - Agencies: `MOODYS`, `SP`, `FITCH`. Currencies: ISO codes (`USD,EUR,GBP,JPY,AUD,AED,…`).
+    - Facilities encode meaning: `CF_<TYPE>_<CCY>_<SIZE>` (e.g. `CF_RCF_EUR_500M`).
+    - Investments: `INV_<TYPE>_<n>` (`MMF/CD/TD/CP/REPO/BOND`). FX deals: `FXF-#######`.
+      Hedges: `HR-#######`. Intercompany: `IC-#######`. SCF docs: `WCF-#######`.
+
+    ---
+sql_conventions: |-
+  Conventions: `:as_of` / `:fy_start` are runtime params. `fx(amount, ccy, d)` is
+  shorthand for the join `JOIN fx_rate r ON r.base_currency=ccy AND r.quote_currency='USD'
+  AND r.rate_type='SPOT' AND r.rate_date=d` then `amount*r.rate`. Where a table is
+  already USD (`counterparty_exposure`, `derivative_mtm`) no conversion is applied.
+  Adjust the consolidated-vs-sum choice per §A.2.
+sql_templates:
+- id: '1'
+  title: Consolidated cash & ST investments (global)
+  dialect: redshift
+  sql: |-
+    WITH latest AS (
+      SELECT company_ref, MAX(period_date) AS pd
+      FROM company_financial_metric WHERE period_type='Q' GROUP BY company_ref)
+    SELECT SUM((m.cash_and_equivalents + m.short_term_investments) * r.rate) AS cash_st_inv_usd
+    FROM company_financial_metric m
+    JOIN latest l ON l.company_ref=m.company_ref AND l.pd=m.period_date AND m.period_type='Q'
+    LEFT JOIN fx_rate r ON r.base_currency=m.reporting_currency AND r.quote_currency='USD'
+       AND r.rate_type='SPOT' AND r.rate_date=m.period_date;
+    -- Drill-down (operational): SUM(cash_balance) EOD-actual + SUM(investment_position.market_value, ST)
+- id: '2'
+  title: Debt-to-EBITDA (TTM)
+  dialect: redshift
+  sql: |-
+    WITH q AS (
+      SELECT company_ref, period_date, ebitda, total_debt,
+             ROW_NUMBER() OVER (PARTITION BY company_ref ORDER BY period_date DESC) rn
+      FROM company_financial_metric WHERE period_type='Q')
+    SELECT (SELECT total_debt FROM q WHERE company_ref=:co AND rn=1)
+           / NULLIF(SUM(ebitda),0) AS debt_to_ebitda_ttm
+    FROM q WHERE company_ref=:co AND rn<=4;            -- :co='GR_HOLDINGS' for group
+- id: '3'
+  title: Weighted average cost of debt (portfolio)
+  dialect: redshift
+  sql: |-
+    SELECT SUM(b.all_in_rate * b.principal_amount * r.rate)
+           / NULLIF(SUM(b.principal_amount * r.rate),0) AS wacd_pct
+    FROM borrowing b
+    LEFT JOIN fx_rate r ON r.base_currency=b.currency_code AND r.quote_currency='USD'
+       AND r.rate_type='SPOT' AND r.rate_date=:as_of
+    WHERE b.status='OUTSTANDING';
+    -- Cross-check: company_financial_metric.weighted_avg_cost_of_debt_pct (latest)
+- id: '4'
+  title: Total liquidity by region (cash + undrawn committed)
+  dialect: redshift
+  sql: |-
+    WITH drawn AS (
+      SELECT facility_ref, SUM(principal_amount) drawn FROM borrowing
+      WHERE status='OUTSTANDING' GROUP BY facility_ref),
+    undrawn AS (
+      SELECT f.company_ref, SUM((f.commitment_amount - COALESCE(d.drawn,0))*r.rate) undrawn_usd
+      FROM credit_facility f LEFT JOIN drawn d ON d.facility_ref=f.code
+      LEFT JOIN fx_rate r ON r.base_currency=f.currency_ref AND r.quote_currency='USD'
+         AND r.rate_type='SPOT' AND r.rate_date=:as_of
+      WHERE f.status='ACTIVE' AND f.facility_type IN ('REVOLVING','TERM_LOAN')
+      GROUP BY f.company_ref),
+    cash AS (
+      SELECT company_ref, (cash_and_equivalents+short_term_investments)*1 AS c, reporting_currency, period_date
+      FROM company_financial_metric m WHERE period_type='Q'
+        AND period_date=(SELECT MAX(period_date) FROM company_financial_metric
+                         WHERE company_ref=m.company_ref AND period_type='Q'))
+    SELECT g.region,
+           SUM(c.c * COALESCE(rc.rate,1)) AS cash_usd,
+           SUM(COALESCE(u.undrawn_usd,0)) AS undrawn_usd,
+           SUM(c.c*COALESCE(rc.rate,1)) + SUM(COALESCE(u.undrawn_usd,0)) AS total_liquidity_usd
+    FROM gen_company_region g
+    LEFT JOIN cash c ON c.company_ref=g.company_code
+    LEFT JOIN fx_rate rc ON rc.base_currency=c.reporting_currency AND rc.quote_currency='USD'
+       AND rc.rate_type='SPOT' AND rc.rate_date=c.period_date
+    LEFT JOIN undrawn u ON u.company_ref=g.company_code
+    GROUP BY g.region;
+- id: '5'
+  title: Current credit rating by agency
+  dialect: redshift
+  sql: |-
+    SELECT agency, rating_grade, outlook, rating_action, as_of_date
+    FROM credit_rating
+    WHERE is_current=true AND company_ref='GR_HOLDINGS'
+    ORDER BY agency;
+- id: '6'
+  title: Bank share of wallet (last 12 months)
+  dialect: redshift
+  sql: |-
+    WITH f AS (
+      SELECT bf.bank_ref, SUM(bf.charged_amount*COALESCE(r.rate,1)) fees_usd
+      FROM bank_fee bf
+      LEFT JOIN fx_rate r ON r.base_currency=bf.currency_code AND r.quote_currency='USD'
+         AND r.rate_type='SPOT' AND r.rate_date=bf.statement_period
+      WHERE bf.statement_period >= DATEADD(month,-12,:as_of)
+      GROUP BY bf.bank_ref)
+    SELECT b.description1 AS bank, f.fees_usd,
+           f.fees_usd / SUM(f.fees_usd) OVER () AS share_of_wallet
+    FROM f JOIN bank b ON b.code=f.bank_ref
+    ORDER BY share_of_wallet DESC;
+- id: '7'
+  title: YoY change in net debt
+  dialect: redshift
+  sql: |-
+    WITH q AS (
+      SELECT company_ref, period_date, net_debt,
+             ROW_NUMBER() OVER (PARTITION BY company_ref ORDER BY period_date DESC) rn
+      FROM company_financial_metric WHERE period_type='Q' AND company_ref=:co)
+    SELECT (SELECT net_debt FROM q WHERE rn=1) AS net_debt_now,
+           (SELECT net_debt FROM q WHERE rn=5) AS net_debt_yoy,
+           (SELECT net_debt FROM q WHERE rn=1)-(SELECT net_debt FROM q WHERE rn=5) AS yoy_change;
+- id: '8'
+  title: FCF most recent quarter
+  dialect: redshift
+  sql: |-
+    SELECT company_ref, period_date, free_cash_flow
+    FROM company_financial_metric m WHERE period_type='Q'
+      AND period_date=(SELECT MAX(period_date) FROM company_financial_metric
+                       WHERE period_type='Q' AND company_ref=m.company_ref)
+      AND company_ref=:co;
+- id: '9'
+  title: Interest expense vs income (year)
+  dialect: redshift
+  sql: |-
+    SELECT SUM(interest_expense) AS int_expense, SUM(interest_income) AS int_income,
+           SUM(interest_expense)-SUM(interest_income) AS net_interest
+    FROM company_financial_metric
+    WHERE period_type='Q' AND company_ref=:co
+      AND period_date > DATEADD(month,-12,:as_of);
+    -- Cross-check: SELECT direction, SUM(amount) FROM interest_accrual ... GROUP BY direction
+- id: '10'
+  title: FX hedge ratio for forecasted EUR exposures
+  dialect: redshift
+  sql: |-
+    WITH expo AS (
+      SELECT SUM(gross_exposure_amount) g FROM fx_exposure_forecast
+      WHERE exposure_currency='EUR'
+        AND snapshot_date=(SELECT MAX(snapshot_date) FROM fx_exposure_forecast WHERE exposure_currency='EUR')),
+    hedged AS (
+      SELECT SUM(notional_amount) h FROM hedge_relationship
+      WHERE hedged_currency='EUR' AND status='ACTIVE')
+    SELECT h.h AS hedged_eur, e.g AS exposure_eur, h.h/NULLIF(e.g,0) AS hedge_ratio
+    FROM expo e CROSS JOIN hedged h;
+- id: '11'
+  title: Treasury dashboard (component queries)
+  dialect: redshift
+  sql: |-
+    -- Liquidity: query #1 + #4 ; Policy floors:
+    SELECT company_ref, policy_type, threshold_amount, threshold_pct FROM liquidity_policy
+    WHERE :as_of BETWEEN effective_from AND COALESCE(effective_to,:as_of);
+    -- Debt maturity wall:
+    SELECT DATE_TRUNC('quarter',maturity_date) q, SUM(commitment_amount) FROM credit_facility
+    WHERE status='ACTIVE' GROUP BY 1 ORDER BY 1;
+    -- Investment performance:
+    SELECT instrument_ref, market_value, yield_to_maturity, duration_days FROM investment_position
+    WHERE as_of_date=(SELECT MAX(as_of_date) FROM investment_position);
+    -- Counterparty exposure top 10:
+    SELECT counterparty_bank_ref, total_exposure, pct_of_total FROM counterparty_exposure
+    WHERE as_of_date=(SELECT MAX(as_of_date) FROM counterparty_exposure)
+    ORDER BY total_exposure DESC LIMIT 10;
+    -- FX/IR hedging: query #10 + derivative_mtm latest + benchmark_rate latest.
+- id: '12'
+  title: Capital structure vs peers
+  dialect: redshift
+  sql: |-
+    SELECT 'US' AS who, period_date, leverage_ratio, debt_to_ebitda, wacc_pct, return_on_capital_pct
+    FROM company_financial_metric WHERE company_ref='GR_HOLDINGS' AND period_type='Q'
+      AND period_date=(SELECT MAX(period_date) FROM company_financial_metric WHERE period_type='Q')
+    UNION ALL
+    SELECT p.code, pm.period_date, pm.leverage_ratio, pm.debt_to_ebitda, pm.wacc_pct, pm.return_on_capital_pct
+    FROM peer_company_metric pm JOIN peer_company p ON p.code=pm.peer_code
+    WHERE p.code IN ('WMT','TGT','HD','KR') AND pm.period_type='Q'
+      AND pm.period_date=(SELECT MAX(period_date) FROM peer_company_metric WHERE period_type='Q');
+    -- Shareholder returns: pm.shareholder_return_yield_pct / dividend_yield_pct / buyback_yield_pct
+- id: '13'
+  title: Working capital trend (8Q) + CCC decomposition by entity
+  dialect: redshift
+  sql: |-
+    WITH w AS (
+      SELECT company_ref, period_date, dso_days, dio_days, dpo_days, ccc_days, revenue_ttm, cogs_ttm,
+             ROW_NUMBER() OVER (PARTITION BY company_ref ORDER BY period_date DESC) rn,
+             LAG(dso_days) OVER (PARTITION BY company_ref ORDER BY period_date) p_dso,
+             LAG(dio_days) OVER (PARTITION BY company_ref ORDER BY period_date) p_dio,
+             LAG(dpo_days) OVER (PARTITION BY company_ref ORDER BY period_date) p_dpo
+      FROM working_capital_metric)
+    SELECT company_ref, period_date, ccc_days,
+           (dso_days-p_dso) AS d_dso, (dio_days-p_dio) AS d_dio, -(dpo_days-p_dpo) AS d_dpo_effect,
+           (dso_days-p_dso)*revenue_ttm/365 AS ar_dollar_impact,
+           (dio_days-p_dio)*cogs_ttm/365   AS inv_dollar_impact,
+           -(dpo_days-p_dpo)*cogs_ttm/365  AS ap_dollar_impact
+    FROM w WHERE rn<=8 ORDER BY company_ref, period_date;
+- id: '14'
+  title: Trapped cash by region (+ routes; taxes external)
+  dialect: redshift
+  sql: |-
+    WITH cash AS (
+      SELECT g.region, m.company_ref, (m.cash_and_equivalents)*COALESCE(r.rate,1) cash_usd
+      FROM company_financial_metric m JOIN gen_company_region g ON g.company_code=m.company_ref
+      LEFT JOIN fx_rate r ON r.base_currency=m.reporting_currency AND r.quote_currency='USD'
+         AND r.rate_type='SPOT' AND r.rate_date=m.period_date
+      WHERE m.period_type='Q' AND m.period_date=(SELECT MAX(period_date) FROM company_financial_metric
+            WHERE company_ref=m.company_ref AND period_type='Q')),
+    floor AS (SELECT company_ref, threshold_amount FROM liquidity_policy WHERE policy_type IN ('MIN_CASH','OPERATING_FLOOR'))
+    SELECT c.region, SUM(c.cash_usd) cash_usd, SUM(COALESCE(f.threshold_amount,0)) operating_floor,
+           SUM(c.cash_usd)-SUM(COALESCE(f.threshold_amount,0)) AS distributable_excess
+    FROM cash c LEFT JOIN floor f ON f.company_ref=c.company_ref GROUP BY c.region;
+    -- Routes: intercompany_transaction (purpose IN DIVIDEND/LOAN/POOLING). Repatriation tax = EXTERNAL assumption.
+- id: '15'
+  title: Buyback program YTD
+  dialect: redshift
+  sql: |-
+    SELECT program_name,
+           SUM(shares) shares_bought,
+           SUM(total_amount)/NULLIF(SUM(shares),0) AS avg_price,
+           SUM(total_amount) AS total_spend,
+           MAX(authorization_remaining) AS remaining_auth
+    FROM equity_action
+    WHERE action_type='BUYBACK' AND action_date >= :fy_start
+    GROUP BY program_name;
+    -- EPS / share-count impact: compare diluted_shares_outstanding & diluted_eps across periods.
+- id: '16'
+  title: Pension funded status / OCI / 3-yr contributions vs rates
+  dialect: redshift
+  sql: |-
+    SELECT v.plan_ref, v.as_of_date, v.funded_status, v.funded_status_pct, v.oci_impact,
+           v.discount_rate_pct,
+           v.projected_contribution_y1, v.projected_contribution_y2, v.projected_contribution_y3
+    FROM pension_valuation v
+    ORDER BY v.plan_ref, v.as_of_date;
+    -- Correlate discount_rate_pct vs benchmark_rate / macro_indicator over as_of_date.
+- id: '17'
+  title: Actual vs framework capital allocation (3y)
+  dialect: redshift
+  sql: |-
+    WITH tot AS (SELECT company_ref, period_date, SUM(amount) total_amt
+                 FROM capital_allocation_actual GROUP BY company_ref, period_date)
+    SELECT a.company_ref, a.period_date, a.bucket,
+           a.amount, a.amount/NULLIF(t.total_amt,0) AS actual_pct,
+           a.framework_target_pct,
+           a.amount/NULLIF(t.total_amt,0) - a.framework_target_pct AS variance_pct
+    FROM capital_allocation_actual a JOIN tot t USING (company_ref, period_date)
+    WHERE a.period_date >= DATEADD(year,-3,:as_of)
+    ORDER BY a.period_date, a.bucket;
+- id: '18'
+  title: FX risk report
+  dialect: redshift
+  sql: |-
+    -- Translation exposure by currency:
+    SELECT exposure_currency, SUM(gross_exposure_amount) FROM fx_exposure_forecast
+    WHERE source IN ('TRANSLATION','BALANCE_SHEET')
+      AND snapshot_date=(SELECT MAX(snapshot_date) FROM fx_exposure_forecast)
+    GROUP BY exposure_currency;
+    -- Transaction exposure by entity:
+    SELECT company_ref, exposure_currency, SUM(gross_exposure_amount) FROM fx_exposure_forecast
+    WHERE source IN ('FORECAST','TRANSACTION')
+      AND snapshot_date=(SELECT MAX(snapshot_date) FROM fx_exposure_forecast)
+    GROUP BY company_ref, exposure_currency;
+    -- Hedge coverage per ccy: query #10 generalized. YTD FX impact: SUM(derivative_mtm.mtm_amount delta) YTD.
+- id: '19'
+  title: Supplier financing / dynamic discounting
+  dialect: redshift
+  sql: |-
+    SELECT status, COUNT(*) docs, SUM(amount*COALESCE(r.rate,1)) amount_usd
+    FROM wcf_document w
+    LEFT JOIN fx_rate r ON r.base_currency=w.currency_code AND r.quote_currency='USD'
+       AND r.rate_type='SPOT' AND r.rate_date=w.issue_date
+    GROUP BY status;
+    -- DPO impact: working_capital_metric.dpo_days trend; discount captured derived from early_payment_terms_ref.
+- id: 20-30
+  title: Modeling / scenario prompts (baseline-extraction queries)
+  dialect: redshift
+  sql: |-
+    -- 20 Capital-structure optimization: current mix
+    SELECT facility_type, currency_ref, SUM(commitment_amount) commit,
+           AVG(spread_bps) avg_spread, MIN(maturity_date) next_maturity
+    FROM credit_facility WHERE status='ACTIVE' GROUP BY facility_type, currency_ref;
+
+    -- 21 Gulf-war / 6-month projection drivers
+    SELECT indicator_code, region, as_of_date, value FROM macro_indicator
+    WHERE indicator_code IN ('BRENT_CRUDE','GEOPOLITICAL_RISK_INDEX','EURUSD_VOL')
+      AND as_of_date >= DATEADD(month,-6,:as_of) ORDER BY indicator_code, as_of_date;
+    SELECT company_ref, forecast_date, flow_category, SUM(forecast_amount) FROM forecast_cash_flow
+    WHERE snapshot_id=(SELECT snapshot_id FROM forecast_snapshot ORDER BY snapshot_date DESC LIMIT 1)
+      AND forecast_date <= DATEADD(month,6,:as_of) GROUP BY company_ref, forecast_date, flow_category;
+
+    -- 23 Liquidity stress test results
+    SELECT s.code, s.scenario_type, rr.company_ref, rr.min_projected_cash, rr.threshold_amount,
+           rr.breach_date, rr.breach_severity
+    FROM stress_run_result rr JOIN stress_scenario s ON s.code=rr.scenario_ref
+    WHERE rr.run_date=(SELECT MAX(run_date) FROM stress_run_result) ORDER BY rr.breach_severity DESC;
+
+    -- 24 Top-8 currency exposures (hedging optimization input)
+    SELECT exposure_currency, SUM(gross_exposure_amount) gross FROM fx_exposure_forecast
+    WHERE snapshot_date=(SELECT MAX(snapshot_date) FROM fx_exposure_forecast)
+    GROUP BY exposure_currency ORDER BY gross DESC LIMIT 8;
+
+    -- 25 Risk dashboard inputs: counterparty (USD) + FX series + IR series
+    SELECT counterparty_bank_ref, total_exposure, pct_of_total FROM counterparty_exposure
+    WHERE as_of_date=(SELECT MAX(as_of_date) FROM counterparty_exposure);
+    -- FX VaR series: fx_rate history; IR VaR series: benchmark_rate history; commodity proxy: macro_indicator BRENT.
+
+    -- 26 $3B maturities over 18 months
+    SELECT 'facility' src, code id, currency_ref ccy, commitment_amount amt, maturity_date dt
+    FROM credit_facility WHERE maturity_date BETWEEN :as_of AND DATEADD(month,18,:as_of)
+    UNION ALL
+    SELECT 'borrowing', facility_ref, currency_code, principal_amount, repayment_date
+    FROM borrowing WHERE status='OUTSTANDING' AND repayment_date BETWEEN :as_of AND DATEADD(month,18,:as_of)
+    ORDER BY dt;
+
+    -- 27 RTP / ISO 20022 transition baseline
+    SELECT payment_rail, SUM(volume_count) vol, SUM(value_amount) val,
+           AVG(stp_rate_pct) stp, SUM(rejection_count) rejects, SUM(repair_count) repairs
+    FROM payment_hub_throughput WHERE metric_date >= DATEADD(month,-12,:as_of)
+    GROUP BY payment_rail;
+    -- Cost baseline: bank_fee per txn; fraud baseline: fraud_loss; WC benefit: working_capital_metric.
+
+    -- 28 KPI scorecard inputs
+    SELECT 'forecast_accuracy' kpi, AVG(ABS(variance_pct)) val FROM forecast_vs_actual
+    WHERE period_date >= DATEADD(month,-12,:as_of)
+    UNION ALL SELECT 'avg_stp_rate', AVG(stp_rate_pct) FROM payment_hub_throughput
+    WHERE metric_date >= DATEADD(month,-12,:as_of)
+    UNION ALL SELECT 'fee_overage_usd', SUM(overage_amount) FROM bank_fee
+    WHERE statement_period >= DATEADD(month,-12,:as_of);
+    -- Best-in-class targets = EXTERNAL (not in schema); peer_company_metric where comparable.
+
+    -- 29 Sustainability-linked financing: SCF proxy only
+    SELECT status, SUM(amount) FROM wcf_document GROUP BY status;
+    -- Green bonds / SLLs / ESG KPIs: NOT REPRESENTED in schema -> flag as external/assumption.
+sql_building_blocks:
+  id: C.1
+  title: Reusable building blocks
+  sql: |-
+    -- Latest period per entity (quarterly)
+    -- ROW_NUMBER() OVER (PARTITION BY company_ref ORDER BY period_date DESC)=1
+    -- USD translation join
+    -- LEFT JOIN fx_rate r ON r.base_currency=<ccy> AND r.quote_currency='USD'
+    --   AND r.rate_type='SPOT' AND r.rate_date=<date>
+    -- Region rollup
+    -- JOIN gen_company_region g ON g.company_code=<fact>.company_ref  (GROUP BY g.region)
+    -- EOD-actual cash filter
+    -- date_basis='VALUE_DATE' AND includes_actual AND includes_confirmed
+    --   AND NOT includes_intraday AND NOT includes_estimated
