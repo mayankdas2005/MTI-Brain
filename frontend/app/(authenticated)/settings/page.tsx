@@ -1,8 +1,10 @@
 'use client';
 
 import {
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
@@ -18,6 +20,10 @@ import {
   Info,
   ChevronLeft,
   ChevronRight,
+  BookText,
+  Plus,
+  Trash2,
+  Loader2,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -41,6 +47,10 @@ import {
   type Density,
   type ThinkingPlacement,
 } from '@/lib/store/preferences';
+import { useInstructionsStore } from '@/lib/store/instructions';
+import type { UserInstruction } from '@/lib/api/instructions';
+import { listFeedbackHistory, type FeedbackHistoryPage } from '@/lib/api/feedback-history';
+import { ThumbsUp, ThumbsDown } from 'lucide-react';
 import {
   getPermission,
   notificationsSupported,
@@ -54,6 +64,7 @@ type SectionId =
   | 'display'
   | 'appearance'
   | 'notifications'
+  | 'instructions'
   | 'about';
 
 interface SectionDef {
@@ -64,6 +75,7 @@ interface SectionDef {
 
 const SECTIONS: SectionDef[] = [
   { id: 'response-style', label: 'Response style', icon: MessageSquare },
+  { id: 'instructions', label: 'Instructions', icon: BookText },
   { id: 'display', label: 'Display', icon: Eye },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -144,6 +156,7 @@ export default function SettingsPage() {
     'response-style': TONE_OPTIONS.some((o) =>
       matches(`response style tone ${o.label} ${o.description}`),
     ),
+    instructions: v('instructions standing rules claude apply always'),
     display:
       v('show sql queries display') ||
       v('auto show charts visualizations') ||
@@ -345,6 +358,7 @@ function SectionPanel({
 }) {
   const titles: Record<SectionId, { title: string; description: string }> = {
     'response-style': { title: 'Response style', description: 'How MTI Brain frames its answers.' },
+    instructions: { title: 'Instructions', description: 'Standing rules applied to every response across all chats.' },
     display: { title: 'Display', description: 'Control what\'s shown alongside responses.' },
     appearance: { title: 'Appearance', description: 'Adjust layout density and accessibility.' },
     notifications: { title: 'Notifications', description: 'Configure how MTI Brain alerts you.' },
@@ -400,6 +414,7 @@ function SectionPanel({
             v={v}
           />
         )}
+        {activeSection === 'instructions' && <InstructionsPanel />}
         {activeSection === 'about' && <AboutBlock />}
       </div>
     </div>
@@ -495,6 +510,11 @@ function SearchResults({
             notifySound={notifySound} setNotifySound={setNotifySound}
             v={v}
           />
+        </SearchGroup>
+      )}
+      {sectionVisible.instructions && (
+        <SearchGroup title="Instructions">
+          <InstructionsPanel />
         </SearchGroup>
       )}
       {sectionVisible.about && (
@@ -926,6 +946,472 @@ const VERSION_QUOTES = [
   '"Growth is a mindset." — VP, Corp Dev',
   '"We skipped v1. Too many features, not enough bugs." — QA Team',
 ];
+
+// ─── Instructions panel ──────────────────────────────────────────────────
+
+const CONTENT_LIMIT = 500;
+const BUDGET_LIMIT = 1500;
+
+function InstructionCard({
+  instruction,
+  onToggle,
+  onUpdate,
+  onDelete,
+}: {
+  instruction: UserInstruction;
+  onToggle: (enabled: boolean) => void;
+  onUpdate: (patch: { title?: string; content?: string }) => void;
+  onDelete: () => void;
+}) {
+  const [title, setTitle] = useState(instruction.title);
+  const [content, setContent] = useState(instruction.content);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLTextAreaElement>(null);
+
+  const savePatch = useCallback(
+    (patch: { title?: string; content?: string }) => {
+      const trimmed = { title: patch.title?.trim(), content: patch.content?.trim() };
+      if ((trimmed.title !== undefined && trimmed.title === instruction.title) &&
+          (trimmed.content !== undefined && trimmed.content === instruction.content)) return;
+      onUpdate(trimmed);
+    },
+    [instruction.title, instruction.content, onUpdate],
+  );
+
+  return (
+    <div
+      className={`rounded-xl border transition-colors ${
+        instruction.enabled
+          ? 'border-border bg-muted/20 hover:border-border/80'
+          : 'border-border/40 bg-muted/8 opacity-60'
+      }`}
+    >
+      {/* Card header row: title + toggle */}
+      <div className="flex items-start gap-3 px-4 pt-4 pb-2">
+        <div className="flex-1 min-w-0">
+          <input
+            ref={titleRef}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={() => savePatch({ title })}
+            placeholder="Instruction name"
+            className="w-full bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground/50 outline-none border-b border-transparent focus:border-border/60 pb-0.5 transition-colors"
+          />
+        </div>
+        <Switch
+          checked={instruction.enabled}
+          onCheckedChange={onToggle}
+          aria-label={`${instruction.enabled ? 'Disable' : 'Enable'} instruction`}
+          className="shrink-0 mt-0.5"
+        />
+      </div>
+
+      {/* Content textarea */}
+      <div className="px-4 pb-1">
+        <textarea
+          ref={contentRef}
+          value={content}
+          maxLength={CONTENT_LIMIT}
+          onChange={(e) => {
+            setContent(e.target.value);
+            e.target.style.height = 'auto';
+            e.target.style.height = `${e.target.scrollHeight}px`;
+          }}
+          onBlur={() => savePatch({ content })}
+          placeholder="Describe what MTI Brain should always do…"
+          rows={3}
+          className="w-full resize-none bg-transparent text-xs text-muted-foreground placeholder:text-muted-foreground/40 outline-none leading-relaxed border-none focus:text-foreground transition-colors"
+          style={{ minHeight: '4rem' }}
+        />
+        <div className="flex justify-end pb-1">
+          <span className={`text-[10px] tabular-nums ${content.length >= CONTENT_LIMIT ? 'text-amber-500 font-medium' : 'text-muted-foreground/40'}`}>
+            {CONTENT_LIMIT - content.length} remaining
+          </span>
+        </div>
+      </div>
+
+      {/* Card footer: delete */}
+      <div className="flex items-center justify-end px-4 pb-3">
+        {confirmDelete ? (
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Delete this instruction?</span>
+            <button
+              onClick={onDelete}
+              className="text-destructive hover:text-destructive/80 font-medium transition-colors"
+            >
+              Yes
+            </button>
+            <button
+              onClick={() => setConfirmDelete(false)}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="flex items-center gap-1.5 text-[11px] text-muted-foreground/50 hover:text-destructive transition-colors"
+            aria-label="Delete instruction"
+          >
+            <Trash2 className="w-3 h-3" />
+            Delete
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InstructionsPanel() {
+  const { instructions, loading, lastFetched, fetchInstructions, addInstruction, updateInstruction, removeInstruction } =
+    useInstructionsStore();
+  const [adding, setAdding] = useState(false);
+  const [newTitle, setNewTitle] = useState('');
+  const [newContent, setNewContent] = useState('');
+  const [saving, setSaving] = useState(false);
+  const newTitleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!lastFetched) fetchInstructions();
+  }, [lastFetched, fetchInstructions]);
+
+  const activeCharCount = instructions
+    .filter((i) => i.enabled)
+    .reduce((sum, i) => sum + i.content.length, 0);
+  const budgetPct = Math.min(100, (activeCharCount / BUDGET_LIMIT) * 100);
+  const budgetOver = activeCharCount > BUDGET_LIMIT;
+  const budgetBarColor = budgetOver
+    ? 'bg-destructive'
+    : budgetPct >= 80
+      ? 'bg-amber-500'
+      : 'bg-primary';
+
+  const handleAdd = async () => {
+    const title = newTitle.trim();
+    const content = newContent.trim();
+    if (!title || !content) return;
+    setSaving(true);
+    try {
+      await addInstruction({ title, content, enabled: true });
+      setAdding(false);
+      setNewTitle('');
+      setNewContent('');
+    } catch {
+      toast.error('Failed to save instruction');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleStartAdding = () => {
+    setAdding(true);
+    setTimeout(() => newTitleRef.current?.focus(), 50);
+  };
+
+  if (loading && !lastFetched) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Info strip */}
+      <p className="text-xs text-muted-foreground">
+        Sent to the AI on every query. When an instruction conflicts with learned feedback, the instruction wins — review what the AI has learned below and disable instructions here to let feedback take over.
+      </p>
+
+      {/* Header row: status + budget bar + add button */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex-1 min-w-0 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              {instructions.length === 0
+                ? 'No instructions yet. Add one to get started.'
+                : `${instructions.filter((i) => i.enabled).length} of ${instructions.length} active`}
+            </p>
+            {budgetOver && (
+              <span className="text-[11px] text-destructive font-medium">Too many active instructions</span>
+            )}
+            {!budgetOver && budgetPct >= 80 && (
+              <span className="text-[11px] text-amber-500">Getting heavy — consider disabling some</span>
+            )}
+          </div>
+          {instructions.some((i) => i.enabled) && (
+            <div className="h-1 w-full rounded-full bg-muted/50 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${budgetBarColor}`}
+                style={{ width: `${budgetPct}%` }}
+              />
+            </div>
+          )}
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleStartAdding}
+          className="shrink-0 flex items-center gap-1.5 h-8 text-xs"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Add instruction
+        </Button>
+      </div>
+
+      {/* New instruction form */}
+      {adding && (
+        <div className="rounded-xl border border-primary/40 bg-primary/5 p-4 space-y-3">
+          <input
+            ref={newTitleRef}
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="Instruction name (e.g. Acronym Glossary)"
+            className="w-full bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground/50 outline-none border-b border-border/60 pb-0.5"
+          />
+          <div>
+            <textarea
+              value={newContent}
+              maxLength={CONTENT_LIMIT}
+              onChange={(e) => {
+                setNewContent(e.target.value);
+                e.target.style.height = 'auto';
+                e.target.style.height = `${e.target.scrollHeight}px`;
+              }}
+              placeholder="What should MTI Brain always do? (e.g. List all acronyms as a table at the end of every response)"
+              rows={3}
+              className="w-full resize-none bg-transparent text-xs text-muted-foreground placeholder:text-muted-foreground/40 outline-none leading-relaxed border-none focus:text-foreground"
+              style={{ minHeight: '4rem' }}
+            />
+            <div className="flex justify-end">
+              <span className={`text-[10px] tabular-nums ${newContent.length >= CONTENT_LIMIT ? 'text-amber-500 font-medium' : 'text-muted-foreground/40'}`}>
+                {CONTENT_LIMIT - newContent.length} remaining
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => { setAdding(false); setNewTitle(''); setNewContent(''); }}
+              className="h-7 text-xs"
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleAdd}
+              className="h-7 text-xs"
+              disabled={saving || !newTitle.trim() || !newContent.trim()}
+            >
+              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Save'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Instruction cards */}
+      <div className="space-y-3">
+        {instructions.map((instr) => (
+          <InstructionCard
+            key={instr.id}
+            instruction={instr}
+            onToggle={(enabled) => {
+              updateInstruction(instr.id, { enabled }).catch(() => toast.error('Failed to update'));
+            }}
+            onUpdate={(patch) => {
+              updateInstruction(instr.id, patch).catch(() => toast.error('Failed to save changes'));
+            }}
+            onDelete={() => {
+              removeInstruction(instr.id).catch(() => toast.error('Failed to delete'));
+            }}
+          />
+        ))}
+      </div>
+
+      {instructions.length === 0 && !adding && (
+        <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed border-border/40 rounded-xl">
+          <BookText className="w-8 h-8 text-muted-foreground/30 mb-3" />
+          <p className="text-sm text-muted-foreground/60">No instructions yet</p>
+          <p className="text-xs text-muted-foreground/40 mt-1">
+            Instructions apply to every response across all chats
+          </p>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={handleStartAdding}
+            className="mt-4 flex items-center gap-1.5 text-xs"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add your first instruction
+          </Button>
+        </div>
+      )}
+
+      {/* Feedback history — collapsible */}
+      <FeedbackHistorySection />
+    </div>
+  );
+}
+
+function FeedbackHistorySection() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="border-t border-border/40 mt-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between py-3 group outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+        aria-expanded={open}
+      >
+        <div className="text-left">
+          <p className="text-xs font-medium text-foreground group-hover:text-foreground/80 transition-colors">
+            What the AI has learned from you
+          </p>
+          {!open && (
+            <p className="text-[11px] text-muted-foreground/50 mt-0.5">
+              Review feedback to spot conflicts with instructions above
+            </p>
+          )}
+        </div>
+        <ChevronRight
+          className={`w-3.5 h-3.5 text-muted-foreground/50 shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <div className="pb-4">
+          <p className="text-[11px] text-muted-foreground/60 mb-3">
+            If anything here conflicts with an instruction above, the instruction wins — disable the instruction to let this feedback apply instead.
+          </p>
+          <FeedbackHistory />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const FB_PER_PAGE = 10;
+
+function relativeDate(iso: string): string {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return `${days} days ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks} week${weeks > 1 ? 's' : ''} ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} month${months > 1 ? 's' : ''} ago`;
+  return `${Math.floor(days / 365)} year${Math.floor(days / 365) > 1 ? 's' : ''} ago`;
+}
+
+function FeedbackHistory() {
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState<FeedbackHistoryPage | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async (p: number) => {
+    setLoading(true);
+    try {
+      const result = await listFeedbackHistory(p, FB_PER_PAGE);
+      setData(result);
+      setPage(p);
+    } catch {
+      // non-fatal
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(1); }, [load]);
+
+  if (!data && loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!data || data.total === 0) {
+    return (
+      <p className="text-xs text-muted-foreground/50 py-4 text-center">
+        No feedback given yet — rate responses in any chat to start building a preference profile.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      {/* Entries */}
+      <div className="divide-y divide-border/30">
+        {data.items.map((item) => (
+          <div key={item.id} className="flex items-start gap-3 py-3">
+            {/* Sentiment icon */}
+            <div className={`shrink-0 mt-0.5 rounded-full p-1 ${item.liked ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-red-500/10 text-red-500 dark:text-red-400'}`}>
+              {item.liked
+                ? <ThumbsUp className="w-3 h-3" />
+                : <ThumbsDown className="w-3 h-3" />}
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-foreground leading-snug">
+                {item.comment
+                  ? `"${item.comment}"`
+                  : <span className="text-muted-foreground/60 italic">
+                      {item.liked ? 'Marked response helpful' : 'Marked response unhelpful'}
+                    </span>
+                }
+              </p>
+              {item.question_text && (
+                <p className="text-[11px] text-muted-foreground/55 mt-0.5 leading-snug truncate">
+                  {item.question_text}
+                </p>
+              )}
+              <p className="text-[10px] text-muted-foreground/35 mt-0.5">
+                {relativeDate(item.created_at)}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Pagination */}
+      {data.total_pages > 1 && (
+        <div className="flex items-center justify-between pt-3">
+          <button
+            onClick={() => load(page - 1)}
+            disabled={page <= 1 || loading}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-default transition-colors"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            Previous
+          </button>
+          <span className="text-[11px] text-muted-foreground/60 tabular-nums">
+            {page} / {data.total_pages}
+          </span>
+          <button
+            onClick={() => load(page + 1)}
+            disabled={page >= data.total_pages || loading}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-default transition-colors"
+          >
+            Next
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Total count */}
+      <p className="text-[10px] text-muted-foreground/40 text-center pt-1">
+        {data.total} feedback {data.total === 1 ? 'entry' : 'entries'} total
+      </p>
+    </div>
+  );
+}
 
 function AboutBlock() {
   const [hovered, setHovered] = useState(false);

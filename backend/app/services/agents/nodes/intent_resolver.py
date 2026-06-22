@@ -304,10 +304,16 @@ def _build_prompt(state: AnalyticsState) -> list:
     else:
         execution_error_section = ""
 
+    _global_instructions = state.get("global_instructions") or ""
+    _instructions_section = (
+        f"<user_instructions>\nApply only instructions relevant to your task as a query intent resolver. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{_global_instructions}\n</user_instructions>"
+        if _global_instructions else ""
+    )
     return INTENT_RESOLVE_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         persona=state.get("persona", "analyst"),
         feedback_context=state.get("feedback_context", ""),
+        instructions_section=_instructions_section,
         conversation_context=conversation_context,
         memory_context=semantic_context.get("memory_context", ""),
         schema_candidates_text=schema_candidates_text,

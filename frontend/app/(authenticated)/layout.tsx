@@ -18,6 +18,7 @@ import { useSearchStore } from '@/lib/store/search';
 import { useThreadStore } from '@/lib/store/threads';
 import { useProjectStore } from '@/lib/store/projects';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
+import { useInstructionsStore } from '@/lib/store/instructions';
 import { copyText } from '@/lib/utils';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { useTheme } from 'next-themes';
@@ -134,6 +135,11 @@ export default function AuthenticatedLayout({
       const pmStore = usePinnedMetricsStore.getState();
       if (!pmStore.fetched) {
         pmStore.fetchMetrics();
+      }
+      const INSTR_FRESH_MS = 30_000;
+      const instrStore = useInstructionsStore.getState();
+      if (now - (instrStore.lastFetched || 0) > INSTR_FRESH_MS) {
+        instrStore.fetchInstructions();
       }
     };
 

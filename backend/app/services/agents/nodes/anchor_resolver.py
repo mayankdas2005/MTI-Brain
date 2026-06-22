@@ -149,6 +149,15 @@ def _inject_signal_tables(
             second_hop = neo4j_client.get_direct_joins(list(joinable_fqns))
             joinable_fqns |= {r["to_fqn"] for r in second_hop} | {r["from_fqn"] for r in second_hop}
             _raw_join_edges.extend({"_type": "JOINS_TO", "source": "anchor_resolver_2hop", **r} for r in second_hop)
+        elif semantic_context.get("entity_hints"):
+            # Entity-bearing dimensions are often 2 hops from the fact anchor
+            # (fact -> bridge -> dimension, e.g. cash_balance -> bank_account -> company).
+            # Expand one extra hop when the user named an entity value so that dimension
+            # passes the joinable gate below — otherwise the specialist falls back to
+            # substring-matching a code column. Scoped to entity-hint cases to limit cost.
+            entity_second_hop = neo4j_client.get_direct_joins(list(joinable_fqns))
+            joinable_fqns |= {r["to_fqn"] for r in entity_second_hop} | {r["from_fqn"] for r in entity_second_hop}
+            _raw_join_edges.extend({"_type": "JOINS_TO", "source": "anchor_resolver_entity_2hop", **r} for r in entity_second_hop)
         # Also treat any table that appears in loaded JoinPath nodes as joinable —
         # avoids a second Neo4j call and covers multi-hop paths without JOINS_TO edges.
         for path in (anchor_join_paths or []):
@@ -166,6 +175,27 @@ def _inject_signal_tables(
     bt_added = 0
     intent_added = 0
     domain_added = 0
+    entity_hint_added = 0
+
+    # Signal 1 (highest confidence): entity_hints — tables where the user's named value
+    # ACTUALLY matched a column value (score >= 2). The entity lives in this dimension, so it
+    # MUST be in scope; otherwise the specialist substring-matches a code column and selects a
+    # wrong/contaminated population. Deterministic — not left to the LLM honoring the prompt hint.
+    entity_hint_cap = 3
+    for h in (semantic_context.get("entity_hints") or []):
+        if entity_hint_added >= entity_hint_cap:
+            break
+        fqn = h.get("table_fqn")
+        if fqn and fqn not in valid_anchors and fqn not in to_add:
+            if _joinable(fqn):
+                to_add.append(fqn)
+                entity_hint_added += 1
+                logger.info(
+                    "anchor_resolver | entity_hint_injected | {} (col={} value={})",
+                    fqn, h.get("column"), h.get("token"),
+                )
+            else:
+                logger.info("anchor_resolver | signal_rejected_not_joinable | fqn={} | signal=entity_hint", fqn)
 
     # Signal 2: BusinessTerm.related_table_fqns — Neo4j REFERENCES_TABLE edge, not LLM output
     # No valid_tables gate: BT FQNs are ground truth; injecting outside the 14-cap is safe.
@@ -263,8 +293,8 @@ def _inject_signal_tables(
 
     if len(result) > len(valid_anchors):
         logger.info(
-            "anchor_resolver | signal_injection | bt={} intent={} domain={} entity={} | total={}",
-            bt_added, intent_added, domain_added, ent_added, result,
+            "anchor_resolver | signal_injection | entity_hint={} bt={} intent={} domain={} entity={} | total={}",
+            entity_hint_added, bt_added, intent_added, domain_added, ent_added, result,
         )
     return result, _raw_join_edges, _raw_bridge_edges, _raw_community_nodes
 
@@ -357,7 +387,9 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         feeds="schema_enricher (column loading for selected tables), all 3 specialists (entity context)",
     )
     from app.services.agents.helpers import format_prior_context_block
-    _prior_ctx_block = format_prior_context_block(state.get("prior_execution_context"))
+    _prior_ctx_block = format_prior_context_block(
+        state.get("prior_context_window") or state.get("prior_execution_context")
+    )
     anchor_prompt[0].content = _mission + "\n\n" + (_prior_ctx_block + "\n" if _prior_ctx_block else "") + anchor_prompt[0].content
 
     from app.services.agents.prompts import QUERY_PLANNER_PROMPT

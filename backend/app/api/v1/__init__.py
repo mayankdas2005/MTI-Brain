@@ -8,6 +8,7 @@ from app.api.v1.labels import router as labels_router
 from app.api.v1.pinned_metrics import router as pinned_metrics_router
 from app.api.v1.playbook import router as playbook_router
 from app.api.v1.project import router as project_router
+from app.api.v1.settings import router as settings_router
 from fastapi import APIRouter
 
 v1_router = APIRouter()
@@ -19,3 +20,4 @@ v1_router.include_router(pinned_metrics_router, prefix="/pinned-metrics", tags=[
 v1_router.include_router(labels_router, prefix="/labels", tags=["labels"])
 v1_router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
 v1_router.include_router(graph_context_router, prefix="/graph-context", tags=["graph-context"])
+v1_router.include_router(settings_router, prefix="/settings", tags=["settings"])

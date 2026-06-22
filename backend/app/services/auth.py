@@ -108,5 +108,10 @@ async def upsert_user(
         db.add(user)
         await db.flush()
         logger.info(f"New user created: {email}")
+        try:
+            from app.services.chat.instructions import seed_default_instructions
+            await seed_default_instructions(db, user.id)
+        except Exception as e:
+            logger.warning(f"Failed to seed default instructions for {email}: {e}")
 
     return user

@@ -218,34 +218,58 @@ async def _resolve_filter(
                 combined = list(dict.fromkeys([*filter_values, *probe_result]))
                 patterns, score = resolve_to_patterns(f.raw_user_value, combined, value_aliases)
 
+    _CATEGORICAL_SEMANTICS = frozenset({"dimension", "flag", "code", "identifier", "category"})
+    _is_categorical = column_meta.get("semantic_type", "") in _CATEGORICAL_SEMANTICS
+
     if patterns:
+        # Exact grounded value — always equality, regardless of vocabulary size.
         if score == 100.0 and len(patterns) == 1:
-            _known_vals = column_meta.get("distinct_values") or column_meta.get("value_vocabulary") or []
-            _is_exhaustive_enum = bool(_known_vals) and len(_known_vals) <= 10
-            _op = "=" if _is_exhaustive_enum else "ILIKE"
-            _val = patterns[0] if _is_exhaustive_enum else f"%{patterns[0]}%"
-            return [f.model_copy(update={"value": _val, "operator": _op, "resolved": True})], False
+            return [f.model_copy(update={"value": patterns[0], "operator": "=", "resolved": True})], False
 
-        low_confidence = score < 85
-        result_specs = [
-            f.model_copy(update={"value": pat, "operator": "ILIKE", "resolved": True})
-            for pat in patterns
-        ]
-
-        # LLM disambiguation when too many high-confidence patterns
-        if len(result_specs) > 3 and score >= 85:
+        # Multiple high-confidence candidates → LLM picks one exact value.
+        if len(patterns) > 3 and score >= 85:
             disambiguated = await _tier5_disambiguate(f, patterns[:5], state, config)
             if disambiguated:
-                return [f.model_copy(update={"value": disambiguated, "resolved": True})], False
+                return [f.model_copy(update={"value": disambiguated, "operator": "=", "resolved": True})], False
 
+        low_confidence = score < 85
+
+        if _is_categorical:
+            # Categorical / code / dimension columns are NEVER substring-matched (the validator
+            # also blocks that). A single strong candidate becomes an exact equality; otherwise
+            # emit the best candidate as equality but flag low-confidence for clarification —
+            # we fail loud (possibly 0 rows) rather than silently contaminating the population.
+            if len(patterns) == 1 and score >= 85:
+                return [f.model_copy(update={"value": patterns[0], "operator": "=", "resolved": True})], False
+            logger.info(
+                "filter_resolver | categorical low-confidence | {}.{} | '{}' → '{}' score={}",
+                f.table_fqn, f.column_name, f.raw_user_value, patterns[0], score,
+            )
+            return [f.model_copy(update={"value": patterns[0], "operator": "=", "resolved": True})], True
+
+        # Free-text columns: substring ILIKE is justified.
+        result_specs = [
+            f.model_copy(update={"value": f"%{pat}%", "operator": "ILIKE", "resolved": True})
+            for pat in patterns
+        ]
         logger.info(
-            "filter_resolver | patterns | {}.{} | '{}' → {} pattern(s) score={} low_conf={}",
+            "filter_resolver | free-text ILIKE | {}.{} | '{}' → {} pattern(s) score={} low_conf={}",
             f.table_fqn, f.column_name, f.raw_user_value, len(result_specs), score, low_confidence,
         )
         return result_specs, low_confidence
 
+    # No pattern matched at all.
+    if _is_categorical:
+        logger.warning(
+            "filter_resolver | unresolved categorical value | {}.{} val={} | exact (loud), no substring",
+            f.table_fqn, f.column_name, f.raw_user_value,
+        )
+        return [f.model_copy(update={
+            "value": f.raw_user_value, "operator": "=", "resolved": True,
+        })], True
+
     logger.warning(
-        "filter_resolver | value unresolvable | table={} col={} val={} | falling back to ILIKE",
+        "filter_resolver | unresolved free-text value | {}.{} val={} | falling back to ILIKE",
         f.table_fqn, f.column_name, f.raw_user_value,
     )
     return [f.model_copy(update={

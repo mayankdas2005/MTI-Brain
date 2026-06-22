@@ -236,6 +236,11 @@ async def generate_sql_llm(
     feedback_section = _build_feedback_section(state)
     query_patterns_section = _build_query_patterns_section(query_patterns, pattern_matched, pattern_name)
     prior_sql_section = _build_prior_sql_section(state)
+    _gi = state.get("global_instructions") or ""
+    instructions_section = (
+        f"<user_instructions>\nApply only instructions relevant to your task as a SQL generator. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{_gi}\n</user_instructions>"
+        if _gi else ""
+    )
 
     recompile_count = state.get("recompile_count", 0)
     # Always show candidate join paths when Neo4j found alternatives — prevents the SQL generator
@@ -286,6 +291,7 @@ async def generate_sql_llm(
         anti_patterns=sql_anti_patterns,
         reasoning_directive=reasoning_directive,
         unresolved_joins_section=unresolved_joins_section,
+        instructions_section=instructions_section,
         feedback_section=feedback_section,
         query_patterns_section=query_patterns_section,
         prior_sql_section=prior_sql_section,
@@ -1000,7 +1006,7 @@ def _build_query_blueprint(
     if filters:
         lines.append("FILTERS:")
         from collections import defaultdict
-        fuzzy_groups: dict[tuple, list] = defaultdict(list)   # → [fuzzy — use ~* regex]
+        fuzzy_groups: dict[tuple, list] = defaultdict(list)   # → [fuzzy — use ILIKE]
         exact_groups: dict[tuple, list] = defaultdict(list)
         other_filters: list[dict] = []
         for f in filters:
@@ -1059,16 +1065,16 @@ def _build_query_blueprint(
         for (tfqn, col), grp in fuzzy_groups.items():
             section = "HAVING" if grp[0].get("is_having") else "WHERE"
             if len(grp) == 1:
-                val = str(grp[0].get("value", ""))
-                clause = f"{tfqn}.{col} ~* '{val}'"
-                label = "[fuzzy — use ~* regex]"
+                val = _ilike_pattern(grp[0].get("value", ""))
+                clause = f"{tfqn}.{col} ILIKE '{val}'"
+                label = "[fuzzy — use ILIKE]"
             else:
                 parts = " OR ".join(
-                    "{}.{} ~* '{}'".format(tfqn, col, str(g.get("value", "")))
+                    "{}.{} ILIKE '{}'".format(tfqn, col, _ilike_pattern(g.get("value", "")))
                     for g in grp
                 )
                 clause = f"({parts})"
-                label = "[fuzzy — multiple, use OR ~* regex]"
+                label = "[fuzzy — multiple, use OR ILIKE]"
             lines.append(f"  {section}:   {clause}   {label}")
         lines.append("")
 
@@ -1222,6 +1228,18 @@ def _is_numeric_value(v) -> bool:
 def _sql_literal(v) -> str:
     """Quote v as a SQL string literal unless it is numeric or already a raw SQL expression."""
     return str(v) if _is_numeric_value(v) else f"'{v}'"
+
+
+def _ilike_pattern(v: str) -> str:
+    """Wrap a value in %...% for an ILIKE predicate, exactly once.
+
+    Values already carrying a % wildcard are passed through unchanged so we never
+    double-wrap (e.g. the resolver may already emit '%TOKEN%').
+    """
+    v = str(v).strip()
+    if "%" in v:
+        return v
+    return f"%{v}%"
 
 
 def _format_filter_line(f: dict) -> tuple[str, str]:
@@ -1511,7 +1529,7 @@ def _build_feedback_section(state: AnalyticsState) -> str:
     if not fb:
         return ""
     return (
-        f"USER SQL PREFERENCES (from prior feedback — apply silently):\n"
+        f"LEARNED SQL PREFERENCES (from prior feedback — apply within the bounds of standing instructions above):\n"
         f"<feedback_context>{fb}</feedback_context>"
     )
 

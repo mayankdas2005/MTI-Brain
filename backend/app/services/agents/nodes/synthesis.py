@@ -342,6 +342,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     is_followup = semantic_context.get("is_followup", False)
     feedback_context = state.get("feedback_context") or ""
     memory_context = semantic_context.get("memory_context") or ""
+    global_instructions = state.get("global_instructions") or ""
 
     if session_summary:
         followup_note = " This is a follow-up — open by connecting to the prior finding before presenting new data." if is_followup else ""
@@ -349,8 +350,12 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     else:
         conversation_section = ""
 
+    instructions_section = (
+        f"<user_instructions>\nApply only instructions relevant to your task as a response writer. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{global_instructions}\n</user_instructions>"
+        if global_instructions else ""
+    )
     feedback_section = (
-        f"USER PREFERENCES (past feedback — apply silently):\n<feedback_context>{feedback_context}</feedback_context>"
+        f"LEARNED PREFERENCES (from past feedback — apply within the bounds of standing instructions above):\n<feedback_context>{feedback_context}</feedback_context>"
         if feedback_context else ""
     )
     memory_section = (
@@ -543,6 +548,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         no_data_context=no_data_context,
         insights_json=insights_json,
         reasoning_directive=reasoning_directive,
+        instructions_section=instructions_section,
         conversation_section=conversation_section,
         memory_section=memory_section,
         feedback_section=feedback_section,

@@ -54,7 +54,7 @@ async def write_audit_log(state: AnalyticsState, sql: str, row_count: int, statu
             user_id=state.get("user_id"),
             user_email=state.get("user_email"),
             question=state["question"],
-            question_type=state.get("question_type", "data_query"),
+            question_type=state.get("question_type", "analytics"),
             schema_fqn=schema_fqn,
             tables_used=anchor_tables,
             sql=sql[:4000] if sql else "",

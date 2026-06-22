@@ -670,8 +670,13 @@ async def _call_chart_llm(
 
     fb = state.get("feedback_context") or ""
     feedback_section = (
-        f"USER PREFERENCES (apply — these override all defaults):\n<feedback_context>{fb}</feedback_context>"
+        f"LEARNED PREFERENCES (from past feedback — apply within the bounds of standing instructions above):\n<feedback_context>{fb}</feedback_context>"
         if fb else ""
+    )
+    _gi = state.get("global_instructions") or ""
+    instructions_section = (
+        f"<user_instructions>\nApply only instructions relevant to your task as a chart specification builder. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{_gi}\n</user_instructions>"
+        if _gi else ""
     )
 
     raw_intent = state.get("query_intent") or []
@@ -687,6 +692,7 @@ async def _call_chart_llm(
         query_intent=query_intent_str,
         data_profile=data_profile,
         column_metadata=col_meta_str,
+        instructions_section=instructions_section,
         feedback_section=feedback_section,
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
     )

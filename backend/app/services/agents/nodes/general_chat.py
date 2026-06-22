@@ -17,6 +17,7 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
     feedback_context = state.get("feedback_context") or ""
     semantic_context = state.get("semantic_context") or {}
     memory_context = semantic_context.get("memory_context") or ""
+    global_instructions = state.get("global_instructions") or ""
 
     # Use DB-loaded conversation_history (bypasses checkpoint messages)
     conversation_context = state.get("conversation_history") or session_summary or ""
@@ -24,8 +25,12 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
         f"CONVERSATION CONTEXT:\n<conversation_context>{conversation_context}</conversation_context>"
         if conversation_context and conversation_context != "(no prior context)" else ""
     )
+    instructions_section = (
+        f"<user_instructions>\nApply only instructions relevant to your task as a conversational assistant. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{global_instructions}\n</user_instructions>"
+        if global_instructions else ""
+    )
     feedback_section = (
-        f"USER PREFERENCES (apply silently):\n<feedback_context>{feedback_context}</feedback_context>"
+        f"LEARNED PREFERENCES (from past feedback — apply within the bounds of standing instructions above):\n<feedback_context>{feedback_context}</feedback_context>"
         if feedback_context else ""
     )
     memory_section = (
@@ -36,6 +41,7 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
     prompt = GENERAL_CHAT_PROMPT.format_messages(
         question=state["question"],
         persona=state.get("persona", "analyst"),
+        instructions_section=instructions_section,
         conversation_section=conversation_section,
         memory_section=memory_section,
         feedback_section=feedback_section,

@@ -127,7 +127,7 @@ FILTER_VALUES_DB_CODES = (
     "FILTER VALUES ARE ALREADY RESOLVED: Every filter value in FILTER DIRECTIVE is the exact DB\n"
     "string. Do NOT translate, humanize, or re-interpret these values. Operator is already set —\n"
     "copy it. Boolean columns: TRUE/FALSE (not 'true'/'false'). Numeric: integer literal (no $, commas).\n"
-    "String filters use ~* syntax — copy verbatim from FILTER DIRECTIVE."
+    "String filters use ILIKE '%value%' syntax — copy verbatim from FILTER DIRECTIVE."
 )
 
 CTE_SCOPE_ISOLATION = (
@@ -521,6 +521,8 @@ Persona: {persona}
 Tone guide: executive: 2-3 sentences, strategic pitch. analyst: concise with specifics.
             manager / director: outcome-focused, what action this enables.
 
+{instructions_section}
+
 {conversation_section}
 
 {memory_section}
@@ -751,6 +753,8 @@ USER PROFILE:
 Persona: {persona}
 Prior feedback: {feedback_context}
 
+{instructions_section}
+
 ---
 
 CONVERSATION CONTEXT (use to interpret follow-ups like "show me", "break that down", "yes" and prior conversation turns. If empty, treat the question as a new query with no inherited parameters):
@@ -960,6 +964,8 @@ ANTI-PATTERNS (do not repeat these):
 {anti_patterns}
 
 {candidate_paths_section}
+
+{instructions_section}
 
 {feedback_section}
 
@@ -1462,6 +1468,8 @@ USER QUESTION: {question}
 
 {query_patterns_section}
 
+{instructions_section}
+
 {feedback_section}
 
 ---
@@ -1572,7 +1580,7 @@ S3. """ + FILTER_VALUES_DB_CODES + """
 S3b. FILTER SYNTAX (3 tiers — when operator not already given by FILTER DIRECTIVE):
    a. Column marked [enum: ...] -> EXACT match only. ILIKE FORBIDDEN on enum columns.
    b. [exact] tag -> use = 'VALUE'. [exact — multiple values, use IN] -> use IN ('V1', 'V2').
-   c. [fuzzy — use ~* regex] tag -> use case-insensitive regex.
+   c. [fuzzy — use ILIKE] tag -> use case-insensitive ILIKE '%value%'. NEVER use ~* regex.
 S3c. NEVER infer or guess enum values for a column by analogy from other columns or tables.
    Only these three sources authorise a filter value:
    a. The column's own distinct_values or sample_values listed in SCHEMA REFERENCE.
@@ -2119,26 +2127,6 @@ CURRENCY OUTPUT RULE — MANDATORY:
   This applies regardless of whether the number comes from an FX-converted query or a local-currency filter.
   Ambiguous numbers ("$4.77T" with no currency label) will be misread by executives — never omit.
 
-ACRONYM APPENDIX — MANDATORY:
-  At the end of every response, append a glossary table for any domain-specific or non-obvious
-  acronyms used in the body. Omit universally known terms (USD, EUR, KPI, SQL, API).
-  Include treasury, finance, banking, and system acronyms (e.g. ACH, FX, SLA, GL, AP, AR,
-  KRW, MTM, LGD, PD, EAD, WCF, SCC, RCF, LOC, TMS, ERP, SWIFT, SEPA, RTGS).
-  Format:
-
-  ---
-  **Acronym Glossary**
-
-  | Acronym | Full Form |
-  |---------|-----------|
-  | ACH     | Automated Clearing House |
-  | ... (only acronyms actually used above) |
-
-  Rules:
-  - Only include acronyms that appear in this response.
-  - Definitions must be accurate and specific to the treasury/finance context.
-  - If no domain-specific acronyms were used, omit the table entirely (do not add an empty table).
-
 ---
 
 {persona_structure}
@@ -2159,6 +2147,8 @@ LANGUAGE RULES:
   - NEVER describe a data quality or data linkage issue as a "pipeline failure", "system failure", or "processing failure". These are internal technical terms that belong to engineering, not to a business briefing. Rephrase as: "data mapping gap", "data linkage issue", "data configuration gap", or similar business-facing language.
 
 ---
+
+{instructions_section}
 
 {conversation_section}
 
@@ -2318,6 +2308,8 @@ QUESTION: {question}
 
 QUERY INTENT:
 {query_intent}
+
+{instructions_section}
 
 {feedback_section}
 
@@ -2953,16 +2945,28 @@ Q4 "does this treasury position require action" -> measures=[] (judgment query, 
 FILTER_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
     """You are a schema-bound filter extractor. You map user words to database columns.
 
+COLUMN CHOICE (do this FIRST, it determines correctness):
+  A named entity / geography / categorical concept lives in the DIMENSION column whose
+  distinct_values or code_mappings actually contain that concept. Pick THAT column.
+  NEVER pick a `code`/`identifier` column (e.g. an account_ref, reference, or id code) and
+  substring-match the entity inside it — a code string like 'GR_AU_OPERATING_1' is NOT a
+  geography/entity field, and matching '%USA%'/'%US%' inside codes selects an arbitrary,
+  contaminated population. If the dimension column that holds the value is NOT in the
+  filterable list below, OMIT the filter (it will be surfaced upstream) rather than forcing
+  the concept onto a code column.
+
 Two output fields exist for every filter:
   raw_user_value: ALWAYS the user's exact words — never a DB code. Audit trail only.
-  db_value: the ACTUAL DB value from this column's metadata, when you are confident:
-    - User's term appears (case-insensitive) in all_values or known_values → emit that DB value exactly as listed
-    - User's term matches a human label in code_mappings (DB_CODE -> human name) → emit the DB_CODE (left side)
-    - Column all_values is a closed small enum AND one value clearly corresponds to the user's intent → emit it
-    - Otherwise: null. The downstream resolver handles it from raw_user_value.
-  Do NOT invent db_values. Only emit what you can directly see in the column metadata shown below.
+  db_value: the ACTUAL DB value from the chosen column's metadata. Actively MAP the user's
+    term onto the closest real value shown — you understand synonyms the schema can't encode:
+    - User's term appears (case-insensitive) in all_values / known_values → emit that value exactly
+    - User's term matches a human label in code_mappings (DB_CODE -> human name) → emit the DB_CODE
+    - User's term is a well-known synonym/abbreviation of a shown value (e.g. "USA"→"US",
+      "JPMorgan"→a JPM code, "dollars"→"USD") → emit the shown value it corresponds to
+    - Only if NO shown value plausibly corresponds → null (downstream flags low-confidence).
+  Do NOT invent db_values that are absent from the column metadata. Map to what is shown.
 
-Your single failure mode to avoid: emitting a WHERE clause with a value you invented from the question text. "USD" might be stored as "US Dollar", "INFLOW" might be stored as "IN". You never know — only the schema knows. When you see the exact DB value in the metadata, use it via db_value. When you don't, leave db_value null.
+Your single failure mode to avoid: emitting a WHERE clause with a value you invented from the question text. "USD" might be stored as "US Dollar", "INFLOW" might be stored as "IN". Map your term onto a value the metadata actually shows; when none fits, leave db_value null.
 
 You identify FILTER CONDITIONS from the user's question.
 

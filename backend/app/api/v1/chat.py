@@ -96,6 +96,11 @@ _TONE_TO_PERSONA = {
 }
 
 
+# Rolling thread-context window: how many recent analytics turns of structured context
+# (anchors/filters/measures/dimensions — never SQL) to carry forward to the specialists.
+_PRIOR_CONTEXT_WINDOW = 4
+
+
 def _build_sse_generator(
     question: str,
     thread_id: uuid.UUID,
@@ -114,7 +119,9 @@ def _build_sse_generator(
     user_email: str | None = None,
     is_retry: bool = False,
     prior_execution_context: dict | None = None,
+    prior_context_window: list[dict] | None = None,
     conversation_history: str = "(no prior context)",
+    global_instructions: str = "",
 ):
     async def _save_assistant_message(save_data: dict) -> None:
         from app.db import async_session_factory
@@ -254,7 +261,9 @@ def _build_sse_generator(
                 user_display_name=user_display_name,
                 is_retry=is_retry,
                 prior_execution_context=prior_execution_context,
+                prior_context_window=prior_context_window,
                 conversation_history=conversation_history,
+                global_instructions=global_instructions,
             ):
                 event_name = sse_ev["event"]
                 data = sse_ev["data"]
@@ -617,25 +626,29 @@ async def ask_question(
             except Exception:
                 logger.warning("[ask] refinement | prior_question lookup failed | conversation_id={}", body.source_conversation_id)
 
-        # ── Load prior execution context from last analytics assistant message ──
+        # ── Load rolling thread-context window from recent analytics assistant messages ──
         prior_execution_context = None
+        prior_context_window: list[dict] = []
         try:
             async with db.begin_nested():
                 from sqlalchemy import select as _select
                 from app.models.conversation import MTIBrainMessage
-                _prior_row = await db.execute(
+                _prior_rows = await db.execute(
                     _select(MTIBrainMessage.metadata_)
                     .where(MTIBrainMessage.thread_id == thread_id)
                     .where(MTIBrainMessage.role == "assistant")
-                    .where(MTIBrainMessage.metadata_["question_type"].astext == "data_query")
+                    .where(MTIBrainMessage.metadata_["question_type"].astext == "analytics")
                     .order_by(MTIBrainMessage.created_at.desc())
-                    .limit(1)
+                    .limit(_PRIOR_CONTEXT_WINDOW)
                 )
-                _prior_meta = _prior_row.scalar_one_or_none()
-                if _prior_meta:
-                    prior_execution_context = _prior_meta.get("prior_execution_context")
+                for _meta in _prior_rows.scalars().all():
+                    _pec = (_meta or {}).get("prior_execution_context")
+                    if _pec:
+                        prior_context_window.append(_pec)
+                if prior_context_window:
+                    prior_execution_context = prior_context_window[0]
         except Exception:
-            logger.debug("[ask] prior_execution_context lookup failed (non-fatal)")
+            logger.debug("[ask] prior context window lookup failed (non-fatal)")
 
         # ── Load conversation history from DB (persistent, not Redis) ──
         conversation_history = "(no prior context)"
@@ -645,6 +658,15 @@ async def ask_question(
             )
         except Exception:
             logger.debug("[ask] conversation_history lookup failed (non-fatal)")
+
+        # ── Load enabled standing instructions for this user ──
+        global_instructions = ""
+        try:
+            from app.services.chat.instructions import load_enabled_instructions, format_instructions
+            _instructions = await load_enabled_instructions(db, current_user.id)
+            global_instructions = format_instructions(_instructions)
+        except Exception:
+            logger.debug("[ask] global_instructions lookup failed (non-fatal)")
 
         save_result = await conv_service.save_message_and_touch(
             db,
@@ -693,7 +715,9 @@ async def ask_question(
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
         prior_execution_context=prior_execution_context,
+        prior_context_window=prior_context_window,
         conversation_history=conversation_history,
+        global_instructions=global_instructions,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -769,8 +793,9 @@ async def retry_response(
         elif orig_meta.get("source_conversation_id"):
             user_meta = {"source_conversation_id": str(orig_meta["source_conversation_id"])}
 
-        # ── Load prior execution context for retries (scoped BEFORE the retried msg) ──
+        # ── Load rolling thread-context window for retries (scoped BEFORE the retried msg) ──
         prior_execution_context = None
+        prior_context_window: list[dict] = []
         try:
             async with db.begin_nested():
                 # Get timestamp of the original user message being retried
@@ -782,18 +807,21 @@ async def retry_response(
                 )
                 _user_ts = _user_ts_row.scalar_one_or_none()
                 if _user_ts:
-                    _prior_row = await db.execute(
+                    _prior_rows = await db.execute(
                         _select(MTIBrainMessage.metadata_)
                         .where(MTIBrainMessage.thread_id == thread_id)
                         .where(MTIBrainMessage.role == "assistant")
-                        .where(MTIBrainMessage.metadata_["question_type"].astext == "data_query")
+                        .where(MTIBrainMessage.metadata_["question_type"].astext == "analytics")
                         .where(MTIBrainMessage.created_at < _user_ts)
                         .order_by(MTIBrainMessage.created_at.desc())
-                        .limit(1)
+                        .limit(_PRIOR_CONTEXT_WINDOW)
                     )
-                    _prior_meta = _prior_row.scalar_one_or_none()
-                    if _prior_meta:
-                        prior_execution_context = _prior_meta.get("prior_execution_context")
+                    for _meta in _prior_rows.scalars().all():
+                        _pec = (_meta or {}).get("prior_execution_context")
+                        if _pec:
+                            prior_context_window.append(_pec)
+                    if prior_context_window:
+                        prior_execution_context = prior_context_window[0]
         except Exception:
             pass
 
@@ -805,6 +833,15 @@ async def retry_response(
             )
         except Exception:
             pass
+
+        # ── Load enabled standing instructions for this user ──
+        global_instructions = ""
+        try:
+            from app.services.chat.instructions import load_enabled_instructions, format_instructions
+            _instructions = await load_enabled_instructions(db, current_user.id)
+            global_instructions = format_instructions(_instructions)
+        except Exception:
+            logger.debug("[retry] global_instructions lookup failed (non-fatal)")
 
         save_result = await conv_service.save_message_and_touch(
             db,
@@ -839,7 +876,9 @@ async def retry_response(
         user_email=current_user.email,
         is_retry=not is_refinement_retry,
         prior_execution_context=prior_execution_context,
+        prior_context_window=prior_context_window,
         conversation_history=conversation_history,
+        global_instructions=global_instructions,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -882,8 +921,11 @@ async def edit_question(
         if body.source_conversation_id:
             user_meta = {"source_conversation_id": str(body.source_conversation_id)}
 
-        # ── Load prior execution context for edits (scoped BEFORE the edited msg) ──
+        # ── Load rolling thread-context window for edits (scoped BEFORE the edited msg) ──
+        # Advisory only: the edited question may differ entirely, so the specialists re-ground
+        # from the new text; this window just fills elliptical references.
         prior_execution_context = None
+        prior_context_window: list[dict] = []
         try:
             async with db.begin_nested():
                 from sqlalchemy import select as _select
@@ -897,18 +939,21 @@ async def edit_question(
                 )
                 _user_ts = _user_ts_row.scalar_one_or_none()
                 if _user_ts:
-                    _prior_row = await db.execute(
+                    _prior_rows = await db.execute(
                         _select(MTIBrainMessage.metadata_)
                         .where(MTIBrainMessage.thread_id == thread_id)
                         .where(MTIBrainMessage.role == "assistant")
-                        .where(MTIBrainMessage.metadata_["question_type"].astext == "data_query")
+                        .where(MTIBrainMessage.metadata_["question_type"].astext == "analytics")
                         .where(MTIBrainMessage.created_at < _user_ts)
                         .order_by(MTIBrainMessage.created_at.desc())
-                        .limit(1)
+                        .limit(_PRIOR_CONTEXT_WINDOW)
                     )
-                    _prior_meta = _prior_row.scalar_one_or_none()
-                    if _prior_meta:
-                        prior_execution_context = _prior_meta.get("prior_execution_context")
+                    for _meta in _prior_rows.scalars().all():
+                        _pec = (_meta or {}).get("prior_execution_context")
+                        if _pec:
+                            prior_context_window.append(_pec)
+                    if prior_context_window:
+                        prior_execution_context = prior_context_window[0]
         except Exception:
             pass
 
@@ -920,6 +965,15 @@ async def edit_question(
             )
         except Exception:
             pass
+
+        # ── Load enabled standing instructions for this user ──
+        global_instructions = ""
+        try:
+            from app.services.chat.instructions import load_enabled_instructions, format_instructions
+            _instructions = await load_enabled_instructions(db, current_user.id)
+            global_instructions = format_instructions(_instructions)
+        except Exception:
+            logger.debug("[edit] global_instructions lookup failed (non-fatal)")
 
         save_result = await conv_service.save_message_and_touch(
             db,
@@ -953,7 +1007,9 @@ async def edit_question(
         user_email=current_user.email,
         is_retry=True,
         prior_execution_context=prior_execution_context,
+        prior_context_window=prior_context_window,
         conversation_history=conversation_history,
+        global_instructions=global_instructions,
     )
     return EventSourceResponse(generator(), ping=15)
 

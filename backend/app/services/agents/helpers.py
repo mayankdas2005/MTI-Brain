@@ -524,7 +524,7 @@ def build_directive_section(state: dict) -> str:
             "  4. CONTEXT — informational only; shapes intent but never overrides above\n"
             "\n"
             "ADDITIVE RULE (not a conflict): COMPUTED_FILTER and FILTER DIRECTIVE target different columns.\n"
-            "  FILTER DIRECTIVE = base table column filters (WHERE bank.name ~* 'JPM'). Apply always.\n"
+            "  FILTER DIRECTIVE = base table column filters (WHERE bank.name ILIKE '%JPM%'). Apply always.\n"
             "  COMPUTED_FILTER = predicates on derived values (WHERE running_total < 200000000). Apply always.\n"
             "  Never substitute one for the other. Both appear in the final SQL simultaneously.\n"
             "\n"
@@ -637,12 +637,39 @@ def _build_concept_mappings_section(concept_mappings: dict | None) -> str:
     return "\n".join(lines)
 
 
-def format_prior_context_block(prior_ctx: dict | None) -> str:
+def format_prior_context_block(prior_ctx) -> str:
     """Format prior execution context into a compact factual block for LLM prompts.
 
-    Returns empty string if prior_ctx is None or empty.
+    Accepts EITHER a single prior-turn dict OR a list of recent prior-turn dicts
+    (newest first — the rolling thread-context window). Returns empty string if empty.
+    Never includes SQL — only structured context (tables, filters, measures, dimensions).
     The block is non-directive — agents decide what is relevant.
     """
+    if not prior_ctx:
+        return ""
+
+    if isinstance(prior_ctx, dict):
+        turns = [prior_ctx]
+    else:
+        turns = [t for t in prior_ctx if t]
+    if not turns:
+        return ""
+
+    blocks = []
+    for idx, turn in enumerate(turns):
+        body = _format_single_prior_turn(turn)
+        if body:
+            label = "most recent" if idx == 0 else f"{idx + 1} turns back"
+            blocks.append(f"[{label}]\n{body}")
+    if not blocks:
+        return ""
+
+    header = "PRIOR THREAD CONTEXT (recent turns, newest first — reference only, use your judgment):\n"
+    return header + "\n\n".join(blocks) + "\n"
+
+
+def _format_single_prior_turn(prior_ctx: dict) -> str:
+    """Format one prior-turn context dict into compact factual lines (no header, no SQL)."""
     if not prior_ctx:
         return ""
 
@@ -706,12 +733,11 @@ def format_prior_context_block(prior_ctx: dict | None) -> str:
     grain_suffix = f" (grain: {', '.join(temporal_grains)})" if temporal_grains else ""
 
     return (
-        "PRIOR TURN CONTEXT (reference only — use your judgment on relevance):\n"
         f"Prior question: \"{question}\"\n"
         f"Tables: {tables_line}\n"
         f"Filters: {filter_line}\n"
         f"Measures: {measure_line}\n"
-        f"Dimensions: {dim_line}{grain_suffix}\n"
+        f"Dimensions: {dim_line}{grain_suffix}"
     )
 
 

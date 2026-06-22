@@ -232,8 +232,13 @@ async def attempt_repair(
 
     fb = state.get("feedback_context") or ""
     feedback_section = (
-        f"USER SQL PREFERENCES (from prior feedback — apply silently):\n<feedback_context>{fb}</feedback_context>"
+        f"LEARNED SQL PREFERENCES (from prior feedback — apply within the bounds of standing instructions above):\n<feedback_context>{fb}</feedback_context>"
         if fb else ""
+    )
+    _gi = state.get("global_instructions") or ""
+    instructions_section = (
+        f"<user_instructions>\nApply only instructions relevant to your task as a SQL repair specialist. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{_gi}\n</user_instructions>"
+        if _gi else ""
     )
 
     from app.services.agents.helpers import build_directive_section, _build_entity_tokens_section
@@ -382,6 +387,7 @@ async def attempt_repair(
             prior_attempts_detail=attempts_detail,
             directive_section=directive_section,
             output_shape_section=output_shape_section,
+            instructions_section=instructions_section,
             feedback_section=feedback_section,
             performance_directive=_perf_directive,
             explain_section=explain_section,

@@ -294,6 +294,7 @@ async def stream_pipeline(
         "feedback_context": feedback_context,
         "lt_memory_context": "",
         "preference_summary": None,
+        "global_instructions": kwargs.get("global_instructions") or "",
         "summary": "",
         "error": None,
         "execution_error": None,
@@ -313,6 +314,7 @@ async def stream_pipeline(
         "prior_sql_tables": _prior_sql_tables,
         "is_refinement": bool(_prior_sql) and not bool(kwargs.get("is_retry")),
         "prior_execution_context": kwargs.get("prior_execution_context") or None,
+        "prior_context_window": kwargs.get("prior_context_window") or None,
     }
 
     from app.services.agents.helpers import MultiSectionStreamer, SectionStreamer

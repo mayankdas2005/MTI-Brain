@@ -937,9 +937,6 @@ export function Sidebar({ forceExpanded = false, forceCollapsed = false }: { for
                   </button>
                 )}
               </div>
-              <div className="px-3 py-1">
-                <div className="border-t border-sidebar-border" />
-              </div>
             </>
           );
         })()}

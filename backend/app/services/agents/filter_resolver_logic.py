@@ -63,13 +63,15 @@ def resolve_to_patterns(
 
     Returns (patterns, score):
       score == 100, len == 1  -> exact alias/vocabulary match; caller uses operator '='
-      score < 100             -> fuzzy/substring patterns; caller uses operator 'ILIKE' (-> ~*)
+      score < 100             -> fuzzy/substring candidates; the caller (filter_resolver)
+                                 only emits ILIKE for free-text columns and never for
+                                 categorical/code columns (validator blocks the latter)
       empty list              -> no match found
 
     Tiers (in order):
       1. Alias exact (100)   — human label -> DB code via value_aliases
       2. Exact vocab (100)   — case-insensitive equality against filter_values
-      3. Substring (65)      — user keyword embedded inside a DB code -> ~* 'KEYWORD'
+      3. Substring (65)      — user keyword embedded inside a DB code (free-text only)
       4. Segment fuzzy (≥80) — WRatio(user_value, segment) from _extract_segments pool
       5. Full-code WRatio (70-84) — fallback on raw codes
     """
@@ -168,9 +170,9 @@ def resolve_tier1_combined(
 
     # Substring check: user value appears literally inside a stored value.
     # Catches short qualifiers embedded in compound codes (e.g. "operating" -> "GR_US_INC_OPERATING_1").
-    # Return the user's keyword (uppercased) — NOT the specific matched code — so the SQL generator
-    # emits ~* 'OPERATING' (matches all operating accounts) rather than ~* 'GR_AE_OPERATING_1'
-    # (would match only that one code).  The ~* operator is case-insensitive so uppercase is fine.
+    # Returns the user's keyword (uppercased) at low confidence (65). The caller only turns this
+    # into an ILIKE '%KEYWORD%' for FREE-TEXT columns; for categorical/code columns it is treated
+    # as low-confidence (exact/loud) and the validator blocks substring predicates on code columns.
     substring_hits = [v for v in (filter_values or []) if user_lower in str(v).lower()]
     if substring_hits:
         return user_value.upper(), 65.0, []

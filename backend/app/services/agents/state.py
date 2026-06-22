@@ -102,6 +102,7 @@ class AnalyticsState(TypedDict):
     feedback_context: str
     lt_memory_context: str               # long-term memory fetched by lt_memory_retriever node
     preference_summary: dict | None      # structured summary from lt_memory_retriever (counts + items) → saved to message metadata
+    global_instructions: str             # enabled user standing instructions loaded pre-pipeline; injected into synthesis/general_chat/sql_generator etc.
     summary: str                          # short-term session summary
     context_fetch_label: str | None      # deterministic markdown summary from context_fetcher — emitted as synthetic reasoning.delta
 
@@ -131,6 +132,7 @@ class AnalyticsState(TypedDict):
     prior_sql_tables: list[str]         # schema.table FQNs parsed from prior_sql (e.g. ["lpp.counterparty_exposure"])
     is_refinement: bool                 # True for user-initiated refinements (prior_sql from frontend, not is_retry)
     prior_execution_context: dict | None  # structured context from the last analytics turn (read from DB); passed to specialists as non-directive reference
+    prior_context_window: list[dict] | None  # last N analytics turns' structured context (newest first, no SQL); rolling thread-context window passed to specialists
 
     # ── sql_generator intra-turn cache (avoids redundant Neo4j calls on recompile) ──
     _sql_schema_ctx_cache: dict | None  # result of build_schema_context — reused on recompile

@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 _FEEDBACK_STALE_DAYS = 90
 _FEEDBACK_OLD_DAYS = 30
 
+_RRF_K = 60
+
 
 async def save_feedback(
     db: AsyncSession,
@@ -74,6 +76,7 @@ async def save_feedback(
     if existing:
         existing.liked = liked
         existing.comment = comment
+        existing.question_text = question_text or None
         if embedding is not None:
             existing.embedding = embedding
         feedback = existing
@@ -86,6 +89,7 @@ async def save_feedback(
             thread_id=thread_id,
             liked=liked,
             comment=comment,
+            question_text=question_text or None,
             embedding=embedding,
         )
         db.add(feedback)
@@ -129,6 +133,7 @@ async def save_feedback(
     return feedback, langfuse_trace_id, pattern_id, neo4j_context
 
 
+# question_text is now stored on the row — no JOIN to mti_brain_message needed
 _FIND_THREAD_FEEDBACK_SQL = text("""
     SELECT
         f.id,
@@ -136,10 +141,8 @@ _FIND_THREAD_FEEDBACK_SQL = text("""
         f.comment,
         f.thread_id,
         f.created_at,
-        q.content AS question_text
+        f.question_text
     FROM mti_brain_feedback f
-    LEFT JOIN mti_brain_message m ON m.id = f.message_id
-    LEFT JOIN mti_brain_message q ON q.conversation_id = m.conversation_id AND q.role = 'user'
     WHERE f.thread_id = :thread_id
     ORDER BY f.created_at DESC
     LIMIT :limit
@@ -170,24 +173,63 @@ async def find_thread_feedback(
     ]
 
 
-_FIND_SIMILAR_SQL = text("""
+# ── Hybrid cross-thread search ────────────────────────────────────────────────
+
+_FIND_SIMILAR_VECTOR_SQL = text("""
     SELECT
         f.id,
         f.liked,
         f.comment,
         f.thread_id,
         f.created_at,
-        q.content AS question_text,
-        1 - (f.embedding <=> CAST(:embedding AS vector)) AS similarity
+        f.question_text,
+        1 - (f.embedding <=> CAST(:embedding AS vector)) AS score
     FROM mti_brain_feedback f
-    LEFT JOIN mti_brain_message m ON m.id = f.message_id
-    LEFT JOIN mti_brain_message q ON q.conversation_id = m.conversation_id AND q.role = 'user'
     WHERE f.embedding IS NOT NULL
       AND f.thread_id != :current_thread_id
       AND 1 - (f.embedding <=> CAST(:embedding AS vector)) >= :min_similarity
-    ORDER BY similarity DESC
+    ORDER BY score DESC
     LIMIT :limit
 """)
+
+_FIND_SIMILAR_FTS_SQL = text("""
+    SELECT
+        f.id,
+        f.liked,
+        f.comment,
+        f.thread_id,
+        f.created_at,
+        f.question_text,
+        ts_rank_cd(f.search_vector, websearch_to_tsquery('english', :query)) AS score
+    FROM mti_brain_feedback f
+    WHERE f.search_vector IS NOT NULL
+      AND f.thread_id != :current_thread_id
+      AND f.search_vector @@ websearch_to_tsquery('english', :query)
+    ORDER BY score DESC
+    LIMIT :limit
+""")
+
+
+def _rrf_merge(
+    ranked_lists: list[list[dict]],
+    k: int = _RRF_K,
+    top_n: int = 5,
+) -> list[dict]:
+    """Reciprocal Rank Fusion over N ranked lists keyed by feedback row id."""
+    scores: dict[str, float] = {}
+    by_key: dict[str, dict] = {}
+    for ranked in ranked_lists:
+        for rank, row in enumerate(ranked):
+            key = row["id"]
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+            by_key.setdefault(key, row)
+    ranked_keys = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    result = []
+    for key, score in ranked_keys[:top_n]:
+        row = dict(by_key[key])
+        row["_rrf_score"] = score
+        result.append(row)
+    return result
 
 
 async def find_similar_feedback(
@@ -195,36 +237,80 @@ async def find_similar_feedback(
     question: str,
     current_thread_id: uuid.UUID,
     limit: int = 5,
-    min_similarity: float = 0.75,
+    min_similarity: float = 0.60,
 ) -> list[dict]:
-    """Find feedback from OTHER threads with questions semantically similar to the current one.
+    """Find feedback from OTHER threads matching the current question.
 
-    Current thread is excluded — find_thread_feedback already covers it completely.
+    Hybrid: vector cosine similarity + FTS over question_text and comment,
+    merged via Reciprocal Rank Fusion. Both legs are optional — if one fails
+    or returns nothing the other still contributes results.
     """
+    ranked_lists: list[list[dict]] = []
+
+    # Vector leg
     embedding = await embed_question(question)
-    if embedding is None:
+    if embedding is not None:
+        try:
+            vec_result = await db.execute(
+                _FIND_SIMILAR_VECTOR_SQL,
+                {
+                    "embedding": str(embedding),
+                    "current_thread_id": str(current_thread_id),
+                    "limit": limit * 2,
+                    "min_similarity": min_similarity,
+                },
+            )
+            vec_rows = [
+                {
+                    "id": str(r.id),
+                    "liked": r.liked,
+                    "comment": r.comment,
+                    "thread_id": str(r.thread_id),
+                    "created_at": r.created_at,
+                    "question_text": (r.question_text or "")[:200],
+                    "similarity": round(float(r.score), 3),
+                }
+                for r in vec_result.fetchall()
+            ]
+            if vec_rows:
+                ranked_lists.append(vec_rows)
+        except Exception as exc:
+            logger.warning("find_similar_feedback | vector_leg_failed | err={}: {}", type(exc).__name__, exc)
+
+    # FTS leg — searches both question_text and comment via search_vector
+    try:
+        fts_result = await db.execute(
+            _FIND_SIMILAR_FTS_SQL,
+            {
+                "query": question,
+                "current_thread_id": str(current_thread_id),
+                "limit": limit * 2,
+            },
+        )
+        fts_rows = [
+            {
+                "id": str(r.id),
+                "liked": r.liked,
+                "comment": r.comment,
+                "thread_id": str(r.thread_id),
+                "created_at": r.created_at,
+                "question_text": (r.question_text or "")[:200],
+                "similarity": None,
+            }
+            for r in fts_result.fetchall()
+        ]
+        if fts_rows:
+            ranked_lists.append(fts_rows)
+    except Exception as exc:
+        logger.warning("find_similar_feedback | fts_leg_failed | err={}: {}", type(exc).__name__, exc)
+
+    if not ranked_lists:
         return []
-    result = await db.execute(
-        _FIND_SIMILAR_SQL,
-        {
-            "embedding": str(embedding),
-            "current_thread_id": str(current_thread_id),
-            "limit": limit,
-            "min_similarity": min_similarity,
-        },
-    )
+
+    merged = _rrf_merge(ranked_lists, top_n=limit)
     return [
-        {
-            "id": str(row.id),
-            "liked": row.liked,
-            "comment": row.comment,
-            "thread_id": str(row.thread_id),
-            "created_at": row.created_at,
-            "question_text": (row.question_text or "")[:200],
-            "similarity": round(float(row.similarity), 3),
-            "source": "similar",
-        }
-        for row in result.fetchall()
+        {**row, "source": "similar"}
+        for row in merged
     ]
 
 

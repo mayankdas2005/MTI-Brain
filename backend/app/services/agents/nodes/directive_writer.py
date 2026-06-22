@@ -325,7 +325,9 @@ async def _detect_schema_gaps(state: dict, config: RunnableConfig) -> str:
             reasoning_directive=reasoning,
         )
         from app.services.agents.helpers import format_prior_context_block
-        _prior_ctx_block = format_prior_context_block(state.get("prior_execution_context"))
+        _prior_ctx_block = format_prior_context_block(
+            state.get("prior_context_window") or state.get("prior_execution_context")
+        )
         if _prior_ctx_block:
             prompt[0].content = _prior_ctx_block + "\n" + prompt[0].content
 

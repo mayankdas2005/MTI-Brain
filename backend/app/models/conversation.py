@@ -285,8 +285,12 @@ class MTIBrainFeedback(Base):
         Boolean, nullable=True
     )  # true=like, false=dislike
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # pgvector embedding of question + feedback for similarity search
+    # Denormalised question text — avoids JOIN at retrieval time; populated on save
+    question_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # pgvector embedding of question for vector similarity search
     embedding = mapped_column(Vector(1536), nullable=True)
+    # tsvector over question_text + comment for FTS; maintained by DB trigger
+    search_vector = mapped_column(TSVECTOR, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -298,6 +302,7 @@ class MTIBrainFeedback(Base):
         Index("ix_mti_brain_feedback_message", "message_id"),
         Index("ix_mti_brain_feedback_created", "created_at"),
         Index("ix_mti_brain_feedback_message_created", "message_id", "created_at"),
+        Index("idx_mti_brain_feedback_fts", "search_vector", postgresql_using="gin"),
     )
 
 
