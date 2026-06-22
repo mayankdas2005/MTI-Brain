@@ -637,6 +637,84 @@ def _build_concept_mappings_section(concept_mappings: dict | None) -> str:
     return "\n".join(lines)
 
 
+def format_prior_context_block(prior_ctx: dict | None) -> str:
+    """Format prior execution context into a compact factual block for LLM prompts.
+
+    Returns empty string if prior_ctx is None or empty.
+    The block is non-directive — agents decide what is relevant.
+    """
+    if not prior_ctx:
+        return ""
+
+    question = prior_ctx.get("question", "")
+    tables = prior_ctx.get("anchor_tables") or []
+    filters = prior_ctx.get("filters") or []
+    measures = prior_ctx.get("measures") or []
+    dimensions = prior_ctx.get("dimensions") or []
+    time_filter = prior_ctx.get("time_filter")
+    temporal_grains = prior_ctx.get("temporal_grains") or []
+    measure_summary = prior_ctx.get("measure_summary") or ""
+    dimension_summary = prior_ctx.get("dimension_summary") or ""
+
+    # Flatten filters from SemanticIR (list of dicts with table_fqn, column_name, operator, values)
+    filter_parts = []
+    for f in filters:
+        tbl = f.get("table_fqn", "")
+        col = f.get("column_name", "")
+        op = f.get("operator", "=")
+        vals = f.get("values") or []
+        val_str = ", ".join(str(v) for v in vals) if vals else f.get("raw_user_value") or ""
+        if col:
+            prefix = f"{tbl}." if tbl else ""
+            filter_parts.append(f"{prefix}{col} {op} {val_str}")
+    if time_filter:
+        tf_col = time_filter.get("column_name") or time_filter.get("column") or ""
+        tf_range = time_filter.get("range") or time_filter.get("period") or ""
+        if tf_col and tf_range:
+            filter_parts.append(f"time: {tf_col} → {tf_range}")
+        elif tf_range:
+            filter_parts.append(f"period: {tf_range}")
+    filter_line = " | ".join(filter_parts) if filter_parts else "(none)"
+
+    # Flatten measures from SemanticIR
+    measure_parts = []
+    for m in measures:
+        agg = m.get("aggregation") or ""
+        tbl = m.get("table_fqn", "")
+        col = m.get("column_name", "")
+        alias = m.get("alias", "")
+        if agg and col:
+            measure_parts.append(f"{agg}({tbl}.{col}) → {alias}" if alias else f"{agg}({tbl}.{col})")
+        elif col:
+            measure_parts.append(f"{tbl}.{col}")
+    if not measure_parts and measure_summary:
+        measure_line = measure_summary[:200]
+    else:
+        measure_line = " | ".join(measure_parts) if measure_parts else "(none)"
+
+    # Flatten dimensions from SemanticIR
+    dim_parts = [d.get("column_name", "") for d in dimensions if d.get("column_name")]
+    if not dim_parts and dimension_summary:
+        dim_line = dimension_summary[:200]
+    else:
+        dim_line = ", ".join(dim_parts) if dim_parts else "(none)"
+
+    # Tables
+    tables_line = ", ".join(tables) if tables else "(none)"
+
+    # Temporal grains
+    grain_suffix = f" (grain: {', '.join(temporal_grains)})" if temporal_grains else ""
+
+    return (
+        "PRIOR TURN CONTEXT (reference only — use your judgment on relevance):\n"
+        f"Prior question: \"{question}\"\n"
+        f"Tables: {tables_line}\n"
+        f"Filters: {filter_line}\n"
+        f"Measures: {measure_line}\n"
+        f"Dimensions: {dim_line}{grain_suffix}\n"
+    )
+
+
 def build_mission_context(state: dict, role: str, feeds: str) -> str:
     """Return a MISSION block prepended to any LLM node's prompt.
 

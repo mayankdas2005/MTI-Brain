@@ -19,8 +19,8 @@ async def clarification(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     semantic_context = state.get("semantic_context") or {}
     session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
-    recent_msgs = _format_recent_messages(state.get("messages", []))
-    conversation_context = session_summary if session_summary else recent_msgs
+    # Use DB-loaded conversation_history (bypasses checkpoint messages)
+    conversation_context = state.get("conversation_history") or session_summary or _format_recent_messages(state.get("messages", []))
 
     conversation_section = (
         f"CONVERSATION CONTEXT:\n<conversation_context>{conversation_context}</conversation_context>"

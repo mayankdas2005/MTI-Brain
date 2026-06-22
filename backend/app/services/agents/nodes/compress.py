@@ -12,7 +12,6 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents import redis_client
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_tag
 from app.services.agents.prompts import COMPRESS_PROMPT
@@ -48,7 +47,7 @@ async def compress(state: AnalyticsState, config: RunnableConfig) -> dict:
         return {}
 
     if summary:
-        redis_client.set_session_summary(thread_id, summary, ttl=1800)
+        logger.info("compress | summary generated | thread={} | len={}", thread_id, len(summary))
 
     logger.info("compress DONE | thread={} | removed={} | summary_len={}",
                 thread_id, len(to_summarize), len(summary))

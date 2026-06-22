@@ -22,7 +22,6 @@ from app.core.logger import logger
 from app.core.retry import retry_async, retry_sync
 from app.services.agents import neo4j_client
 from app.services.agents.helpers import merge_neo4j_raw_graph
-from app.services.agents.memory import short_term
 from app.services.agents.state import AnalyticsState
 from . import helpers, table_discovery, column_loader, cross_domain
 
@@ -97,7 +96,8 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
 
     try:
         # ── Short-term memory + follow-up detection ────────────────────────────
-        session_summary = short_term.get_session_summary(state["thread_id"]) or state.get("summary") or ""
+        _conv_history = state.get("conversation_history") or ""
+        session_summary = _conv_history if _conv_history and _conv_history != "(no prior context)" else (state.get("summary") or "")
         raw_question    = state["question"]
         is_followup     = helpers.is_followup_question(raw_question, bool(session_summary))
 

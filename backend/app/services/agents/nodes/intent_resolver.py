@@ -272,8 +272,7 @@ def _build_prompt(state: AnalyticsState) -> list:
     schema_candidates_text = _build_schema_candidates_text(semantic_context)
 
     session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
-    recent_msgs = _format_recent_messages(state.get("messages", []))
-    conversation_context = session_summary if session_summary else recent_msgs
+    conversation_context = state.get("conversation_history") or session_summary or _format_recent_messages(state.get("messages", []))
 
     execution_error = state.get("execution_error")
     prior_sql = state.get("prior_sql")

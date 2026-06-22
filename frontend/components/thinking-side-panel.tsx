@@ -23,12 +23,32 @@ export function ThinkingSidePanel() {
   const isStreaming = useThreadStore((s) => s.isStreaming);
   const currentMessages = useThreadStore((s) => s.currentMessages);
   const streamingMessages = useThreadStore((s) => s.streamingMessages);
+  const currentThreadId = useThreadStore((s) => s.currentThreadId);
+  const streamingThreadId = useThreadStore((s) => s.streamingThreadId);
 
-  // Resolve the message to display
-  const allMessages = streamingMessages.length > 0 ? streamingMessages : currentMessages;
+  // Resolve the message to display.
+  // Always search currentMessages first (the displayed thread), then fall back
+  // to streamingMessages only when the current thread IS the streaming thread.
+  // This prevents cross-thread bleed where streamingMessages from Thread B are
+  // shown while the user is viewing Thread A.
+  const onStreamingThread = currentThreadId === streamingThreadId;
   const message: Message | undefined = panelMessageId
-    ? allMessages.find((m) => m.id === panelMessageId)
+    ? (currentMessages.find((m) => m.id === panelMessageId) ??
+       (onStreamingThread ? streamingMessages.find((m) => m.id === panelMessageId) : undefined))
     : undefined;
+
+  // Auto-close the panel when the user navigates to a different thread.
+  // currentMessages changes whenever setCurrentThread fires. We only allow
+  // streamingMessages as a valid source when still on the streaming thread —
+  // otherwise leaving a streaming thread would keep the panel open because
+  // streamingMessages still holds the in-flight message.
+  useEffect(() => {
+    if (!panelOpen || !panelMessageId) return;
+    const inCurrent = currentMessages.some((m) => m.id === panelMessageId);
+    const inStreaming = onStreamingThread && streamingMessages.some((m) => m.id === panelMessageId);
+    if (!inCurrent && !inStreaming) closePanel();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMessages]);
 
   // Drag resize state
   const panelRef = useRef<HTMLDivElement>(null);
@@ -87,8 +107,6 @@ export function ThinkingSidePanel() {
   if (thinkingPlacement !== 'sidebar' || !panelOpen || !message) {
     return null;
   }
-
-  const tribalFacts = message.metadata_?.tribal_facts ?? [];
 
   const steps = message.streamingSteps;
   const hasSteps = !!steps && steps.length > 0;
@@ -174,23 +192,6 @@ export function ThinkingSidePanel() {
           <X className="w-4 h-4" />
         </button>
       </div>
-
-      {/* Tribal Knowledge section — pinned above pipeline steps when deep analysis returned facts */}
-      {tribalFacts.length > 0 && (
-        <div className="px-5 pt-4 pb-3 border-b border-border/40 shrink-0">
-          <p className="text-[11px] font-semibold text-foreground/40 uppercase tracking-wider mb-3">
-            Tribal Knowledge
-          </p>
-          <div className="space-y-3">
-            {tribalFacts.map((fact, i) => (
-              <div key={i}>
-                <p className="text-xs font-semibold text-foreground/75 mb-0.5 truncate">{fact.label}</p>
-                <p className="text-xs text-foreground/50 leading-relaxed line-clamp-3">{fact.value}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Content */}
       <div

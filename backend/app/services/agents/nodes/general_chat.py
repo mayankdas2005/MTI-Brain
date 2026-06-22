@@ -18,9 +18,11 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
     semantic_context = state.get("semantic_context") or {}
     memory_context = semantic_context.get("memory_context") or ""
 
+    # Use DB-loaded conversation_history (bypasses checkpoint messages)
+    conversation_context = state.get("conversation_history") or session_summary or ""
     conversation_section = (
-        f"CONVERSATION CONTEXT:\n<conversation_context>{session_summary}</conversation_context>"
-        if session_summary else ""
+        f"CONVERSATION CONTEXT:\n<conversation_context>{conversation_context}</conversation_context>"
+        if conversation_context and conversation_context != "(no prior context)" else ""
     )
     feedback_section = (
         f"USER PREFERENCES (apply silently):\n<feedback_context>{feedback_context}</feedback_context>"

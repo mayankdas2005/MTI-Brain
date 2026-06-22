@@ -27,6 +27,7 @@ from typing_extensions import TypedDict
 class AnalyticsState(TypedDict):
     # ── Core conversation ────────────────────────────────────────────────────
     messages: Annotated[list, add_messages]
+    conversation_history: str             # pre-formatted "User: ...\nAssistant: ..." from DB (bypasses checkpoint messages for LLM context)
     user_id: str
     thread_id: str
     persona: str                          # executive | analyst | manager — passed in from HTTP, NOT re-detected
@@ -129,6 +130,7 @@ class AnalyticsState(TypedDict):
     prior_question: str | None          # original question text looked up from DB; used by context_fetcher to find the right tables for refinements
     prior_sql_tables: list[str]         # schema.table FQNs parsed from prior_sql (e.g. ["lpp.counterparty_exposure"])
     is_refinement: bool                 # True for user-initiated refinements (prior_sql from frontend, not is_retry)
+    prior_execution_context: dict | None  # structured context from the last analytics turn (read from DB); passed to specialists as non-directive reference
 
     # ── sql_generator intra-turn cache (avoids redundant Neo4j calls on recompile) ──
     _sql_schema_ctx_cache: dict | None  # result of build_schema_context — reused on recompile

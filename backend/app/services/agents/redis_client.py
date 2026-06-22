@@ -79,10 +79,6 @@ def filter_vals_cache_key(table_fqn: str, col_name: str) -> str:
     return f"filter_vals:{table_fqn}:{col_name}"
 
 
-def session_summary_key(thread_id: str) -> str:
-    return f"session_summary:{thread_id}"
-
-
 # ── Breaker-protected inner calls ─────────────────────────────────────────────
 # Defined at module level so @redis_breaker is applied once, not per call.
 
@@ -209,16 +205,6 @@ def get_filter_values(table_fqn: str, col_name: str) -> list[str] | None:
 def set_filter_values(table_fqn: str, col_name: str, values: list[str], ttl: int = 86400) -> None:
     key = filter_vals_cache_key(table_fqn, col_name)
     cache_set(key, json.dumps(values), ttl)
-
-
-def get_session_summary(thread_id: str) -> str | None:
-    key = session_summary_key(thread_id)
-    return cache_get(key)
-
-
-def set_session_summary(thread_id: str, summary: str, ttl: int = 1800) -> None:
-    key = session_summary_key(thread_id)
-    cache_set(key, summary, ttl)
 
 
 def get_json(key: str) -> object | None:

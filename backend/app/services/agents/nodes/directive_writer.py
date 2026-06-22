@@ -324,6 +324,10 @@ async def _detect_schema_gaps(state: dict, config: RunnableConfig) -> str:
             query_plan_section=query_plan_section,
             reasoning_directive=reasoning,
         )
+        from app.services.agents.helpers import format_prior_context_block
+        _prior_ctx_block = format_prior_context_block(state.get("prior_execution_context"))
+        if _prior_ctx_block:
+            prompt[0].content = _prior_ctx_block + "\n" + prompt[0].content
 
         @llm_breaker
         async def _call():

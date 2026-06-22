@@ -157,6 +157,49 @@ def _build_graph_context_snapshot(state: AnalyticsState) -> dict:
     }
 
 
+def _build_prior_execution_context(state: dict) -> dict | None:
+    """Build structured prior execution context from final pipeline state.
+
+    Persisted in assistant message metadata_ for use in subsequent turns.
+    Returns None if this wasn't an analytics turn with results.
+
+    Uses only fields present in _STATE_KEYS (accumulated during streaming).
+    """
+    if state.get("question_type") != "analytics":
+        return None
+    if not state.get("sql_list"):
+        return None
+
+    ir_list = state.get("semantic_ir_list") or []
+    first_ir = ir_list[0] if ir_list else {}
+
+    anchor_tables = (
+        first_ir.get("anchor_tables")
+        or state.get("anchor_tables_resolved")
+        or []
+    )
+
+    # Structured fields from SemanticIR (populated by query_compiler / filter_resolver)
+    measures = first_ir.get("measures") or []
+    dimensions = first_ir.get("dimensions") or []
+    filters = first_ir.get("filters") or []
+    time_filter = first_ir.get("time_filter")
+    temporal_grains = first_ir.get("temporal_grains") or []
+
+    return {
+        "question": state.get("question", ""),
+        "anchor_tables": list(anchor_tables),
+        "filters": filters,
+        "measures": measures,
+        "dimensions": dimensions,
+        "time_filter": time_filter,
+        "temporal_grains": temporal_grains,
+        "filter_directive": state.get("filter_directive") or "",
+        "measure_summary": state.get("_measure_specialist_output") or "",
+        "dimension_summary": state.get("_dimension_specialist_output") or "",
+    }
+
+
 async def stream_pipeline(
     question: str,
     thread_id: str = "default",
@@ -213,6 +256,7 @@ async def stream_pipeline(
 
     initial: AnalyticsState = {
         "messages": [],
+        "conversation_history": kwargs.get("conversation_history") or "(no prior context)",
         "user_id": user_id or "",
         "thread_id": thread_id,
         "persona": persona or "analyst",
@@ -268,6 +312,7 @@ async def stream_pipeline(
         "prior_question": kwargs.get("prior_question") or None,
         "prior_sql_tables": _prior_sql_tables,
         "is_refinement": bool(_prior_sql) and not bool(kwargs.get("is_retry")),
+        "prior_execution_context": kwargs.get("prior_execution_context") or None,
     }
 
     from app.services.agents.helpers import MultiSectionStreamer, SectionStreamer
@@ -470,13 +515,24 @@ async def stream_pipeline(
                 elif node == N_TRIBAL_RETRIEVAL and isinstance(output, dict):
                     facts = output.get("tribal_facts") or []
                     if facts:
+                        strong_facts = [f for f in facts if f.get("score", 0) >= 0.70]
+                        display_facts = strong_facts or facts
+                        def _relevance(score: float) -> str:
+                            pct = round(score * 100)
+                            return f"{pct}% · {'top match' if pct >= 90 else 'strong'}"
                         lines = [
-                            f"**{f.get('label', 'unknown')}**\n{str(f.get('value', ''))[:200].strip()}…"
-                            for f in facts
+                            "- **{}**{}".format(
+                                f.get("label", "unknown"),
+                                f"  `{_relevance(f['score'])}`" if f.get("score") is not None else "",
+                            )
+                            for f in display_facts
                         ]
+                        dropped = len(facts) - len(display_facts)
+                        suffix = f"\n\n*{dropped} low-relevance document(s) excluded*" if dropped else ""
                         _tribal_label = (
-                            f"**Tribal Knowledge:** {len(facts)} document(s) retrieved\n\n"
-                            + "\n\n---\n\n".join(lines)
+                            f"Retrieved **{len(display_facts)}** high-relevance document(s)\n\n"
+                            + "\n".join(lines)
+                            + suffix
                         )
                         yield {"event": "reasoning.delta", "data": {"node": node, "text": _tribal_label}}
                         # Dedicated event so the frontend can update the thinking panel
@@ -688,6 +744,7 @@ async def stream_pipeline(
                     "temporal_projection": state.get("temporal_projection"),
                     "deep_analysis":      state.get("deep_analysis", False),
                     "tribal_facts":       state.get("tribal_facts") or [],
+                    "prior_execution_context": _build_prior_execution_context(state),
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

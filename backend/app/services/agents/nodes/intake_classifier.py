@@ -202,9 +202,7 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
     memory_task = asyncio.create_task(lt_memory_retriever(state, config))
 
     ctx = _get_classifier_context()
-    conversation_context = _format_conversation(
-        state.get("messages", []), state.get("summary") or ""
-    )
+    conversation_context = state.get("conversation_history") or "(no prior context)"
 
     prompt = INTAKE_CLASSIFY_PROMPT.format_messages(
         question=question,

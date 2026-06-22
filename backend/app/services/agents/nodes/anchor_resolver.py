@@ -356,7 +356,9 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         role="Select the anchor tables from Neo4j candidates that are semantically central to this query",
         feeds="schema_enricher (column loading for selected tables), all 3 specialists (entity context)",
     )
-    anchor_prompt[0].content = _mission + "\n\n" + anchor_prompt[0].content
+    from app.services.agents.helpers import format_prior_context_block
+    _prior_ctx_block = format_prior_context_block(state.get("prior_execution_context"))
+    anchor_prompt[0].content = _mission + "\n\n" + (_prior_ctx_block + "\n" if _prior_ctx_block else "") + anchor_prompt[0].content
 
     from app.services.agents.prompts import QUERY_PLANNER_PROMPT
     available_tables_lines = [

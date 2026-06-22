@@ -239,7 +239,7 @@ def _build_deep_analysis_sections(
     if tribal_facts:
         citation_lines = [
             f"- **{f.get('label', 'Document')}**"
-            for f in tribal_facts[:6]
+            for f in tribal_facts[:8]
         ]
         parts.append(
             "\n\n<details>\n<summary>Knowledge Sources</summary>\n\n"
@@ -359,21 +359,37 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     )
 
     tribal_facts = state.get("tribal_facts") or []
-    if tribal_facts and state.get("deep_analysis"):
+    query_type = state.get("query_type") or ""
+
+    # Fix 1: gate by query_type — lookups are pure data retrieval; tribal injection causes hallucination
+    inject_tribal = bool(tribal_facts) and state.get("deep_analysis") and query_type not in ("lookup",)
+
+    if inject_tribal:
+        # Fix 2: score threshold — only inject facts with sufficient retrieval confidence
+        relevant_facts = [f for f in tribal_facts if f.get("score", 1.0) >= 0.70]
         fact_blocks = []
-        for f in tribal_facts[:6]:
+        for f in relevant_facts[:8]:
             label = f.get("label", "Document")
             value = str(f.get("value", "")).strip()
-            fact_blocks.append(f"Document: {label}\n{value[:600]}")
-        tribal_facts_section = (
-            "TRIBAL KNOWLEDGE CONTEXT — WEAVE INTO YOUR NARRATIVE:\n"
-            "The following internal documents were retrieved because they are directly relevant "
-            "to this query. Explicitly reference specific thresholds, commitments, and decisions "
-            "from these documents where they contextualise or challenge the data findings. "
-            "Cite by document name (e.g. 'per Group Treasury Policy', 'per CFO meeting notes of 2026-05-29').\n\n"
-            + "\n\n---\n\n".join(fact_blocks)
-        )
-    elif tribal_facts:
+            fact_blocks.append(f"Document: {label}\n{value[:1500]}")
+        if fact_blocks:
+            # Fix 3: anti-hallucination guardrail — tribal numbers are NOT SQL data
+            tribal_facts_section = (
+                "TRIBAL KNOWLEDGE CONTEXT:\n"
+                "CRITICAL RULE — DATA AUTHORITY: Dollar figures, percentages, and dates in these documents "
+                "are historical reference values from meeting notes, forecasts, and policy memos — they are "
+                "NOT the current SQL query results. The SQL data is the ONLY authoritative source for current "
+                "state. If a tribal document contains a figure that differs from the SQL result, report the SQL "
+                "figure as the current value and cite the tribal figure as a named benchmark or threshold only. "
+                "NEVER substitute a tribal document figure for what the SQL returned.\n\n"
+                "Use these documents for: internal policy thresholds, management commitments, internal targets, "
+                "and analytical framing — not as data answers. Cite by document name "
+                "(e.g. 'per Group Treasury Policy', 'per CFO meeting notes of 2026-05-29').\n\n"
+                + "\n\n---\n\n".join(fact_blocks)
+            )
+        else:
+            tribal_facts_section = ""
+    elif tribal_facts and not state.get("deep_analysis"):
         facts_text = "\n".join(
             f"  [{f.get('type', '')}] {f.get('label', '')} — {f.get('value', '')} (status: {f.get('status', 'active')})"
             for f in tribal_facts

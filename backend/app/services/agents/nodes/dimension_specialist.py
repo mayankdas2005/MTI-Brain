@@ -178,7 +178,9 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         role="Identify grouping dimensions and temporal grain(s) for the query",
         feeds="intent_assembler → directive_writer (dimension_intent, temporal_grains)",
     )
-    prompt[0].content = _mission + "\n\n" + prompt[0].content
+    from app.services.agents.helpers import format_prior_context_block
+    _prior_ctx_block = format_prior_context_block(state.get("prior_execution_context"))
+    prompt[0].content = _mission + "\n\n" + (_prior_ctx_block + "\n" if _prior_ctx_block else "") + prompt[0].content
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

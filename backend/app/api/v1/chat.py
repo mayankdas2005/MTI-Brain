@@ -113,6 +113,8 @@ def _build_sse_generator(
     user_display_name: str = "",
     user_email: str | None = None,
     is_retry: bool = False,
+    prior_execution_context: dict | None = None,
+    conversation_history: str = "(no prior context)",
 ):
     async def _save_assistant_message(save_data: dict) -> None:
         from app.db import async_session_factory
@@ -169,6 +171,7 @@ def _build_sse_generator(
                 "temporal_projection": save_data.get("temporal_projection"),
                 "deep_analysis":      save_data.get("deep_analysis", False),
                 "tribal_facts":       save_data.get("tribal_facts") or [],
+                "prior_execution_context": save_data.get("prior_execution_context"),
             }),
         )
         _conf = save_data.get("confidence")
@@ -250,6 +253,8 @@ def _build_sse_generator(
                 user_email=user_email,
                 user_display_name=user_display_name,
                 is_retry=is_retry,
+                prior_execution_context=prior_execution_context,
+                conversation_history=conversation_history,
             ):
                 event_name = sse_ev["event"]
                 data = sse_ev["data"]
@@ -612,6 +617,35 @@ async def ask_question(
             except Exception:
                 logger.warning("[ask] refinement | prior_question lookup failed | conversation_id={}", body.source_conversation_id)
 
+        # ── Load prior execution context from last analytics assistant message ──
+        prior_execution_context = None
+        try:
+            async with db.begin_nested():
+                from sqlalchemy import select as _select
+                from app.models.conversation import MTIBrainMessage
+                _prior_row = await db.execute(
+                    _select(MTIBrainMessage.metadata_)
+                    .where(MTIBrainMessage.thread_id == thread_id)
+                    .where(MTIBrainMessage.role == "assistant")
+                    .where(MTIBrainMessage.metadata_["question_type"].astext == "data_query")
+                    .order_by(MTIBrainMessage.created_at.desc())
+                    .limit(1)
+                )
+                _prior_meta = _prior_row.scalar_one_or_none()
+                if _prior_meta:
+                    prior_execution_context = _prior_meta.get("prior_execution_context")
+        except Exception:
+            logger.debug("[ask] prior_execution_context lookup failed (non-fatal)")
+
+        # ── Load conversation history from DB (persistent, not Redis) ──
+        conversation_history = "(no prior context)"
+        try:
+            conversation_history = await conv_service.get_conversation_history(
+                db, thread_id, before_conversation_id=None
+            )
+        except Exception:
+            logger.debug("[ask] conversation_history lookup failed (non-fatal)")
+
         save_result = await conv_service.save_message_and_touch(
             db,
             thread_id=thread_id,
@@ -658,6 +692,8 @@ async def ask_question(
         prior_question=prior_question,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
+        prior_execution_context=prior_execution_context,
+        conversation_history=conversation_history,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -733,6 +769,43 @@ async def retry_response(
         elif orig_meta.get("source_conversation_id"):
             user_meta = {"source_conversation_id": str(orig_meta["source_conversation_id"])}
 
+        # ── Load prior execution context for retries (scoped BEFORE the retried msg) ──
+        prior_execution_context = None
+        try:
+            async with db.begin_nested():
+                # Get timestamp of the original user message being retried
+                _user_ts_row = await db.execute(
+                    _select(MTIBrainMessage.created_at)
+                    .where(MTIBrainMessage.conversation_id == body.conversation_id)
+                    .where(MTIBrainMessage.role == "user")
+                    .limit(1)
+                )
+                _user_ts = _user_ts_row.scalar_one_or_none()
+                if _user_ts:
+                    _prior_row = await db.execute(
+                        _select(MTIBrainMessage.metadata_)
+                        .where(MTIBrainMessage.thread_id == thread_id)
+                        .where(MTIBrainMessage.role == "assistant")
+                        .where(MTIBrainMessage.metadata_["question_type"].astext == "data_query")
+                        .where(MTIBrainMessage.created_at < _user_ts)
+                        .order_by(MTIBrainMessage.created_at.desc())
+                        .limit(1)
+                    )
+                    _prior_meta = _prior_row.scalar_one_or_none()
+                    if _prior_meta:
+                        prior_execution_context = _prior_meta.get("prior_execution_context")
+        except Exception:
+            pass
+
+        # ── Load conversation history from DB (before the retried conversation) ──
+        conversation_history = "(no prior context)"
+        try:
+            conversation_history = await conv_service.get_conversation_history(
+                db, thread_id, before_conversation_id=body.conversation_id
+            )
+        except Exception:
+            pass
+
         save_result = await conv_service.save_message_and_touch(
             db,
             thread_id=thread_id,
@@ -765,6 +838,8 @@ async def retry_response(
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
         is_retry=not is_refinement_retry,
+        prior_execution_context=prior_execution_context,
+        conversation_history=conversation_history,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -807,6 +882,45 @@ async def edit_question(
         if body.source_conversation_id:
             user_meta = {"source_conversation_id": str(body.source_conversation_id)}
 
+        # ── Load prior execution context for edits (scoped BEFORE the edited msg) ──
+        prior_execution_context = None
+        try:
+            async with db.begin_nested():
+                from sqlalchemy import select as _select
+                from app.models.conversation import MTIBrainMessage
+                # Get timestamp of the original user message being edited
+                _user_ts_row = await db.execute(
+                    _select(MTIBrainMessage.created_at)
+                    .where(MTIBrainMessage.conversation_id == body.conversation_id)
+                    .where(MTIBrainMessage.role == "user")
+                    .limit(1)
+                )
+                _user_ts = _user_ts_row.scalar_one_or_none()
+                if _user_ts:
+                    _prior_row = await db.execute(
+                        _select(MTIBrainMessage.metadata_)
+                        .where(MTIBrainMessage.thread_id == thread_id)
+                        .where(MTIBrainMessage.role == "assistant")
+                        .where(MTIBrainMessage.metadata_["question_type"].astext == "data_query")
+                        .where(MTIBrainMessage.created_at < _user_ts)
+                        .order_by(MTIBrainMessage.created_at.desc())
+                        .limit(1)
+                    )
+                    _prior_meta = _prior_row.scalar_one_or_none()
+                    if _prior_meta:
+                        prior_execution_context = _prior_meta.get("prior_execution_context")
+        except Exception:
+            pass
+
+        # ── Load conversation history from DB (before the edited conversation) ──
+        conversation_history = "(no prior context)"
+        try:
+            conversation_history = await conv_service.get_conversation_history(
+                db, thread_id, before_conversation_id=body.conversation_id
+            )
+        except Exception:
+            pass
+
         save_result = await conv_service.save_message_and_touch(
             db,
             thread_id=thread_id,
@@ -838,6 +952,8 @@ async def edit_question(
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
         is_retry=True,
+        prior_execution_context=prior_execution_context,
+        conversation_history=conversation_history,
     )
     return EventSourceResponse(generator(), ping=15)
 

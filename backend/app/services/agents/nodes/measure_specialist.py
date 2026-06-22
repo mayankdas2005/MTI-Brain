@@ -185,7 +185,9 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
         role="Identify all metrics and aggregation expressions the query requires from schema columns",
         feeds="intent_assembler → directive_writer (measure_intent)",
     )
-    prompt[0].content = _mission + "\n\n" + prompt[0].content
+    from app.services.agents.helpers import format_prior_context_block
+    _prior_ctx_block = format_prior_context_block(state.get("prior_execution_context"))
+    prompt[0].content = _mission + "\n\n" + (_prior_ctx_block + "\n" if _prior_ctx_block else "") + prompt[0].content
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
