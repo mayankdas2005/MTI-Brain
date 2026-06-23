@@ -416,9 +416,35 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         len(_directive_summary_lines),
     )
 
+    import re as _re
+
+    def _extract_col_tokens(text: str) -> list[str]:
+        tokens = _re.findall(r'\b[a-z][a-z0-9_]{2,}\b', text or "")
+        _stop = {"the", "for", "and", "not", "use", "sum", "avg", "max", "min", "count", "with",
+                 "from", "where", "join", "group", "order", "null", "case", "when", "then", "else",
+                 "are", "all", "any", "has", "its", "was", "per", "this", "that", "each", "into",
+                 "only", "over", "also", "most", "last", "base", "data", "type", "name", "date",
+                 "true", "false", "none", "both", "via", "used", "include", "such"}
+        return list(dict.fromkeys(t for t in tokens if t not in _stop))[:8]
+
+    _tf_period = ""
+    for _tfl in instructions_text.splitlines():
+        if _tfl.strip().upper().startswith("TIME_FILTER:"):
+            _tf_period = _tfl.split(":", 1)[1].strip()
+            break
+
+    _intent_fingerprint: dict = {
+        "anchor_tables": sorted(state.get("anchor_tables_resolved") or []),
+        "measures":      _extract_col_tokens(state.get("_measure_specialist_output") or ""),
+        "filters":       _extract_col_tokens(state.get("filter_directive_hint") or ""),
+        "dimensions":    _extract_col_tokens(state.get("_dimension_specialist_output") or ""),
+        "time_period":   _tf_period,
+    }
+
     return {
         "intent_directive": directive,
         "intent_directive_instructions": instructions_text,
         "intent_directive_context": full_context_text,
         "_directive_summary": directive_summary,
+        "intent_fingerprint": _intent_fingerprint,
     }

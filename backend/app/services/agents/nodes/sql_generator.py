@@ -234,7 +234,15 @@ async def generate_sql_llm(
     schema_reference = _build_schema_reference(schema_ctx)
     unresolved_joins_section = _build_unresolved_joins_section(unresolved_pairs, col_lookup)
     feedback_section = _build_feedback_section(state)
-    query_patterns_section = _build_query_patterns_section(query_patterns, pattern_matched, pattern_name)
+    # Force pattern to schema/join-path only when prior SQL exists AND the current question
+    # is related to the prior one (prior_execution_context set to None by B_prior for unrelated turns).
+    _force_hint = bool(
+        (state.get("prior_sql") or "").strip()
+        and state.get("prior_execution_context")
+    )
+    query_patterns_section = _build_query_patterns_section(
+        query_patterns, pattern_matched, pattern_name, force_hint=_force_hint
+    )
     prior_sql_section = _build_prior_sql_section(state)
     _gi = state.get("global_instructions") or ""
     instructions_section = (
@@ -1525,7 +1533,8 @@ def _build_low_confidence_section(state: AnalyticsState) -> str:
 
 
 def _build_feedback_section(state: AnalyticsState) -> str:
-    fb = state.get("feedback_context") or ""
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    fb = _fb_for_node(state.get("feedback_context") or [], "sql")
     if not fb:
         return ""
     return (
@@ -1538,6 +1547,7 @@ def _build_query_patterns_section(
     query_patterns: list,
     pattern_matched: bool = False,
     pattern_name: str | None = None,
+    force_hint: bool = False,
 ) -> str:
     if not query_patterns:
         return ""
@@ -1553,6 +1563,33 @@ def _build_query_patterns_section(
 
     if not (outline or join_outline or sql_text):
         return ""
+
+    # Continuation conflict resolution: when prior_sql exists AND the current question is
+    # related to the prior one (prior_execution_context non-None after B_prior similarity
+    # filter), inject only join paths + schema metadata — the prior SQL defines CTE structure.
+    # This prevents two competing structural SQL references reaching the LLM simultaneously.
+    if force_hint:
+        lines = [
+            "QUERY PATTERN SCHEMA REFERENCE (continuing prior question — CTE structure from PRIOR SQL below):"
+        ]
+        if question_text:
+            lines.append(f"  Question:   \"{question_text}\"")
+        lines.append(f"  Tables:     {tables}")
+        if join_outline:
+            lines.append(f"  Join paths: {join_outline}")
+        if filter_summary:
+            lines.append(f"  Filters:    {filter_summary}")
+        _msummary = top.get("measure_summary") or ""
+        _dsummary = top.get("dimension_summary") or ""
+        if _msummary:
+            lines.append(f"  Measures:   {_msummary}")
+        if _dsummary:
+            lines.append(f"  Dimensions: {_dsummary}")
+        lines.append(
+            "Use the join paths and column names above to satisfy the new requirements. "
+            "CTE naming and structure come from the PRIOR QUESTION SQL — do not rename existing CTEs."
+        )
+        return "\n".join(lines)
 
     # Compute tier inline using raw_score + occurrence guard (mirrors context_fetcher logic).
     raw_score  = top.get("raw_score", 0)
@@ -1644,7 +1681,16 @@ def _build_prior_sql_section(state: AnalyticsState) -> str:
             "copy them from the prior SQL — no changes requested.\n"
         )
 
-    return ""
+    # Continuation — prior SQL as structural reference for related questions.
+    return (
+        "PRIOR QUESTION SQL — structural reference:\n"
+        "If the current question extends or drills into the prior one:\n"
+        "  - Preserve CTE names (e.g. cb_anchor, fx_latest, base_data) where the logic carries forward\n"
+        "  - Modify CTE contents (add JOINs, columns, change GROUP BY) as needed for new requirements\n"
+        "  - Do not rename existing CTEs; add new ones if a separate step is needed\n"
+        "If the current question uses different tables or is entirely unrelated, ignore this section.\n\n"
+        f"<prior_sql>\n{prior_sql}\n</prior_sql>\n"
+    )
 
 
 def _format_sql(sql: str) -> str:

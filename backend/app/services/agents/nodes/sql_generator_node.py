@@ -19,6 +19,32 @@ from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
 
+def _try_pattern_cache(state: AnalyticsState) -> str | None:
+    """Return cached sql_text for near-identical questions. None = regenerate via LLM.
+
+    Conditions (ALL must hold):
+    - Pattern tier is 'exact' (Pass 1) or raw_score >= 0.98 (Pass 2 refined)
+    - raw_score >= 0.98 (within 2% of perfect match — same standalone question)
+    - Pattern was stored with repair_count <= 1 and recompile_count == 0
+    - Not a follow-up (follow-ups depend on thread-specific prior context)
+    """
+    semantic_context = state.get("semantic_context") or {}
+    pattern = state.get("_refined_matched_pattern") or semantic_context.get("_matched_pattern")
+    if not pattern:
+        return None
+    if state.get("is_followup"):
+        return None
+    raw_score = pattern.get("raw_score", 0)
+    if raw_score < 0.98:
+        return None
+    if semantic_context.get("_matched_pattern_tier") != "exact" and state.get("_refined_matched_pattern") is None:
+        return None
+    if pattern.get("repair_count", 0) > 1 or pattern.get("recompile_count", 0) > 0:
+        return None
+    sql = (pattern.get("sql_text") or "").strip()
+    return sql if sql else None
+
+
 async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("sql_generator START | thread={}", state["thread_id"])
 
@@ -28,6 +54,20 @@ async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
     if not ir_list:
         logger.warning("sql_generator | no IR list | thread={}", state["thread_id"])
         return {"sql_list": [], "error": "No IR to generate SQL from"}
+
+    _cached_sql = _try_pattern_cache(state)
+    if _cached_sql:
+        _pattern_id = (
+            (state.get("_refined_matched_pattern") or semantic_context.get("_matched_pattern") or {})
+            .get("id", "")
+        )
+        logger.info("sql_generator | pattern_cache_hit=True | pattern_id={}", (_pattern_id or "")[:8])
+        return {
+            "sql_list": [_cached_sql],
+            "prior_sql": _cached_sql,
+            "pattern_cache_hit": True,
+            "semantic_context": semantic_context,
+        }
 
     sql_list: list[str] = []
     _cte_outline: str = ""

@@ -25,6 +25,20 @@ from app.services.agents.prompts import QUERY_PLANNER_PROMPT, REASONING_DIRECTIV
 from app.services.agents.state import AnalyticsState
 
 
+def _build_prior_columns_section(prior_output_columns: list[str]) -> str:
+    if not prior_output_columns:
+        return ""
+    cols_list = "\n".join(f"  - {c}" for c in prior_output_columns)
+    return (
+        "PRIOR QUESTION OUTPUT COLUMNS:\n"
+        f"{cols_list}\n"
+        "If the current question narrows, filters, or extends the prior result:\n"
+        "  Include in output_slots any prior column that is still needed to describe the result.\n"
+        "  Omit prior columns that are irrelevant given the new question's scope.\n"
+        "If the current question is on a different topic or uses different data, ignore this section.\n"
+    )
+
+
 async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("query_planner START | thread={} | question={}", state["thread_id"], state["question"][:80])
 
@@ -38,6 +52,7 @@ async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         available_tables_section="",
         entity_tokens_section="",
+        prior_columns_section=_build_prior_columns_section(state.get("prior_output_columns") or []),
     )
 
     @llm_breaker

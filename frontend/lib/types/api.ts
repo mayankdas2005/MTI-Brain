@@ -254,6 +254,7 @@ export interface EditRequest {
 export interface FeedbackRequest {
   liked: boolean;
   comment?: string;
+  feedback_type?: string;
 }
 
 export interface RenameRequest {

@@ -340,7 +340,8 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     semantic_context = state.get("semantic_context") or {}
     session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
     is_followup = semantic_context.get("is_followup", False)
-    feedback_context = state.get("feedback_context") or ""
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    feedback_context = _fb_for_node(state.get("feedback_context") or [], "answer")
     memory_context = semantic_context.get("memory_context") or ""
     global_instructions = state.get("global_instructions") or ""
 

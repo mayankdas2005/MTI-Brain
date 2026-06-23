@@ -546,29 +546,79 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Collapsible>
           )}
 
-          {/* Reasoning trace - full text the LLM produced, for debugging. */}
-          {message.reasoning && (
-            <Collapsible
-              title="Reasoning trace"
-              icon={ScrollText}
-              actions={
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleCopy(message.reasoning!, 'Reasoning trace');
-                  }}
-                  className="p-1 rounded text-muted-foreground"
-                  aria-label="Copy reasoning trace"
+          {/* Reasoning trace - grouped by node when pipeline_steps available */}
+          {(() => {
+            const stepsWithReasoning = m?.pipeline_steps?.filter((s) => s.reasoning?.trim());
+            if (stepsWithReasoning && stepsWithReasoning.length > 0) {
+              const fullText = stepsWithReasoning
+                .map((s) => `## ${s.message || s.node}\n\n${s.reasoning}`)
+                .join('\n\n---\n\n');
+              return (
+                <Collapsible
+                  title="Reasoning trace"
+                  icon={ScrollText}
+                  actions={
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopy(fullText, 'Reasoning trace');
+                      }}
+                      className="p-1 rounded text-muted-foreground"
+                      aria-label="Copy reasoning trace"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  }
                 >
-                  <Copy className="w-3.5 h-3.5" />
-                </button>
-              }
-            >
-              <div className="rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto">
-                <MarkdownRenderer content={message.reasoning!} />
-              </div>
-            </Collapsible>
-          )}
+                  <div className="space-y-3 max-h-[28rem] overflow-y-auto">
+                    {stepsWithReasoning.map((step, i) => (
+                      <div key={`${step.node}-${i}`} className="rounded-md border border-border bg-muted/40 overflow-hidden">
+                        <div className="px-3 py-1.5 bg-muted/60 border-b border-border/60 flex items-center gap-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            {step.message || step.node}
+                          </span>
+                          {step.duration_ms != null && (
+                            <span className="ml-auto text-[10px] font-mono tabular-nums text-muted-foreground/60">
+                              {(step.duration_ms / 1000).toFixed(2)}s
+                            </span>
+                          )}
+                        </div>
+                        <div className="p-2.5">
+                          <MarkdownRenderer content={step.reasoning!} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Collapsible>
+              );
+            }
+            // Fallback: legacy flat reasoning string
+            if (message.reasoning) {
+              return (
+                <Collapsible
+                  title="Reasoning trace"
+                  icon={ScrollText}
+                  actions={
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopy(message.reasoning!, 'Reasoning trace');
+                      }}
+                      className="p-1 rounded text-muted-foreground"
+                      aria-label="Copy reasoning trace"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  }
+                >
+                  <div className="rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto">
+                    <MarkdownRenderer content={message.reasoning!} />
+                  </div>
+                </Collapsible>
+              );
+            }
+            return null;
+          })()}
         </div>
       </SheetContent>
     </Sheet>

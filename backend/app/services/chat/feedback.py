@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 import uuid
 from datetime import datetime, timezone
 
@@ -11,11 +13,34 @@ from app.services.embeddings import embed_question
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-_FEEDBACK_STALE_DAYS = 90
-_FEEDBACK_OLD_DAYS = 30
+_FEEDBACK_DECAY_HALF_LIFE_DAYS = 45   # feedback weight halves every 45 days
+_FEEDBACK_DROP_WEIGHT = 0.05          # drop items below this weight (~180 days)
+_FEEDBACK_OLD_DAYS = 30               # annotate items older than this
 
 _RRF_K = 60
 
+
+# ── Intent text helpers ───────────────────────────────────────────────────────
+
+def _build_intent_text(raw_fingerprint_json: str | None) -> str | None:
+    """Build a FTS-searchable string from a stored intent_fingerprint JSON blob."""
+    if not raw_fingerprint_json:
+        return None
+    try:
+        fp = json.loads(raw_fingerprint_json)
+    except Exception:
+        return None
+    parts = [
+        " ".join(fp.get("anchor_tables") or []),
+        " ".join(fp.get("measures") or []),
+        " ".join(fp.get("filters") or []),
+        " ".join(fp.get("dimensions") or []),
+        fp.get("time_period") or "",
+    ]
+    return " | ".join(p for p in parts if p) or None
+
+
+# ── Save ──────────────────────────────────────────────────────────────────────
 
 async def save_feedback(
     db: AsyncSession,
@@ -23,17 +48,16 @@ async def save_feedback(
     thread_id: uuid.UUID,
     liked: bool,
     comment: str | None = None,
+    feedback_type: str = "general",
+    intent_text: str | None = None,
 ) -> tuple[MTIBrainFeedback, str | None, str | None, dict | None]:
     """Save feedback and embed the question for future similarity search.
 
-    Embedding is async and non-blocking. If it fails, feedback is still
-    saved — just without an embedding (similarity search won't find it).
-
     Returns ``(feedback, langfuse_trace_id, pattern_id, neo4j_context)``
-    where neo4j_context carries the action + data needed for graph writes:
-      action='dislike'              → write :AntiPattern (any confidence)
-      action='like_without_pattern' → retroactively write :QueryPattern (low-confidence like)
-      None                          → no extra graph write needed
+    neo4j_context actions:
+      'dislike'              → write AntiPattern (sql/general feedback_type only)
+      'like_without_pattern' → retroactively write QueryPattern
+      None                   → no Neo4j write needed
     """
     result = await db.execute(
         text(
@@ -55,7 +79,6 @@ async def save_feedback(
     langfuse_trace_id: str | None = row.langfuse_trace_id if row else None
     pattern_id: str | None = row.pattern_id if row else None
 
-    # Embed the user's question so future similar questions can find this feedback
     question_result = await db.execute(
         text(
             "SELECT content FROM mti_brain_message "
@@ -66,22 +89,26 @@ async def save_feedback(
     question_text = question_result.scalar_one_or_none() or ""
     embedding = await embed_question(question_text) if question_text else None
 
-    # Upsert: update existing feedback for this message rather than creating duplicates
     existing: MTIBrainFeedback | None = None
     if message_id:
         existing = (await db.execute(
             select(MTIBrainFeedback).where(MTIBrainFeedback.message_id == message_id)
         )).scalar_one_or_none()
 
+    _ftype = feedback_type or "general"
+
     if existing:
         existing.liked = liked
         existing.comment = comment
         existing.question_text = question_text or None
+        existing.feedback_type = _ftype
+        if intent_text is not None:
+            existing.intent_text = intent_text
         if embedding is not None:
             existing.embedding = embedding
         feedback = existing
         logger.info(
-            f"Feedback updated: conversation={conversation_id}, liked={liked}"
+            "Feedback updated: conversation={}, liked={}, type={}", conversation_id, liked, _ftype
         )
     else:
         feedback = MTIBrainFeedback(
@@ -90,12 +117,14 @@ async def save_feedback(
             liked=liked,
             comment=comment,
             question_text=question_text or None,
+            intent_text=intent_text,
+            feedback_type=_ftype,
             embedding=embedding,
         )
         db.add(feedback)
         logger.info(
-            f"Feedback saved: conversation={conversation_id}, liked={liked}, "
-            f"has_embedding={embedding is not None}"
+            "Feedback saved: conversation={}, liked={}, type={}, has_embedding={}",
+            conversation_id, liked, _ftype, embedding is not None,
         )
 
     await db.flush()
@@ -106,8 +135,11 @@ async def save_feedback(
     _complexity = (row.complexity or "") if row else ""
     _conf_score = int(row.confidence_score) if (row and row.confidence_score) else 0
 
+    # Only sql/general dislikes write to Neo4j — answer/chart dislikes are presentation-only
+    _is_sql_signal = _ftype in ("sql", "general")
+
     neo4j_context: dict | None = None
-    if not liked:
+    if not liked and _is_sql_signal:
         neo4j_context = {
             "action": "dislike",
             "question": question_text,
@@ -117,6 +149,7 @@ async def save_feedback(
             "complexity": _complexity,
             "embedding": embedding,
             "comment": comment,
+            "feedback_type": _ftype,
         }
     elif liked and not pattern_id:
         neo4j_context = {
@@ -128,12 +161,14 @@ async def save_feedback(
             "complexity": _complexity,
             "confidence_score": _conf_score,
             "embedding": embedding,
+            "feedback_type": _ftype,
         }
 
     return feedback, langfuse_trace_id, pattern_id, neo4j_context
 
 
-# question_text is now stored on the row — no JOIN to mti_brain_message needed
+# ── Thread feedback (all same-thread feedback applies to all subsequent queries) ──
+
 _FIND_THREAD_FEEDBACK_SQL = text("""
     SELECT
         f.id,
@@ -141,7 +176,8 @@ _FIND_THREAD_FEEDBACK_SQL = text("""
         f.comment,
         f.thread_id,
         f.created_at,
-        f.question_text
+        f.question_text,
+        f.feedback_type
     FROM mti_brain_feedback f
     WHERE f.thread_id = :thread_id
     ORDER BY f.created_at DESC
@@ -167,13 +203,14 @@ async def find_thread_feedback(
             "thread_id": str(row.thread_id),
             "created_at": row.created_at,
             "question_text": (row.question_text or "")[:200],
+            "feedback_type": row.feedback_type or "general",
             "source": "thread",
         }
         for row in result.fetchall()
     ]
 
 
-# ── Hybrid cross-thread search ────────────────────────────────────────────────
+# ── Cross-thread hybrid search ────────────────────────────────────────────────
 
 _FIND_SIMILAR_VECTOR_SQL = text("""
     SELECT
@@ -183,6 +220,7 @@ _FIND_SIMILAR_VECTOR_SQL = text("""
         f.thread_id,
         f.created_at,
         f.question_text,
+        f.feedback_type,
         1 - (f.embedding <=> CAST(:embedding AS vector)) AS score
     FROM mti_brain_feedback f
     WHERE f.embedding IS NOT NULL
@@ -200,6 +238,7 @@ _FIND_SIMILAR_FTS_SQL = text("""
         f.thread_id,
         f.created_at,
         f.question_text,
+        f.feedback_type,
         ts_rank_cd(f.search_vector, websearch_to_tsquery('english', :query)) AS score
     FROM mti_brain_feedback f
     WHERE f.search_vector IS NOT NULL
@@ -215,7 +254,6 @@ def _rrf_merge(
     k: int = _RRF_K,
     top_n: int = 5,
 ) -> list[dict]:
-    """Reciprocal Rank Fusion over N ranked lists keyed by feedback row id."""
     scores: dict[str, float] = {}
     by_key: dict[str, dict] = {}
     for ranked in ranked_lists:
@@ -239,15 +277,9 @@ async def find_similar_feedback(
     limit: int = 5,
     min_similarity: float = 0.60,
 ) -> list[dict]:
-    """Find feedback from OTHER threads matching the current question.
-
-    Hybrid: vector cosine similarity + FTS over question_text and comment,
-    merged via Reciprocal Rank Fusion. Both legs are optional — if one fails
-    or returns nothing the other still contributes results.
-    """
+    """Find feedback from OTHER threads matching the current question (hybrid: vector + FTS + RRF)."""
     ranked_lists: list[list[dict]] = []
 
-    # Vector leg
     embedding = await embed_question(question)
     if embedding is not None:
         try:
@@ -268,6 +300,7 @@ async def find_similar_feedback(
                     "thread_id": str(r.thread_id),
                     "created_at": r.created_at,
                     "question_text": (r.question_text or "")[:200],
+                    "feedback_type": r.feedback_type or "general",
                     "similarity": round(float(r.score), 3),
                 }
                 for r in vec_result.fetchall()
@@ -277,7 +310,6 @@ async def find_similar_feedback(
         except Exception as exc:
             logger.warning("find_similar_feedback | vector_leg_failed | err={}: {}", type(exc).__name__, exc)
 
-    # FTS leg — searches both question_text and comment via search_vector
     try:
         fts_result = await db.execute(
             _FIND_SIMILAR_FTS_SQL,
@@ -295,6 +327,7 @@ async def find_similar_feedback(
                 "thread_id": str(r.thread_id),
                 "created_at": r.created_at,
                 "question_text": (r.question_text or "")[:200],
+                "feedback_type": r.feedback_type or "general",
                 "similarity": None,
             }
             for r in fts_result.fetchall()
@@ -308,11 +341,10 @@ async def find_similar_feedback(
         return []
 
     merged = _rrf_merge(ranked_lists, top_n=limit)
-    return [
-        {**row, "source": "similar"}
-        for row in merged
-    ]
+    return [{**row, "source": "similar"} for row in merged]
 
+
+# ── Context building ──────────────────────────────────────────────────────────
 
 def _days_old(created_at: datetime | None) -> int:
     if created_at is None:
@@ -322,56 +354,116 @@ def _days_old(created_at: datetime | None) -> int:
     return max(0, (now - ts).days)
 
 
+def _decay_weight(created_at: datetime | None) -> float:
+    age = _days_old(created_at)
+    return math.exp(-0.693 * age / _FEEDBACK_DECAY_HALF_LIFE_DAYS)
+
+
+def _resolve_contradictions(feedback_items: list[dict]) -> list[dict]:
+    """Keep only the most recent item when contradictory same-topic feedback exists."""
+    def _topic_key(fb: dict) -> str:
+        words = (fb.get("comment") or "").lower().split()
+        significant = [w for w in words if len(w) > 3]
+        return " ".join(significant[:6])
+
+    by_topic: dict[str, dict] = {}
+    for fb in feedback_items:
+        if not fb.get("comment"):
+            continue
+        key = _topic_key(fb)
+        if not key:
+            continue
+        existing = by_topic.get(key)
+        if existing is None:
+            by_topic[key] = fb
+        else:
+            ts_existing = existing.get("created_at")
+            ts_new = fb.get("created_at")
+            if ts_new and ts_existing and ts_new > ts_existing:
+                if existing["liked"] != fb["liked"]:
+                    logger.debug("feedback | contradiction_resolved | topic={}", key)
+                by_topic[key] = fb
+
+    no_comment = [fb for fb in feedback_items if not fb.get("comment")]
+    return list(by_topic.values()) + no_comment
+
+
 def build_feedback_context(
     thread_feedback: list[dict],
     similar_feedback: list[dict],
-) -> str:
-    """Build a feedback context string to inject into agent prompts.
+) -> list[dict]:
+    """Merge thread + cross-thread feedback, dedup, apply decay threshold.
 
-    Deduplicates by id (thread feedback takes priority over similar).
-    Excludes feedback older than 90 days. Annotates feedback 30-90 days old.
-    Thumbs-only (no comment) signals are included with synthetic labels at lower priority.
-    Returns empty string if no actionable feedback exists.
+    Returns list[dict] — callers use build_feedback_context_for_node to get
+    a node-type-filtered string for injection into an LLM prompt.
     """
     seen_ids = {f["id"] for f in thread_feedback}
     similar_deduped = [f for f in similar_feedback if f["id"] not in seen_ids]
     all_feedback = thread_feedback + similar_deduped
+    return [f for f in all_feedback if _decay_weight(f.get("created_at")) >= _FEEDBACK_DROP_WEIGHT]
 
-    # Exclude stale feedback
-    all_feedback = [f for f in all_feedback if _days_old(f.get("created_at")) <= _FEEDBACK_STALE_DAYS]
 
-    if not all_feedback:
+def build_feedback_context_for_node(all_feedback: list[dict], node_type: str) -> str:
+    """Build a type-filtered LLM-injectable feedback string for a specific node.
+
+    node_type routing:
+      'sql'     → feedback_type IN ('sql', 'general')
+                  → anchor_resolver, filter/measure/dimension specialists, directive_writer, sql_generator
+      'answer'  → feedback_type IN ('answer', 'general')  → synthesis
+      'chart'   → feedback_type IN ('chart', 'general')   → chart_agent
+      'general' → feedback_type == 'general' only          → general_chat
+    """
+    _allowed: dict[str, set[str]] = {
+        "sql":     {"sql", "general"},
+        "answer":  {"answer", "general"},
+        "chart":   {"chart", "general"},
+        "general": {"general"},
+    }
+    allowed = _allowed.get(node_type, {"general"})
+    filtered = [f for f in all_feedback if (f.get("feedback_type") or "general") in allowed]
+    return _build_context_string(filtered)
+
+
+def _build_context_string(feedback_items: list[dict]) -> str:
+    """Build the final prompt-injectable string from a pre-filtered list."""
+    if not feedback_items:
+        return ""
+
+    weighted = sorted(
+        feedback_items,
+        key=lambda f: (_decay_weight(f.get("created_at")), 1 if f.get("comment") else 0),
+        reverse=True,
+    )
+    weighted = _resolve_contradictions(weighted)
+
+    injectable = [f for f in weighted if f.get("comment")]
+    if not injectable:
+        return ""
+
+    dislikes = [f for f in injectable if not f["liked"]]
+    likes = [f for f in injectable if f["liked"]]
+
+    if not dislikes and not likes:
         return ""
 
     def _label(fb: dict) -> str:
         age = _days_old(fb.get("created_at"))
         source = "this thread" if fb.get("source") == "thread" else "similar question"
-        comment = fb.get("comment") or ""
-        age_note = f" (from ~{age}d ago)" if age > _FEEDBACK_OLD_DAYS else ""
-        if comment:
-            return f"    - [{source}]{age_note} {comment}"
-        sentiment = "User rated a similar response positively" if fb["liked"] else "User rated a similar response negatively"
-        return f"    - [{source}]{age_note} [positive signal] {sentiment}" if fb["liked"] else f"    - [{source}]{age_note} [negative signal] {sentiment}"
+        age_note = f" (~{age}d ago)" if age > _FEEDBACK_OLD_DAYS else ""
+        return f"    - [{source}]{age_note} {fb['comment']}"
 
-    def _sort_key(fb: dict):
-        age = _days_old(fb.get("created_at"))
-        has_comment = 1 if fb.get("comment") else 0
-        return (-has_comment, age)
-
-    dislikes = sorted([f for f in all_feedback if not f["liked"]], key=_sort_key)
-    likes = sorted([f for f in all_feedback if f["liked"]], key=_sort_key)
-
-    if not dislikes and not likes:
-        return ""
-
-    lines = ["USER FEEDBACK (apply to your response):"]
+    lines: list[str] = ["USER FEEDBACK (apply to your response):"]
     if dislikes:
-        lines.append("  AVOID (users disliked this):")
+        lines.append("  <hard_constraints>")
+        lines.append("  NEVER DO (users explicitly rejected this):")
         for fb in dislikes[:5]:
             lines.append(_label(fb))
+        lines.append("  </hard_constraints>")
     if likes:
-        lines.append("  KEEP DOING (users liked this):")
+        lines.append("  <preferences>")
+        lines.append("  PREFERRED PATTERNS (users liked this approach):")
         for fb in likes[:3]:
             lines.append(_label(fb))
+        lines.append("  </preferences>")
 
     return "\n".join(lines)

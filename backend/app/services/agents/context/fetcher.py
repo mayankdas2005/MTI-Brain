@@ -298,6 +298,14 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             _patterns = _quality_patterns if _quality_patterns else _all_patterns
             _top = _patterns[0] if _patterns else None
             if _top:
+                _last_seen_days = _top.get("last_seen_days")
+                if _last_seen_days is not None and _last_seen_days > 180:
+                    logger.info(
+                        "context_fetcher | pattern_stale_skip | id={} | days={}",
+                        (_top.get("id") or "")[:8], _last_seen_days,
+                    )
+                    _top = None
+            if _top:
                 _raw = _top.get("raw_score", 0)
                 _tier = "exact" if _raw >= 0.95 else "strong" if _raw >= 0.85 else "hint"
                 # Stale guard: downgrade if any table the pattern used is absent from current schema
@@ -313,6 +321,26 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
                     _tier = "hint"
                 elif _occurrence < 4 and not _liked and _tier == "exact":
                     _tier = "strong"  # exact requires 4+ occurrences or an explicit like
+                if (_last_seen_days or 0) > 90 and _tier != "hint":
+                    _tier = "hint"
+                    logger.info(
+                        "context_fetcher | pattern_age_cap | id={} | days={}",
+                        (_top.get("id") or "")[:8], _last_seen_days,
+                    )
+                _cross_d = _top.get("cross_thread_dislikes") or 0
+                _cross_l = _top.get("cross_thread_likes") or 0
+                if _cross_d >= 3 and _cross_d > _cross_l:
+                    _tier = "hint"
+                    logger.info(
+                        "context_fetcher | pattern_cross_demote | id={} | cross_dislikes={}",
+                        (_top.get("id") or "")[:8], _cross_d,
+                    )
+                elif _cross_l >= 3 and _tier == "hint":
+                    _tier = "strong"
+                    logger.info(
+                        "context_fetcher | pattern_cross_promote | id={} | cross_likes={}",
+                        (_top.get("id") or "")[:8], _cross_l,
+                    )
                 semantic_context["_matched_pattern"]      = _top
                 semantic_context["_matched_pattern_tier"] = _tier
                 # Optional corroborating 2nd pattern (same tables, strong tier only)

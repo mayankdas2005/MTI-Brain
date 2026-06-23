@@ -6,6 +6,7 @@ nodes to Neo4j — all as fire-and-forget background tasks.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import time
@@ -13,6 +14,7 @@ import uuid
 
 from app.core.logger import logger
 from app.services.agents import neo4j_client
+from app.services.agents.neo4j import increment_anti_pattern_success as _neo4j_increment_ap_success
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
@@ -120,6 +122,12 @@ async def write_query_pattern(
             "updated" if is_update else "saved",
             pattern_data["id"][:8], confidence_score, ir.intent, is_update,
         )
+        _matched_aps = (state.get("semantic_context") or {}).get("_matched_anti_patterns") or []
+        _ap_ids = [ap["id"] for ap in _matched_aps if ap.get("id")]
+        if _ap_ids:
+            asyncio.create_task(
+                asyncio.to_thread(_neo4j_increment_ap_success, _ap_ids)
+            )
     except Exception as e:
         logger.warning("audit | write_query_pattern failed | error={}", e)
 

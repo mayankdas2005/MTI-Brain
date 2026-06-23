@@ -74,3 +74,4 @@ prompt_cache:
 feature_toggles:
   langfuse_enabled: true           # Enable Langfuse tracing and model usage tracking
   data_quality_checker_enabled: false  # When true: runs after executor; output feeds confidence + synthesis
+  confidence_score_enabled: false  # When true: runs after executor; output feeds confidence + synthesis

@@ -25,11 +25,28 @@ interface FeedbackWidgetProps {
   feedback?: { liked: boolean; comment?: string };
 }
 
+type FeedbackType = 'answer' | 'sql' | 'chart' | 'general';
+
+const DISLIKE_TYPES: { label: string; value: FeedbackType }[] = [
+  { label: 'The answer', value: 'answer' },
+  { label: 'The SQL', value: 'sql' },
+  { label: 'The chart', value: 'chart' },
+  { label: 'Something else', value: 'general' },
+];
+
+const LIKE_TYPES: { label: string; value: FeedbackType }[] = [
+  { label: 'The answer', value: 'answer' },
+  { label: 'The SQL', value: 'sql' },
+  { label: 'The chart', value: 'chart' },
+  { label: 'Everything', value: 'general' },
+];
+
 export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackWidgetProps) {
   const submitFeedback = useThreadStore((s) => s.submitFeedback);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [comment, setComment] = useState('');
   const [pendingLiked, setPendingLiked] = useState<boolean | null>(null);
+  const [feedbackType, setFeedbackType] = useState<FeedbackType>('answer');
   const [isPending, startTransition] = useTransition();
   const [optimisticLiked, setOptimisticLiked] = useOptimistic(feedback?.liked);
 
@@ -38,6 +55,7 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
     if (optimisticLiked === liked) return;
     setPendingLiked(liked);
     setComment('');
+    setFeedbackType('answer');
     setDialogOpen(true);
   };
 
@@ -45,16 +63,19 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
     if (pendingLiked === null) return;
     const likedValue = pendingLiked;
     const commentValue = comment;
+    const typeValue = feedbackType;
     setDialogOpen(false);
     setComment('');
     setPendingLiked(null);
+    setFeedbackType('answer');
     startTransition(async () => {
       setOptimisticLiked(likedValue);
       try {
-        await submitFeedback(threadId, conversationId, likedValue, commentValue || undefined);
+        await submitFeedback(threadId, conversationId, likedValue, commentValue || undefined, typeValue);
         track(Events.FeedbackGiven, {
           liked: likedValue,
           has_comment: commentValue.trim().length > 0,
+          feedback_type: typeValue,
         });
       } catch {
         toast.error('Failed to submit feedback.');
@@ -63,6 +84,7 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
   };
 
   const isPositive = pendingLiked === true;
+  const typeOptions = isPositive ? LIKE_TYPES : DISLIKE_TYPES;
 
   return (
     <>
@@ -118,10 +140,31 @@ export function FeedbackWidget({ threadId, conversationId, feedback }: FeedbackW
           <DialogDescription className="sr-only">
             {isPositive ? 'Share what was satisfying about this response' : 'Tell us what went wrong with this response'}
           </DialogDescription>
-          <p className="text-sm text-muted-foreground mb-4">
-            {isPositive
-              ? 'Please provide details: (optional)'
-              : 'What went wrong with this response?'}
+
+          <p className="text-sm text-muted-foreground mb-3">
+            {isPositive ? 'What did you like?' : 'What was wrong?'}
+          </p>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {typeOptions.map(({ label, value }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setFeedbackType(value)}
+                className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                  feedbackType === value
+                    ? isPositive
+                      ? 'bg-green-500/20 border-green-500/40 text-green-700 dark:text-green-400'
+                      : 'bg-red-500/20 border-red-500/40 text-red-700 dark:text-red-400'
+                    : 'bg-muted/50 border-border text-muted-foreground hover:text-foreground hover:border-foreground/30'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <p className="text-sm text-muted-foreground mb-2">
+            {isPositive ? 'Add a comment (optional):' : 'Tell us more (optional):'}
           </p>
           <textarea
             value={comment}

@@ -375,7 +375,7 @@ interface ThreadStore {
   stopGeneration: (threadId: string) => Promise<void>;
 
   // Feedback
-  submitFeedback: (threadId: string, conversationId: string, liked: boolean, comment?: string) => Promise<void>;
+  submitFeedback: (threadId: string, conversationId: string, liked: boolean, comment?: string, feedbackType?: string) => Promise<void>;
 
   // Local UI
   setCurrentThread: (id: string | null) => void;
@@ -2070,8 +2070,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
   // ─── Feedback ───
 
-  submitFeedback: async (threadId, conversationId, liked, comment) => {
-    const result = await api.submitFeedback(threadId, conversationId, { liked, comment });
+  submitFeedback: async (threadId, conversationId, liked, comment, feedbackType) => {
+    const result = await api.submitFeedback(threadId, conversationId, { liked, comment, feedback_type: feedbackType });
     // Update both currentMessages (live render) and threadMessageMap (cache)
     // so navigating away and back doesn't reset the feedback indicator.
     const apply = (m: Message) =>

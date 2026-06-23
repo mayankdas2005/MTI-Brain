@@ -109,6 +109,13 @@ def search_query_patterns(embedding: list[float], threshold: float = 0.65, limit
            qp.recompile_count AS recompile_count,
            qp.repair_count AS repair_count,
            qp.promotion_status AS promotion_status,
+           qp.occurrence_count AS occurrence_count,
+           qp.liked_count AS liked_count,
+           coalesce(qp.cross_thread_likes, 0) AS cross_thread_likes,
+           coalesce(qp.cross_thread_dislikes, 0) AS cross_thread_dislikes,
+           CASE WHEN qp.last_seen IS NOT NULL
+                THEN duration.between(qp.last_seen, datetime()).days
+                ELSE null END AS last_seen_days,
            score AS raw_score,
            boosted_score AS score
     ORDER BY boosted_score DESC
@@ -179,6 +186,7 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
     SEARCH ap IN (VECTOR INDEX `antipattern_cohere_embedding` FOR $embedding LIMIT 5)
     SCORE AS score
     WHERE score > 0.65
+      AND (ap.success_count IS NULL OR ap.success_count < 3)
     WITH ap, score,
          score
          * (1.0 + log(1.0 + coalesce(ap.occurrence_count, 1)) * 0.15)
@@ -190,6 +198,7 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
            ap.error_type AS error_type, coalesce(ap.error_detail, ap.error_summary, '') AS error_summary,
            ap.failing_element AS failing_element, ap.complexity AS complexity,
            ap.occurrence_count AS occurrence_count,
+           ap.tables_involved AS tables_involved,
            boosted_score AS score
     ORDER BY boosted_score DESC
     """

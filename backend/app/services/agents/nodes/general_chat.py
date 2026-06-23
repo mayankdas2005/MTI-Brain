@@ -14,7 +14,8 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
     logger.info("general_chat START | thread={}", state["thread_id"])
 
     session_summary = state.get("summary") or ""
-    feedback_context = state.get("feedback_context") or ""
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    feedback_context = _fb_for_node(state.get("feedback_context") or [], "general")
     semantic_context = state.get("semantic_context") or {}
     memory_context = semantic_context.get("memory_context") or ""
     global_instructions = state.get("global_instructions") or ""

@@ -122,6 +122,8 @@ def _build_sse_generator(
     prior_context_window: list[dict] | None = None,
     conversation_history: str = "(no prior context)",
     global_instructions: str = "",
+    distilled_preferences: str = "",
+    prior_output_columns: list[str] | None = None,
 ):
     async def _save_assistant_message(save_data: dict) -> None:
         from app.db import async_session_factory
@@ -179,6 +181,7 @@ def _build_sse_generator(
                 "deep_analysis":      save_data.get("deep_analysis", False),
                 "tribal_facts":       save_data.get("tribal_facts") or [],
                 "prior_execution_context": save_data.get("prior_execution_context"),
+                "intent_fingerprint": save_data.get("intent_fingerprint"),
             }),
         )
         _conf = save_data.get("confidence")
@@ -264,6 +267,8 @@ def _build_sse_generator(
                 prior_context_window=prior_context_window,
                 conversation_history=conversation_history,
                 global_instructions=global_instructions,
+                distilled_preferences=distilled_preferences,
+                prior_output_columns=prior_output_columns or [],
             ):
                 event_name = sse_ev["event"]
                 data = sse_ev["data"]
@@ -629,6 +634,8 @@ async def ask_question(
         # ── Load rolling thread-context window from recent analytics assistant messages ──
         prior_execution_context = None
         prior_context_window: list[dict] = []
+        _prior_sql_from_context = ""
+        _prior_output_columns: list[str] = []
         try:
             async with db.begin_nested():
                 from sqlalchemy import select as _select
@@ -641,10 +648,14 @@ async def ask_question(
                     .order_by(MTIBrainMessage.created_at.desc())
                     .limit(_PRIOR_CONTEXT_WINDOW)
                 )
-                for _meta in _prior_rows.scalars().all():
+                for _i, _meta in enumerate(_prior_rows.scalars().all()):
                     _pec = (_meta or {}).get("prior_execution_context")
                     if _pec:
                         prior_context_window.append(_pec)
+                    if _i == 0:
+                        _prior_sql_from_context = (_meta or {}).get("sql") or ""
+                        _pec_cols = (_pec or {}).get("output_columns") if _pec else None
+                        _prior_output_columns = _pec_cols or (_meta or {}).get("columns") or []
                 if prior_context_window:
                     prior_execution_context = prior_context_window[0]
         except Exception:
@@ -661,12 +672,28 @@ async def ask_question(
 
         # ── Load enabled standing instructions for this user ──
         global_instructions = ""
+        distilled_preferences = ""
         try:
             from app.services.chat.instructions import load_enabled_instructions, format_instructions
+            from app.models.user import MTIBrainUser
+            from sqlalchemy import select as _sel_u
             _instructions = await load_enabled_instructions(db, current_user.id)
             global_instructions = format_instructions(_instructions)
+            _u_row = await db.execute(
+                _sel_u(MTIBrainUser.distilled_preferences, MTIBrainUser.distilled_at)
+                .where(MTIBrainUser.id == current_user.id)
+            )
+            _u_result = _u_row.one_or_none()
+            if _u_result and _u_result.distilled_preferences:
+                _dist_at = _u_result.distilled_at
+                if _dist_at:
+                    _dist_at = _dist_at if _dist_at.tzinfo else _dist_at.replace(tzinfo=datetime.timezone.utc)
+                    _dist_age = (datetime.datetime.now(datetime.timezone.utc) - _dist_at).days
+                    distilled_preferences = _u_result.distilled_preferences if _dist_age <= 7 else ""
+                else:
+                    distilled_preferences = ""
         except Exception:
-            logger.debug("[ask] global_instructions lookup failed (non-fatal)")
+            logger.debug("[ask] global_instructions/distilled_preferences lookup failed (non-fatal)")
 
         save_result = await conv_service.save_message_and_touch(
             db,
@@ -710,14 +737,16 @@ async def ask_question(
         max_rows=body.max_rows,
         deep_analysis=body.deep_analysis,
         cancel_event=_cancel_ev,
-        prior_sql=body.prior_sql or "",
+        prior_sql=body.prior_sql or _prior_sql_from_context,
         prior_question=prior_question,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
         prior_execution_context=prior_execution_context,
         prior_context_window=prior_context_window,
+        prior_output_columns=_prior_output_columns,
         conversation_history=conversation_history,
         global_instructions=global_instructions,
+        distilled_preferences=distilled_preferences,
     )
     return EventSourceResponse(generator(), ping=15)
 
@@ -1041,6 +1070,23 @@ async def submit_feedback(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    # Build intent_text from stored intent_fingerprint on the assistant message
+    _intent_text: str | None = None
+    try:
+        from sqlalchemy import text as _sa_text
+        _fp_row = await db.execute(
+            _sa_text(
+                "SELECT metadata->>'intent_fingerprint' AS intent_fingerprint "
+                "FROM mti_brain_message "
+                "WHERE conversation_id = :cid AND role = 'assistant' LIMIT 1"
+            ),
+            {"cid": str(conversation_id)},
+        )
+        _raw_fp = _fp_row.scalar_one_or_none()
+        _intent_text = fb_service._build_intent_text(_raw_fp)
+    except Exception:
+        logger.debug("submit_feedback | intent_fingerprint lookup failed (non-fatal)")
+
     try:
         feedback, langfuse_trace_id, pattern_id, neo4j_context = await fb_service.save_feedback(
             db,
@@ -1048,10 +1094,20 @@ async def submit_feedback(
             thread_id=thread_id,
             liked=body.liked,
             comment=body.comment,
+            feedback_type=body.feedback_type or "general",
+            intent_text=_intent_text,
         )
     except Exception:
         logger.exception("Feedback save failed")
         raise HTTPException(status_code=500, detail="Failed to save feedback")
+
+    # Fire background distillation (non-blocking; triggers if 5+ new comment feedbacks)
+    try:
+        from app.services.chat.feedback_distiller import maybe_distill
+        from app.db import async_session_factory as _sf
+        asyncio.create_task(maybe_distill(current_user.id, _sf))
+    except Exception:
+        pass
 
     # Neo4j feedback loops — run in thread pool (sync Neo4j writes)
     if pattern_id or neo4j_context:

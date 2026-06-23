@@ -387,10 +387,51 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         feeds="schema_enricher (column loading for selected tables), all 3 specialists (entity context)",
     )
     from app.services.agents.helpers import format_prior_context_block
-    _prior_ctx_block = format_prior_context_block(
-        state.get("prior_context_window") or state.get("prior_execution_context")
+    from app.services.embeddings import embed_question as _embed_q
+    _prior_ctx = state.get("prior_execution_context")
+    _prior_window = state.get("prior_context_window")
+    _cur_emb = semantic_context.get("query_embedding")
+    if _cur_emb and _prior_ctx and _prior_ctx.get("question"):
+        try:
+            _prev_emb = await _embed_q(_prior_ctx["question"])
+            if _prev_emb:
+                _sim = sum(a * b for a, b in zip(_cur_emb, _prev_emb))
+                if _sim < 0.65:
+                    logger.info(
+                        "anchor_resolver | prior_ctx_filtered | sim={:.2f} | thread={}",
+                        _sim, state["thread_id"],
+                    )
+                    _prior_ctx = None
+        except Exception as _exc:
+            logger.debug("anchor_resolver | prior_ctx_sim_failed | err={}", _exc)
+    if _cur_emb and _prior_window:
+        try:
+            _kept: list[dict] = []
+            for _entry in _prior_window:
+                _eq = (_entry.get("question") or "").strip()
+                if not _eq:
+                    continue
+                _eemb = await _embed_q(_eq)
+                if _eemb:
+                    _esim = sum(a * b for a, b in zip(_cur_emb, _eemb))
+                    if _esim >= 0.65:
+                        _kept.append(_entry)
+            _prior_window = _kept or None
+        except Exception as _exc:
+            logger.debug("anchor_resolver | prior_window_filter_failed | err={}", _exc)
+    _prior_ctx_block = format_prior_context_block(_prior_window or _prior_ctx)
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    _feedback_block = _fb_for_node(state.get("feedback_context") or [], "sql")
+    _feedback_section = (
+        f"LEARNED SQL PREFERENCES (apply where relevant to table selection):\n<feedback_context>{_feedback_block}</feedback_context>\n"
+        if _feedback_block else ""
     )
-    anchor_prompt[0].content = _mission + "\n\n" + (_prior_ctx_block + "\n" if _prior_ctx_block else "") + anchor_prompt[0].content
+    anchor_prompt[0].content = (
+        _mission + "\n\n"
+        + (_prior_ctx_block + "\n" if _prior_ctx_block else "")
+        + (_feedback_section if _feedback_section else "")
+        + anchor_prompt[0].content
+    )
 
     from app.services.agents.prompts import QUERY_PLANNER_PROMPT
     available_tables_lines = [
@@ -407,6 +448,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         available_tables_section=available_tables_section,
         entity_tokens_section=_build_entity_tokens_section(entity_tokens),
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+        prior_columns_section="",
     )
 
     from app.services.agents.bedrock import get_llm
@@ -565,6 +607,26 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         _raw_join_edges + _raw_bridge_edges + _raw_struct_edges,
     )
 
+    # B0: Pass 2 pattern re-search — embed question + resolved table names for intent-aware match
+    _refined_matched_pattern: dict | None = None
+    _current_top_score = (semantic_context.get("_matched_pattern") or {}).get("raw_score", 0)
+    if valid_anchors:
+        try:
+            from app.services.agents import neo4j_client as _nc2
+            _anchor_names = " ".join(sorted(fqn.rsplit(".", 1)[-1] for fqn in valid_anchors))
+            _anchor_intent_text = f"{state['question']} | tables: {_anchor_names}"
+            _anchor_emb = await _embed_q(_anchor_intent_text)
+            if _anchor_emb:
+                _refined = await asyncio.to_thread(_nc2.search_query_patterns, _anchor_emb)
+                if _refined and _refined[0].get("raw_score", 0) > _current_top_score:
+                    _refined_matched_pattern = _refined[0]
+                    logger.info(
+                        "anchor_resolver | pass2_pattern | raw={:.3f} > pass1={:.3f} | id={}",
+                        _refined[0]["raw_score"], _current_top_score, (_refined[0].get("id") or "")[:8],
+                    )
+        except Exception as _b0e:
+            logger.debug("anchor_resolver | pass2_pattern_failed | err={}", _b0e)
+
     # Store in resolved_intent stub so query_compiler can read result_shape
     existing_resolved = state.get("resolved_intent") or {}
     return {
@@ -574,4 +636,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         "neo4j_raw_graph": neo4j_raw_graph,
         "fx_rate_template_join": _fx_template_join,
         "llm_selected_anchors": _llm_selected_anchors,
+        "prior_execution_context": _prior_ctx,
+        "prior_context_window": _prior_window,
+        "_refined_matched_pattern": _refined_matched_pattern,
     }

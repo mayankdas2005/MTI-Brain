@@ -12,6 +12,7 @@ export type ThinkingPlacement = 'inline' | 'sidebar';
 interface PreferencesState {
   responseTone: ResponseTone;
   showSQL: boolean;
+  showData: boolean;
   autoShowCharts: boolean;
   showFollowUps: boolean;
   defaultDataView: DefaultDataView;
@@ -43,6 +44,7 @@ interface PreferencesState {
 interface PreferencesActions {
   setResponseTone: (tone: ResponseTone) => void;
   setShowSQL: (show: boolean) => void;
+  setShowData: (show: boolean) => void;
   setAutoShowCharts: (show: boolean) => void;
   setShowFollowUps: (show: boolean) => void;
   setDefaultDataView: (view: DefaultDataView) => void;
@@ -72,8 +74,9 @@ interface PreferencesActions {
 type PreferencesStore = PreferencesState & PreferencesActions;
 
 export const PREFERENCES_DEFAULTS: PreferencesState = {
-  responseTone: 'analyst',
+  responseTone: 'executive',
   showSQL: true,
+  showData: true,
   autoShowCharts: true,
   showFollowUps: true,
   defaultDataView: 'table',
@@ -101,6 +104,7 @@ export const usePreferencesStore = create<PreferencesStore>()(
 
       setResponseTone: (tone) => set({ responseTone: tone }),
       setShowSQL: (show) => set({ showSQL: show }),
+      setShowData: (show) => set({ showData: show }),
       setAutoShowCharts: (show) => set({ autoShowCharts: show }),
       setShowFollowUps: (show) => set({ showFollowUps: show }),
       setDefaultDataView: (view) => set({ defaultDataView: view }),

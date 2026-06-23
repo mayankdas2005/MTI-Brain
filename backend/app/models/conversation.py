@@ -287,9 +287,16 @@ class MTIBrainFeedback(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Denormalised question text — avoids JOIN at retrieval time; populated on save
     question_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # FTS-searchable intent fingerprint built from directive_writer intent_fingerprint dict
+    intent_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 'answer' | 'sql' | 'chart' | 'general' — captured from frontend widget
+    feedback_type: Mapped[str] = mapped_column(String(16), nullable=False, default="general")
+    # Tracking: when was this feedback last retrieved and applied to a query
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    trigger_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # pgvector embedding of question for vector similarity search
     embedding = mapped_column(Vector(1536), nullable=True)
-    # tsvector over question_text + comment for FTS; maintained by DB trigger
+    # tsvector over question_text + comment + intent_text for FTS; maintained by DB trigger
     search_vector = mapped_column(TSVECTOR, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

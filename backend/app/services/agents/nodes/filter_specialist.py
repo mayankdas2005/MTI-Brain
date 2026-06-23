@@ -233,7 +233,18 @@ async def filter_specialist(state: AnalyticsState, config: RunnableConfig) -> di
     _prior_ctx_block = format_prior_context_block(
         state.get("prior_context_window") or state.get("prior_execution_context")
     )
-    prompt[0].content = _mission + "\n\n" + (_prior_ctx_block + "\n" if _prior_ctx_block else "") + prompt[0].content
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    _feedback_block = _fb_for_node(state.get("feedback_context") or [], "sql")
+    _feedback_section = (
+        f"LEARNED SQL PREFERENCES (apply where relevant to filter selection):\n<feedback_context>{_feedback_block}</feedback_context>\n"
+        if _feedback_block else ""
+    )
+    prompt[0].content = (
+        _mission + "\n\n"
+        + (_prior_ctx_block + "\n" if _prior_ctx_block else "")
+        + (_feedback_section if _feedback_section else "")
+        + prompt[0].content
+    )
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

@@ -48,6 +48,7 @@ ON CREATE SET
   qp.recompile_count  = $recompile_count,
   qp.repair_count     = $repair_count,
   qp.promotion_status = 'active',
+  qp.enabled          = false,
   qp.liked_count      = 0,
   qp.disliked_count   = 0,
   qp.first_seen       = datetime(),
@@ -142,7 +143,9 @@ ON CREATE SET
   ap.complexity       = $complexity,
   ap.cohere_embedding = $cohere_embedding,
   ap.first_seen       = datetime(),
-  ap.occurrence_count = 1
+  ap.occurrence_count = 1,
+  ap.success_count    = 0,
+  ap.enabled          = false
 ON MATCH SET
   ap.occurrence_count  = ap.occurrence_count + 1,
   ap.last_seen         = datetime(),
@@ -165,7 +168,50 @@ def write_anti_pattern(pattern_data: dict) -> None:
     logger.debug("neo4j | fn=write_anti_pattern | merge_key={}", (pattern_data.get("merge_key") or "")[:8])
 
 
+@neo4j_breaker
+def increment_anti_pattern_success(anti_pattern_ids: list) -> None:
+    """Increment success_count on matched anti-patterns when a clean execution ran against the same intent.
+
+    Anti-patterns with success_count >= 3 are suppressed in search_anti_patterns — they've been
+    shown to be overcautious for this query intent.
+    """
+    if not anti_pattern_ids:
+        return
+    _neo4j_write(
+        """
+        MATCH (ap:AntiPattern) WHERE ap.id IN $ids
+        SET ap.success_count = coalesce(ap.success_count, 0) + 1
+        """,
+        ids=anti_pattern_ids,
+    )
+    logger.debug("neo4j | fn=increment_anti_pattern_success | ids={}", len(anti_pattern_ids))
+
+
 # ── Feedback loops ────────────────────────────────────────────────────────────
+
+@neo4j_breaker
+def update_pattern_cross_signals(pattern_id: str, like_delta: int, dislike_delta: int) -> None:
+    """Update cross-thread like/dislike counters on a QueryPattern.
+
+    Called after each pipeline run when the matched pattern has similar feedback from
+    other threads. These counters adjust tier selection in context/fetcher.py.
+    """
+    _neo4j_write(
+        """
+        MATCH (qp:QueryPattern {id: $id})
+        SET qp.cross_thread_likes    = coalesce(qp.cross_thread_likes, 0) + $like_delta,
+            qp.cross_thread_dislikes = coalesce(qp.cross_thread_dislikes, 0) + $dislike_delta,
+            qp.last_cross_signal_at  = datetime()
+        """,
+        id=pattern_id,
+        like_delta=like_delta,
+        dislike_delta=dislike_delta,
+    )
+    logger.debug(
+        "neo4j | fn=update_pattern_cross_signals | id={} | +likes={} | +dislikes={}",
+        pattern_id[:8], like_delta, dislike_delta,
+    )
+
 
 @neo4j_breaker
 def update_pattern_feedback(pattern_id: str, liked: bool) -> None:
@@ -176,8 +222,8 @@ def update_pattern_feedback(pattern_id: str, liked: bool) -> None:
             MATCH (p:QueryPattern {id: $id})
             SET p.liked_count = coalesce(p.liked_count, 0) + 1,
                 p.promotion_status = CASE
-                    WHEN coalesce(p.liked_count, 0) + 1 >= 1
-                         AND coalesce(p.confidence_score, 0) >= 80
+                    WHEN coalesce(p.liked_count, 0) + 1 >= 2
+                         AND coalesce(p.occurrence_count, 0) >= 3
                          AND coalesce(p.repair_count, 1) = 0
                          AND NOT p.promotion_status IN ['promoted', 'demoted']
                     THEN 'candidate'

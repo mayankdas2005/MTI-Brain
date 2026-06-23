@@ -1023,6 +1023,8 @@ R3f. TYPE CONVERSION ERRORS ("invalid value for", "cannot cast", "date/time fiel
 R3g. """ + COLUMN_QUALIFICATION_RULE + """
 R4. USER SQL PREFERENCES (if the section appears above): apply every listed preference when writing
    the corrected SQL — formatting, ordering, alias style. These override your defaults.
+R5. COLUMN ALIAS RULE: do not add or change AS aliases on raw column references — only derived
+   expressions (aggregations, arithmetic, CASE, type conversions, string functions) may be aliased.
 
 ---
 
@@ -1261,6 +1263,16 @@ CONTRACT FORMAT — output one block per CTE, then FINAL SELECT:
   LIMIT: <n>
   NOTE: If FINAL SELECT uses UNION ALL / UNION, ORDER BY must reference only aliases present in
   every branch's SELECT list. Expressions or bare column names not in the SELECT list are forbidden.
+
+ALIAS RULE — mandatory for all exports:
+  Raw column reference: alias MUST equal the source column name. Do NOT rename it.
+    CORRECT:   vendor_ref (source: aiw.vendor_ref)
+    WRONG:     vendor (source: aiw.vendor_ref)     ← renamed raw column — forbidden
+  Derived value (aggregation, expression, CASE, arithmetic, type conversion, DATE_TRUNC, string function):
+  alias is required and should describe the result.
+    CORRECT:   total_spend_usd (source: SUM(bd.amount_usd))
+    CORRECT:   period_month (source: TO_CHAR(DATE_TRUNC('MONTH', bd.issue_date), 'YYYY-MM'))
+  Rationale: renaming raw columns breaks downstream column-name continuity between related queries.
 
 COLUMN FORWARDING RULES:
   - A CTE reading from real tables may SELECT any column as schema.table.alias_expression.
@@ -1562,6 +1574,13 @@ S15. CTE CONTRACT (if present): three binding constraints.
        not in its own reads_from.
     COMPUTATION EXCEPTION: The contract defines WHAT columns exist, not HOW they are computed.
     Rules S1-S19 always govern computation method (e.g., OLS slope formula over hardcoded multipliers).
+S16. COLUMN ALIAS RULE — applies in every CTE SELECT and the FINAL SELECT:
+    Raw column reference (direct column from a table or upstream CTE): do NOT add an AS clause.
+      CORRECT: bd.vendor_ref                  WRONG: bd.vendor_ref AS vendor
+    Derived expression (aggregation, arithmetic, CASE, type conversion, string function, DATE_TRUNC):
+    MUST have a descriptive AS alias.
+      CORRECT: SUM(bd.amount_usd) AS total_spend_usd
+    Rationale: aliasing raw columns invisibly renames them, breaking continuity with prior queries.
 
 --- FILTER RULES ---
 
@@ -1798,6 +1817,7 @@ RULES:
 - what_if: only populate when a specific data value supports a plausible "if X then Y" scenario. Leave null if speculative.
 - data_gaps: only populate if a column is all-NULL or a key field is missing that would change the analysis.
 - staleness_note: populate only if TEMPORAL CONTEXT shows data older than 30 days. Format: "Positions as of [date], [N] days old."
+- truncation_count: when the data profile includes "TRUNCATION WARNING" with true total M and display cap N, every row-count reference must say "top N of M" (e.g. "top 100 of 249 vendors"), not "M vendors" — users see only the capped rows in the data table.
 - follow_up_paths: 3 short questions (≤12 words each) tailored to the PERSONA above.
   Reference specific entities or amounts from findings. Start with "Which", "What", "How", "Is", "Should", or "When".
   NEVER start with Validate, Retrieve, Confirm whether, Analyze, Quantify, or Identify.
@@ -2390,8 +2410,17 @@ AGGREGATION — decide if rows need collapsing before charting:
 
 ---
 
+TRUNCATED DATA RULE (applies when column profiles show "⚠ Display rows only:"):
+  Full-result stats describe the complete dataset — the display rows are a subset that may cover fewer time periods or categories.
+  Use "⚠ Display rows only:" distinct counts for all chart type selection and confidence scoring:
+  • Apply the -20 (x Distinct < 4) deduction based on the display-rows distinct count, not the full-result count.
+  • If display rows show 1 distinct date period → do NOT pick line or area chart; pick bar.
+  • If display rows show 2 distinct date periods → prefer bar unless the question explicitly asks for a trend.
+
+---
+
 CHART CONFIDENCE (start 100, deduct):
-  -20  time-series chart but x Distinct < 4
+  -20  time-series chart but x Distinct < 4 (use display-rows distinct from "⚠ Display rows only:" if present)
   -20  color series > 10 distinct values (unreadable)
   -15  primary measure has only 1 distinct value (flat chart)
   -10  trend question but < 7 data points
@@ -2406,9 +2435,9 @@ CHART CONFIDENCE (start 100, deduct):
 1. Feedback: quote what the feedback_section says (if any) and state exactly how you will apply it.
    If no feedback: "No feedback provided."
 2. Persona "{persona}": which preference rule applies here?
-3. Data shape: identify date cols, string cols, numeric cols from the profile above.
+3. Data shape: identify date cols, string cols, numeric cols from the profile above. For any column with "⚠ Display rows only:", record the display distinct count — that is what can actually be plotted.
 4. No-chart check: does this data benefit from visualization? If not, state why and output confidence 0.
-5. x_column: which column, what x_column_type — justify from actual sample values.
+5. x_column: which column, what x_column_type — justify from actual sample values. If "⚠ Display rows only:" is present for this column, use its distinct count for chart type selection.
 6. y_column: which numeric measure best answers the question?
 7. color_column: is there a meaningful series dimension? null for single series.
 8. Sort reasoning: what order makes this chart most readable given the question intent?
@@ -2617,6 +2646,8 @@ User question: {question}
 {available_tables_section}
 
 {entity_tokens_section}
+
+{prior_columns_section}
 
 Extract ONLY what is explicitly stated. Do not infer, expand, or add anything not directly mentioned.
 

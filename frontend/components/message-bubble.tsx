@@ -99,6 +99,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     const md = message.metadata_;
     const hasRows = !!(md?.rows && (md.rows as unknown[]).length > 0);
     if (!hasRows && md?.sql) return 'sql';
+    if (!pref.showData) return 'sql';
     if (!pref.showSQL) return 'table';
     return pref.defaultDataView;
   });
@@ -428,6 +429,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
   const thinkingPlacement = usePreferencesStore((s) => s.thinkingPlacement);
+  const prefShowData = usePreferencesStore((s) => s.showData);
   const openThinkingPanel = useUIStore((s) => s.openThinkingPanel);
   const thinkingPanelOpen = useUIStore((s) => s.thinkingPanelOpen);
   const thinkingPanelMessageId = useUIStore((s) => s.thinkingPanelMessageId);
@@ -615,7 +617,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 SQL
               </Button>
             )}
-            {hasTableData && (
+            {hasTableData && prefShowData && (
               <Button
                 variant={dataView === 'table' ? 'secondary' : 'ghost'}
                 size="sm"
@@ -648,7 +650,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               </div>
             </div>
           )}
-          {dataView === 'table' && hasTableData && (
+          {dataView === 'table' && hasTableData && prefShowData && (
             <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} isStreaming={message.isStreaming} />
           )}
         </div>

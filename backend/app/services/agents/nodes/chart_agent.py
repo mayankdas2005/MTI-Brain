@@ -668,7 +668,8 @@ async def _call_chart_llm(
     data_profile = _build_data_profile(columns, rows, query_summary)
     col_meta_str = _build_column_metadata(columns, state)
 
-    fb = state.get("feedback_context") or ""
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    fb = _fb_for_node(state.get("feedback_context") or [], "chart")
     feedback_section = (
         f"LEARNED PREFERENCES (from past feedback — apply within the bounds of standing instructions above):\n<feedback_context>{fb}</feedback_context>"
         if fb else ""

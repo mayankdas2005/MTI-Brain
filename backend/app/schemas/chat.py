@@ -107,10 +107,12 @@ class FeedbackRequest(_StrictRequest):
     Attributes:
         liked: Whether the user liked the response (true=like, false=dislike).
         comment: Optional free-text comment.
+        feedback_type: What aspect the feedback targets ('answer'|'sql'|'chart'|'general').
     """
 
     liked: bool = Field(..., description="true=like, false=dislike")
     comment: str | None = Field(default=None, max_length=2000)
+    feedback_type: str | None = Field(default=None, description="'answer'|'sql'|'chart'|'general'")
 
 
 class RenameRequest(_StrictRequest):

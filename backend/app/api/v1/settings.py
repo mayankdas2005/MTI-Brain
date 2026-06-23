@@ -134,6 +134,9 @@ class FeedbackHistoryItem(BaseModel):
     question_text: str | None
     thread_id: uuid.UUID
     thread_title: str | None
+    feedback_type: str | None
+    last_triggered_at: datetime | None
+    trigger_count: int
     created_at: datetime
 
 
@@ -172,6 +175,9 @@ async def list_feedback_history(
             MTIBrainFeedback.comment,
             MTIBrainFeedback.question_text,
             MTIBrainFeedback.thread_id,
+            MTIBrainFeedback.feedback_type,
+            MTIBrainFeedback.last_triggered_at,
+            MTIBrainFeedback.trigger_count,
             MTIBrainFeedback.created_at,
             MTIBrainThread.title.label("thread_title"),
         )
@@ -190,6 +196,9 @@ async def list_feedback_history(
             question_text=r.question_text,
             thread_id=r.thread_id,
             thread_title=r.thread_title,
+            feedback_type=r.feedback_type,
+            last_triggered_at=r.last_triggered_at,
+            trigger_count=r.trigger_count or 0,
             created_at=r.created_at,
         )
         for r in rows_result.all()
@@ -202,6 +211,99 @@ async def list_feedback_history(
         per_page=per_page,
         total_pages=max(1, math.ceil(total / per_page)),
     )
+
+
+_PATTERN_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "is", "are", "was", "were",
+    "to", "of", "in", "on", "at", "for", "with", "by", "this", "that",
+    "it", "its", "not", "no", "do", "don't", "please", "use", "using",
+    "always", "never", "should", "would", "could", "will", "when", "show",
+    "instead", "more", "less", "also", "just", "only", "very", "much",
+}
+
+
+def _topic_key(comment: str) -> str:
+    words = [
+        w.strip(".,!?;:()") for w in comment.lower().split()
+        if len(w.strip(".,!?;:()")) > 3 and w.strip(".,!?;:()") not in _PATTERN_STOPWORDS
+    ]
+    return " ".join(words[:5])
+
+
+def _suggest_title(topic_key: str, is_positive: bool) -> str:
+    words = topic_key.replace("_", " ").title()
+    prefix = "Always" if is_positive else "Avoid"
+    return f"{prefix}: {words}"
+
+
+class FeedbackPattern(BaseModel):
+    topic_key: str
+    count: int
+    liked_count: int
+    disliked_count: int
+    sample_comments: list[str]
+    suggested_title: str
+    feedback_ids: list[uuid.UUID]
+
+
+@router.get("/feedback/patterns", response_model=list[FeedbackPattern])
+async def get_feedback_patterns(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_read_session),
+):
+    """Return recurring feedback topics — patterns appearing in 2+ feedback comments."""
+    rows_result = await db.execute(
+        select(
+            MTIBrainFeedback.id,
+            MTIBrainFeedback.liked,
+            MTIBrainFeedback.comment,
+        )
+        .join(MTIBrainThread, MTIBrainFeedback.thread_id == MTIBrainThread.id)
+        .where(
+            MTIBrainThread.user_id == current_user.id,
+            MTIBrainFeedback.comment.is_not(None),
+        )
+        .order_by(MTIBrainFeedback.created_at.desc())
+        .limit(100)
+    )
+    rows = rows_result.all()
+
+    groups: dict[str, dict] = {}
+    for row in rows:
+        key = _topic_key(row.comment or "")
+        if not key:
+            continue
+        if key not in groups:
+            groups[key] = {
+                "topic_key": key,
+                "count": 0,
+                "liked_count": 0,
+                "disliked_count": 0,
+                "sample_comments": [],
+                "feedback_ids": [],
+            }
+        g = groups[key]
+        g["count"] += 1
+        if row.liked:
+            g["liked_count"] += 1
+        else:
+            g["disliked_count"] += 1
+        if len(g["sample_comments"]) < 3:
+            g["sample_comments"].append(row.comment)
+        g["feedback_ids"].append(row.id)
+
+    patterns = sorted(
+        [g for g in groups.values() if g["count"] >= 2],
+        key=lambda p: p["count"],
+        reverse=True,
+    )
+    return [
+        FeedbackPattern(
+            **g,
+            suggested_title=_suggest_title(g["topic_key"], g["liked_count"] >= g["disliked_count"]),
+        )
+        for g in patterns[:20]
+    ]
 
 
 @router.delete("/instructions/{instruction_id}", status_code=204)

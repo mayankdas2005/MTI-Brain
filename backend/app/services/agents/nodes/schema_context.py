@@ -251,11 +251,20 @@ async def fetch_anti_patterns(state: AnalyticsState) -> str:
         )
         lines = []
         for p in patterns:
-            element = p.get("failing_element")
-            line = f"- [{p.get('error_type', 'error')}]"
-            if element:
-                line += f" element={element} |"
-            line += f" {p.get('error_summary', '')}"
+            if p.get("error_type") == "user_dislike":
+                count = p.get("occurrence_count") or 1
+                reason = (p.get("error_summary") or "").strip()
+                tables = (p.get("tables_involved") or "").strip()
+                line = f"USER REJECTED THIS APPROACH ({count}× reported): {reason}"
+                if tables:
+                    line += f"\n  Tables involved: {tables}"
+                line += "\n  DO NOT repeat this pattern."
+            else:
+                element = p.get("failing_element")
+                line = f"- [{p.get('error_type', 'error')}]"
+                if element:
+                    line += f" element={element} |"
+                line += f" {p.get('error_summary', '')}"
             lines.append(line)
         return "\n".join(lines)
     except Exception as e:

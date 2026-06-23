@@ -32,6 +32,7 @@ from app.services.agents.node_names import (
 )
 from app.services.agents.nodes.audit import write_query_pattern, write_schema_gaps
 from app.services.agents.neo4j.template_search import find_canonical_pattern_id
+from app.services.agents.neo4j.write import update_pattern_cross_signals
 from app.services.agents.nodes.confidence import compute_confidence
 from app.services.agents.helpers import format_sql
 from app.services.agents.semantic_ir import SemanticIR
@@ -44,7 +45,7 @@ _STATE_KEYS = {
     "current_date",
     "semantic_context", "enriched_schema", "anchor_tables_resolved", "resolved_intent",
     "intent_directive", "intent_directive_instructions", "intent_directive_context",
-    "filter_directive", "schema_directive",
+    "filter_directive", "filter_directive_hint", "schema_directive",
     "semantic_ir_list", "sql_list",
     "recompile_count", "repair_count", "filter_resolution_needed",
     "result_list", "query_summary", "no_data", "reliability_flags",
@@ -52,9 +53,12 @@ _STATE_KEYS = {
     "data_quality_flag", "data_quality_reason",
     "answer", "chart_spec", "chart_type", "alternative_chart_specs", "follow_ups", "error", "stopped", "prior_sql",
     "query_intent", "entity_tokens", "search_terms", "is_followup", "complexity",
-    "preference_summary", "neo4j_raw_graph",
+    "preference_summary", "preference_label", "neo4j_raw_graph",
     "_measure_specialist_output", "_dimension_specialist_output", "_directive_summary", "_cte_outline",
     "tribal_facts",
+    "feedback_context", "distilled_preferences",
+    "intent_fingerprint", "_refined_matched_pattern", "_refined_feedback_pool", "pattern_cache_hit",
+    "prior_execution_context", "prior_context_window",
 }
 
 
@@ -197,6 +201,7 @@ def _build_prior_execution_context(state: dict) -> dict | None:
         "filter_directive": state.get("filter_directive") or "",
         "measure_summary": state.get("_measure_specialist_output") or "",
         "dimension_summary": state.get("_dimension_specialist_output") or "",
+        "output_columns": state.get("columns") or [],
     }
 
 
@@ -206,7 +211,7 @@ async def stream_pipeline(
     persona: str | None = None,
     user_id: str | None = None,
     cancel_event: asyncio.Event | None = None,
-    feedback_context: str = "",
+    feedback_context: list = [],
     user_email: str | None = None,
     user_display_name: str = "",
     max_rows: int = 100,
@@ -291,10 +296,16 @@ async def stream_pipeline(
         "answer": "",
         "chart_spec": None,
         "follow_ups": [],
-        "feedback_context": feedback_context,
+        "feedback_context": [],
         "lt_memory_context": "",
         "preference_summary": None,
+        "preference_label": None,
         "global_instructions": kwargs.get("global_instructions") or "",
+        "distilled_preferences": kwargs.get("distilled_preferences") or "",
+        "intent_fingerprint": None,
+        "_refined_matched_pattern": None,
+        "_refined_feedback_pool": [],
+        "pattern_cache_hit": False,
         "summary": "",
         "error": None,
         "execution_error": None,
@@ -315,6 +326,7 @@ async def stream_pipeline(
         "is_refinement": bool(_prior_sql) and not bool(kwargs.get("is_retry")),
         "prior_execution_context": kwargs.get("prior_execution_context") or None,
         "prior_context_window": kwargs.get("prior_context_window") or None,
+        "prior_output_columns": kwargs.get("prior_output_columns") or [],
     }
 
     from app.services.agents.helpers import MultiSectionStreamer, SectionStreamer
@@ -652,15 +664,19 @@ async def stream_pipeline(
             "question": question,
             "_rows": _done_rows,
             "_cols": _done_cols,
-        }) if not stopped else None
+        }) if not stopped and settings.CONFIDENCE_SCORE_ENABLED else None
         if _confidence:
             logger.info("[{}] confidence | score={} | label={}", run_id[:8], _confidence.get("score"), _confidence.get("label"))
             yield {"event": "confidence", "data": _confidence}
 
-        # ── Loop 1: write QueryPattern (confidence-gated) + SchemaGaps ─────────
+        # ── Loop 1: write QueryPattern (quality-gated) + SchemaGaps ─────────────
         _confidence_score = _confidence.get("score", 0) if _confidence else 0
+        _exec_clean = (
+            state.get("repair_count", 0) <= 1
+            and state.get("recompile_count", 0) == 0
+        )
         _pattern_id: str | None = None
-        if not stopped and _done_rows and _confidence_score >= 60:
+        if not stopped and _done_rows and _exec_clean:
             _ir_list = state.get("semantic_ir_list", [])
             _first_ir = SemanticIR(**_ir_list[0]) if _ir_list else None
             _sql = state.get("sql_list", [""])[0] if state.get("sql_list") else ""
@@ -682,6 +698,23 @@ async def stream_pipeline(
                 asyncio.create_task(
                     write_query_pattern(state, _sql, _first_ir, _confidence_score, _pattern_id, is_update=bool(_existing_id))
                 )
+                _feedback_pool: list = state.get("feedback_context") or []
+                _cross_dislikes = sum(
+                    1 for f in _feedback_pool
+                    if not f.get("liked")
+                    and f.get("source") == "similar"
+                    and (f.get("_rrf_score") or 0) > 0.015
+                )
+                _cross_likes = sum(
+                    1 for f in _feedback_pool
+                    if f.get("liked")
+                    and f.get("source") == "similar"
+                    and (f.get("_rrf_score") or 0) > 0.015
+                )
+                if _cross_dislikes >= 2 or _cross_likes >= 2:
+                    asyncio.create_task(
+                        asyncio.to_thread(update_pattern_cross_signals, _pattern_id, _cross_likes, _cross_dislikes)
+                    )
         asyncio.create_task(write_schema_gaps(state))
 
         _graph_context = _build_graph_context_snapshot(state)
@@ -747,6 +780,8 @@ async def stream_pipeline(
                     "deep_analysis":      state.get("deep_analysis", False),
                     "tribal_facts":       state.get("tribal_facts") or [],
                     "prior_execution_context": _build_prior_execution_context(state),
+                    "intent_fingerprint": state.get("intent_fingerprint"),
+                    "pattern_cache_hit": state.get("pattern_cache_hit", False),
                 },
             }
         except (asyncio.CancelledError, GeneratorExit):

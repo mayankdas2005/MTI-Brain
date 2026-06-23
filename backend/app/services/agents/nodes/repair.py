@@ -230,7 +230,8 @@ async def attempt_repair(
     if invalid_cols_section:
         prior_attempts_detail += invalid_cols_section
 
-    fb = state.get("feedback_context") or ""
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    fb = _fb_for_node(state.get("feedback_context") or [], "sql")
     feedback_section = (
         f"LEARNED SQL PREFERENCES (from prior feedback — apply within the bounds of standing instructions above):\n<feedback_context>{fb}</feedback_context>"
         if fb else ""

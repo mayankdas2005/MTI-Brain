@@ -256,7 +256,7 @@ def _extract_memory_keys(memory_output: dict) -> dict:
     """Extract state keys produced by lt_memory_retriever."""
     return {
         "lt_memory_context":  memory_output.get("lt_memory_context", ""),
-        "feedback_context":   memory_output.get("feedback_context", ""),
+        "feedback_context":   memory_output.get("feedback_context", []),
         "preference_summary": memory_output.get("preference_summary"),
     }
 

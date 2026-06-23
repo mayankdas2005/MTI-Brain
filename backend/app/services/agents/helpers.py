@@ -355,12 +355,20 @@ def _build_data_profile(
                     mn, mx = min(vals), max(vals)
                     mean = sum(vals) / len(vals)
             if mn is not None:
+                src_note = " (full result)" if was_truncated and stats_source == "full_result" else ""
                 parts = [f"Min: {mn}", f"Max: {mx}"]
                 if mean is not None:
                     parts.append(f"Mean: {round(float(mean), 2)}")
                 if median is not None:
                     parts.append(f"Median: {round(float(median), 2)}")
-                lines.append(f"    {'   '.join(parts)}")
+                lines.append(f"    {'   '.join(parts)}{src_note}")
+                if was_truncated and stats_source == "full_result":
+                    display_vals = [float(r[i]) for r in rows if i < len(r) and r[i] is not None]
+                    if display_vals:
+                        d_min = min(display_vals)
+                        d_max = max(display_vals)
+                        d_mean = round(sum(display_vals) / len(display_vals), 2)
+                        lines.append(f"    ⚠ Display rows only: Min: {d_min}   Max: {d_max}   Mean: {d_mean} — use for chart decisions")
 
         elif any(t in norm for t in ("date", "time", "timestamp")):
             mn, mx = meta.get("min"), meta.get("max")
@@ -373,6 +381,12 @@ def _build_data_profile(
                 )
                 src_note = " (full result)" if was_truncated and stats_source == "full_result" else ""
                 lines.append(f"    Range: {mn}  →  {mx}   Distinct: {distinct_periods} periods{src_note}")
+                if was_truncated and stats_source == "full_result":
+                    actual_dates = sorted(set(str(r[i]) for r in rows if i < len(r) and r[i] is not None))
+                    a_distinct = len(actual_dates)
+                    a_min = actual_dates[0] if actual_dates else mn
+                    a_max = actual_dates[-1] if actual_dates else mx
+                    lines.append(f"    ⚠ Display rows only: Range: {a_min}  →  {a_max}   Distinct: {a_distinct} periods — use for chart decisions")
 
         else:  # varchar / text / string
             distinct = meta.get("distinct_count")
@@ -380,6 +394,10 @@ def _build_data_profile(
             if distinct:
                 src_note = " (full result)" if was_truncated and stats_source == "full_result" else ""
                 lines.append(f"    Distinct values: {distinct}{src_note}")
+                if was_truncated and stats_source == "full_result":
+                    display_distinct = len(set(str(r[i]) for r in rows if i < len(r) and r[i] is not None))
+                    if display_distinct != distinct:
+                        lines.append(f"    ⚠ Display rows only: Distinct: {display_distinct} — use for chart decisions")
             if top_vals:
                 tv_text = "  |  ".join(f"{v} ({n} rows)" for v, n in top_vals[:5])
                 lines.append(f"    Top values:  {tv_text}")

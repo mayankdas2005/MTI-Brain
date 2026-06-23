@@ -49,7 +49,7 @@ import {
 } from '@/lib/store/preferences';
 import { useInstructionsStore } from '@/lib/store/instructions';
 import type { UserInstruction } from '@/lib/api/instructions';
-import { listFeedbackHistory, type FeedbackHistoryPage } from '@/lib/api/feedback-history';
+import { listFeedbackHistory, getFeedbackPatterns, type FeedbackHistoryPage, type FeedbackPattern } from '@/lib/api/feedback-history';
 import { ThumbsUp, ThumbsDown } from 'lucide-react';
 import {
   getPermission,
@@ -96,6 +96,8 @@ export default function SettingsPage() {
   const setResponseTone = usePreferencesStore((s) => s.setResponseTone);
   const showSQL = usePreferencesStore((s) => s.showSQL);
   const setShowSQL = usePreferencesStore((s) => s.setShowSQL);
+  const showData = usePreferencesStore((s) => s.showData);
+  const setShowData = usePreferencesStore((s) => s.setShowData);
   const autoShowCharts = usePreferencesStore((s) => s.autoShowCharts);
   const setAutoShowCharts = usePreferencesStore((s) => s.setAutoShowCharts);
   const showFollowUps = usePreferencesStore((s) => s.showFollowUps);
@@ -192,6 +194,7 @@ export default function SettingsPage() {
 
   const sharedProps = {
     showSQL, setShowSQL,
+    showData, setShowData,
     autoShowCharts, setAutoShowCharts,
     showFollowUps, setShowFollowUps,
     showReasoning, setShowReasoning,
@@ -330,6 +333,7 @@ function SectionPanel({
   activeSection, v,
   responseTone, setResponseTone, hydrated,
   showSQL, setShowSQL,
+  showData, setShowData,
   autoShowCharts, setAutoShowCharts,
   showFollowUps, setShowFollowUps,
   showReasoning, setShowReasoning,
@@ -345,6 +349,7 @@ function SectionPanel({
   v: (k: string) => boolean;
   responseTone: ResponseTone; setResponseTone: (v: ResponseTone) => void; hydrated: boolean;
   showSQL: boolean; setShowSQL: (v: boolean) => void;
+  showData: boolean; setShowData: (v: boolean) => void;
   autoShowCharts: boolean; setAutoShowCharts: (v: boolean) => void;
   showFollowUps: boolean; setShowFollowUps: (v: boolean) => void;
   showReasoning: boolean; setShowReasoning: (v: boolean) => void;
@@ -392,6 +397,7 @@ function SectionPanel({
           <DisplayContent
             v={v}
             showSQL={showSQL} setShowSQL={setShowSQL}
+            showData={showData} setShowData={setShowData}
             autoShowCharts={autoShowCharts} setAutoShowCharts={setAutoShowCharts}
             showFollowUps={showFollowUps} setShowFollowUps={setShowFollowUps}
             showReasoning={showReasoning} setShowReasoning={setShowReasoning}
@@ -427,6 +433,7 @@ function SearchResults({
   visibleCount, query, setQuery, sectionVisible, matches, v,
   responseTone, setResponseTone, hydrated,
   showSQL, setShowSQL,
+  showData, setShowData,
   autoShowCharts, setAutoShowCharts,
   showFollowUps, setShowFollowUps,
   showReasoning, setShowReasoning,
@@ -443,6 +450,7 @@ function SearchResults({
   matches: (h: string) => boolean; v: (k: string) => boolean;
   responseTone: ResponseTone; setResponseTone: (v: ResponseTone) => void; hydrated: boolean;
   showSQL: boolean; setShowSQL: (v: boolean) => void;
+  showData: boolean; setShowData: (v: boolean) => void;
   autoShowCharts: boolean; setAutoShowCharts: (v: boolean) => void;
   showFollowUps: boolean; setShowFollowUps: (v: boolean) => void;
   showReasoning: boolean; setShowReasoning: (v: boolean) => void;
@@ -485,6 +493,7 @@ function SearchResults({
           <DisplayContent
             v={v}
             showSQL={showSQL} setShowSQL={setShowSQL}
+            showData={showData} setShowData={setShowData}
             autoShowCharts={autoShowCharts} setAutoShowCharts={setAutoShowCharts}
             showFollowUps={showFollowUps} setShowFollowUps={setShowFollowUps}
             showReasoning={showReasoning} setShowReasoning={setShowReasoning}
@@ -587,6 +596,7 @@ function ToneGrid({
 function DisplayContent({
   v,
   showSQL, setShowSQL,
+  showData, setShowData,
   autoShowCharts, setAutoShowCharts,
   showFollowUps, setShowFollowUps,
   showReasoning, setShowReasoning,
@@ -596,6 +606,7 @@ function DisplayContent({
 }: {
   v: (k: string) => boolean;
   showSQL: boolean; setShowSQL: (v: boolean) => void;
+  showData: boolean; setShowData: (v: boolean) => void;
   autoShowCharts: boolean; setAutoShowCharts: (v: boolean) => void;
   showFollowUps: boolean; setShowFollowUps: (v: boolean) => void;
   showReasoning: boolean; setShowReasoning: (v: boolean) => void;
@@ -613,6 +624,15 @@ function DisplayContent({
             checked={showSQL}
             onCheckedChange={setShowSQL}
             isDefault={showSQL === PREFERENCES_DEFAULTS.showSQL}
+          />
+        )}
+        {v('show data table results display') && (
+          <ToggleRow
+            label="Show Data"
+            description="Display the data table alongside results."
+            checked={showData}
+            onCheckedChange={setShowData}
+            isDefault={showData === PREFERENCES_DEFAULTS.showData}
           />
         )}
         {v('auto show charts visualizations') && (
@@ -1073,6 +1093,13 @@ function InstructionsPanel() {
   const [saving, setSaving] = useState(false);
   const newTitleRef = useRef<HTMLInputElement>(null);
 
+  const handleAddFromPattern = useCallback((title: string, content: string) => {
+    setNewTitle(title);
+    setNewContent(content);
+    setAdding(true);
+    setTimeout(() => newTitleRef.current?.focus(), 50);
+  }, []);
+
   useEffect(() => {
     if (!lastFetched) fetchInstructions();
   }, [lastFetched, fetchInstructions]);
@@ -1253,6 +1280,9 @@ function InstructionsPanel() {
 
       {/* Feedback history — collapsible */}
       <FeedbackHistorySection />
+
+      {/* Progressive promotion — suggest patterns as standing instructions */}
+      <FeedbackPatternsSection onAddInstruction={handleAddFromPattern} />
     </div>
   );
 }
@@ -1308,6 +1338,18 @@ function relativeDate(iso: string): string {
   return `${Math.floor(days / 365)} year${Math.floor(days / 365) > 1 ? 's' : ''} ago`;
 }
 
+function isStale(item: { created_at: string; last_triggered_at: string | null }): boolean {
+  const STALE_DAYS = 60;
+  const now = Date.now();
+  const createdAge = Math.floor((now - new Date(item.created_at).getTime()) / 86_400_000);
+  if (createdAge <= STALE_DAYS) return false;
+  if (item.last_triggered_at) {
+    const triggeredAge = Math.floor((now - new Date(item.last_triggered_at).getTime()) / 86_400_000);
+    return triggeredAge > STALE_DAYS;
+  }
+  return true;
+}
+
 function FeedbackHistory() {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<FeedbackHistoryPage | null>(null);
@@ -1348,36 +1390,58 @@ function FeedbackHistory() {
     <div className="space-y-1">
       {/* Entries */}
       <div className="divide-y divide-border/30">
-        {data.items.map((item) => (
-          <div key={item.id} className="flex items-start gap-3 py-3">
-            {/* Sentiment icon */}
-            <div className={`shrink-0 mt-0.5 rounded-full p-1 ${item.liked ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-red-500/10 text-red-500 dark:text-red-400'}`}>
-              {item.liked
-                ? <ThumbsUp className="w-3 h-3" />
-                : <ThumbsDown className="w-3 h-3" />}
-            </div>
+        {data.items.map((item) => {
+          const stale = isStale(item);
+          return (
+            <div key={item.id} className={`flex items-start gap-3 py-3 ${stale ? 'opacity-50' : ''}`}>
+              {/* Sentiment icon */}
+              <div className={`shrink-0 mt-0.5 rounded-full p-1 ${item.liked ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-red-500/10 text-red-500 dark:text-red-400'}`}>
+                {item.liked
+                  ? <ThumbsUp className="w-3 h-3" />
+                  : <ThumbsDown className="w-3 h-3" />}
+              </div>
 
-            {/* Content */}
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-foreground leading-snug">
-                {item.comment
-                  ? `"${item.comment}"`
-                  : <span className="text-muted-foreground/60 italic">
-                      {item.liked ? 'Marked response helpful' : 'Marked response unhelpful'}
+              {/* Content */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-xs text-foreground leading-snug">
+                    {item.comment
+                      ? `"${item.comment}"`
+                      : <span className="text-muted-foreground/60 italic">
+                          {item.liked ? 'Marked response helpful' : 'Marked response unhelpful'}
+                        </span>
+                    }
+                  </p>
+                  {stale && (
+                    <span className="shrink-0 text-[9px] text-muted-foreground/40 italic whitespace-nowrap">
+                      Not recently applied
                     </span>
-                }
-              </p>
-              {item.question_text && (
-                <p className="text-[11px] text-muted-foreground/55 mt-0.5 leading-snug truncate">
-                  {item.question_text}
-                </p>
-              )}
-              <p className="text-[10px] text-muted-foreground/35 mt-0.5">
-                {relativeDate(item.created_at)}
-              </p>
+                  )}
+                </div>
+                {item.question_text && (
+                  <p className="text-[11px] text-muted-foreground/55 mt-0.5 leading-snug truncate">
+                    {item.question_text}
+                  </p>
+                )}
+                <div className="flex items-center gap-2 mt-0.5">
+                  <p className="text-[10px] text-muted-foreground/35">
+                    {relativeDate(item.created_at)}
+                  </p>
+                  {item.feedback_type && item.feedback_type !== 'general' && (
+                    <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 font-medium">
+                      {item.feedback_type}
+                    </span>
+                  )}
+                  {item.trigger_count > 0 && (
+                    <span className="text-[9px] text-muted-foreground/30">
+                      applied {item.trigger_count}×
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Pagination */}
@@ -1409,6 +1473,86 @@ function FeedbackHistory() {
       <p className="text-[10px] text-muted-foreground/40 text-center pt-1">
         {data.total} feedback {data.total === 1 ? 'entry' : 'entries'} total
       </p>
+    </div>
+  );
+}
+
+const DISMISSED_PATTERNS_KEY = 'mti_brain_dismissed_patterns';
+
+function FeedbackPatternsSection({
+  onAddInstruction,
+}: {
+  onAddInstruction: (title: string, content: string) => void;
+}) {
+  const [patterns, setPatterns] = useState<FeedbackPattern[] | null>(null);
+  const [dismissed, setDismissed] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(DISMISSED_PATTERNS_KEY);
+      return new Set(stored ? JSON.parse(stored) : []);
+    } catch {
+      return new Set();
+    }
+  });
+
+  useEffect(() => {
+    getFeedbackPatterns()
+      .then(setPatterns)
+      .catch(() => setPatterns([]));
+  }, []);
+
+  const dismiss = (key: string) => {
+    setDismissed((prev) => {
+      const next = new Set(prev).add(key);
+      try { localStorage.setItem(DISMISSED_PATTERNS_KEY, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+
+  const visible = (patterns ?? []).filter((p) => !dismissed.has(p.topic_key));
+  if (visible.length === 0) return null;
+
+  return (
+    <div className="border-t border-border/40 mt-2 pt-3">
+      <p className="text-xs font-medium text-foreground mb-1">Patterns we noticed</p>
+      <p className="text-[11px] text-muted-foreground/60 mb-3">
+        These topics appear repeatedly in your feedback — add them as standing instructions so they apply on every query.
+      </p>
+      <div className="space-y-2">
+        {visible.slice(0, 5).map((p) => (
+          <div
+            key={p.topic_key}
+            className="flex items-start justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 px-3 py-2.5"
+          >
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-foreground truncate">{p.suggested_title}</p>
+              <p className="text-[11px] text-muted-foreground/60 mt-0.5 leading-snug line-clamp-1">
+                {p.sample_comments[0]}
+              </p>
+              <p className="text-[10px] text-muted-foreground/40 mt-0.5">
+                Mentioned {p.count} time{p.count !== 1 ? 's' : ''}
+                {p.liked_count > 0 && p.disliked_count > 0 && ` · ${p.liked_count} liked · ${p.disliked_count} disliked`}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => onAddInstruction(p.suggested_title, p.sample_comments[0] ?? p.topic_key)}
+              >
+                Add as instruction
+              </Button>
+              <button
+                onClick={() => dismiss(p.topic_key)}
+                className="text-muted-foreground/30 hover:text-muted-foreground transition-colors"
+                aria-label="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

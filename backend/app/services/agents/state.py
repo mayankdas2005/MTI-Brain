@@ -99,10 +99,13 @@ class AnalyticsState(TypedDict):
     follow_ups: list[str]
 
     # ── Memory / feedback ────────────────────────────────────────────────────
-    feedback_context: str
+    feedback_context: list               # list[dict] of merged thread+similar feedback rows; nodes call build_feedback_context_for_node() to filter by type
     lt_memory_context: str               # long-term memory fetched by lt_memory_retriever node
     preference_summary: dict | None      # structured summary from lt_memory_retriever (counts + items) → saved to message metadata
+    preference_label: str | None         # markdown summary for UI pipeline step
     global_instructions: str             # enabled user standing instructions loaded pre-pipeline; injected into synthesis/general_chat/sql_generator etc.
+    distilled_preferences: str           # Haiku-synthesised 5-8 bullet behavioural profile; injected instead of raw feedback when fresh (set by chat.py pre-load)
+    intent_fingerprint: dict | None      # {anchor_tables, measures, filters, dimensions, time_period} — built by directive_writer; stored to message metadata for feedback FTS
     summary: str                          # short-term session summary
     context_fetch_label: str | None      # deterministic markdown summary from context_fetcher — emitted as synthetic reasoning.delta
 
@@ -133,11 +136,17 @@ class AnalyticsState(TypedDict):
     is_refinement: bool                 # True for user-initiated refinements (prior_sql from frontend, not is_retry)
     prior_execution_context: dict | None  # structured context from the last analytics turn (read from DB); passed to specialists as non-directive reference
     prior_context_window: list[dict] | None  # last N analytics turns' structured context (newest first, no SQL); rolling thread-context window passed to specialists
+    prior_output_columns: list[str]      # actual result column names from the most recent prior analytics query; injected into query_planner for continuation column continuity
 
     # ── sql_generator intra-turn cache (avoids redundant Neo4j calls on recompile) ──
     _sql_schema_ctx_cache: dict | None  # result of build_schema_context — reused on recompile
     _cached_anti_patterns: str | None   # pre-formatted anti-pattern text — reused on recompile
     _cached_query_patterns: list | None # raw query pattern list — reused on recompile
+
+    # ── Track B: QueryPattern intent re-ranking ──────────────────────────────
+    _refined_matched_pattern: dict | None  # Pass 2 pattern from anchor_resolver (intent-aware re-search); beats Pass 1 when raw_score > threshold
+    _refined_feedback_pool: list           # Pass 2 feedback from anchor_resolver (intent-aware re-rank of similar feedback)
+    pattern_cache_hit: bool                # True when sql_generator bypassed LLM and returned cached SQL from QueryPattern node
 
     # ── specialist <output> captures (written by each specialist; read by audit to persist) ──
     # Annotated reducer: keep first non-empty value — survives parallel Send API branch merges

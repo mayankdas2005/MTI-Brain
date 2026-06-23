@@ -260,6 +260,11 @@ def _build_schema_candidates_text(semantic_context: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_feedback_context_str(state: AnalyticsState) -> str:
+    from app.services.chat.feedback import build_feedback_context_for_node as _fbn
+    return _fbn(state.get("feedback_context") or [], "sql")
+
+
 def _build_prompt(state: AnalyticsState) -> list:
     semantic_context = state.get("semantic_context") or {}
 
@@ -312,7 +317,7 @@ def _build_prompt(state: AnalyticsState) -> list:
     return INTENT_RESOLVE_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         persona=state.get("persona", "analyst"),
-        feedback_context=state.get("feedback_context", ""),
+        feedback_context=_build_feedback_context_str(state),
         instructions_section=_instructions_section,
         conversation_context=conversation_context,
         memory_context=semantic_context.get("memory_context", ""),
