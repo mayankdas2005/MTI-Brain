@@ -32,10 +32,15 @@ def _build_prior_columns_section(prior_output_columns: list[str]) -> str:
     return (
         "PRIOR QUESTION OUTPUT COLUMNS:\n"
         f"{cols_list}\n"
-        "If the current question narrows, filters, or extends the prior result:\n"
-        "  Include in output_slots any prior column that is still needed to describe the result.\n"
-        "  Omit prior columns that are irrelevant given the new question's scope.\n"
-        "If the current question is on a different topic or uses different data, ignore this section.\n"
+        "\n"
+        "INSTRUCTIONS — read all four rules before generating output_slots:\n"
+        "  1. Generate output_slots ENTIRELY from what the CURRENT question asks for — do this first.\n"
+        "  2. Then carry forward any prior identifier/dimension columns (entity codes, names, reference keys)\n"
+        "     that help the user recognise this result relative to the prior one.\n"
+        "  3. Do NOT carry forward prior measure columns (aggregations, totals, amounts, counts)\n"
+        "     unless the current question explicitly asks for that same metric.\n"
+        "  4. If the current question is on a completely different topic or different tables, ignore this section.\n"
+        "CRITICAL: Prior columns SUPPLEMENT output_slots — they do not define or constrain them.\n"
     )
 
 
@@ -47,12 +52,20 @@ async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     llm = get_llm("fast")
 
+    _prior_cols = state.get("prior_output_columns") or []
+    _prior_section = _build_prior_columns_section(_prior_cols)
+    if _prior_cols:
+        logger.info(
+            "query_planner | prior_columns_injected | thread={} | count={} | cols={}",
+            state["thread_id"], len(_prior_cols), _prior_cols,
+        )
+
     prompt = QUERY_PLANNER_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         available_tables_section="",
         entity_tokens_section="",
-        prior_columns_section=_build_prior_columns_section(state.get("prior_output_columns") or []),
+        prior_columns_section=_prior_section,
     )
 
     @llm_breaker

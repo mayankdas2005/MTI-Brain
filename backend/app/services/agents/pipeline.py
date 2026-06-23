@@ -675,6 +675,14 @@ async def stream_pipeline(
             state.get("repair_count", 0) <= 1
             and state.get("recompile_count", 0) == 0
         )
+        if not _exec_clean:
+            logger.info(
+                "[{}] QueryPattern SKIP | repair_count={} | recompile_count={} | reason={}",
+                run_id[:8],
+                state.get("repair_count", 0),
+                state.get("recompile_count", 0),
+                "recompile" if state.get("recompile_count", 0) > 0 else "repair>1",
+            )
         _pattern_id: str | None = None
         if not stopped and _done_rows and _exec_clean:
             _ir_list = state.get("semantic_ir_list", [])
@@ -695,6 +703,11 @@ async def stream_pipeline(
                     except Exception as _dedup_err:
                         logger.warning("[{}] pattern dedup failed, creating fresh node | {}", run_id[:8], _dedup_err)
                 _pattern_id = _existing_id or str(uuid.uuid4())
+                logger.info(
+                    "[{}] QueryPattern SAVE | pattern_id={} | existing={} | repair_count={} | confidence={:.3f}",
+                    run_id[:8], _pattern_id, bool(_existing_id),
+                    state.get("repair_count", 0), _confidence_score,
+                )
                 asyncio.create_task(
                     write_query_pattern(state, _sql, _first_ir, _confidence_score, _pattern_id, is_update=bool(_existing_id))
                 )

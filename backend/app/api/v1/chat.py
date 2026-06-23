@@ -660,6 +660,10 @@ async def ask_question(
                     prior_execution_context = prior_context_window[0]
         except Exception:
             logger.debug("[ask] prior context window lookup failed (non-fatal)")
+        logger.info(
+            "[ask] prior_output_columns | thread={} | count={} | cols={}",
+            thread_id, len(_prior_output_columns), _prior_output_columns,
+        )
 
         # ── Load conversation history from DB (persistent, not Redis) ──
         conversation_history = "(no prior context)"

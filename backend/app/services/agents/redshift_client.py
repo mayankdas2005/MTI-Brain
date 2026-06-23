@@ -38,15 +38,25 @@ def _make_connection():
 
 
 async def init_redshift() -> None:
-    """Initialize the Redshift connection pool (6 connections)."""
+    """Initialize the Redshift connection pool — all connections opened in parallel."""
     global _connection_pool
     try:
+        results = await asyncio.gather(
+            *[asyncio.to_thread(_make_connection) for _ in range(_POOL_SIZE)],
+            return_exceptions=True,
+        )
         pool: queue.Queue = queue.Queue(maxsize=_POOL_SIZE)
-        for _ in range(_POOL_SIZE):
-            conn = await asyncio.to_thread(_make_connection)
-            pool.put_nowait(conn)
+        ok = 0
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("Redshift connection failed (skipping): {}", r)
+            else:
+                pool.put_nowait(r)
+                ok += 1
+        if ok == 0:
+            raise RuntimeError("All Redshift connections failed during pool init")
         _connection_pool = pool
-        logger.info("Redshift pool initialized | size={} | host={}", _POOL_SIZE, settings.REDSHIFT_HOST)
+        logger.info("Redshift pool initialized | size={}/{} | host={}", ok, _POOL_SIZE, settings.REDSHIFT_HOST)
     except Exception as e:
         logger.error("Redshift initialization failed: {}", e)
         raise

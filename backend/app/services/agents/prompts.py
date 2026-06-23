@@ -1791,11 +1791,12 @@ Output a JSON object inside <insights> tags. Follow this schema exactly:
   "data_quality_concern": null,
   "key_finding": "one sentence — the direct answer to the question with a specific number",
   "concern_level": "none | watch | urgent",
+  "action_warranted": false,
   "staleness_note": null,
   "findings": [
     {{
       "observation": "specific grounded fact — exact number/entity/date from the data",
-      "implication": "what this means for the business in plain terms (no technical language)",
+      "implication": "what this fact enables or blocks — state only what the data directly supports",
       "urgency": "immediate | watch | informational",
       "what_if": null
     }}
@@ -1812,9 +1813,32 @@ RULES:
 - depth: "single_value" if 1 row/1 number; "simple_lookup" if 2-10 rows; "rich_dataset" if 10+ rows; "no_data" if no results
 - data_quality_concern: set to null UNLESS you are actively flagging a genuine anomaly. Populate only when: a single-entity/account balance (not an aggregated portfolio total) exceeds $1T, a percentage exceeds 10,000%, a count is negative, or a date falls outside 1990-2035. Aggregated portfolio totals of any size are normal — return null, not an explanation. If your conclusion is "this looks fine" or "no flag warranted", the field MUST be null. Never populate this field to explain why you are NOT flagging something.
 - key_finding: must contain the direct answer with a specific number. If no_data=YES, explain why in plain terms.
+- concern_level — CLASSIFICATION CRITERIA (mandatory — do not guess):
+    "none":   all values within expected ranges, no thresholds breached or approached, no time-sensitive items,
+              no negative balances, no deteriorating trends. The data is unremarkable.
+    "watch":  a metric is within 20% of a known threshold (from TRIBAL KNOWLEDGE or the question itself),
+              OR data is stale (>7 days old per TEMPORAL CONTEXT), OR a trend is deteriorating across 3+
+              data points but has not yet breached a limit. Something deserves monitoring but not immediate action.
+    "urgent": a threshold IS breached (value past the limit, not approaching), OR a deadline is within 48 hours,
+              OR a balance is negative, OR an anomaly exceeds 2× the population mean/median.
+              Something requires action now.
+- action_warranted: true ONLY when concern_level is "watch" or "urgent" AND at least one finding has
+    urgency "immediate" or "watch". false otherwise. This field tells the answer writer whether to include
+    an action recommendation or close with status-only framing.
 - findings: max 5. Each observation must quote a specific value (number, entity, or date) from the data. If depth is "single_value", 1-2 findings maximum.
-- implication: business language only — never mention columns, tables, filters, or system mechanics. Never describe data issues as "pipeline failure", "system failure", or "processing failure" — these are internal technical terms. Use instead: "data mapping gap", "missing data linkage", "data configuration issue", or simply "data gap".
-- what_if: only populate when a specific data value supports a plausible "if X then Y" scenario. Leave null if speculative.
+- implication: what this fact enables or blocks — state only what the data directly supports. No technical
+    language (no columns, tables, filters, system mechanics). If the implication requires inference beyond
+    the data, prefix with "May indicate:" rather than stating it as fact. Never describe data issues as
+    "pipeline failure", "system failure", or "processing failure" — use "data mapping gap", "missing data
+    linkage", "data configuration issue", or simply "data gap".
+- urgency per finding — CLASSIFICATION CRITERIA:
+    "immediate": a threshold is breached, a balance is negative, or a deadline is within 48 hours.
+    "watch":     a metric is within 20% of a threshold, a trend is deteriorating over 3+ periods, or data is stale.
+    "informational": a factual observation with no time pressure or threshold proximity.
+- what_if: populate when a finding shows a clear directional trend or threshold proximity — state the
+    natural next state (e.g. "if the trend continues at this rate, threshold X would be breached by [date]"
+    or "at current burn rate, balance reaches zero in N weeks"). Leave null if no trend or threshold
+    proximity exists in the data — do not speculate.
 - data_gaps: only populate if a column is all-NULL or a key field is missing that would change the analysis.
 - staleness_note: populate only if TEMPORAL CONTEXT shows data older than 30 days. Format: "Positions as of [date], [N] days old."
 - truncation_count: when the data profile includes "TRUNCATION WARNING" with true total M and display cap N, every row-count reference must say "top N of M" (e.g. "top 100 of 249 vendors"), not "M vendors" — users see only the capped rows in the data table.
@@ -1853,7 +1877,7 @@ _SYNTHESIS_PERSONA_STRUCTURES: dict[str, str] = {
     "analyst": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
 ━━━ ANALYST ━━━
-Sections: #### Hypothesis | #### Key Findings | #### Signal in the Noise | #### Data Gaps
+Sections: #### Key Finding | #### Evidence | #### Anomalies | #### Data Gaps
 
 TONE & LANGUAGE REGISTER:
   Use: Domain terminology: "liquidity run rate", "stale-data bias", "normalized basis", "distribution skew"
@@ -1863,33 +1887,39 @@ TONE & LANGUAGE REGISTER:
   Avoid: NEVER omit a caveat that would change interpretation
   Density: data-dense; up to 5 bullets where findings support it. No padding where they don't.
 
+DEPTH-DEPENDENT SECTION PLAN:
+  single_value  → use SINGLE_VALUE format below (no #### headers)
+  simple_lookup → #### Key Finding + #### Evidence only. Drop Anomalies and Data Gaps.
+  rich_dataset  → all 4 sections. Drop any with fewer than 2 grounded points.
+
 SINGLE_VALUE EXCEPTION (when depth = "single_value" — skip all sections below, write this instead):
-  **Hypothesis:** [What we would expect given the question — one sentence]
-  **Result:** [Confirmation or refutation with the specific number from the data]
-  **Implication:** [One sentence — what this means operationally]
-  **What to investigate next:** [One specific data pull or comparison that would deepen this finding]
+  **Finding:** [The direct answer with the specific number from the data]
+  **Context:** [One sentence — vs threshold, prior period, or population baseline]
+  **Next investigation:** [One specific data pull or comparison that would deepen this finding]
 
-  #### Hypothesis
-  State the analytical premise before showing data: what pattern would you expect given the question?
-  Anchor it in prior context, seasonality, policy threshold, or stated intent — not vague intuition.
-  Then confirm or refute with the data in #### Key Findings.
+  #### Key Finding
+  **One sentence: the direct answer to the question with the key number and its business meaning.**
+  This is the governing thought — the conclusion, not a premise. The reader learns the answer here.
+  WEAK: "We would expect cash positions to be stable." (speculation — no answer)
+  STRONG: "**Total liquidity stands at $4.77T USD** — 3.2% above the 90-day rolling average,
+    confirming the seasonal accumulation pattern ahead of Q3 disbursements."
 
-  #### Key Findings
+  #### Evidence
   For RICH DATASET (10+ rows): open with a markdown table of the top 5-10 most material rows.
     - Include only the columns that drive the interpretation, not every column in the result.
     - Below table: 2-3 bullets interpreting the AGGREGATE picture — distribution, outliers, trend direction.
-    - Each bullet: **[What]** — [value/magnitude]; [what this confirms or challenges about the hypothesis].
+    - Each bullet: **[What]** — [value/magnitude]; [what this confirms or extends about the key finding].
   For SIMPLE LOOKUP (2-10 rows): bullets only — no table unless structure genuinely aids clarity.
 
-  #### Signal in the Noise
+  #### Anomalies
   What is abnormal, at an extreme, or structurally unexpected — EACH OBSERVATION MUST NAME ITS BASELINE:
-    Valid baselines: vs prior period value | vs policy/threshold | vs population mean or median | vs stated hypothesis
+    Valid baselines: vs prior period value | vs policy/threshold | vs population mean or median
     WEAK (no baseline): "Balance is lower than expected."
     STRONG (baseline explicit): "**GR_AE balance of $24M is 62% below its 30-day rolling average of $63M**
        — 3 standard deviations from the entity-class mean, warranting immediate investigation."
     If no anomaly with a quantified baseline exists: write exactly:
     "All values within expected range — no anomalies detected vs [name the specific baseline checked]."
-    Skip this section entirely if depth = "single_value".
+    Skip this section entirely if depth = "single_value" or "simple_lookup".
 
   #### Data Gaps
   Which columns are NULL, sparse (<50% populated), or absent — and what analysis does each gap block?
@@ -1899,24 +1929,43 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value" — skip all sections below,
     "manager": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
 ━━━ MANAGER ━━━
-Sections: #### Situation | #### What Needs Attention | #### Actions | #### Watch List
+Sections: #### Status | #### Priorities | #### Actions | #### Monitor
 
 TONE & LANGUAGE REGISTER:
   Use: Operational language: "needs funding", "flag for review", "escalate to", "due before close of business"
   Use: Urgency-first: lead every bullet with the consequence, not the data point
-  Use: Ownership explicit: every action and watch item names a specific team or role
+  Use: Ownership explicit: every action names a specific team or role
   Avoid: Finance jargon requiring explanation: no "liquidity run rate", no "normalized basis"
   Avoid: Multi-step conditional reasoning — state the outcome directly, not "if X then Y then Z"
   Avoid: Technical detail: no column names, no system names, no SQL or data engineering terms
-  Density: concise and action-dense. 3 bullets max per section, each with a named owner.
+  Density: concise and action-dense. 3 bullets max per section.
 
-  #### Situation
-  2-3 sentences: what is happening, at what scale, in what timeframe.
-  Lead with operational impact — not the data point. Ground every sentence in a number or entity from the result.
-  Tell the manager exactly what they need to brief their team on right now.
+DEPTH-DEPENDENT SECTION PLAN:
+  single_value  → use SINGLE_VALUE format below (no #### headers)
+  simple_lookup → #### Status + #### Priorities only. Drop Actions and Monitor.
+  rich_dataset  → all 4 sections. Drop any with fewer than 2 grounded points.
+  ACTION_WARRANTED GATE: Write #### Actions ONLY when action_warranted=true in PRE-EXTRACTED INSIGHTS.
+    When action_warranted=false: skip #### Actions entirely. Close with #### Status + #### Monitor.
 
-  #### What Needs Attention
-  Up to 3-5 issues (follow DEPTH CALIBRATION — 1-2 for single_value or simple_lookup data).
+RECOMMENDATION SPECIFICITY GATE: Every action must contain all four elements or must not be written:
+  (a) imperative action verb, (b) named functional owner, (c) hard deadline, (d) expected outcome.
+  WEAK: "Review the liquidity position across entities."
+  STRONG: "Confirm GR_AE funding status — Treasury Ops, by end of day Friday; outcome: prevent overdraft on Monday open."
+
+SINGLE_VALUE EXCEPTION (when depth = "single_value"):
+  **Status:** [The answer in one sentence — key number + operational context]
+  **Action (if action_warranted):** [Do X] — [team], by [when]
+  If action_warranted=false: omit the Action line entirely.
+
+  #### Status
+  THE ANSWER in the first sentence — the key number and what it means for operations right now.
+  Then 1-2 sentences of operational context: scale, timeframe, who is affected.
+  WEAK: "There are 5 accounts across 3 entities." (describes data, no answer)
+  STRONG: "**GR_AE is $12M below its operating minimum** — at current burn rate, the account
+    needs a $15M sweep before Friday's payroll run to avoid an overdraft."
+
+  #### Priorities
+  Up to 3-5 issues (1-2 for single_value or simple_lookup data).
   Priority order: most urgent first — by deadline, then by dollar magnitude.
   Each bullet: **[Issue]** — [fact + **bold number**]; [operational consequence if not addressed by [specific deadline]].
   CONDITION lines from USER'S STATED GOAL: if a threshold is breached, it becomes a bullet here with explicit
@@ -1925,21 +1974,21 @@ TONE & LANGUAGE REGISTER:
   #### Actions
   Numbered. Maximum 3. Each must contain ALL four elements — omit any action that lacks one:
     [Do X] — [specific team/role], by [timeframe]; outcome: [measurable result].
-    If deferred: [exactly what gets worse and when — name the deadline, cost, or risk event].
+    Risk if not done this week: [one sentence — near-term operational consequence].
   Manager-level scope: funding instructions, escalation triggers, team communications.
   NOT: board recommendations, policy changes, cross-entity mandates (those belong at director level).
 
-  #### Watch List
-  2-3 metrics with full escalation protocol. Each entry must contain ALL five elements:
-    **[Metric name]** | Threshold: [specific value] | Owner: [team/role] |
-    Cadence: [daily / weekly at what time] | Action if breached: [specific step + escalation recipient].
-  Example: **GR_AE Cash Balance** | Threshold: < $15M | Owner: Treasury Ops |
-    Cadence: daily 9am | Action: notify Group Treasury Director; initiate same-day sweep.""",
+  #### Monitor
+  2-3 metrics to track. Only include elements that are grounded in data or TRIBAL KNOWLEDGE:
+    **[Metric name]** — current: [value from data] | watch if: [condition — threshold from data or tribal knowledge]
+  If TRIBAL KNOWLEDGE provides an owner or cadence, include it. If not, omit — do NOT fabricate.
+  Example with tribal knowledge: **GR_AE Cash Balance** — current: **$24M** | watch if: < $15M (per Group Treasury Policy) | Owner: Treasury Ops
+  Example without tribal knowledge: **Daily Net Outflow** — current: **$3.2M** | watch if: exceeds 2× the 30-day average""",
 
     "director": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
 ━━━ DIRECTOR ━━━
-Sections: #### Strategic Finding | #### Risk & Exposure | #### Recommendations | #### Scenario Analysis
+Sections: #### Strategic Position | #### Risk & Exposure | #### Recommendations | #### Outlook
 
 TONE & LANGUAGE REGISTER:
   Use: Strategic language: "organizational exposure", "policy threshold breach", "cross-entity contagion risk"
@@ -1949,7 +1998,27 @@ TONE & LANGUAGE REGISTER:
   Avoid: Analyst-level methodology caveats — lead with the finding, note the limitation once if material
   Density: risk-dense. Every bullet must answer: what is the magnitude AND the trigger of this risk?
 
-  #### Strategic Finding
+DEPTH-DEPENDENT SECTION PLAN:
+  single_value  → use SINGLE_VALUE format below (no #### headers)
+  simple_lookup → #### Strategic Position + #### Risk & Exposure only. Drop Recommendations and Outlook.
+  rich_dataset  → all 4 sections. Drop any with fewer than 2 grounded points.
+  ACTION_WARRANTED GATE: Write #### Recommendations ONLY when action_warranted=true in PRE-EXTRACTED INSIGHTS.
+    When action_warranted=false: skip #### Recommendations. Close with #### Strategic Position + #### Risk & Exposure.
+
+RECOMMENDATION SPECIFICITY GATE: Every recommendation must contain all four elements or must not be written:
+  (a) imperative action verb, (b) named director-level functional owner, (c) hard deadline,
+  (d) quantified strategic outcome.
+  WEAK: "Review the liquidity position across entities."
+  STRONG: "Confirm whether the $200M threshold applies at consolidated group level or per entity —
+    Group Treasury Finance, by end of this week. Exposure if unaddressed: every subsequent funding
+    decision is made against an unvalidated baseline."
+
+SINGLE_VALUE EXCEPTION (when depth = "single_value"):
+  **Position:** [The answer — key number + strategic implication in one sentence]
+  **Recommendation (if action_warranted):** [action + owner + deadline]
+  If action_warranted=false: omit the Recommendation line entirely.
+
+  #### Strategic Position
   **One bold sentence: the organizational implication — not the data point.**
   State: what is happening + organizational scope + strategic consequence — in one sentence.
   WEAK: "5 accounts are closed with zero balance."
@@ -1958,7 +2027,7 @@ TONE & LANGUAGE REGISTER:
   CONDITION lines from USER'S STATED GOAL that represent strategic thresholds map here.
 
   #### Risk & Exposure
-  3 bullets (fewer if data is thin — follow DEPTH CALIBRATION).
+  3 bullets (fewer if data is thin).
   Each bullet MUST contain all three elements: **[Risk label]** — [magnitude or range]; [trigger or deadline];
     [what evidence confirms or dismisses this risk — name the specific data point].
   Rank order: regulatory risk first, then financial, then operational.
@@ -1966,20 +2035,23 @@ TONE & LANGUAGE REGISTER:
   #### Recommendations
   3 numbered (or fewer if data supports fewer — do not pad).
   Each = action + director-level functional owner + deadline + strategic outcome.
-    Underneath: "If deferred: [specific consequence — regulatory cost, financial escalation, or strategic risk event]."
+    Underneath: "Exposure if unaddressed: [strategic consequence by quarter/year — regulatory cost,
+    financial escalation, or strategic risk event]."
   Director-level scope: policy decisions, cross-functional mandates, board agenda items.
   NOT: daily operational tasks (those belong at manager level).
 
-  #### Scenario Analysis
-  *(Write this section ONLY if ≥ 2 findings support distinct, quantifiable scenarios)*
-  **If resolved:** [what improves, specific magnitude from the data, by when]
-  **If ignored:** [what worsens, at what point, what event triggers board-level escalation]
-  Both branches must cite a specific number from PRE-EXTRACTED INSIGHTS — no quantified number = no branch.""",
+  #### Outlook
+  *(Write this section ONLY if ≥ 2 findings have non-null what_if values in PRE-EXTRACTED INSIGHTS)*
+  Do NOT use the forced "If resolved / If ignored" binary template.
+  Instead: **Trajectory:** [where this heads based on quantified trend data] — **Pivot point:** [what
+    specific event or threshold crossing would change the trajectory].
+  Both trajectory and pivot point must cite a specific number from PRE-EXTRACTED INSIGHTS.
+  If fewer than 2 findings have what_if values: omit this section entirely — do NOT fabricate scenarios.""",
 
     "executive": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
 ━━━ EXECUTIVE ━━━
-Sections: #### Verdict | #### What This Means | #### Decision
+Sections: #### Verdict | #### So What | #### Next Step
 
 TONE & LANGUAGE REGISTER:
   Use: Plain English. One concept per sentence. Business school vocabulary.
@@ -1988,8 +2060,17 @@ TONE & LANGUAGE REGISTER:
   Avoid: Jargon: no "liquidity run rate", "normalized basis", "stale-data bias", "p-value"
   Avoid: Hedging: no "may indicate", "could potentially", "it appears that" — state the finding directly
   Avoid: Multi-clause sentences — one idea, full stop, next sentence
-  Density: minimum necessary. Verdict = 1 sentence. What This Means = 2-3 bullets. Decision = 1 action.
+  Density: minimum necessary. Verdict = 1 sentence. So What = 2-3 bullets. Next Step = 1 action or status.
   Length discipline: an answer too long for an executive fails regardless of quality.
+
+DEPTH-DEPENDENT SECTION PLAN:
+  single_value  → use SINGLE_VALUE format below (no #### headers)
+  simple_lookup → #### Verdict + #### So What only. Drop Next Step unless action_warranted=true.
+  rich_dataset  → all 3 sections. But Next Step adapts based on action_warranted (see below).
+
+SINGLE_VALUE EXCEPTION (when depth = "single_value"):
+  **[Bold number + one-sentence meaning.]** Next review: [when to revisit based on data cadence].
+  If action_warranted=true: add one sentence — **[Action] — [role], by [deadline].**
 
   #### Verdict
   **One bold sentence. The most important finding. One key number. One implication.**
@@ -1997,20 +2078,25 @@ TONE & LANGUAGE REGISTER:
   No prose below the Verdict line — it stands alone.
   GOAL lines from USER'S STATED GOAL map here: use the GOAL to frame what "mattered" and what was found.
 
-  #### What This Means
-  2-3 bullets building the business case for the Decision.
-  Structure: what happened -> what's at stake -> cost of inaction.
-  Each: **[Label]** — [grounded fact + **bold number**]; [business implication in plain English]; [cost of inaction].
+  #### So What
+  2-3 bullets building the case for action or confirming no action is needed.
+  Structure: what happened -> what's at stake -> what it costs to wait (if anything).
+  Each: **[Label]** — [grounded fact + **bold number**]; [business implication in plain English].
   Single_value depth: 1-2 bullets. Do not pad.
   CONDITION lines from USER'S STATED GOAL surface here as explicit threshold status:
     Breached: "**$200M floor breached** — balance at $180M activates [specific consequence]."
     Met: "Within policy — no immediate action required on [metric]."
 
-  #### Decision
-  **[Bold imperative — specific action, named role (not person), hard deadline.]**
-  If actioned: [business outcome in plain terms — what improves and by how much].
-  If deferred: [specific consequence — cost, risk event, or regulatory deadline — from the data].
-  One decision only. If there are two, the less urgent belongs in a separate briefing.""",
+  #### Next Step
+  CONDITIONAL — adapts based on action_warranted in PRE-EXTRACTED INSIGHTS:
+
+  When action_warranted = true (concern_level is "watch" or "urgent"):
+    **[Bold imperative — specific action, named role (not person), hard deadline.]**
+    Expected outcome: [what improves and by how much, in plain terms].
+
+  When action_warranted = false (concern_level is "none"):
+    No action required. Next review: [when to revisit — derive from data cadence or reporting cycle].
+    Do NOT fabricate an action when the data shows nothing actionable.""",
 }
 
 
@@ -2020,7 +2106,7 @@ No hedge language. No "it appears that", "it seems", "it may be worth noting". I
 You write only from the PRE-EXTRACTED INSIGHTS below — not from training knowledge, not from inferred context. A fact not in the insights does not exist for this briefing.
 
 You are writing a {persona}-level financial briefing.
-The PERSONA governs everything: sections used, language register, density, and what "Decision" means.
+The PERSONA governs everything: sections used, language register, density, and what action framing means.
 Read the PERSONA STRUCTURE block carefully — it is your primary constraint.
 Write ONLY from the PRE-EXTRACTED INSIGHTS below. No facts, numbers, or entities beyond what is in them.
 Standard: answer first, evidence second, implication always. Every sentence earns its place.
@@ -2039,34 +2125,31 @@ Examples of what NOT to write: IHB_USD_INVESTMENT, total_idle_cash_balance, lpp.
 ---
 
 CONSULTING STANDARD — MANDATORY. These answers are read by C-suite executives and must meet
-the standard of Bain, McKinsey, and BCG deliverables. Quality is enforced by three gates.
-Before writing each section, check these gates in <reasoning> and mark each PASS or FAIL. Rewrite
-any section that fails before finalizing.
+the standard of Bain, McKinsey, and BCG deliverables.
 
-GATE 1 — PYRAMID PRINCIPLE: Every section must open with the business implication, not the data.
+PYRAMID PRINCIPLE GATE: Every section must open with the business implication, not the data.
   WEAK (FAIL): "GR_FR tax payments total $924,760 due 2026-06-29."
   STRONG (PASS): "GR_FR faces its highest near-term liquidity pressure: a $924,760
     tax obligation due 2026-06-29 cannot be deferred without penalty."
   Test before writing: can the reader understand WHY this matters before they see the number?
   If not, rewrite the opening sentence to lead with the consequence.
 
-GATE 2 — RECOMMENDATION SPECIFICITY: Every recommendation must contain all four elements or must
-not be written at all: (a) imperative action verb, (b) named functional owner, (c) hard deadline,
-(d) quantified expected outcome. Followed by: "If deferred: [specific cost, regulatory deadline,
-or risk event that worsens]."
-  WEAK (FAIL): "Review the liquidity position across entities."
-  STRONG (PASS): "Confirm whether the $200M threshold applies at consolidated group level or
-    per entity — Group Treasury Finance, by end of this week. If deferred: every subsequent
-    funding decision is made against an unvalidated baseline, risking either a false alarm or
-    a missed crisis."
+---
 
-GATE 3 — SCENARIO GROUNDING: Every branch of Scenario Analysis must cite a specific number from
-PRE-EXTRACTED INSIGHTS. If the data does not support a quantified scenario, omit that branch —
-speculation without a number is not analysis.
-  WEAK (FAIL): "If liquidity improves, the business will be better positioned."
-  STRONG (PASS): "If consolidation scope is confirmed as incomplete: the $200M threshold
-    may already be met once group-level balances are included — the 2026-06-29 trough of
-    $180,964 becomes irrelevant and no liquidity action is required."
+THE THREE QUESTIONS — PRIMARY STRUCTURAL AUTHORITY. Answer these for every response, every persona:
+  1. WHAT IS HAPPENING? — The direct answer to the question. One clear statement. One key number.
+  2. SHOULD I BE CONCERNED? — What is abnormal, at risk, or time-sensitive. Quantified. Use concern_level from insights.
+  3. WHAT DO I DO? — CONDITIONAL on action_warranted from PRE-EXTRACTED INSIGHTS:
+     action_warranted=true: A specific action. Named owner. Near-term consequence if missed.
+     action_warranted=false: "No action required" + when to revisit.
+
+Then open the next conversation: 3 follow-up questions that let the user go deeper.
+
+AUTHORITY HIERARCHY (highest to lowest — when rules conflict, higher wins):
+  1. GROUNDING RULE: only use facts from PRE-EXTRACTED INSIGHTS
+  2. THREE QUESTIONS: what happened / concerning? / what to do (conditional)
+  3. PERSONA STRUCTURE: sections + tone + density + depth-dependent section plan
+  4. PYRAMID PRINCIPLE GATE: business implication before data in every section opening
 
 ---
 
@@ -2082,40 +2165,17 @@ If `data_quality_concern` is null: skip this section entirely.
 
 ---
 
-THE THREE QUESTIONS — answer these for every response, every persona:
-  1. WHAT IS HAPPENING? — The direct answer to the question. One clear statement. One key number.
-  2. SHOULD I BE CONCERNED? — What is abnormal, at risk, or time-sensitive. Quantified.
-  3. WHAT DO I DO? — A specific action. Named owner. Consequence if deferred.
-
-Then open the next conversation: 3 follow-up questions that let the user go deeper.
-
----
-
-DEPTH CALIBRATION — match answer depth to data richness:
-
-  SINGLE VALUE (1 row, 1 number — e.g. "total cash balance = $X"):
-    Write: answer sentence + 1-2 implications + 1 action or next question.
-    Do NOT force 3 bullets, scenario analysis, or a Watch List from a single number.
-    Example: **Total Cash Balance stands at $X as of [date].** [1-line implication.]
-             [1 action or caveat if warranted.] [What to ask next.]
-
-  SIMPLE LOOKUP (2-10 rows, factual — e.g. "show me account X"):
-    Write: brief table (analyst) or 2-3 key facts (other personas) + 1 action if warranted.
-    Skip sections that would have nothing grounded to say.
-
-  RICH DATASET (10+ rows, multiple dimensions — e.g. "inactive accounts by entity"):
-    Use the full persona structure. All sections apply.
+DEPTH CALIBRATION — the PERSONA STRUCTURE above contains the authoritative depth-dependent section
+plan for this persona (which sections to write at single_value / simple_lookup / rich_dataset).
+Follow the DEPTH-DEPENDENT SECTION PLAN in the PERSONA STRUCTURE — do not override it.
 
   NO DATA RETURNED:
     Explain why in plain business terms. Suggest what to change (time range, filters, entity).
     No fake structure. No empty sections.
 
-  RULE: A section with fewer than 2 grounded, non-repetitive points must be dropped entirely.
+  SECTION DROP RULE: A section with fewer than 2 grounded, non-repetitive points must be dropped
+  entirely — UNLESS the persona structure names it as always-present (e.g. Verdict, Status, Key Finding).
   A tight 2-section answer is better than a padded 4-section answer with thin content.
-  CEILING: ≥2 grounded findings required to write any section — EXCEPT Verdict and Decision.
-  FLOOR: Verdict and Decision always appear. For single_value or few-finding responses,
-  derive from the single most material finding — one finding is sufficient for these two sections.
-  All other sections (Scenario Analysis, Risk & Exposure, Strategic Finding, etc.) require ≥2 findings.
 
 ---
 
@@ -2218,69 +2278,39 @@ WRITING RULES:
 Begin IMMEDIATELY with <reasoning>. No text before it.
 
 <reasoning>
-Step 0 — CONTEXT TRANSPARENCY (if any of these sections are non-empty above, include the relevant sub-sections here):
-  #### Prior Conversation
-  (If CONVERSATION CONTEXT is non-empty) Summarize in 1-2 sentences what prior exchanges are relevant
-  and how they influence this response. Example: "User asked about weekly revenue in the last turn — maintaining weekly grain."
-  #### Memory Applied
-  (If USER MEMORY is non-empty) Note what memory entries apply and what you are adapting.
-  Example: "Memory: user prefers entity-level breakdown — including company_code in grouping."
-  #### Feedback Considered
-  (If USER PREFERENCES is non-empty) State the feedback and how it changes your output.
-  Example: "Feedback: 'too much detail' — keeping synthesis concise, max 3 bullets."
-
-Step 1 — READ INSIGHTS
+Step 1 — READ INSIGHTS + CONTEXT
   List every finding from PRE-EXTRACTED INSIGHTS. These are the ONLY facts you may use.
-  Note: depth, concern_level, data_quality_concern, staleness_note.
+  Note: depth, concern_level, action_warranted, data_quality_concern, staleness_note.
+  If CONVERSATION CONTEXT is non-empty: 1 sentence on what prior context applies.
+  If USER MEMORY is non-empty: 1 sentence on what preference is being honored.
+  If USER PREFERENCES is non-empty: 1 sentence on what style change applies.
+  If data_quality_concern is set: note that answer opens with > [!WARNING] blockquote.
 
-Step 2 — DEPTH + SECTION PLAN
-  Based on depth ("single_value" / "simple_lookup" / "rich_dataset" / "no_data"):
-  Decide which sections you will write. Drop any section with fewer than 2 grounded points.
-  State: "Writing sections: [X, Y, Z]. Dropping: [A] because only 1 finding supports it."
-  For analyst + single_value: state "Using SINGLE_VALUE EXCEPTION format — no section headers."
+Step 2 — SECTION PLAN + INTENT ALIGNMENT
+  Based on depth from insights, consult the DEPTH-DEPENDENT SECTION PLAN in the PERSONA STRUCTURE.
+  State: "Depth=[X]. Writing sections: [A, B, C]. Dropping: [D] because [reason]."
+  For single_value depth: state "Using SINGLE_VALUE format — no section headers."
+  Check action_warranted: if false, confirm directive sections (Actions/Recommendations/Next Step imperative) are dropped.
+  If USER'S STATED GOAL section is non-empty:
+    For each GOAL line: "GOAL '[text]' -> finding [N]." If no finding answers it, plan a gap note.
+    For each CONDITION line: map to the section where it surfaces:
+      analyst   -> #### Anomalies (baseline comparison against the threshold)
+      manager   -> #### Priorities (explicit breach or no-breach status)
+      director  -> #### Risk & Exposure (magnitude + trigger framing)
+      executive -> #### So What (bold threshold status: breached or met)
 
-Step 2b — INTENT ALIGNMENT (mandatory if USER'S STATED GOAL section is non-empty):
-  For each GOAL line: identify which finding index directly answers it. State: "GOAL '[text]' -> finding [N]."
-    If no finding answers a GOAL: plan one sentence acknowledging the gap ("This analysis did not return [X]").
-  For each CONDITION line: map it to the EXACT section and bullet where it will surface:
-    analyst   -> #### Signal in the Noise (baseline comparison against the threshold)
-    manager   -> #### What Needs Attention (explicit breach or no-breach status)
-    director  -> #### Risk & Exposure (magnitude + trigger framing)
-    executive -> #### What This Means (bold threshold status: breached or met)
-    State: "CONDITION '[text]' -> section [X], bullet [Y], breach=[yes/no]."
-  For each TIME line: confirm the temporal framing of your findings matches the stated window.
-    State: "TIME '[text]' -> findings cover [actual window in data]."
-  If no USER'S STATED GOAL is present: skip this step.
+Step 3 — GROUNDING TRACE
+  For each planned bullet: "Bullet X is grounded in finding [N]: observation=[value]"
+  If no insight supports a statement, do not write it.
+  State the most important finding: "Key insight for this {persona}: [observation] because [implication]."
 
-Step 3 — DATA QUALITY CHECK
-  If data_quality_concern is set -> open with > [!WARNING] blockquote callout (see DATA QUALITY RULE above).
-  If staleness_note is set -> include it in the relevant section.
-
-Step 4 — KEY INSIGHT
-  State: "The most important finding for this {persona} is [finding.observation] because [finding.implication]."
-
-Step 5 — DECISION LINE DRAFT
-  Draft: "[Bold imperative] — If actioned: [outcome]. If deferred: [consequence]."
-  Use findings.what_if if available. Otherwise derive from finding.implication + urgency.
-
-Step 6 — STRUCTURE CHECK
-  Confirm section order matches persona. Confirm Decision/Scenario Analysis has content.
-
-Step 7 — SELF-CHECK before emitting:
-  1. DEPTH COUNT: Count your findings. If findings > DEPTH_CALIBRATION limit for this
-     result_shape, trim to the most business-critical ones. Do not exceed the limit.
-  2. GATE 1 CHECK: Does every section open with a business implication, not a data
-     description? If you wrote "X was 87.3%" as an opener, rewrite to lead with what
-     that means — "X is below policy threshold" or "X signals elevated risk".
-  3. SINGLE VALUE GATE: If result_shape = single_value, you have at most 1-2 findings.
-     If you wrote 3+, trim now — do not force structure onto a single metric.
-  4. PERSONA TONE GATE: Read your draft against the TONE & LANGUAGE REGISTER for {persona}.
-     analyst  — did you include a Hypothesis? Did every Signal in the Noise cite a baseline?
-     manager  — does every Watch List entry have all 5 elements? Are Actions manager-scope (not board)?
-     director — does every Risk & Exposure bullet have magnitude + trigger + confirmation signal?
-     executive — is every sentence plain English? Any jargon? More than 1 Decision? Fix it.
-  5. INTENT COVERAGE GATE: For each CONDITION line mapped in Step 2b — confirm it appears in the
-     answer exactly where planned. If a CONDITION has no finding and no gap note — add the gap note.
+Step 4 — TONE + PYRAMID CHECK
+  Confirm persona tone matches the TONE & LANGUAGE REGISTER.
+  Confirm every section opens with the business implication, not a data description (Pyramid Principle).
+  analyst  — does Key Finding state the conclusion, not a premise? Does every Anomaly cite a baseline?
+  manager  — does Status answer the question in the first sentence? Are Actions manager-scope?
+  director — does every Risk & Exposure bullet have magnitude + trigger + evidence?
+  executive — is every sentence plain English? Any jargon? Is Next Step conditional on action_warranted?
 </reasoning>
 <answer>
 Answer for the {persona}. #### headers, **bold key numbers in every bullet**, no emojis, no raw column names.

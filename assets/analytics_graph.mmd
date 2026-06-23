@@ -5,6 +5,7 @@ graph TD;
 	context_fetcher(context_fetcher)
 	tribal_retrieval(tribal_retrieval)
 	anchor_resolver(anchor_resolver)
+	query_planner(query_planner)
 	schema_enricher(schema_enricher)
 	measure_specialist(measure_specialist)
 	filter_specialist(filter_specialist)
@@ -29,7 +30,7 @@ graph TD;
 	__end__([<p>__end__</p>]):::last
 	__start__ --> intake_classifier;
 	anchor_resolver -.-> intent_resolver;
-	anchor_resolver -.-> schema_enricher;
+	anchor_resolver -.-> query_planner;
 	chart_agent -.-> __end__;
 	chart_agent -.-> compress;
 	compress -.-> intent_assembler;
@@ -60,6 +61,7 @@ graph TD;
 	query_compiler -.-> error_response;
 	query_compiler -.-> filter_resolver;
 	query_compiler -.-> sql_generator;
+	query_planner --> schema_enricher;
 	schema_enricher --> dimension_specialist;
 	schema_enricher --> filter_specialist;
 	schema_enricher --> measure_specialist;
