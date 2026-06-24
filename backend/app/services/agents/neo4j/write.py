@@ -54,7 +54,7 @@ ON CREATE SET
   qp.fp_time_period   = $fp_time_period,
   qp.fp_dimensions    = $fp_dimensions,
   qp.promotion_status = 'active',
-  qp.is_enabled       = false,
+  qp.is_enabled       = true,
   qp.liked_count      = 0,
   qp.disliked_count   = 0,
   qp.first_seen       = datetime(),
@@ -165,7 +165,7 @@ ON CREATE SET
   ap.first_seen       = datetime(),
   ap.occurrence_count = 1,
   ap.success_count    = 0,
-  ap.is_enabled       = false
+  ap.is_enabled       = true
 ON MATCH SET
   ap.occurrence_count  = ap.occurrence_count + 1,
   ap.last_seen         = datetime(),
