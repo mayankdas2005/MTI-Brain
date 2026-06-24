@@ -168,10 +168,10 @@ def _compute_layout(records: list[dict]) -> dict[int, tuple[float, float]]:
 
     n = len(G.nodes)
     # k controls ideal edge length; larger k → more spread.  seed → deterministic.
-    pos = nx.spring_layout(G, k=2.5 / max(1, n ** 0.5), iterations=80, seed=42)
+    pos = nx.spring_layout(G, k=2.0 / max(1, n ** 0.5), iterations=80, seed=42)
 
     # Scale normalized [-1, 1] → vis.js pixel coords
-    scale = max(800, n * 55)
+    scale = max(600, n * 35)
     return {node_id: (float(x) * scale, float(y) * scale) for node_id, (x, y) in pos.items()}
 
 

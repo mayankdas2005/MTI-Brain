@@ -252,7 +252,7 @@ def compile_graph():
 
     b.add_conditional_edges(
         N_SYNTHESIS, route_synthesis,
-        {N_CHART_AGENT: N_CHART_AGENT, END: END},
+        {N_CHART_AGENT: N_CHART_AGENT, N_COMPRESS: N_COMPRESS, END: END},
     )
 
     b.add_conditional_edges(N_CHART_AGENT, route_should_compress, {N_COMPRESS: N_COMPRESS, END: END})

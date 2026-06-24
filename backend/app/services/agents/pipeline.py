@@ -30,7 +30,7 @@ from app.services.agents.node_names import (
     SYNTHESIS as N_SYNTHESIS,
     TRIBAL_RETRIEVAL as N_TRIBAL_RETRIEVAL,
 )
-from app.services.agents.nodes.audit import write_query_pattern, write_schema_gaps
+from app.services.agents.nodes.audit import write_query_pattern, write_schema_gaps, write_anti_pattern
 from app.services.agents.neo4j.template_search import find_canonical_pattern_id
 from app.services.agents.neo4j.write import update_pattern_cross_signals
 from app.services.agents.nodes.confidence import compute_confidence
@@ -674,14 +674,21 @@ async def stream_pipeline(
         _exec_clean = (
             state.get("repair_count", 0) <= 1
             and state.get("recompile_count", 0) == 0
+            and state.get("zero_row_rewrite_count", 0) == 0
         )
         if not _exec_clean:
+            _skip_reason = (
+                "recompile" if state.get("recompile_count", 0) > 0
+                else "zero_row_rewrite" if state.get("zero_row_rewrite_count", 0) > 0
+                else "repair>1"
+            )
             logger.info(
-                "[{}] QueryPattern SKIP | repair_count={} | recompile_count={} | reason={}",
+                "[{}] QueryPattern SKIP | repair_count={} | recompile_count={} | zero_row_rewrite={} | reason={}",
                 run_id[:8],
                 state.get("repair_count", 0),
                 state.get("recompile_count", 0),
-                "recompile" if state.get("recompile_count", 0) > 0 else "repair>1",
+                state.get("zero_row_rewrite_count", 0),
+                _skip_reason,
             )
         _pattern_id: str | None = None
         if not stopped and _done_rows and _exec_clean:
@@ -729,6 +736,31 @@ async def stream_pipeline(
                         asyncio.to_thread(update_pattern_cross_signals, _pattern_id, _cross_likes, _cross_dislikes)
                     )
         asyncio.create_task(write_schema_gaps(state))
+
+        # ── AntiPattern: zero-row filter_mismatch ────────────────────────────
+        # When zero-row probe confirmed the filter combination produces no data,
+        # record it as an AntiPattern so future generation avoids the same trap.
+        if (
+            not stopped
+            and state.get("zero_row_rewrite_count", 0) > 0
+            and state.get("zero_row_probe_type") == "filter_mismatch"
+        ):
+            _zr_ir_list = state.get("semantic_ir_list", [])
+            _zr_ir = _zr_ir_list[0] if _zr_ir_list else {}
+            _zr_sql = state.get("sql_list", [""])[0] if state.get("sql_list") else ""
+            _zr_reason = (
+                state.get("zero_row_probe_result")
+                or "Filter combination produced zero rows — no matching data exists"
+            )
+            logger.info(
+                "[{}] AntiPattern WRITE | zero_row_filter_mismatch | tables={} | reason={}",
+                run_id[:8],
+                (_zr_ir.get("anchor_tables") or []),
+                _zr_reason[:120],
+            )
+            asyncio.create_task(
+                write_anti_pattern(state, _zr_sql, _zr_ir, _zr_reason, error_type="zero_row_filter_mismatch")
+            )
 
         _graph_context = _build_graph_context_snapshot(state)
 

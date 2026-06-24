@@ -58,6 +58,8 @@ export interface PreferenceSummary {
   thread_feedback_count: number;
   similar_feedback_count: number;
   feedback_applied: boolean;
+  distilled_active?: boolean;
+  distilled_rules?: string[];
   feedback_items: PreferenceFeedbackItem[];
 }
 

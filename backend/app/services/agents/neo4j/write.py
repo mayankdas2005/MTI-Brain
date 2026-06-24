@@ -28,8 +28,10 @@ def write_join_path(path_data: dict) -> None:
 
 
 _QP_CREATE_CYPHER = """
-MERGE (qp:QueryPattern {id: $id})
+MERGE (qp:QueryPattern {merge_key: $merge_key})
 ON CREATE SET
+  qp.id               = $id,
+  qp.merge_key        = $merge_key,
   qp.question_text    = $question_text,
   qp.sql_text         = $sql_text,
   qp.sql_cte_outline  = $sql_cte_outline,
@@ -47,6 +49,10 @@ ON CREATE SET
   qp.row_count        = $row_count,
   qp.recompile_count  = $recompile_count,
   qp.repair_count     = $repair_count,
+  qp.fp_measures      = $fp_measures,
+  qp.fp_filters       = $fp_filters,
+  qp.fp_time_period   = $fp_time_period,
+  qp.fp_dimensions    = $fp_dimensions,
   qp.promotion_status = 'active',
   qp.enabled          = false,
   qp.liked_count      = 0,
@@ -56,6 +62,7 @@ ON CREATE SET
 ON MATCH SET
   qp.occurrence_count  = coalesce(qp.occurrence_count, 0) + 1,
   qp.last_seen         = datetime(),
+  qp.id                = coalesce(qp.id, $id),
   qp.sql_text          = CASE
       WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
         OR $confidence_score > coalesce(qp.confidence_score, 0)
@@ -87,7 +94,11 @@ ON MATCH SET
       THEN $tables_used       ELSE qp.tables_used       END,
   qp.confidence_score  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
   qp.repair_count      = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
-  qp.recompile_count   = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
+  qp.recompile_count   = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END,
+  qp.fp_measures       = $fp_measures,
+  qp.fp_filters        = $fp_filters,
+  qp.fp_time_period    = $fp_time_period,
+  qp.fp_dimensions     = $fp_dimensions
 """
 
 _QP_UPDATE_CYPHER = """
@@ -95,6 +106,7 @@ MATCH (qp:QueryPattern {id: $id})
 SET
   qp.occurrence_count  = coalesce(qp.occurrence_count, 0) + 1,
   qp.last_seen         = datetime(),
+  qp.merge_key         = coalesce(qp.merge_key, $merge_key),
   qp.sql_text          = CASE
       WHEN ($repair_count + $recompile_count) < coalesce(qp.repair_count + qp.recompile_count, 9999)
         OR $confidence_score > coalesce(qp.confidence_score, 0)
@@ -126,7 +138,11 @@ SET
       THEN $tables_used       ELSE qp.tables_used       END,
   qp.confidence_score  = CASE WHEN $confidence_score > coalesce(qp.confidence_score, 0) THEN $confidence_score ELSE qp.confidence_score END,
   qp.repair_count      = CASE WHEN $repair_count     < coalesce(qp.repair_count,     9999) THEN $repair_count     ELSE qp.repair_count     END,
-  qp.recompile_count   = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END
+  qp.recompile_count   = CASE WHEN $recompile_count  < coalesce(qp.recompile_count,  9999) THEN $recompile_count  ELSE qp.recompile_count  END,
+  qp.fp_measures       = $fp_measures,
+  qp.fp_filters        = $fp_filters,
+  qp.fp_time_period    = $fp_time_period,
+  qp.fp_dimensions     = $fp_dimensions
 """
 
 _AP_CYPHER = """
@@ -142,6 +158,10 @@ ON CREATE SET
   ap.intent           = $intent,
   ap.complexity       = $complexity,
   ap.cohere_embedding = $cohere_embedding,
+  ap.fp_measures      = $fp_measures,
+  ap.fp_filters       = $fp_filters,
+  ap.fp_time_period   = $fp_time_period,
+  ap.fp_dimensions    = $fp_dimensions,
   ap.first_seen       = datetime(),
   ap.occurrence_count = 1,
   ap.success_count    = 0,
@@ -151,7 +171,11 @@ ON MATCH SET
   ap.last_seen         = datetime(),
   ap.sql_text          = $sql_text,
   ap.error_detail      = $error_detail,
-  ap.failing_element   = CASE WHEN $failing_element <> '' THEN $failing_element ELSE ap.failing_element END
+  ap.failing_element   = CASE WHEN $failing_element <> '' THEN $failing_element ELSE ap.failing_element END,
+  ap.fp_measures       = $fp_measures,
+  ap.fp_filters        = $fp_filters,
+  ap.fp_time_period    = $fp_time_period,
+  ap.fp_dimensions     = $fp_dimensions
 """
 
 

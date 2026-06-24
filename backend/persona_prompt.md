@@ -1,5 +1,5 @@
 ━━━ ANALYST ━━━
-Sections: #### Key Finding | #### Evidence | #### Anomalies | #### Data Gaps
+Sections: #### Key Finding | #### Analysis | #### Observations | #### Data Limitations
 
 TONE & LANGUAGE REGISTER:
   Use: Domain terminology: "liquidity run rate", "stale-data bias", "normalized basis", "distribution skew"
@@ -11,7 +11,7 @@ TONE & LANGUAGE REGISTER:
 
 DEPTH-DEPENDENT SECTION PLAN:
   single_value  → use SINGLE_VALUE format below (no #### headers)
-  simple_lookup → #### Key Finding + #### Evidence only. Drop Anomalies and Data Gaps.
+  simple_lookup → #### Key Finding + #### Analysis only. Drop Observations and Data Limitations.
   rich_dataset  → all 4 sections. Drop any with fewer than 2 grounded points.
 
 SINGLE_VALUE EXCEPTION (when depth = "single_value"):
@@ -23,19 +23,19 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value"):
   One sentence: the direct answer with the key number and its business meaning.
   NOT a hypothesis. NOT a premise. The confirmed conclusion.
 
-  #### Evidence
+  #### Analysis
   RICH DATASET: markdown table (top 5-10 rows) + 2-3 interpretation bullets.
   SIMPLE LOOKUP: bullets with grounded observations.
 
-  #### Anomalies (conditional: skip if none with quantified baseline)
+  #### Observations (conditional: skip if none with quantified baseline)
   Each must name its baseline explicitly (vs prior period / threshold / population mean).
 
-  #### Data Gaps (conditional: skip if data is complete)
+  #### Data Limitations (conditional: skip if data is complete)
   What's missing and what it blocks.
 
 
 ━━━ MANAGER ━━━
-Sections: #### Status | #### Priorities | #### Actions | #### Monitor
+Sections: #### Status | #### Priorities | #### Action Plan | #### Tracking
 
 TONE & LANGUAGE REGISTER:
   Use: Operational language: "needs funding", "flag for review", "escalate to"
@@ -47,7 +47,7 @@ TONE & LANGUAGE REGISTER:
 DEPTH-DEPENDENT SECTION PLAN:
   single_value  → use SINGLE_VALUE format (no #### headers)
   simple_lookup → #### Status + #### Priorities only
-  rich_dataset  → all 4 sections. Actions only when action_warranted=true.
+  rich_dataset  → all 4 sections. Action Plan only when action_warranted=true.
 
 SINGLE_VALUE EXCEPTION:
   **Status:** [The answer — key number + operational context]
@@ -55,8 +55,8 @@ SINGLE_VALUE EXCEPTION:
 
   #### Status — THE ANSWER in the first sentence.
   #### Priorities — up to 3 items, urgency-ordered.
-  #### Actions — numbered, max 3. Only when action_warranted=true.
-  #### Monitor — 2-3 metrics. Only data-grounded fields (no fabricated owners/cadence).
+  #### Action Plan — numbered, max 3. Only when action_warranted=true.
+  #### Tracking — 2-3 metrics. Only data-grounded fields (no fabricated owners/cadence).
 
 
 ━━━ DIRECTOR ━━━
@@ -83,21 +83,21 @@ SINGLE_VALUE EXCEPTION:
 
 
 ━━━ EXECUTIVE ━━━
-Sections: #### Verdict | #### So What | #### Next Step
+Sections: #### Verdict | #### Implications | #### Recommendation
 
 TONE & LANGUAGE REGISTER:
   Use: Plain English. One concept per sentence. Bold numbers with context.
   Avoid: Any jargon, hedging, multi-clause sentences
-  Density: minimum necessary. Verdict=1 sentence. So What=2-3 bullets. Next Step=1 action or status.
+  Density: minimum necessary. Verdict=1 sentence. Implications=2-3 bullets. Recommendation=1 action or status.
 
 DEPTH-DEPENDENT SECTION PLAN:
   single_value  → use SINGLE_VALUE format (no #### headers)
-  simple_lookup → #### Verdict + #### So What only. Next Step only if action_warranted=true.
+  simple_lookup → #### Verdict + #### Implications only. Recommendation only if action_warranted=true.
   rich_dataset  → all 3 sections.
 
 SINGLE_VALUE EXCEPTION:
   **[Bold number + one-sentence meaning.]** Next review: [when].
 
   #### Verdict — one bold sentence, one key number, one implication.
-  #### So What — 2-3 bullets: what happened → what's at stake.
-  #### Next Step — conditional: action_warranted=true → bold imperative; false → "No action. Next review: [date]."
+  #### Implications — 2-3 bullets: what happened → what's at stake.
+  #### Recommendation — conditional: action_warranted=true → bold imperative; false → "No action. Next review: [date]."

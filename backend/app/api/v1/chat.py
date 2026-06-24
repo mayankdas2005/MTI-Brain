@@ -695,7 +695,7 @@ async def ask_question(
                     _dist_age = (datetime.datetime.now(datetime.timezone.utc) - _dist_at).days
                     distilled_preferences = _u_result.distilled_preferences if _dist_age <= 7 else ""
                 else:
-                    distilled_preferences = ""
+                    distilled_preferences = _u_result.distilled_preferences
         except Exception:
             logger.debug("[ask] global_instructions/distilled_preferences lookup failed (non-fatal)")
 

@@ -122,6 +122,13 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
 
     # Structured summary for the about panel
     all_feedback = (thread_feedback or []) + (similar_feedback or [])
+    _distilled_rules: list[str] = []
+    if _distilled_active and distilled_preferences:
+        _distilled_rules = [
+            l.strip().lstrip("-•* \t").strip()
+            for l in distilled_preferences.strip().splitlines()
+            if l.strip()
+        ]
     preference_summary = {
         "long_term_memory_applied": bool(lt_mem),
         "long_term_memory_count":   lt_mem_count,
@@ -129,6 +136,7 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
         "similar_feedback_count":   similar_fb_count,
         "feedback_applied":         bool(feedback_context) or _distilled_active,
         "distilled_active":         _distilled_active,
+        "distilled_rules":          _distilled_rules,
         "feedback_items": [
             {
                 "liked":            f["liked"],
@@ -146,7 +154,12 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
     _lines = []
 
     if _distilled_active:
-        _lines.append("- **Distilled profile active** — personalised behavioural rules applied")
+        if _distilled_rules:
+            _lines.append("- **Behavioural rules in effect:**")
+            for _rule in _distilled_rules[:8]:
+                _lines.append(f"  - {_rule}")
+        else:
+            _lines.append("- **Distilled profile active**")
 
     if thread_fb_count > 0:
         _liked_str   = f"{thread_liked} liked" if thread_liked > 0 else ""

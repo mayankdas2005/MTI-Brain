@@ -284,10 +284,11 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         # Patterns fetched here are stored in semantic_context so ALL specialist nodes
         # can read them without a separate Neo4j round-trip.
         _MAX_EXECUTION_COST = 2  # repair_count + recompile_count threshold for quality filter
+        _question = state.get("effective_question") or state["question"]
         try:
             _all_patterns = await asyncio.to_thread(
                 retry_sync,
-                lambda: neo4j_client.search_query_patterns(embedding, threshold=0.72),
+                lambda: neo4j_client.search_query_patterns_hybrid(embedding, _question, threshold=0.72),
                 service="neo4j",
             )
             _quality_patterns = [
@@ -370,7 +371,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         try:
             _anti_patterns = await asyncio.to_thread(
                 retry_sync,
-                lambda: neo4j_client.search_anti_patterns(embedding),
+                lambda: neo4j_client.search_anti_patterns_hybrid(embedding, _question),
                 service="neo4j",
             )
             semantic_context["_matched_anti_patterns"] = (_anti_patterns or [])[:2]

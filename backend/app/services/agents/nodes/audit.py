@@ -78,6 +78,28 @@ async def write_audit_log(state: AnalyticsState, sql: str, row_count: int, statu
         logger.warning("audit | log write failed | error={}", e)
 
 
+def _qp_merge_key(anchor_tables: list[str], intent: str) -> str:
+    """Deterministic merge key for QueryPattern dedup: hash of sorted tables + intent."""
+    tables_csv = ",".join(sorted(t.strip() for t in anchor_tables if t.strip()))
+    raw = f"{tables_csv}::{(intent or '').strip()}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _extract_fp_fields(fingerprint: dict | None) -> dict:
+    """Extract flat string fields from intent_fingerprint for Neo4j storage."""
+    fp = fingerprint or {}
+    def _to_str(v) -> str:
+        if isinstance(v, list):
+            return ", ".join(str(x) for x in v if x)
+        return str(v) if v else ""
+    return {
+        "fp_measures":    _to_str(fp.get("measures")),
+        "fp_filters":     _to_str(fp.get("filters")),
+        "fp_time_period": _to_str(fp.get("time_period")),
+        "fp_dimensions":  _to_str(fp.get("dimensions")),
+    }
+
+
 async def write_query_pattern(
     state: AnalyticsState,
     sql: str,
@@ -93,8 +115,11 @@ async def write_query_pattern(
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
+        _fp = _extract_fp_fields(state.get("intent_fingerprint"))
+        _merge_key = _qp_merge_key(list(ir.anchor_tables), ir.intent)
         pattern_data = {
             "id": pattern_id or str(uuid.uuid4()),
+            "merge_key": _merge_key,
             "question_text": state["question"],
             "sql_text": sql or "",
             "sql_cte_outline": state.get("_cte_outline") or "",
@@ -115,6 +140,7 @@ async def write_query_pattern(
             "promotion_status": "active",
             "liked_count": 0,
             "disliked_count": 0,
+            **_fp,
         }
         neo4j_client.write_query_pattern(pattern_data, is_update=is_update)
         logger.info(
@@ -165,6 +191,7 @@ async def write_anti_pattern(
         embedding = await _get_embedding(state["question"])
         tables_involved = ",".join(ir_dict.get("anchor_tables", []))
         intent = ir_dict.get("intent", "")
+        _fp = _extract_fp_fields(state.get("intent_fingerprint"))
         pattern_data = {
             "id": str(uuid.uuid4()),
             "merge_key": anti_pattern_merge_key(error_type, intent, tables_involved, error_msg),
@@ -177,6 +204,7 @@ async def write_anti_pattern(
             "intent": intent,
             "complexity": ir_dict.get("complexity", ""),
             "cohere_embedding": embedding,
+            **_fp,
         }
         neo4j_client.write_anti_pattern(pattern_data)
         logger.debug(

@@ -1877,7 +1877,7 @@ _SYNTHESIS_PERSONA_STRUCTURES: dict[str, str] = {
     "analyst": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
 ━━━ ANALYST ━━━
-Sections: #### Key Finding | #### Evidence | #### Anomalies | #### Data Gaps
+Sections: #### Key Finding | #### Analysis | #### Observations | #### Data Limitations
 
 TONE & LANGUAGE REGISTER:
   Use: Domain terminology: "liquidity run rate", "stale-data bias", "normalized basis", "distribution skew"
@@ -1889,7 +1889,7 @@ TONE & LANGUAGE REGISTER:
 
 DEPTH-DEPENDENT SECTION PLAN:
   single_value  → use SINGLE_VALUE format below (no #### headers)
-  simple_lookup → #### Key Finding + #### Evidence only. Drop Anomalies and Data Gaps.
+  simple_lookup → #### Key Finding + #### Analysis only. Drop Observations and Data Limitations.
   rich_dataset  → all 4 sections. Drop any with fewer than 2 grounded points.
 
 SINGLE_VALUE EXCEPTION (when depth = "single_value" — skip all sections below, write this instead):
@@ -1904,14 +1904,14 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value" — skip all sections below,
   STRONG: "**Total liquidity stands at $4.77T USD** — 3.2% above the 90-day rolling average,
     confirming the seasonal accumulation pattern ahead of Q3 disbursements."
 
-  #### Evidence
+  #### Analysis
   For RICH DATASET (10+ rows): open with a markdown table of the top 5-10 most material rows.
     - Include only the columns that drive the interpretation, not every column in the result.
     - Below table: 2-3 bullets interpreting the AGGREGATE picture — distribution, outliers, trend direction.
     - Each bullet: **[What]** — [value/magnitude]; [what this confirms or extends about the key finding].
   For SIMPLE LOOKUP (2-10 rows): bullets only — no table unless structure genuinely aids clarity.
 
-  #### Anomalies
+  #### Observations
   What is abnormal, at an extreme, or structurally unexpected — EACH OBSERVATION MUST NAME ITS BASELINE:
     Valid baselines: vs prior period value | vs policy/threshold | vs population mean or median
     WEAK (no baseline): "Balance is lower than expected."
@@ -1921,15 +1921,15 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value" — skip all sections below,
     "All values within expected range — no anomalies detected vs [name the specific baseline checked]."
     Skip this section entirely if depth = "single_value" or "simple_lookup".
 
-  #### Data Gaps
-  Which columns are NULL, sparse (<50% populated), or absent — and what analysis does each gap block?
+  #### Data Limitations
+  Which columns are NULL, sparse (<50% populated), or absent — and what analysis does each limitation block?
     Each bullet: **[Missing or sparse field]** — blocks [specific analysis] / creates [X]% estimation uncertainty.
     Skip entirely if data is complete.""",
 
     "manager": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
 ━━━ MANAGER ━━━
-Sections: #### Status | #### Priorities | #### Actions | #### Monitor
+Sections: #### Status | #### Priorities | #### Action Plan | #### Tracking
 
 TONE & LANGUAGE REGISTER:
   Use: Operational language: "needs funding", "flag for review", "escalate to", "due before close of business"
@@ -1942,10 +1942,10 @@ TONE & LANGUAGE REGISTER:
 
 DEPTH-DEPENDENT SECTION PLAN:
   single_value  → use SINGLE_VALUE format below (no #### headers)
-  simple_lookup → #### Status + #### Priorities only. Drop Actions and Monitor.
+  simple_lookup → #### Status + #### Priorities only. Drop Action Plan and Tracking.
   rich_dataset  → all 4 sections. Drop any with fewer than 2 grounded points.
-  ACTION_WARRANTED GATE: Write #### Actions ONLY when action_warranted=true in PRE-EXTRACTED INSIGHTS.
-    When action_warranted=false: skip #### Actions entirely. Close with #### Status + #### Monitor.
+  ACTION_WARRANTED GATE: Write #### Action Plan ONLY when action_warranted=true in PRE-EXTRACTED INSIGHTS.
+    When action_warranted=false: skip #### Action Plan entirely. Close with #### Status + #### Tracking.
 
 RECOMMENDATION SPECIFICITY GATE: Every action must contain all four elements or must not be written:
   (a) imperative action verb, (b) named functional owner, (c) hard deadline, (d) expected outcome.
@@ -1971,14 +1971,14 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value"):
   CONDITION lines from USER'S STATED GOAL: if a threshold is breached, it becomes a bullet here with explicit
     breach language ("**$200M threshold breached** — current balance $180M"). If not breached, one line confirming it.
 
-  #### Actions
+  #### Action Plan
   Numbered. Maximum 3. Each must contain ALL four elements — omit any action that lacks one:
     [Do X] — [specific team/role], by [timeframe]; outcome: [measurable result].
     Risk if not done this week: [one sentence — near-term operational consequence].
   Manager-level scope: funding instructions, escalation triggers, team communications.
   NOT: board recommendations, policy changes, cross-entity mandates (those belong at director level).
 
-  #### Monitor
+  #### Tracking
   2-3 metrics to track. Only include elements that are grounded in data or TRIBAL KNOWLEDGE:
     **[Metric name]** — current: [value from data] | watch if: [condition — threshold from data or tribal knowledge]
   If TRIBAL KNOWLEDGE provides an owner or cadence, include it. If not, omit — do NOT fabricate.
@@ -2051,7 +2051,7 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value"):
     "executive": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
 ━━━ EXECUTIVE ━━━
-Sections: #### Verdict | #### So What | #### Next Step
+Sections: #### Verdict | #### Implications | #### Recommendation
 
 TONE & LANGUAGE REGISTER:
   Use: Plain English. One concept per sentence. Business school vocabulary.
@@ -2060,13 +2060,13 @@ TONE & LANGUAGE REGISTER:
   Avoid: Jargon: no "liquidity run rate", "normalized basis", "stale-data bias", "p-value"
   Avoid: Hedging: no "may indicate", "could potentially", "it appears that" — state the finding directly
   Avoid: Multi-clause sentences — one idea, full stop, next sentence
-  Density: minimum necessary. Verdict = 1 sentence. So What = 2-3 bullets. Next Step = 1 action or status.
+  Density: minimum necessary. Verdict = 1 sentence. Implications = 2-3 bullets. Recommendation = 1 action or status.
   Length discipline: an answer too long for an executive fails regardless of quality.
 
 DEPTH-DEPENDENT SECTION PLAN:
   single_value  → use SINGLE_VALUE format below (no #### headers)
-  simple_lookup → #### Verdict + #### So What only. Drop Next Step unless action_warranted=true.
-  rich_dataset  → all 3 sections. But Next Step adapts based on action_warranted (see below).
+  simple_lookup → #### Verdict + #### Implications only. Drop Recommendation unless action_warranted=true.
+  rich_dataset  → all 3 sections. But Recommendation adapts based on action_warranted (see below).
 
 SINGLE_VALUE EXCEPTION (when depth = "single_value"):
   **[Bold number + one-sentence meaning.]** Next review: [when to revisit based on data cadence].
@@ -2078,7 +2078,7 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value"):
   No prose below the Verdict line — it stands alone.
   GOAL lines from USER'S STATED GOAL map here: use the GOAL to frame what "mattered" and what was found.
 
-  #### So What
+  #### Implications
   2-3 bullets building the case for action or confirming no action is needed.
   Structure: what happened -> what's at stake -> what it costs to wait (if anything).
   Each: **[Label]** — [grounded fact + **bold number**]; [business implication in plain English].
@@ -2087,7 +2087,7 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value"):
     Breached: "**$200M floor breached** — balance at $180M activates [specific consequence]."
     Met: "Within policy — no immediate action required on [metric]."
 
-  #### Next Step
+  #### Recommendation
   CONDITIONAL — adapts based on action_warranted in PRE-EXTRACTED INSIGHTS:
 
   When action_warranted = true (concern_level is "watch" or "urgent"):
@@ -2290,14 +2290,14 @@ Step 2 — SECTION PLAN + INTENT ALIGNMENT
   Based on depth from insights, consult the DEPTH-DEPENDENT SECTION PLAN in the PERSONA STRUCTURE.
   State: "Depth=[X]. Writing sections: [A, B, C]. Dropping: [D] because [reason]."
   For single_value depth: state "Using SINGLE_VALUE format — no section headers."
-  Check action_warranted: if false, confirm directive sections (Actions/Recommendations/Next Step imperative) are dropped.
+  Check action_warranted: if false, confirm directive sections (Action Plan/Recommendations/Recommendation) are dropped.
   If USER'S STATED GOAL section is non-empty:
     For each GOAL line: "GOAL '[text]' -> finding [N]." If no finding answers it, plan a gap note.
     For each CONDITION line: map to the section where it surfaces:
-      analyst   -> #### Anomalies (baseline comparison against the threshold)
+      analyst   -> #### Observations (baseline comparison against the threshold)
       manager   -> #### Priorities (explicit breach or no-breach status)
       director  -> #### Risk & Exposure (magnitude + trigger framing)
-      executive -> #### So What (bold threshold status: breached or met)
+      executive -> #### Implications (bold threshold status: breached or met)
 
 Step 3 — GROUNDING TRACE
   For each planned bullet: "Bullet X is grounded in finding [N]: observation=[value]"
@@ -2307,10 +2307,10 @@ Step 3 — GROUNDING TRACE
 Step 4 — TONE + PYRAMID CHECK
   Confirm persona tone matches the TONE & LANGUAGE REGISTER.
   Confirm every section opens with the business implication, not a data description (Pyramid Principle).
-  analyst  — does Key Finding state the conclusion, not a premise? Does every Anomaly cite a baseline?
-  manager  — does Status answer the question in the first sentence? Are Actions manager-scope?
+  analyst  — does Key Finding state the conclusion, not a premise? Does every Observation cite a baseline?
+  manager  — does Status answer the question in the first sentence? Are Action Plan items manager-scope?
   director — does every Risk & Exposure bullet have magnitude + trigger + evidence?
-  executive — is every sentence plain English? Any jargon? Is Next Step conditional on action_warranted?
+  executive — is every sentence plain English? Any jargon? Is Recommendation conditional on action_warranted?
 </reasoning>
 <answer>
 Answer for the {persona}. #### headers, **bold key numbers in every bullet**, no emojis, no raw column names.

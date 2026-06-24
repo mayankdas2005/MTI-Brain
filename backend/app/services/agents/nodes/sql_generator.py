@@ -12,7 +12,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import build_mission_context, format_sql, parse_tag
-from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns
+from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns, fetch_feedback_by_tables
 from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, CTE_COLUMN_PLANNER_PROMPT
 from app.services.agents.prompts import (
     _SQL_RULES_TREND, _SQL_RULES_RATIO, _SQL_RULES_FORECAST,
@@ -188,6 +188,21 @@ async def generate_sql_llm(
         state["_cached_query_patterns"] = query_patterns
         state["pattern_matched"] = pattern_matched
         state["pattern_name"] = pattern_name
+
+        # Late-pass table-based feedback: supplement the early vector+FTS retrieval from
+        # lt_memory_retriever with feedback from threads that used the same anchor tables.
+        # Runs only on the first generation (not recompile) since anchor_tables don't change.
+        _table_fb = await fetch_feedback_by_tables(state)
+        if _table_fb:
+            _existing_fb = list(state.get("feedback_context") or [])
+            _seen_ids = {f["id"] for f in _existing_fb}
+            _new_items = [f for f in _table_fb if f["id"] not in _seen_ids]
+            if _new_items:
+                state["feedback_context"] = _existing_fb + _new_items
+                logger.info(
+                    "sql_generator | feedback_table_supplement | new_items={} | thread={}",
+                    len(_new_items), state.get("thread_id"),
+                )
 
     logger.info(
         "sql_generator | context_injection | anti_patterns={} | query_pattern={} | thread={}",

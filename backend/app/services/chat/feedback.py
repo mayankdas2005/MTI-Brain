@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from app.core.logger import logger
 from app.models.conversation import MTIBrainFeedback
 from app.services.embeddings import embed_question
-from sqlalchemy import select, text
+from sqlalchemy import ARRAY, Text, bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _FEEDBACK_DECAY_HALF_LIFE_DAYS = 45   # feedback weight halves every 45 days
@@ -106,6 +106,8 @@ async def save_feedback(
             existing.intent_text = intent_text
         if embedding is not None:
             existing.embedding = embedding
+        if _tables_list:
+            existing.tables_used = _tables_list
         feedback = existing
         logger.info(
             "Feedback updated: conversation={}, liked={}, type={}", conversation_id, liked, _ftype
@@ -120,6 +122,7 @@ async def save_feedback(
             intent_text=intent_text,
             feedback_type=_ftype,
             embedding=embedding,
+            tables_used=_tables_list or None,
         )
         db.add(feedback)
         logger.info(
@@ -134,6 +137,8 @@ async def save_feedback(
     _intent = (row.intent or "") if row else ""
     _complexity = (row.complexity or "") if row else ""
     _conf_score = int(row.confidence_score) if (row and row.confidence_score) else 0
+    # Parse comma-separated tables_used string into a list for the array column
+    _tables_list: list[str] = [t.strip() for t in _tables.split(",") if t.strip()] if _tables else []
 
     # Only sql/general dislikes write to Neo4j — answer/chart dislikes are presentation-only
     _is_sql_signal = _ftype in ("sql", "general")
@@ -268,6 +273,74 @@ def _rrf_merge(
         row["_rrf_score"] = score
         result.append(row)
     return result
+
+
+_FIND_SIMILAR_TABLES_SQL = text("""
+    SELECT id, liked, comment, thread_id, created_at, question_text, feedback_type, score
+    FROM (
+        SELECT
+            f.id, f.liked, f.comment, f.thread_id, f.created_at,
+            f.question_text, f.feedback_type,
+            (
+                SELECT COUNT(*)::float
+                FROM unnest(f.tables_used) t
+                WHERE t = ANY(:anchor_tables)
+            ) / GREATEST(cardinality(f.tables_used), 1) AS score
+        FROM mti_brain_feedback f
+        WHERE f.tables_used IS NOT NULL
+          AND cardinality(f.tables_used) > 0
+          AND f.tables_used && :anchor_tables
+          AND f.thread_id != :current_thread_id
+    ) sub
+    WHERE score >= 0.5
+    ORDER BY score DESC
+    LIMIT :limit
+""").bindparams(bindparam("anchor_tables", type_=ARRAY(Text)))
+
+
+async def find_feedback_by_tables(
+    db: AsyncSession,
+    anchor_tables: list[str],
+    current_thread_id: uuid.UUID,
+    limit: int = 5,
+) -> list[dict]:
+    """Find cross-thread feedback whose stored tables_used overlaps >= 50% with anchor_tables.
+
+    Path B of hybrid feedback retrieval — complements the early vector+FTS pass in
+    lt_memory_retriever.  Called late (from sql_generator) once anchor_tables_resolved
+    is populated.  anchor_tables is passed as a Python list; bindparam(ARRAY(Text))
+    tells asyncpg the correct wire type.
+    """
+    if not anchor_tables:
+        return []
+    try:
+        result = await db.execute(
+            _FIND_SIMILAR_TABLES_SQL,
+            {
+                "anchor_tables": list(anchor_tables),
+                "current_thread_id": str(current_thread_id),
+                "limit": limit,
+            },
+        )
+        return [
+            {
+                "id": str(r.id),
+                "liked": r.liked,
+                "comment": r.comment,
+                "thread_id": str(r.thread_id),
+                "created_at": r.created_at,
+                "question_text": (r.question_text or "")[:200],
+                "feedback_type": r.feedback_type or "general",
+                "similarity": round(float(r.score), 3),
+                "source": "similar_tables",
+            }
+            for r in result.fetchall()
+        ]
+    except Exception as exc:
+        logger.warning(
+            "find_feedback_by_tables | failed | err={}: {}", type(exc).__name__, exc
+        )
+        return []
 
 
 async def find_similar_feedback(

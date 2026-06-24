@@ -19,6 +19,7 @@ from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import Text
 from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID
@@ -298,6 +299,8 @@ class MTIBrainFeedback(Base):
     embedding = mapped_column(Vector(1536), nullable=True)
     # tsvector over question_text + comment + intent_text for FTS; maintained by DB trigger
     search_vector = mapped_column(TSVECTOR, nullable=True)
+    # anchor tables from the pipeline run — enables table-based cross-thread retrieval (late pass)
+    tables_used: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -310,6 +313,7 @@ class MTIBrainFeedback(Base):
         Index("ix_mti_brain_feedback_created", "created_at"),
         Index("ix_mti_brain_feedback_message_created", "message_id", "created_at"),
         Index("idx_mti_brain_feedback_fts", "search_vector", postgresql_using="gin"),
+        Index("idx_mti_brain_feedback_tables_used", "tables_used", postgresql_using="gin"),
     )
 
 

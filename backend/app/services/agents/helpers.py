@@ -460,6 +460,9 @@ def _infer_col_type_from_rows(rows: list[list], col_idx: int) -> str:
 
 # ─── Tag parsing ──────────────────────────────────────────────────────────────
 
+_SQL_LEADING_KEYWORDS = {"SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "EXPLAIN"}
+
+
 def parse_tag(text: str, tag: str) -> str:
     """Extract content from an XML-style tag in LLM output.
 
@@ -469,14 +472,22 @@ def parse_tag(text: str, tag: str) -> str:
     """
     m = re.search(f"<{tag}>(.*?)</{tag}>", text, re.DOTALL | re.IGNORECASE)
     if m:
-        return m.group(1).strip()
+        candidate = m.group(1).strip()
+        if tag.lower() == "sql":
+            first = candidate.upper().split()[0] if candidate.split() else ""
+            if first not in _SQL_LEADING_KEYWORDS:
+                m = None
+            else:
+                return candidate
+        else:
+            return candidate
 
     if tag.lower() == "sql":
         m = re.search(r"```(?:sql)?\s*(.*?)```", text, re.DOTALL)
         if m:
             candidate = m.group(1).strip()
             first = candidate.upper().split()[0] if candidate.split() else ""
-            if first in ("SELECT", "WITH"):
+            if first in _SQL_LEADING_KEYWORDS:
                 return candidate
         return ""
 

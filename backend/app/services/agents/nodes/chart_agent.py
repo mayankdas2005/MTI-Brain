@@ -1126,10 +1126,13 @@ async def chart_agent(state: AnalyticsState, config: RunnableConfig) -> dict:
     )
     all_rows: list[list] = []
     for res in result_list:
-        if res.get("rows"):
+        # Prefer chart_rows (extended 2000-row slice) over display rows (max_rows cap)
+        # so time-series charts get the full date range even when the table is truncated.
+        _row_source = res.get("chart_rows") or res.get("rows")
+        if _row_source:
             if not all_columns and res.get("columns"):
                 all_columns = res["columns"]
-            all_rows.extend(res["rows"])
+            all_rows.extend(_row_source)
 
     if not all_columns or not all_rows:
         logger.warning("chart_agent | no data | thread={}", state["thread_id"])

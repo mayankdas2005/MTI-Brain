@@ -86,6 +86,7 @@ class AnalyticsState(TypedDict):
     low_confidence_filters: list[dict]
     zero_row_probe_result: str | None     # human-readable explanation from Z2/Z3 probe
     zero_row_rewrite_count: int           # tracks zero-row repair attempts (max 1) to prevent infinite loops
+    zero_row_probe_type: str | None       # probe_type from zero_row_probe (e.g. "filter_mismatch") — used for AntiPattern write
 
     # ── Data quality (pre-synthesis gate) ────────────────────────────────────
     data_quality_flag: bool               # True if DATA_INTEGRITY_GATE triggered by data_quality_checker

@@ -226,6 +226,23 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                   : 'No prior feedback found — responded without feedback context'}
               </div>
 
+              {/* Distilled behavioural rules — show the actual rules when a profile is active */}
+              {m.preference_summary.distilled_active && (m.preference_summary.distilled_rules?.length ?? 0) > 0 && (
+                <div className="mb-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-2">
+                    Behavioural Rules Applied
+                  </p>
+                  <div className="rounded-md border border-border/40 bg-muted/10 px-3 py-2 space-y-1.5">
+                    {m.preference_summary.distilled_rules!.map((rule, i) => (
+                      <div key={i} className="flex items-start gap-2 text-xs text-foreground/80 leading-relaxed">
+                        <span className="text-primary/60 shrink-0 font-bold mt-px">·</span>
+                        <span>{rule}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Signal breakdown grid — only show columns that have data */}
               {(m.preference_summary.thread_feedback_count > 0 ||
                 m.preference_summary.similar_feedback_count > 0 ||
