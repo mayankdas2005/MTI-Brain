@@ -167,6 +167,7 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
     _sc = state.get("semantic_context") or {}
     prior_verified_section, prior_trace_row = _build_prior_sections_measure(_sc)
 
+    from app.services.agents.helpers import build_instructions_section
     prompt = MEASURE_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -179,6 +180,7 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
         entity_tokens_section=_build_entity_tokens_section(state.get("entity_tokens") or []),
         prior_verified_section=prior_verified_section,
         prior_trace_row=prior_trace_row,
+        instructions_section=build_instructions_section(state, "metric and aggregation identifier"),
     )
     _mission = build_mission_context(
         state,

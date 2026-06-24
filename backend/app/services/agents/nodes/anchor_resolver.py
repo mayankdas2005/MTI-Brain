@@ -371,6 +371,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
 
     _prior_anchor_section = _build_prior_anchor_section(semantic_context)
 
+    from app.services.agents.helpers import build_instructions_section
     anchor_prompt = ANCHOR_RESOLVER_PROMPT.format_messages(
         question=question,
         tables_section=_build_tables_section(semantic_context),
@@ -380,6 +381,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         intents_section=_build_intents_section(semantic_context),
         query_intent_section=query_intent_section,
         prior_anchor_section=_prior_anchor_section,
+        instructions_section=build_instructions_section(state, "table selector"),
     )
     _mission = build_mission_context(
         state,

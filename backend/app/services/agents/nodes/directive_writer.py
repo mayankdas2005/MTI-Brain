@@ -317,12 +317,14 @@ async def _detect_schema_gaps(state: dict, config: RunnableConfig) -> str:
 
         llm = get_llm("fast")
 
+        from app.services.agents.helpers import build_instructions_section
         prompt = SCHEMA_GAP_DETECTOR_PROMPT.format_messages(
             intent_summary=intent_summary,
             anchor_schema_section=schema_section,
             confirmed_join_paths_section=confirmed_joins_section,
             query_plan_section=query_plan_section,
             reasoning_directive=reasoning,
+            instructions_section=build_instructions_section(state, "schema gap detector"),
         )
         from app.services.agents.helpers import format_prior_context_block
         _prior_ctx_block = format_prior_context_block(

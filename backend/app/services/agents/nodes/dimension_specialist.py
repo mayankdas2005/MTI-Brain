@@ -160,6 +160,7 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
                 f"<prior_failed>\nSimilar questions previously had SQL errors (interpretation may still be correct):\n{_anti_sql_lines}\n</prior_failed>"
             )
 
+    from app.services.agents.helpers import build_instructions_section
     prompt = DIMENSION_SPECIALIST_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         intent_summary=intent_summary,
@@ -172,6 +173,7 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
         entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
         prior_verified_section=prior_verified_section,
         prior_trace_row=prior_trace_row,
+        instructions_section=build_instructions_section(state, "dimension and grouping selector"),
     )
     _mission = build_mission_context(
         state,

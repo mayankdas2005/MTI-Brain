@@ -127,7 +127,12 @@ FILTER_VALUES_DB_CODES = (
     "FILTER VALUES ARE ALREADY RESOLVED: Every filter value in FILTER DIRECTIVE is the exact DB\n"
     "string. Do NOT translate, humanize, or re-interpret these values. Operator is already set —\n"
     "copy it. Boolean columns: TRUE/FALSE (not 'true'/'false'). Numeric: integer literal (no $, commas).\n"
-    "String filters use ILIKE '%value%' syntax — copy verbatim from FILTER DIRECTIVE."
+    "String filters use ILIKE '%value%' syntax — copy verbatim from FILTER DIRECTIVE.\n"
+    "CRITICAL — IDENTIFIER CODES (invoice numbers, reference codes, IDs, account numbers, etc.):\n"
+    "Copy EVERY character of the value literally from FILTER DIRECTIVE. Do NOT re-type from memory —\n"
+    "digit transpositions and character swaps silently return wrong rows with no error. Example:\n"
+    "if FILTER DIRECTIVE shows invoice_number = 'AP-00004791', the SQL MUST contain 'AP-00004791'\n"
+    "exactly — not 'AP-00071491' or any other variant. Paste; do not retype."
 )
 
 CTE_SCOPE_ISOLATION = (
@@ -2779,6 +2784,8 @@ User question: {question}
 
 Extract ONLY what is explicitly stated. Do not infer, expand, or add anything not directly mentioned.
 
+{instructions_section}
+
 {reasoning_directive}
 
 <output>
@@ -2924,6 +2931,8 @@ Rules:
 
 ----
 
+{instructions_section}
+
 {reasoning_directive}
 
 Output your reasoning in <reasoning>...</reasoning>, then the JSON in <output>...</output>.
@@ -3039,6 +3048,8 @@ HARDCODED MULTIPLIERS FORBIDDEN: never emit * 1.05, * 1.03, or any fixed growth 
 Projections use the manual OLS slope formula — the sql_generator handles the pattern (see S19).
 
 {prior_verified_section}
+
+{instructions_section}
 
 {reasoning_directive}
 
@@ -3211,6 +3222,8 @@ CONDITION lines from USER'S STATED GOAL (EC3 rule):
 
 {prior_verified_section}
 
+{instructions_section}
+
 {reasoning_directive}
 
 <reasoning>
@@ -3324,6 +3337,8 @@ Measures already selected: {measures_summary}
 
 {prior_verified_section}
 
+{instructions_section}
+
 {reasoning_directive}
 
 <reasoning>
@@ -3405,6 +3420,8 @@ LOADED SCHEMA (columns available for anchor tables):
 {query_plan_section}
 
 ---
+
+{instructions_section}
 
 OUTPUT RULES — strict:
 1. Emit ONLY lines that start with SCHEMA_GAP_JOIN, SCHEMA_GAP_TABLE, or SCHEMA_GAP_CONCEPT.

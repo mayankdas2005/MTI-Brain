@@ -60,12 +60,14 @@ async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
             state["thread_id"], len(_prior_cols), _prior_cols,
         )
 
+    from app.services.agents.helpers import build_instructions_section
     prompt = QUERY_PLANNER_PROMPT.format_messages(
         question=state.get("effective_question") or state["question"],
         reasoning_directive=REASONING_DIRECTIVE_NORMAL,
         available_tables_section="",
         entity_tokens_section="",
         prior_columns_section=_prior_section,
+        instructions_section=build_instructions_section(state, "query structure planner"),
     )
 
     @llm_breaker

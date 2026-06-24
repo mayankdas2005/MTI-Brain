@@ -770,6 +770,22 @@ def _format_single_prior_turn(prior_ctx: dict) -> str:
     )
 
 
+def build_instructions_section(state: dict, role: str) -> str:
+    """Return a formatted <user_instructions> block for LLM prompts, or '' if no instructions set."""
+    gi = (state.get("global_instructions") or "").strip()
+    if not gi:
+        return ""
+    return (
+        f"<user_instructions>\n"
+        f"Apply only instructions relevant to your task as a {role}. "
+        f"These are explicit user-defined rules — follow them precisely. "
+        f"When an instruction conflicts with schema constraints, follow the schema; "
+        f"where possible also satisfy the instruction's intent.\n"
+        f"{gi}\n"
+        f"</user_instructions>"
+    )
+
+
 def build_mission_context(state: dict, role: str, feeds: str) -> str:
     """Return a MISSION block prepended to any LLM node's prompt.
 
