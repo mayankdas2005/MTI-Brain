@@ -1,12 +1,12 @@
 """Node G: general_chat — conversational response for non-analytics questions."""
 
 from __future__ import annotations
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import build_mission_context, parse_tag
-from app.services.agents.prompts import GENERAL_CHAT_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import GENERAL_CHAT_HUMAN, GENERAL_CHAT_SYSTEM
 from app.services.agents.state import AnalyticsState
 
 
@@ -39,14 +39,18 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
         if memory_context else ""
     )
 
-    prompt = GENERAL_CHAT_PROMPT.format_messages(
-        question=state["question"],
-        persona=state.get("persona", "analyst"),
-        instructions_section=instructions_section,
-        conversation_section=conversation_section,
-        memory_section=memory_section,
-        feedback_section=feedback_section,
-    )
+    prompt = [
+        SystemMessage(
+            content=GENERAL_CHAT_SYSTEM.format(
+                persona=state.get("persona", "analyst"),
+                instructions_section=instructions_section,
+                conversation_section=conversation_section,
+                memory_section=memory_section,
+                feedback_section=feedback_section,
+            )
+        ),
+        HumanMessage(content=GENERAL_CHAT_HUMAN.format(question=state["question"])),
+    ]
     _mission = build_mission_context(
         state,
         role="Answer a non-analytics question conversationally and helpfully",

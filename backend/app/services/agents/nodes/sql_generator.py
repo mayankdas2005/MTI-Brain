@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import json
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import build_mission_context, format_sql, parse_tag
 from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns, fetch_feedback_by_tables
-from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, CTE_COLUMN_PLANNER_PROMPT
+from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, CTE_COLUMN_PLANNER_HUMAN, CTE_COLUMN_PLANNER_SYSTEM
 from app.services.agents.prompts import (
+    SQL_GENERATE_HUMAN,
+    SQL_GENERATE_SYSTEM,
     _SQL_RULES_TREND, _SQL_RULES_RATIO, _SQL_RULES_FORECAST,
     _CTE_PLANNER_TREND, _CTE_PLANNER_MULTIGRAIN, _CTE_PLANNER_FORECAST,
 )
@@ -302,26 +305,28 @@ async def generate_sql_llm(
     _anti_raw = anti_patterns if isinstance(anti_patterns, str) else ""
     sql_anti_patterns = "" if (not _anti_raw or _anti_raw.strip() in ("(none)", "")) else _anti_raw
 
-    from app.services.agents.prompts import SQL_GENERATE_PROMPT
-    prompt = SQL_GENERATE_PROMPT.format_messages(
-        question=state.get("effective_question") or state.get("question", ""),
-        cross_domain_section=cross_domain_section,
-        entity_hints_section=entity_hints_section,
-        directive_section=directive_section,
-        time_col_highlight_section=time_col_highlight_section,
-        query_blueprint=query_blueprint,
-        schema_reference=schema_reference,
-        anti_patterns=sql_anti_patterns,
-        reasoning_directive=reasoning_directive,
-        unresolved_joins_section=unresolved_joins_section,
-        instructions_section=instructions_section,
-        feedback_section=feedback_section,
-        query_patterns_section=query_patterns_section,
-        prior_sql_section=prior_sql_section,
-        cte_column_plan=cte_column_plan,
-        candidate_join_paths_section=candidate_join_paths_section,
-        conditional_rules_section=_build_sql_rules_section(state, spec),
-    )
+    prompt = [
+        SystemMessage(content=SQL_GENERATE_SYSTEM.format(
+            question=state.get("effective_question") or state.get("question", ""),
+            cross_domain_section=cross_domain_section,
+            entity_hints_section=entity_hints_section,
+            directive_section=directive_section,
+            time_col_highlight_section=time_col_highlight_section,
+            query_blueprint=query_blueprint,
+            schema_reference=schema_reference,
+            anti_patterns=sql_anti_patterns,
+            reasoning_directive=reasoning_directive,
+            unresolved_joins_section=unresolved_joins_section,
+            instructions_section=instructions_section,
+            feedback_section=feedback_section,
+            query_patterns_section=query_patterns_section,
+            prior_sql_section=prior_sql_section,
+            cte_column_plan=cte_column_plan,
+            candidate_join_paths_section=candidate_join_paths_section,
+            conditional_rules_section=_build_sql_rules_section(state, spec),
+        )),
+        HumanMessage(content=SQL_GENERATE_HUMAN),
+    ]
 
     _mission = build_mission_context(
         state,
@@ -452,19 +457,22 @@ async def _plan_cte_columns(
             if _qi_lines else ""
         )
 
-        prompt = CTE_COLUMN_PLANNER_PROMPT.format_messages(
-            question=state.get("effective_question") or state.get("question", ""),
-            query_intent_section=query_intent_section,
-            directive_section=directive_section,
-            groupings_hint_section=groupings_hint_section,
-            prior_error_section=prior_error_section,
-            query_blueprint=planner_blueprint,
-            schema_reference=schema_reference,
-            anti_pattern_section=planner_anti_patterns,
-            query_pattern_section=planner_query_patterns,
-            conditional_planning_rules=_build_planner_rules_section(state, spec),
-            conditional_step_11=_CTE_PLANNER_TREND if _is_projection_query(state, spec) else "",
-        )
+        prompt = [
+            SystemMessage(content=CTE_COLUMN_PLANNER_SYSTEM.format(
+                question=state.get("effective_question") or state.get("question", ""),
+                query_intent_section=query_intent_section,
+                directive_section=directive_section,
+                groupings_hint_section=groupings_hint_section,
+                prior_error_section=prior_error_section,
+                query_blueprint=planner_blueprint,
+                schema_reference=schema_reference,
+                anti_pattern_section=planner_anti_patterns,
+                query_pattern_section=planner_query_patterns,
+                conditional_planning_rules=_build_planner_rules_section(state, spec),
+                conditional_step_11=_CTE_PLANNER_TREND if _is_projection_query(state, spec) else "",
+            )),
+            HumanMessage(content=CTE_COLUMN_PLANNER_HUMAN),
+        ]
         response = await retry_async(
             lambda: llm.ainvoke(prompt, config=config),
             service="bedrock-cte-planner",
@@ -1578,6 +1586,21 @@ def _build_query_patterns_section(
 
     if not (outline or join_outline or sql_text):
         return ""
+
+    from app.core.logger import logger as _sqg_logger
+    _sqg_logger.info(
+        "sql_generator | pattern_fields | tier={} | force_hint={} | sql_text={} | join_outline={} | filter_summary={} | measure_summary={} | dimension_summary={} | occurrence={} | repair={} | recompile={}",
+        ("exact" if top.get("raw_score", 0) >= 0.95 else "strong" if top.get("raw_score", 0) >= 0.85 else "hint"),
+        force_hint,
+        "present" if sql_text else "absent",
+        "present" if join_outline else "absent",
+        "present" if filter_summary else "absent",
+        "present" if top.get("measure_summary") else "absent",
+        "present" if top.get("dimension_summary") else "absent",
+        top.get("occurrence_count", 1),
+        recompile,
+        repair,
+    )
 
     # Continuation conflict resolution: when prior_sql exists AND the current question is
     # related to the prior one (prior_execution_context non-None after B_prior similarity

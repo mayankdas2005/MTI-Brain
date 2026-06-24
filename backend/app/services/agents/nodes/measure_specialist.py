@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -19,7 +20,7 @@ from app.services.agents.helpers import (
     build_mission_context,
     build_refinement_section,
 )
-from app.services.agents.prompts import MEASURE_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import MEASURE_SPECIALIST_HUMAN, MEASURE_SPECIALIST_SYSTEM, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 
@@ -167,21 +168,35 @@ async def measure_specialist(state: AnalyticsState, config: RunnableConfig) -> d
     _sc = state.get("semantic_context") or {}
     prior_verified_section, prior_trace_row = _build_prior_sections_measure(_sc)
 
-    from app.services.agents.helpers import build_instructions_section
-    prompt = MEASURE_SPECIALIST_PROMPT.format_messages(
-        question=state.get("effective_question") or state["question"],
-        intent_summary=intent_summary,
-        measurable_columns_section=_build_measurable_columns_section(enriched_schema),
-        joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
-        refinement_section=build_refinement_section(state, role="measures"),
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        query_plan_section=_build_query_plan_section(state.get("query_plan")),
-        concept_mappings_section=_build_concept_mappings_section(state.get("concept_mappings")),
-        entity_tokens_section=_build_entity_tokens_section(state.get("entity_tokens") or []),
-        prior_verified_section=prior_verified_section,
-        prior_trace_row=prior_trace_row,
-        instructions_section=build_instructions_section(state, "metric and aggregation identifier"),
+    _pat_log = _sc.get("_matched_pattern") or {}
+    logger.info(
+        "measure_specialist | pattern_injection | thread={} | tier={} | measure_summary={} | anti_count={} | anti_types={} | section_built={}",
+        state.get("thread_id"),
+        _sc.get("_matched_pattern_tier") or "none",
+        "present" if _pat_log.get("measure_summary") else "absent",
+        len(_sc.get("_matched_anti_patterns") or []),
+        [a.get("error_type") for a in (_sc.get("_matched_anti_patterns") or [])],
+        bool(prior_verified_section),
     )
+
+    from app.services.agents.helpers import build_instructions_section
+    prompt = [
+        SystemMessage(content=MEASURE_SPECIALIST_SYSTEM.format(
+            question=state.get("effective_question") or state["question"],
+            intent_summary=intent_summary,
+            measurable_columns_section=_build_measurable_columns_section(enriched_schema),
+            joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
+            refinement_section=build_refinement_section(state, role="measures"),
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            query_plan_section=_build_query_plan_section(state.get("query_plan")),
+            concept_mappings_section=_build_concept_mappings_section(state.get("concept_mappings")),
+            entity_tokens_section=_build_entity_tokens_section(state.get("entity_tokens") or []),
+            prior_verified_section=prior_verified_section,
+            prior_trace_row=prior_trace_row,
+            instructions_section=build_instructions_section(state, "metric and aggregation identifier"),
+        )),
+        HumanMessage(content=MEASURE_SPECIALIST_HUMAN),
+    ]
     _mission = build_mission_context(
         state,
         role="Identify all metrics and aggregation expressions the query requires from schema columns",

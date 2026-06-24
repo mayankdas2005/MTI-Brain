@@ -12,7 +12,7 @@ Returns None for general_chat (no data grounding applicable).
 
 import json_repair
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.services.agents.bedrock import get_llm
 from app.services.agents.prompts import CONFIDENCE_JUDGE_PROMPT
@@ -48,7 +48,10 @@ async def compute_confidence(state: dict) -> dict | None:
         from app.core.retry import retry_async
         _llm = get_llm("fast")
         response = await retry_async(
-            lambda: _llm.ainvoke([HumanMessage(content=prompt)]),
+            lambda: _llm.ainvoke([
+                SystemMessage(content="You are a strict answer-grounding evaluator. Return only valid JSON."),
+                HumanMessage(content=prompt),
+            ]),
             service="bedrock-confidence",
             max_attempts=2,
             backoff_base=5.0,

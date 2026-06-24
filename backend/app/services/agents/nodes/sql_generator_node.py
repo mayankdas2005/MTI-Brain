@@ -39,7 +39,7 @@ def _try_pattern_cache(state: AnalyticsState) -> str | None:
         return None
     if semantic_context.get("_matched_pattern_tier") != "exact" and state.get("_refined_matched_pattern") is None:
         return None
-    if pattern.get("repair_count", 0) > 1 or pattern.get("recompile_count", 0) > 0:
+    if (pattern.get("repair_count", 0) + pattern.get("recompile_count", 0)) > 1:
         return None
     sql = (pattern.get("sql_text") or "").strip()
     return sql if sql else None

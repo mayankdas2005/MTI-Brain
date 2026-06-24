@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -17,7 +18,7 @@ from app.services.agents.helpers import (
     build_mission_context,
     build_refinement_section,
 )
-from app.services.agents.prompts import DIMENSION_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import DIMENSION_SPECIALIST_HUMAN, DIMENSION_SPECIALIST_SYSTEM, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 
@@ -160,21 +161,34 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
                 f"<prior_failed>\nSimilar questions previously had SQL errors (interpretation may still be correct):\n{_anti_sql_lines}\n</prior_failed>"
             )
 
-    from app.services.agents.helpers import build_instructions_section
-    prompt = DIMENSION_SPECIALIST_PROMPT.format_messages(
-        question=state.get("effective_question") or state["question"],
-        intent_summary=intent_summary,
-        groupable_columns_section=_build_groupable_columns_section(enriched_schema),
-        joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
-        refinement_section=build_refinement_section(state, role="dimensions"),
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        measures_summary=measures_summary,
-        query_plan_section=_build_query_plan_section(state.get("query_plan")),
-        entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
-        prior_verified_section=prior_verified_section,
-        prior_trace_row=prior_trace_row,
-        instructions_section=build_instructions_section(state, "dimension and grouping selector"),
+    logger.info(
+        "dimension_specialist | pattern_injection | thread={} | tier={} | dimension_summary={} | anti_count={} | anti_types={} | section_built={}",
+        state.get("thread_id"),
+        _tier or "none",
+        "present" if (_pat and _pat.get("dimension_summary")) else "absent",
+        len(_anti),
+        [a.get("error_type") for a in _anti],
+        bool(prior_verified_section),
     )
+
+    from app.services.agents.helpers import build_instructions_section
+    prompt = [
+        SystemMessage(content=DIMENSION_SPECIALIST_SYSTEM.format(
+            question=state.get("effective_question") or state["question"],
+            intent_summary=intent_summary,
+            groupable_columns_section=_build_groupable_columns_section(enriched_schema),
+            joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
+            refinement_section=build_refinement_section(state, role="dimensions"),
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            measures_summary=measures_summary,
+            query_plan_section=_build_query_plan_section(state.get("query_plan")),
+            entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
+            prior_verified_section=prior_verified_section,
+            prior_trace_row=prior_trace_row,
+            instructions_section=build_instructions_section(state, "dimension and grouping selector"),
+        )),
+        HumanMessage(content=DIMENSION_SPECIALIST_HUMAN),
+    ]
     _mission = build_mission_context(
         state,
         role="Identify grouping dimensions and temporal grain(s) for the query",

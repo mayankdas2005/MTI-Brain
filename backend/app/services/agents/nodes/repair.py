@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -15,9 +16,14 @@ from app.services.agents import neo4j_client
 from app.services.agents.helpers import parse_tag, merge_neo4j_raw_graph
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_REPAIR,
-    REPAIR_PROMPT,
-    REPAIR_SYNTAX_PROMPT,
-    REPAIR_STRUCTURE_PROMPT,
+    REPAIR_HUMAN,
+    REPAIR_PERFORMANCE_HUMAN,
+    REPAIR_PERFORMANCE_SYSTEM,
+    REPAIR_STRUCTURE_HUMAN,
+    REPAIR_STRUCTURE_SYSTEM,
+    REPAIR_SYNTAX_HUMAN,
+    REPAIR_SYNTAX_SYSTEM,
+    REPAIR_SYSTEM,
 )
 
 _PERFORMANCE_DIRECTIVE = """--- PERFORMANCE DIRECTIVES ---
@@ -360,42 +366,51 @@ async def attempt_repair(
         emsg  = override_err_msg  or error_msg
         osql  = override_sql      or first_sql
         if etype == "syntax":
-            return REPAIR_SYNTAX_PROMPT.format_messages(
-                error_message=emsg,
-                original_sql=osql,
-                prior_attempts_detail=attempts_detail,
-                schema_reference=schema_reference,
-                reasoning_directive=REASONING_DIRECTIVE_REPAIR,
-            )
+            return [
+                SystemMessage(content=REPAIR_SYNTAX_SYSTEM.format(
+                    error_message=emsg,
+                    original_sql=osql,
+                    prior_attempts_detail=attempts_detail,
+                    schema_reference=schema_reference,
+                    reasoning_directive=REASONING_DIRECTIVE_REPAIR,
+                )),
+                HumanMessage(content=REPAIR_SYNTAX_HUMAN),
+            ]
         if etype == "structure":
-            return REPAIR_STRUCTURE_PROMPT.format_messages(
-                error_message=emsg,
-                original_sql=osql,
-                prior_attempts_detail=attempts_detail,
-                candidate_paths_section=candidate_paths_section,
-                schema_reference=schema_reference,
+            return [
+                SystemMessage(content=REPAIR_STRUCTURE_SYSTEM.format(
+                    error_message=emsg,
+                    original_sql=osql,
+                    prior_attempts_detail=attempts_detail,
+                    candidate_paths_section=candidate_paths_section,
+                    schema_reference=schema_reference,
+                    semantic_ir_text=semantic_ir_text,
+                    reasoning_directive=REASONING_DIRECTIVE_REPAIR,
+                )),
+                HumanMessage(content=REPAIR_STRUCTURE_HUMAN),
+            ]
+        return [
+            SystemMessage(content=REPAIR_SYSTEM.format(
+                question=state.get("effective_question") or state.get("question", ""),
+                entity_tokens_section=entity_tokens_section,
+                time_col_highlight_section=time_col_highlight_section,
                 semantic_ir_text=semantic_ir_text,
+                schema_reference=schema_reference,
+                original_sql=osql,
+                error_message=emsg,
+                prior_attempts_detail=attempts_detail,
+                directive_section=directive_section,
+                output_shape_section=output_shape_section,
+                instructions_section=instructions_section,
+                feedback_section=feedback_section,
+                performance_directive=_perf_directive,
+                explain_section=explain_section,
+                anti_patterns=anti_patterns,
+                candidate_paths_section=candidate_paths_section,
                 reasoning_directive=REASONING_DIRECTIVE_REPAIR,
-            )
-        return REPAIR_PROMPT.format_messages(
-            question=state.get("effective_question") or state.get("question", ""),
-            entity_tokens_section=entity_tokens_section,
-            time_col_highlight_section=time_col_highlight_section,
-            semantic_ir_text=semantic_ir_text,
-            schema_reference=schema_reference,
-            original_sql=osql,
-            error_message=emsg,
-            prior_attempts_detail=attempts_detail,
-            directive_section=directive_section,
-            output_shape_section=output_shape_section,
-            instructions_section=instructions_section,
-            feedback_section=feedback_section,
-            performance_directive=_perf_directive,
-            explain_section=explain_section,
-            anti_patterns=anti_patterns,
-            candidate_paths_section=candidate_paths_section,
-            reasoning_directive=REASONING_DIRECTIVE_REPAIR,
-        )
+            )),
+            HumanMessage(content=REPAIR_HUMAN),
+        ]
 
     llm = get_llm("deep")
 
@@ -677,8 +692,6 @@ async def _attempt_performance_repair(
     """
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
-    from app.services.agents.prompts import REPAIR_PERFORMANCE_PROMPT
-
     first_sql = sql_list[0] if sql_list else ""
     if not first_sql:
         return None
@@ -693,11 +706,14 @@ async def _attempt_performance_repair(
         explain_flags, state["thread_id"],
     )
     try:
-        prompt = REPAIR_PERFORMANCE_PROMPT.format_messages(
-            explain_flags=explain_flags,
-            explain_output=explain_output[:3000],
-            original_sql=first_sql,
-        )
+        prompt = [
+            SystemMessage(content=REPAIR_PERFORMANCE_SYSTEM.format(
+                explain_flags=explain_flags,
+                explain_output=explain_output[:3000],
+                original_sql=first_sql,
+            )),
+            HumanMessage(content=REPAIR_PERFORMANCE_HUMAN),
+        ]
         llm = get_llm("default")
 
         @llm_breaker

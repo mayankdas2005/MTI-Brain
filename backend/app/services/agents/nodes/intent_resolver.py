@@ -5,11 +5,12 @@ identifiers from SemanticContext. Validates every identifier post-LLM.
 """
 
 from __future__ import annotations
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import build_mission_context, parse_tag
-from app.services.agents.prompts import INTENT_RESOLVE_PROMPT, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import INTENT_RESOLVE_HUMAN, INTENT_RESOLVE_SYSTEM, REASONING_DIRECTIVE_DEEP, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 
@@ -314,17 +315,21 @@ def _build_prompt(state: AnalyticsState) -> list:
         f"<user_instructions>\nApply only instructions relevant to your task as a query intent resolver. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{_global_instructions}\n</user_instructions>"
         if _global_instructions else ""
     )
-    return INTENT_RESOLVE_PROMPT.format_messages(
-        question=state.get("effective_question") or state["question"],
-        persona=state.get("persona", "analyst"),
-        feedback_context=_build_feedback_context_str(state),
-        instructions_section=_instructions_section,
-        conversation_context=conversation_context,
-        memory_context=semantic_context.get("memory_context", ""),
-        schema_candidates_text=schema_candidates_text,
-        execution_error_section=execution_error_section,
-        reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
-    )
+    return [
+        SystemMessage(
+            content=INTENT_RESOLVE_SYSTEM.format(
+                persona=state.get("persona", "analyst"),
+                feedback_context=_build_feedback_context_str(state),
+                instructions_section=_instructions_section,
+                conversation_context=conversation_context,
+                memory_context=semantic_context.get("memory_context", ""),
+                schema_candidates_text=schema_candidates_text,
+                execution_error_section=execution_error_section,
+                reasoning_directive=REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL,
+            )
+        ),
+        HumanMessage(content=INTENT_RESOLVE_HUMAN.format(question=state.get("effective_question") or state["question"])),
+    ]
 
 
 def _parse_response(raw: str, thread_id: str) -> dict | None:

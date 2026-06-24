@@ -160,7 +160,8 @@ Frame observations as business context and implications, not warnings or problem
 OUTPUT RULES
 ══════════════════════════════════════
 • Output ONLY the HTML that goes inside <body> — no <html>, <head>, <style>, or <script> tags.
-• MUST start with <main class="wrap"> and end with </main>.
+• If no opening tag is pre-provided, start with <main class="wrap"> and end with </main>.
+    If an opening <main class="wrap"> tag is pre-provided, continue from it and close with </main>.
 • Use ONLY the class names listed in the DESIGN SYSTEM below. Do not invent class names.
 • Never display the user question. Never write "User Query", "Input", "Markdown", "SPARQL", "SQL", or any raw technical content.
 • Never expose raw field/column names — translate to executive language.
@@ -358,8 +359,16 @@ LABEL TRANSLATIONS (never use raw column names):
   match_rate → "Reconciliation Match Rate"
   avg_settlement_delay_days → "Avg. Days-to-Settlement"
 
-NUMERIC SHORTHAND: K=thousands, M=millions, B=billions, T=trillions. Preserve as given.
+NUMERIC SHORTHAND: K=thousands, M=millions, B=billions, T=trillions.
 FORMATTING: Currency ≥$1T→$1.24T, ≥$1B→$1.24B, ≥$1M→$12.4M, ≥$1K→$12.4K. Pct→44.3%. Dates→Jan 30, 2026.
+RAW UNITS RULE — CRITICAL: COLUMN STATISTICS (min, max, mean) are raw SQL values in their exact units
+  (currency, count, days, rate, quantity — any numeric type). Do NOT multiply by 1,000 or any other factor.
+  max=948541.4 → format as $948.5K, not $948.5M. max=90 → "90 days", not "90K days".
+  This system always returns raw values exactly as stored; apply the scale table above to format.
+DATA SAMPLE cells are pre-formatted by the pipeline (e.g. "948.54K") — copy them verbatim, do not re-scale.
+ANALYSIS text may already contain formatted numbers — preserve the scale already applied there.
+NO MENTAL ARITHMETIC: Do not sum, average, or derive totals beyond what appears in DATA SAMPLE or
+  COLUMN STATISTICS. Every number in the dashboard must trace to a cell or a stat shown in the input.
 
 Action verbs: Validate / Evaluate / Reconcile / Assess / Confirm
 Owners: Treasury Operations / Finance Ops / Risk & Compliance
@@ -378,7 +387,7 @@ FRAMING RULES
 • Every section should answer "so what?" — raw data without interpretation has no place
 • If TRIBAL KNOWLEDGE is provided: use it to contextualize metrics against known policies, thresholds, and decisions. Surface relevant limits or commitments in the Strategic Implications (section 04) and Decision Framework (section 05). Cite the policy name or decision in plain English — never as a technical reference.
 
-Generate the body HTML now. Start with <main class="wrap">. Only what goes inside <body>. No markdown. No prose."""
+Generate the body HTML now. If an opening <main class="wrap"> tag is already provided, continue from it and do not repeat it. Only what goes inside <body>. No markdown. No prose."""
 
 
 # ─── Input Formatter ──────────────────────────────────────────────────────────
@@ -434,7 +443,7 @@ def build_input_markdown(
     # ── Column statistics (from _build_data_summary) ──
     if col_stats:
         capped_stats = col_stats[:2000] + (" …" if len(col_stats) > 2000 else "")
-        parts.append(f"## COLUMN STATISTICS (full dataset)\n{capped_stats}")
+        parts.append(f"## COLUMN STATISTICS (full dataset — values are raw SQL units, not pre-scaled; do not multiply by 1,000)\n{capped_stats}")
 
     # ── Sample table — spread-sampled rows · budget-filtered columns ──
     if columns and rows:

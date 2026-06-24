@@ -19,6 +19,7 @@ directive output format unchanged — same field names, same tag structure.
 
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -26,7 +27,8 @@ from app.core.logger import logger
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_DEEP,
     REASONING_DIRECTIVE_NORMAL,
-    SCHEMA_GAP_DETECTOR_PROMPT,
+    SCHEMA_GAP_DETECTOR_HUMAN,
+    SCHEMA_GAP_DETECTOR_SYSTEM,
 )
 from app.services.agents.state import AnalyticsState
 
@@ -318,14 +320,17 @@ async def _detect_schema_gaps(state: dict, config: RunnableConfig) -> str:
         llm = get_llm("fast")
 
         from app.services.agents.helpers import build_instructions_section
-        prompt = SCHEMA_GAP_DETECTOR_PROMPT.format_messages(
-            intent_summary=intent_summary,
-            anchor_schema_section=schema_section,
-            confirmed_join_paths_section=confirmed_joins_section,
-            query_plan_section=query_plan_section,
-            reasoning_directive=reasoning,
-            instructions_section=build_instructions_section(state, "schema gap detector"),
-        )
+        prompt = [
+            SystemMessage(content=SCHEMA_GAP_DETECTOR_SYSTEM.format(
+                intent_summary=intent_summary,
+                anchor_schema_section=schema_section,
+                confirmed_join_paths_section=confirmed_joins_section,
+                query_plan_section=query_plan_section,
+                reasoning_directive=reasoning,
+                instructions_section=build_instructions_section(state, "schema gap detector"),
+            )),
+            HumanMessage(content=SCHEMA_GAP_DETECTOR_HUMAN),
+        ]
         from app.services.agents.helpers import format_prior_context_block
         _prior_ctx_block = format_prior_context_block(
             state.get("prior_context_window") or state.get("prior_execution_context")

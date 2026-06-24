@@ -34,11 +34,12 @@ async def compress_session(
     conversation = "\n".join(conversation_text)
 
     try:
-        from app.services.agents.prompts import COMPRESS_PROMPT
-        from langchain_core.messages import HumanMessage as HM
-        response = await llm.ainvoke(
-            COMPRESS_PROMPT.format_messages(conversation=conversation)
-        )
+        from app.services.agents.prompts import COMPRESS_HUMAN, COMPRESS_SYSTEM
+        from langchain_core.messages import HumanMessage as HM, SystemMessage
+        response = await llm.ainvoke([
+            SystemMessage(content=COMPRESS_SYSTEM),
+            HM(content=COMPRESS_HUMAN.format(existing_summary_section="None.", recent_exchanges=conversation)),
+        ])
         summary = (response.content or "").strip()
         if summary:
             logger.info("short_term | compressed session | thread={} | summary_len={}", thread_id, len(summary))

@@ -18,9 +18,11 @@ LLM replaces sqlglot-based SQL manipulation — Redshift has AWS-specific functi
 from __future__ import annotations
 
 import json_repair
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.core.logger import logger
 from app.services.agents.helpers import format_sql
+from app.services.agents.prompts import ZERO_ROW_PROBE_HUMAN, ZERO_ROW_PROBE_SYSTEM
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
@@ -164,8 +166,6 @@ async def _llm_generate_probe_sqls(sql: str, state: AnalyticsState) -> dict | No
     """
     try:
         from app.services.agents.bedrock import get_llm
-        from app.services.agents.prompts import ZERO_ROW_PROBE_PROMPT
-
         from app.core.retry import retry_async
         from app.services.agents.helpers import _build_entity_tokens_section
         llm = get_llm("complex")   # Opus
@@ -184,13 +184,16 @@ async def _llm_generate_probe_sqls(sql: str, state: AnalyticsState) -> dict | No
         else:
             low_confidence_section = ""
 
-        messages = ZERO_ROW_PROBE_PROMPT.format_messages(
-            original_sql=sql,
-            question=state.get("effective_question") or state.get("question", ""),
-            anchor_tables=", ".join((state.get("resolved_intent") or {}).get("anchor_tables") or []),
-            entity_tokens_section=entity_tokens_section,
-            low_confidence_section=low_confidence_section,
-        )
+        messages = [
+            SystemMessage(content=ZERO_ROW_PROBE_SYSTEM.format(
+                original_sql=sql,
+                question=state.get("effective_question") or state.get("question", ""),
+                anchor_tables=", ".join((state.get("resolved_intent") or {}).get("anchor_tables") or []),
+                entity_tokens_section=entity_tokens_section,
+                low_confidence_section=low_confidence_section,
+            )),
+            HumanMessage(content=ZERO_ROW_PROBE_HUMAN),
+        ]
         response = await retry_async(lambda: llm.ainvoke(messages), service="bedrock-zero-row-probe", max_attempts=2, backoff_base=5.0)
         text = (response.content or "").strip()
 

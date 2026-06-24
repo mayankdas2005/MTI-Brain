@@ -8,7 +8,7 @@ invents observations that aren't in the result set.
 """
 
 from __future__ import annotations
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 import datetime
@@ -19,7 +19,7 @@ from app.core.logger import logger
 from app.services.agents.helpers import _build_data_profile, build_mission_context, parse_tag
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP,
-    SYNTHESIS_PROMPT, INSIGHT_EXTRACTOR_PROMPT,
+    SYNTHESIS_HUMAN, SYNTHESIS_SYSTEM, INSIGHT_EXTRACTOR_HUMAN, INSIGHT_EXTRACTOR_SYSTEM,
     _SYNTHESIS_PERSONA_STRUCTURES, _DEEP_ANALYSIS_PERSONA_RULES,
 )
 from app.services.agents.state import AnalyticsState
@@ -443,20 +443,23 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     # Haiku reads the raw data and produces a structured insights JSON.
     # This is the only phase that sees the raw data profile.
 
-    extractor_prompt = INSIGHT_EXTRACTOR_PROMPT.format_messages(
-        question=state["question"],
-        persona=state.get("persona", "analyst"),
-        current_date_context=current_date_context,
-        flag_instructions_text=flag_instructions or "",
-        quality_context=quality_context,
-        no_data="YES" if no_data else "NO",
-        zero_row_probe_result=zero_row_probe_result,
-        data_profile=data_profile,
-        tribal_facts_section=tribal_facts_section,
-        conversation_context=conversation_section,
-        deep_analysis_extraction=deep_extraction,
-        tables_section=tables_section,
-    )
+    extractor_prompt = [
+        SystemMessage(content=INSIGHT_EXTRACTOR_SYSTEM.format(
+            question=state["question"],
+            persona=state.get("persona", "analyst"),
+            current_date_context=current_date_context,
+            flag_instructions_text=flag_instructions or "",
+            quality_context=quality_context,
+            no_data="YES" if no_data else "NO",
+            zero_row_probe_result=zero_row_probe_result,
+            data_profile=data_profile,
+            tribal_facts_section=tribal_facts_section,
+            conversation_context=conversation_section,
+            deep_analysis_extraction=deep_extraction,
+            tables_section=tables_section,
+        )),
+        HumanMessage(content=INSIGHT_EXTRACTOR_HUMAN),
+    ]
 
     haiku = get_llm("fast")
     insights_json: str = "{}"
@@ -561,22 +564,25 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     if is_deep:
         persona_structure += _DEEP_ANALYSIS_PERSONA_RULES.get(_persona_key, "")
 
-    writer_prompt = SYNTHESIS_PROMPT.format_messages(
-        persona=state.get("persona", "analyst"),
-        question=state["question"],
-        no_data_context=no_data_context,
-        insights_json=insights_json,
-        reasoning_directive=reasoning_directive,
-        instructions_section=instructions_section,
-        conversation_section=conversation_section,
-        memory_section=memory_section,
-        feedback_section=feedback_section,
-        tribal_facts_section=tribal_facts_section,
-        low_confidence_section=low_confidence_section,
-        query_intent_section=query_intent_section,
-        persona_structure=persona_structure,
-        deep_analysis_sections=deep_analysis_sections,
-    )
+    writer_prompt = [
+        SystemMessage(content=SYNTHESIS_SYSTEM.format(
+            persona=state.get("persona", "analyst"),
+            question=state["question"],
+            no_data_context=no_data_context,
+            insights_json=insights_json,
+            reasoning_directive=reasoning_directive,
+            instructions_section=instructions_section,
+            conversation_section=conversation_section,
+            memory_section=memory_section,
+            feedback_section=feedback_section,
+            tribal_facts_section=tribal_facts_section,
+            low_confidence_section=low_confidence_section,
+            query_intent_section=query_intent_section,
+            persona_structure=persona_structure,
+            deep_analysis_sections=deep_analysis_sections,
+        )),
+        HumanMessage(content=SYNTHESIS_HUMAN),
+    ]
     _mission = build_mission_context(
         state,
         role="Narrate the result as a direct, complete answer to the user's question — no fabrication, no omission",

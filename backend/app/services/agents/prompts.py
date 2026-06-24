@@ -15,6 +15,8 @@ LLMs read top-to-bottom; labeled sections give precise anchors for every rule.
 
 from langchain_core.prompts import ChatPromptTemplate
 
+_SECOND_WAVE_DEFAULT_HUMAN = "Execute the task using the provided context and follow the output format exactly."
+
 # ─── Reasoning directives (same style as existing pipeline) ──────────────────
 
 _REASONING_FORMAT = (
@@ -519,8 +521,7 @@ User question: "{question}"
 
 # ─── Node G: General Chat ────────────────────────────────────────────────────
 
-GENERAL_CHAT_PROMPT = ChatPromptTemplate.from_template(
-    """You are MTI Brain, an intelligent assistant for treasury and payments analytics.
+GENERAL_CHAT_SYSTEM = """You are MTI Brain, an intelligent assistant for treasury and payments analytics.
 
 Persona: {persona}
 Tone guide: executive: 2-3 sentences, strategic pitch. analyst: concise with specifics.
@@ -533,8 +534,6 @@ Tone guide: executive: 2-3 sentences, strategic pitch. analyst: concise with spe
 {memory_section}
 
 {feedback_section}
-
-User: {question}
 
 Context guidance:
 - If CONVERSATION CONTEXT appears above: reference the prior exchange when it is relevant.
@@ -563,12 +562,17 @@ your response here
 
 The <follow_ups> block: exactly 3 direct queries the user might naturally ask next.
 If the message is a greeting or capability question, suggest 3 analytics topics to explore."""
-)
+
+GENERAL_CHAT_HUMAN = """User: {question}"""
+
+GENERAL_CHAT_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", GENERAL_CHAT_SYSTEM),
+  ("human", GENERAL_CHAT_HUMAN),
+])
 
 # ─── Node 1b: Intent Resolver ────────────────────────────────────────────────
 
-INTENT_RESOLVE_PROMPT = ChatPromptTemplate.from_template(
-    """You are a financial analytics semantic interpreter for treasury data. Your job is to map user language to schema identifiers — not to reason about what the user probably needs. Every table name and column name you emit must exist verbatim in the SCHEMA CANDIDATES below. If you cannot find it, you flag a gap — you do not invent a plausible alternative.
+INTENT_RESOLVE_SYSTEM = """You are a financial analytics semantic interpreter for treasury data. Your job is to map user language to schema identifiers — not to reason about what the user probably needs. Every table name and column name you emit must exist verbatim in the SCHEMA CANDIDATES below. If you cannot find it, you flag a gap — you do not invent a plausible alternative.
 
 HARD CONSTRAINT: Use ONLY table names and column names from the TABLES and COLUMNS sections
 of SCHEMA CANDIDATES below. Never invent identifiers.
@@ -812,8 +816,6 @@ from CONVERSATION CONTEXT. Only add what the follow-up explicitly introduces.
 
 {execution_error_section}
 
-USER QUESTION: {question}
-
 ---
 
 {reasoning_directive}
@@ -853,17 +855,21 @@ Leave both arrays empty [] when not explicitly requested.
   "order_by": []
 }}
 </output>"""
-)
+
+INTENT_RESOLVE_HUMAN = """USER QUESTION: {question}"""
+
+INTENT_RESOLVE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", INTENT_RESOLVE_SYSTEM),
+    ("human", INTENT_RESOLVE_HUMAN),
+])
 
 # ─── Node C: Clarification ───────────────────────────────────────────────────
 
-CLARIFICATION_PROMPT = ChatPromptTemplate.from_template(
-    """You are asking a targeted clarification question for a financial analytics query.
+CLARIFICATION_SYSTEM = """You are asking a targeted clarification question for a financial analytics query.
 Persona: {persona}
 
 {conversation_section}
 
-The user asked: "{question}"
 Reason clarification is needed: {clarification_reason}
 
 Ask ONE specific, concise question. No reasoning, no explanation, no preamble.
@@ -871,20 +877,17 @@ Ask ONE specific, concise question. No reasoning, no explanation, no preamble.
 <question>
 one targeted question here
 </question>"""
-)
+
+CLARIFICATION_HUMAN = """The user asked: "{question}"""
+
+CLARIFICATION_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", CLARIFICATION_SYSTEM),
+  ("human", CLARIFICATION_HUMAN),
+])
 
 # ─── Node F: Filter Disambiguation (Tier 5) ──────────────────────────────────
 
-FILTER_DISAMBIGUATE_PROMPT = ChatPromptTemplate.from_template(
-    """You are resolving an ambiguous filter value for a financial data query.
-
-Column: {column_name}  in table: {table_fqn}
-User said: "{raw_user_value}"
-Context question: {question}
-
-{entity_hint_section}
-Known database codes (numbered; business meanings shown in parentheses when available):
-{candidates}
+FILTER_DISAMBIGUATE_SYSTEM = """You are resolving an ambiguous filter value for a financial data query.
 
 ---
 
@@ -910,12 +913,23 @@ One sentence: which numbered entry matches (by direct match or meaning label) an
 <output>
 {{"resolved_value": "EXACT_DB_CODE_FROM_NUMBERED_LIST"}}
 </output>"""
-)
+
+FILTER_DISAMBIGUATE_HUMAN = """Column: {column_name}  in table: {table_fqn}
+User said: "{raw_user_value}"
+Context question: {question}
+
+{entity_hint_section}
+Known database codes (numbered; business meanings shown in parentheses when available):
+{candidates}"""
+
+FILTER_DISAMBIGUATE_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", FILTER_DISAMBIGUATE_SYSTEM),
+  ("human", FILTER_DISAMBIGUATE_HUMAN),
+])
 
 # ─── Repair Node ──────────────────────────────────────────────────────────────
 
-REPAIR_PROMPT = ChatPromptTemplate.from_template(
-    """You are a Redshift SQL debugger performing a surgical fix. Your constraint: change the minimum possible to eliminate the reported error. Every table, CTE name, JOIN, and output column that is not part of the error stays exactly as written.
+REPAIR_SYSTEM = """You are a Redshift SQL debugger performing a surgical fix. Your constraint: change the minimum possible to eliminate the reported error. Every table, CTE name, JOIN, and output column that is not part of the error stays exactly as written.
 If the fix requires touching structure (a CTE name, a JOIN chain), note it explicitly in reasoning — that means the original plan had a deeper problem. Otherwise: one error, one fix, nothing else moves.
 
 Redshift is NOT PostgreSQL.
@@ -1081,10 +1095,13 @@ SELF-CHECK after writing the fix:
 <sql>
 fixed SQL here
 </sql>"""
-)
+REPAIR_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+REPAIR_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", REPAIR_SYSTEM),
+  ("human", REPAIR_HUMAN),
+])
 
-REPAIR_SYNTAX_PROMPT = ChatPromptTemplate.from_template(
-    """You are a Redshift dialect specialist performing a one-line surgical fix. You know every point where Redshift diverges from standard SQL and PostgreSQL. Your fix changes exactly the reported syntax error and nothing else — no cleanup, no refactoring, no "while I'm here" changes.
+REPAIR_SYNTAX_SYSTEM = """You are a Redshift dialect specialist performing a one-line surgical fix. You know every point where Redshift diverges from standard SQL and PostgreSQL. Your fix changes exactly the reported syntax error and nothing else — no cleanup, no refactoring, no "while I'm here" changes.
 
 REDSHIFT DIALECT RULES (most common sources of syntax errors):
   WRONG: INTERVAL '1 year'           CORRECT: DATEADD(year, -1, date)
@@ -1114,10 +1131,13 @@ BROKEN SQL: {original_sql}
 {reasoning_directive}
 <reasoning>Identify exact error. State the one-line fix. If prior attempts exist: why each failed and how this differs.</reasoning>
 <sql>fixed SQL here</sql>"""
-)
+REPAIR_SYNTAX_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+REPAIR_SYNTAX_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", REPAIR_SYNTAX_SYSTEM),
+  ("human", REPAIR_SYNTAX_HUMAN),
+])
 
-REPAIR_STRUCTURE_PROMPT = ChatPromptTemplate.from_template(
-    """You are a Redshift CTE chain debugger. You trace column references from the error site back through the CTE export chain to find exactly where an alias was not exported. You fix by adding the missing export to the upstream CTE — not by restructuring or renaming the query. Surgical fix only: one missing export, one addition, nothing else moves.
+REPAIR_STRUCTURE_SYSTEM = """You are a Redshift CTE chain debugger. You trace column references from the error site back through the CTE export chain to find exactly where an alias was not exported. You fix by adding the missing export to the upstream CTE — not by restructuring or renaming the query. Surgical fix only: one missing export, one addition, nothing else moves.
 
 CTE EXPORT ERROR — the only fix pattern:
   Error: "CTE 'X' references column 'col' not exported by upstream CTE 'Y'"
@@ -1164,12 +1184,15 @@ BROKEN SQL: {original_sql}
 {reasoning_directive}
 <reasoning>Identify exact error type (export/scope/join). State which CTE needs the fix. Confirm what changes and what stays the same.</reasoning>
 <sql>fixed SQL here</sql>"""
-)
+REPAIR_STRUCTURE_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+REPAIR_STRUCTURE_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", REPAIR_STRUCTURE_SYSTEM),
+  ("human", REPAIR_STRUCTURE_HUMAN),
+])
 
 # ─── Performance repair (EXPLAIN-driven rewrite) ─────────────────────────────
 
-REPAIR_PERFORMANCE_PROMPT = ChatPromptTemplate.from_template(
-    """You are a Redshift query optimizer reading EXPLAIN output. You identify the specific distribution warnings (DS_BCAST_INNER, DS_DIST_ALL_INNER, Seq Scan on large tables) and apply the minimum structural rewrite that eliminates them. You never change query semantics, output columns, or filter logic — only the execution path.
+REPAIR_PERFORMANCE_SYSTEM = """You are a Redshift query optimizer reading EXPLAIN output. You identify the specific distribution warnings (DS_BCAST_INNER, DS_DIST_ALL_INNER, Seq Scan on large tables) and apply the minimum structural rewrite that eliminates them. You never change query semantics, output columns, or filter logic — only the execution path.
 
 PROBLEM FLAGS: {explain_flags}
 EXPLAIN OUTPUT (first 3000 chars):
@@ -1204,12 +1227,15 @@ Rules:
 
 <reasoning>Identify the primary flag. State which CTE restructuring resolves it. List exactly what changes and what stays the same.</reasoning>
 <sql>rewritten SQL here</sql>"""
-)
+REPAIR_PERFORMANCE_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+REPAIR_PERFORMANCE_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", REPAIR_PERFORMANCE_SYSTEM),
+  ("human", REPAIR_PERFORMANCE_HUMAN),
+])
 
 # ─── CTE Column Planner (fast pre-pass before SQL generation) ─────────────────
 
-CTE_COLUMN_PLANNER_PROMPT = ChatPromptTemplate.from_template(
-    """You are a Redshift query architect. Your job is to plan the CTE skeleton before any SQL is written — names, export columns, source chains, and the backward trace from FINAL SELECT to each CTE's inputs.
+CTE_COLUMN_PLANNER_SYSTEM = """You are a Redshift query architect. Your job is to plan the CTE skeleton before any SQL is written — names, export columns, source chains, and the backward trace from FINAL SELECT to each CTE's inputs.
 You think backwards: start from what the FINAL SELECT must output, trace which CTE provides each column, verify no CTE is dead (unreferenced downstream), and flag any missing export before the SQL generator touches the query.
 You produce a contract, not code. The SQL generator is bound by every name and export you specify — do not leave anything ambiguous.
 
@@ -1434,12 +1460,15 @@ Output ONLY the plan below — no other text:
 <plan>
 (one CTE block per CTE, then FINAL SELECT / ORDER BY / LIMIT)
 </plan>"""
-)
+CTE_COLUMN_PLANNER_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+CTE_COLUMN_PLANNER_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", CTE_COLUMN_PLANNER_SYSTEM),
+  ("human", CTE_COLUMN_PLANNER_HUMAN),
+])
 
 # ─── SQL Generator ────────────────────────────────────────────────────────────
 
-SQL_GENERATE_PROMPT = ChatPromptTemplate.from_template(
-    """You are a senior Redshift DBA at a financial services firm writing production SQL.
+SQL_GENERATE_SYSTEM = """You are a senior Redshift DBA at a financial services firm writing production SQL.
 Before touching a keyword, you simulate the query plan: which CTEs filter early, which aggregate before joining, where correlated subqueries would scan millions of rows. You write SQL that Redshift can execute efficiently — not SQL that merely runs.
 Your non-negotiables: filter inside CTEs not the outer SELECT, aggregate before joining, CROSS JOIN only for single-row scalars, pre-compute all MAX dates in a dedicated CTE, qualify every column reference with its table or CTE alias.
 
@@ -1756,16 +1785,33 @@ SELF-CHECK before emitting SQL:
 <sql>
 complete Redshift SQL here
 </sql>"""
-)
+SQL_GENERATE_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+SQL_GENERATE_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", SQL_GENERATE_SYSTEM),
+  ("human", SQL_GENERATE_HUMAN),
+])
 
 # ─── Node 4: Synthesis — Phase 1: Insight Extractor (Haiku) ─────────────────
 # Single job: read the raw data and extract structured insights.
 # Sonnet (Phase 2) never sees the raw data — it writes only from these insights.
 # This prevents Sonnet from hallucinating details not in the data.
 
-INSIGHT_EXTRACTOR_PROMPT = ChatPromptTemplate.from_template(
-    """You are a financial analyst extracting facts from a query result table. You work only from the numbers in front of you — no outside knowledge, no memory of prior questions, no industry benchmarks unless they appear in the data. Every sentence you write must be traceable to a specific cell value in the result.
+INSIGHT_EXTRACTOR_SYSTEM = """You are a financial analyst extracting facts from a query result table. You work only from the numbers in front of you — no outside knowledge, no memory of prior questions, no industry benchmarks unless they appear in the data. Every sentence you write must be traceable to a specific cell value in the result.
 Your failure mode: stating something that sounds plausible but is not in the data. Synthesis downstream will trust everything you produce — if you hallucinate, the final answer halluccinates. When in doubt, omit.
+
+RAW UNITS RULE — CRITICAL: Every numeric value in the DATA SAMPLE and COLUMN PROFILES is already
+in its exact raw unit — currency amounts, counts, days, rates, quantities, or any other numeric type.
+Do NOT multiply by 1,000 or any other factor regardless of the column type.
+  948,541.40 = nine hundred forty-eight thousand (e.g. $948K or 948K units) — NOT 948M.
+  14,200 = fourteen thousand two hundred — NOT 14.2M or 14.2B.
+  90 = ninety (e.g. 90 days) — NOT 90K.
+This system always returns raw SQL row values exactly as stored. No pre-scaling has been applied.
+Treat every number exactly as written. The downstream formatter converts to K/M/B for display.
+
+OUTPUT NUMBER FORMAT RULE: In your JSON output, write all numeric values exactly as they appear
+in the data — do NOT abbreviate (no "948.5M", no "14.2B"). Write "948541.40" not "$948.5M".
+The synthesis agent receives your JSON and handles all number formatting. If you abbreviate,
+synthesis will misread the scale and amplify the error.
 
 Extract business insights from this financial data. Facts only. Every observation must quote a specific value from the data.
 PERSONA: {persona}
@@ -1816,6 +1862,13 @@ Output a JSON object inside <insights> tags. Follow this schema exactly:
 
 RULES:
 - depth: "single_value" if 1 row/1 number; "simple_lookup" if 2-10 rows; "rich_dataset" if 10+ rows; "no_data" if no results
+- NO MENTAL ARITHMETIC — ABSOLUTE RULE: Do NOT sum, multiply, average, or otherwise compute figures
+  from the data rows in your head. Every number you cite in "key_finding" or any "observation" MUST
+  appear verbatim as a cell value in the DATA SAMPLE, OR as a Min/Max/Mean/Median stat in the
+  COLUMN PROFILES above. If a total or aggregate does not appear as an actual data cell, do not cite it.
+  Example violation: summing 36 "hedged_amount" rows to write "USD 14.2B total hedged" — that total
+  is not a cell value, so it must not appear in the output.
+  Example violation: interpreting a Max stat of 948,541 as "$948M" — use the number as written.
 - data_quality_concern: set to null UNLESS you are actively flagging a genuine anomaly. Populate only when: a single-entity/account balance (not an aggregated portfolio total) exceeds $1T, a percentage exceeds 10,000%, a count is negative, or a date falls outside 1990-2035. Aggregated portfolio totals of any size are normal — return null, not an explanation. If your conclusion is "this looks fine" or "no flag warranted", the field MUST be null. Never populate this field to explain why you are NOT flagging something.
 - key_finding: must contain the direct answer with a specific number. If no_data=YES, explain why in plain terms.
 - concern_level — CLASSIFICATION CRITERIA (mandatory — do not guess):
@@ -1864,16 +1917,29 @@ RULES:
 - humanize all names: snake_case -> Title Case, drop prefixes (lpp_, IHB_USD_ -> IHB Investment).
 
 SELF-CHECK before emitting insights:
-1. DATA GROUNDING: For every "observation" you write, point to the specific number or value in the data rows that supports it. If you cannot point to a row, remove the observation.
-2. TREND GATE: Do not describe a trend from fewer than 3 data points. Two values is a comparison, not a trend.
-3. IMPLICATION CHECK: Does each "implication" follow logically from the observation, or does it require outside knowledge? If it requires inference beyond the data, hedge it ("may indicate", "warrants investigation") rather than stating it as fact.
+1. DATA GROUNDING: For every number in "key_finding" and every "observation", identify the exact cell
+   or stat (Min/Max/Mean/Median from COLUMN PROFILES) that produced it. If you cannot name the source
+   cell or stat, the number is hallucinated — remove it.
+2. NO-ARITHMETIC CHECK: Scan your output for any aggregate or total figure (portfolio sum, entity total,
+   group-level subtotal). Ask: "Does this number appear as a cell value in DATA SAMPLE or as a column
+   stat?" If not, delete it. You are NOT permitted to compute totals in your head, even if the arithmetic
+   seems straightforward. The SQL already computed everything the user needs — trust the cells.
+3. SCALE CHECK: Scan every number in your JSON output. If any number contains an abbreviation (M, B, K, T)
+   or appears larger/smaller than the source cell by a factor of 1000+, you applied illegal scaling —
+   rewrite it as the exact raw value from the data. 948,541.40 must appear as 948541.40, not 948.5M.
+4. TREND GATE: Do not describe a trend from fewer than 3 data points. Two values is a comparison, not a trend.
+5. IMPLICATION CHECK: Does each "implication" follow logically from the observation, or does it require outside knowledge? If it requires inference beyond the data, hedge it ("may indicate", "warrants investigation") rather than stating it as fact.
 
 {deep_analysis_extraction}
 
 <insights>
 {{ JSON here }}
 </insights>"""
-)
+INSIGHT_EXTRACTOR_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+INSIGHT_EXTRACTOR_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", INSIGHT_EXTRACTOR_SYSTEM),
+  ("human", INSIGHT_EXTRACTOR_HUMAN),
+])
 
 
 # ─── Node 4: Synthesis — Phase 2: Answer Writer (Sonnet) ─────────────────────
@@ -2196,8 +2262,7 @@ DEEP ANALYSIS INTEGRATION (active — supplementary sections will appear after y
 }
 
 
-SYNTHESIS_PROMPT = ChatPromptTemplate.from_template(
-    """You are a senior treasury analyst writing a briefing that will be read by someone who has 90 seconds. They will not re-read it. They need the number, the direction, and the decision implication — in that order, in the first sentence.
+SYNTHESIS_SYSTEM = """You are a senior treasury analyst writing a briefing that will be read by someone who has 90 seconds. They will not re-read it. They need the number, the direction, and the decision implication — in that order, in the first sentence.
 No hedge language. No "it appears that", "it seems", "it may be worth noting". If you know it, say it. If you don't know it, don't say it. Precision over completeness.
 You write only from the PRE-EXTRACTED INSIGHTS below — not from training knowledge, not from inferred context. A fact not in the insights does not exist for this briefing.
 
@@ -2294,6 +2359,10 @@ NUMBERS RULE:
     ≥ 1,000             → K  (thousands)   e.g. $924K, 5.2K records
     < 1,000             → exact            e.g. $924, 7 accounts
   Never mix raw numbers ("4769206475441") with abbreviated numbers in the same response.
+  TRUST THE INSIGHTS JSON: Numbers in PRE-EXTRACTED INSIGHTS are raw SQL values in their exact units
+  (currency, count, days, rate, quantity — any numeric type). Apply the scale table above to format
+  them; do NOT multiply by 1,000 or re-scale. 948541.40 → **$948.5K**, not **$948.5M**.
+  90 → **90 days**, not **90K days**. Preserve the unit and the magnitude as received.
 
 CURRENCY OUTPUT RULE — MANDATORY:
   Every financial figure must state its output currency explicitly. Never write a bare number.
@@ -2437,13 +2506,16 @@ The <follow_ups> block: use the follow_up_paths from PRE-EXTRACTED INSIGHTS verb
   NEVER start with Validate, Retrieve, Confirm whether, Analyze, Quantify, or Identify.
   No multi-part questions. No raw column names. These are questions, not instructions.
 Output only the JSON array inside the tags."""
-)
+SYNTHESIS_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+SYNTHESIS_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", SYNTHESIS_SYSTEM),
+  ("human", SYNTHESIS_HUMAN),
+])
 
 
 # ─── Node 5: Chart Agent (unified — type + bindings + labels + sort in one call) ─
 
-CHART_AGENT_PROMPT = ChatPromptTemplate.from_template(
-    """You are a data visualization expert building financial dashboards.
+CHART_AGENT_SYSTEM = """You are a data visualization expert building financial dashboards.
 One call. Decide everything: chart type, column assignments, axis types, labels, sort order, aggregation.
 
 LESS IS MORE: Only generate a chart when it adds clear insight over reading the numbers.
@@ -2457,22 +2529,9 @@ Persona chart preferences:
   manager    — comparison → bar; trend → line
   analyst    — no restrictions; choose purely on data shape
 
-QUESTION: {question}
-
-QUERY INTENT:
-{query_intent}
-
 {instructions_section}
 
 {feedback_section}
-
----
-
-{data_profile}
-
----
-
-{column_metadata}
 
 ---
 
@@ -2616,18 +2675,29 @@ CHART CONFIDENCE (start 100, deduct):
   ]
 }}
 </chart>"""
-)
+
+CHART_AGENT_HUMAN = """QUESTION: {question}
+
+QUERY INTENT:
+{query_intent}
+
+---
+
+{data_profile}
+
+---
+
+{column_metadata}"""
+
+CHART_AGENT_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", CHART_AGENT_SYSTEM),
+    ("human", CHART_AGENT_HUMAN),
+])
 
 # ─── Conversation Compress ───────────────────────────────────────────────────
 
-COMPRESS_PROMPT = ChatPromptTemplate.from_template(
-    """Summarize this treasury analytics conversation for a rolling context window.
+COMPRESS_SYSTEM = """Summarize this treasury analytics conversation for a rolling context window.
 Keep the summary under 350 words. Prioritise precision over completeness.
-
-{existing_summary_section}
-
-Recent exchanges to summarize:
-{recent_exchanges}
 
 Capture — in order of priority:
 1. Entity identifiers mentioned: account codes, company codes, bank names, table names, filter values.
@@ -2646,7 +2716,16 @@ Do NOT summarise the SQL queries themselves — only the intent and findings.
 <summary>
 [Concise summary here. Max 350 words. Lead with entity identifiers, then intents, findings, and offered follow-ups.]
 </summary>"""
-)
+
+COMPRESS_HUMAN = """{existing_summary_section}
+
+Recent exchanges to summarize:
+{recent_exchanges}"""
+
+COMPRESS_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", COMPRESS_SYSTEM),
+  ("human", COMPRESS_HUMAN),
+])
 
 # ─── Confidence Grounding Judge ──────────────────────────────────────────────
 
@@ -2681,8 +2760,7 @@ EXAMPLES:
 
 # ─── Temporal Expression Resolver (Tier 3.5) ─────────────────────────────────
 
-TEMPORAL_RESOLVE_PROMPT = ChatPromptTemplate.from_template(
-    """Convert a temporal expression to a Redshift SQL date range. Return JSON only — no explanation.
+TEMPORAL_RESOLVE_SYSTEM = """Convert a temporal expression to a Redshift SQL date range. Return JSON only — no explanation.
 
 Use ONLY these Redshift functions: CURRENT_DATE, DATEADD(unit, n, CURRENT_DATE), DATE_TRUNC('unit', CURRENT_DATE)
 Negative n for past periods, positive n for future periods.
@@ -2701,18 +2779,21 @@ Examples:
   "this month"        -> {{"operator":">=","value":"DATE_TRUNC('month',CURRENT_DATE)"}}
   "last quarter"      -> {{"operator":"BETWEEN_SQL","start":"DATE_TRUNC('quarter',DATEADD(quarter,-1,CURRENT_DATE))","end":"DATEADD(day,-1,DATE_TRUNC('quarter',CURRENT_DATE))"}}
   "Q3 2024"           -> {{"operator":"BETWEEN_SQL","start":"2024-07-01","end":"2024-09-30"}}
-  "CONFIRMED"         -> {{"operator":null}}
+  "CONFIRMED"         -> {{"operator":null}}"""
 
-{temporal_grain_hint}
+TEMPORAL_RESOLVE_HUMAN = """{temporal_grain_hint}
 User question: {question}
 Expression: {expression}"""
-)
+
+TEMPORAL_RESOLVE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", TEMPORAL_RESOLVE_SYSTEM),
+    ("human", TEMPORAL_RESOLVE_HUMAN),
+])
 
 
 # ─── Zero-Row Probe (Opus LLM diagnostic) ────────────────────────────────────
 
-ZERO_ROW_PROBE_PROMPT = ChatPromptTemplate.from_template(
-    """Given this Redshift SQL that returned 0 rows, produce 3 diagnostic COUNT(*) variants.
+ZERO_ROW_PROBE_SYSTEM = """Given this Redshift SQL that returned 0 rows, produce 3 diagnostic COUNT(*) variants.
 Each variant removes filter conditions progressively to identify the cause.
 Return JSON only — no explanation, no markdown fences.
 
@@ -2761,13 +2842,16 @@ ANCHOR TABLES: {anchor_tables}
 
 Original SQL:
 {original_sql}"""
-)
+ZERO_ROW_PROBE_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+ZERO_ROW_PROBE_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", ZERO_ROW_PROBE_SYSTEM),
+  ("human", ZERO_ROW_PROBE_HUMAN),
+])
 
 # ─── Single-Responsibility Agent Prompts ─────────────────────────────────────
 # Each prompt has exactly one job. Context is minimal — only what that job needs.
 
-QUERY_PLANNER_PROMPT = ChatPromptTemplate.from_template(
-    """You are a literal question reader. You extract only what the user explicitly stated — not what they implied, not what would be "useful to include", not what a complete analysis would normally show. Implied columns get added later when the schema is known. Your job is the user's words, nothing else.
+QUERY_PLANNER_SYSTEM = """You are a literal question reader. You extract only what the user explicitly stated — not what they implied, not what would be "useful to include", not what a complete analysis would normally show. Implied columns get added later when the schema is known. Your job is the user's words, nothing else.
 Over-extraction is your failure mode: adding output_slots the user never mentioned causes downstream nodes to chase schema columns that don't exist and produces SQL for questions the user didn't ask.
 
 You are a query specification extractor. Your ONLY job is to read the user's question
@@ -2868,11 +2952,14 @@ SELF-CHECK before outputting:
 3. TIME PERIOD: Copy the user's exact words for required_time_period. Do not paraphrase or normalize.
 4. FX CHECK: Does the question aggregate any financial amount? If yes, set fx_required: true.
 5. OUTPUT SLOTS: List only what the user asks to SEE — not what is filtered or grouped internally."""
-)
+QUERY_PLANNER_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+QUERY_PLANNER_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", QUERY_PLANNER_SYSTEM),
+  ("human", QUERY_PLANNER_HUMAN),
+])
 
 
-ANCHOR_RESOLVER_PROMPT = ChatPromptTemplate.from_template(
-    """You are a data model navigator for a financial services data warehouse. This is the highest-stakes decision in the pipeline — every node downstream (measure selection, filter extraction, SQL generation) inherits whatever tables you choose. A wrong anchor cannot be fixed later.
+ANCHOR_RESOLVER_SYSTEM = """You are a data model navigator for a financial services data warehouse. This is the highest-stakes decision in the pipeline — every node downstream (measure selection, filter extraction, SQL generation) inherits whatever tables you choose. A wrong anchor cannot be fixed later.
 You read domain markers and business-term matches before touching table names. Surface-level name similarity is a trap — "payment_transaction" is not always where payments live. Follow the markers, follow the grain, follow the join paths.
 Your ONLY job is to identify which database tables are needed to answer the user's question. You do NOT write SQL, extract columns, or build filters.
 
@@ -3002,11 +3089,14 @@ SELF-CHECK before outputting anchor_tables:
   "intent_summary": "one sentence describing what the user wants"
 }}
 </output>"""
-)
+ANCHOR_RESOLVER_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+ANCHOR_RESOLVER_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", ANCHOR_RESOLVER_SYSTEM),
+  ("human", ANCHOR_RESOLVER_HUMAN),
+])
 
 
-MEASURE_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
-    """You are a financial data analyst reading a database schema to identify exactly which numeric columns answer the user's question. You never reason about what "liquidity" or "exposure" means in the abstract — you find the specific column in the schema that carries that value and name it exactly as it appears.
+MEASURE_SPECIALIST_SYSTEM = """You are a financial data analyst reading a database schema to identify exactly which numeric columns answer the user's question. You never reason about what "liquidity" or "exposure" means in the abstract — you find the specific column in the schema that carries that value and name it exactly as it appears.
 The single rule that prevents non-determinism: if the column is not visible in the schema below, you do not emit it. You do not infer it, derive it from question wording, or hallucinate a plausible-sounding name.
 
 You identify which columns to AGGREGATE to answer the user's question.
@@ -3109,11 +3199,14 @@ Q1 "total liquidity available today" -> measures=[{{liquidity/available_balance,
 Q2 "inflows and outflows forecast" -> measures=[{{inflow_amount, SUM}}, {{outflow_amount, SUM}}], derived_measures=[{{net_cash_flow, SUM(inflows)-SUM(outflows)}}]
 Q3 "CFO briefing: liquidity, debt, FX, interest rate exposure" -> measures per domain (total_liquidity, total_debt, fx_exposure, rate_exposure)
 Q4 "does this treasury position require action" -> measures=[] (judgment query, no aggregation)"""
-)
+MEASURE_SPECIALIST_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+MEASURE_SPECIALIST_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", MEASURE_SPECIALIST_SYSTEM),
+  ("human", MEASURE_SPECIALIST_HUMAN),
+])
 
 
-FILTER_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
-    """You are a schema-bound filter extractor. You map user words to database columns.
+FILTER_SPECIALIST_SYSTEM = """You are a schema-bound filter extractor. You map user words to database columns.
 
 COLUMN CHOICE (do this FIRST, it determines correctness):
   A named entity / geography / categorical concept lives in the DIMENSION column whose
@@ -3304,11 +3397,14 @@ Q2 "4-week and 3-month cash forecast... falls below $200M minimum threshold" ->
     threshold_specs=[{{expression: projected_liquidity, operator: <, value: 200000000, label: below_threshold_flag, is_having: false}}]
 Q3 "CFO briefing: liquidity, debt, FX, interest rate exposure" -> filters=[], timeframe=null
 Q4 "does this treasury position require action" -> inherit filters from Q3 conversation context via is_followup=true"""
-)
+FILTER_SPECIALIST_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+FILTER_SPECIALIST_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", FILTER_SPECIALIST_SYSTEM),
+  ("human", FILTER_SPECIALIST_HUMAN),
+])
 
 
-DIMENSION_SPECIALIST_PROMPT = ChatPromptTemplate.from_template(
-    """You are a literal grouping extractor. You emit only the GROUP BY columns the user explicitly asked for. You never add groupings because they "make sense" or "seem useful" — if the user did not say "by X" or "per X" or "for each X", X is not a dimension.
+DIMENSION_SPECIALIST_SYSTEM = """You are a literal grouping extractor. You emit only the GROUP BY columns the user explicitly asked for. You never add groupings because they "make sense" or "seem useful" — if the user did not say "by X" or "per X" or "for each X", X is not a dimension.
 Over-grouping is as wrong as under-grouping: adding an unrequested dimension produces one row per entity instead of one aggregate, silently breaking the entire query.
 
 You identify DIMENSION columns — the columns used to GROUP or PARTITION the result.
@@ -3392,10 +3488,14 @@ Q1 "total liquidity available today" -> dimensions=[] (single KPI)
 Q2 "4-week and 3-month cash forecast" -> dimensions=[{{date_col, alias: forecast_period}}]
 Q3 "CFO briefing: liquidity, debt, FX, interest rate exposure" -> dimensions=[{{domain/category alias}}] — one row per domain
 Q4 "does this treasury position require action" -> dimensions=[] (judgment, not a grouping query)"""
-)
+DIMENSION_SPECIALIST_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+DIMENSION_SPECIALIST_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", DIMENSION_SPECIALIST_SYSTEM),
+  ("human", DIMENSION_SPECIALIST_HUMAN),
+])
 
 
-SCHEMA_GAP_DETECTOR_PROMPT = ChatPromptTemplate.from_template("""\
+SCHEMA_GAP_DETECTOR_SYSTEM = """\
 {reasoning_directive}
 
 You are a schema gap detector. Your default answer is silence — emit nothing unless a concept the user explicitly asked for has absolutely no matching column in the loaded schema.
@@ -3448,7 +3548,12 @@ REASONING:
   For each gap candidate: check the schema above column by column.
   If ANY column covers the concept (even approximately), it is NOT a gap.
   Only emit a gap when the concept is genuinely absent.
-""")
+"""
+SCHEMA_GAP_DETECTOR_HUMAN = _SECOND_WAVE_DEFAULT_HUMAN
+SCHEMA_GAP_DETECTOR_PROMPT = ChatPromptTemplate.from_messages([
+  ("system", SCHEMA_GAP_DETECTOR_SYSTEM),
+  ("human", SCHEMA_GAP_DETECTOR_HUMAN),
+])
 
 
 DATA_QUALITY_CHECKER_PROMPT = """\
@@ -3507,3 +3612,5 @@ Output only valid JSON (no markdown):
   "reason": null
 }}
 """
+
+

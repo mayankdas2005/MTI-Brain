@@ -671,22 +671,22 @@ async def stream_pipeline(
 
         # ── Loop 1: write QueryPattern (quality-gated) + SchemaGaps ─────────────
         _confidence_score = _confidence.get("score", 0) if _confidence else 0
+        _total_retries = state.get("repair_count", 0) + state.get("recompile_count", 0)
         _exec_clean = (
-            state.get("repair_count", 0) <= 1
-            and state.get("recompile_count", 0) == 0
+            _total_retries <= 1
             and state.get("zero_row_rewrite_count", 0) == 0
         )
         if not _exec_clean:
             _skip_reason = (
-                "recompile" if state.get("recompile_count", 0) > 0
-                else "zero_row_rewrite" if state.get("zero_row_rewrite_count", 0) > 0
-                else "repair>1"
+                "zero_row_rewrite" if state.get("zero_row_rewrite_count", 0) > 0
+                else f"retries>{1} (repair={state.get('repair_count', 0)} recompile={state.get('recompile_count', 0)})"
             )
             logger.info(
-                "[{}] QueryPattern SKIP | repair_count={} | recompile_count={} | zero_row_rewrite={} | reason={}",
+                "[{}] QueryPattern SKIP | repair_count={} | recompile_count={} | total_retries={} | zero_row_rewrite={} | reason={}",
                 run_id[:8],
                 state.get("repair_count", 0),
                 state.get("recompile_count", 0),
+                _total_retries,
                 state.get("zero_row_rewrite_count", 0),
                 _skip_reason,
             )

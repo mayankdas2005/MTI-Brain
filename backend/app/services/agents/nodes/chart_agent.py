@@ -7,11 +7,12 @@ Python handles: data cleaning, row sorting, Vega-Lite spec assembly, large-numbe
 from __future__ import annotations
 import copy
 import re
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import _build_data_profile, build_mission_context, parse_tag
-from app.services.agents.prompts import CHART_AGENT_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import CHART_AGENT_HUMAN, CHART_AGENT_SYSTEM, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 _VALID_CHART_TYPES = {
@@ -687,16 +688,24 @@ async def _call_chart_llm(
         ir_intent = ((state.get("semantic_ir_list") or [{}])[0]).get("intent", "")
         query_intent_str = f"  {ir_intent}" if ir_intent else "  (not available)"
 
-    prompt = CHART_AGENT_PROMPT.format_messages(
-        question=state.get("effective_question") or state["question"],
-        persona=persona,
-        query_intent=query_intent_str,
-        data_profile=data_profile,
-        column_metadata=col_meta_str,
-        instructions_section=instructions_section,
-        feedback_section=feedback_section,
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-    )
+    prompt = [
+        SystemMessage(
+            content=CHART_AGENT_SYSTEM.format(
+                persona=persona,
+                instructions_section=instructions_section,
+                feedback_section=feedback_section,
+                reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            )
+        ),
+        HumanMessage(
+            content=CHART_AGENT_HUMAN.format(
+                question=state.get("effective_question") or state["question"],
+                query_intent=query_intent_str,
+                data_profile=data_profile,
+                column_metadata=col_meta_str,
+            )
+        ),
+    ]
 
     _mission = build_mission_context(
         state,

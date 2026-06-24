@@ -6,6 +6,7 @@ Tier 6 routes to clarification if all tiers fail.
 """
 
 from __future__ import annotations
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 import json
@@ -20,7 +21,12 @@ from app.services.agents.filter_resolver_logic import (
     resolve_tier3_temporal,
     resolve_to_patterns,
 )
-from app.services.agents.prompts import FILTER_DISAMBIGUATE_PROMPT, TEMPORAL_RESOLVE_PROMPT
+from app.services.agents.prompts import (
+    FILTER_DISAMBIGUATE_HUMAN,
+    FILTER_DISAMBIGUATE_SYSTEM,
+    TEMPORAL_RESOLVE_HUMAN,
+    TEMPORAL_RESOLVE_SYSTEM,
+)
 from app.services.agents.semantic_ir import FilterSpec, SemanticIR
 from app.services.agents.state import AnalyticsState
 
@@ -292,11 +298,16 @@ async def _tier35_temporal_llm(raw_value: str, state: AnalyticsState) -> dict | 
         query_plan = state.get("query_plan") or {}
         temporal_grain = query_plan.get("required_time_period") or ""
         temporal_grain_hint = f'Hint: required_time_period = "{temporal_grain}"' if temporal_grain else ""
-        messages = TEMPORAL_RESOLVE_PROMPT.format_messages(
-            expression=raw_value,
-            question=state.get("effective_question") or state.get("question", ""),
-            temporal_grain_hint=temporal_grain_hint,
-        )
+        messages = [
+            SystemMessage(content=TEMPORAL_RESOLVE_SYSTEM),
+            HumanMessage(
+                content=TEMPORAL_RESOLVE_HUMAN.format(
+                    expression=raw_value,
+                    question=state.get("effective_question") or state.get("question", ""),
+                    temporal_grain_hint=temporal_grain_hint,
+                )
+            ),
+        ]
         response = await retry_async(lambda: llm.ainvoke(messages), service="bedrock-filter-resolver-temporal", max_attempts=2, backoff_base=5.0)
         text = (response.content or "").strip()
         # Extract JSON from response — may be wrapped in markdown code fence
@@ -377,15 +388,19 @@ async def _tier5_disambiguate(f: FilterSpec, candidates: list[str], state: Analy
         "Pre-resolved entity hints (prefer these values):\n" + "\n".join(pre_resolved)
         if pre_resolved else ""
     )
-    prompt = FILTER_DISAMBIGUATE_PROMPT.format_messages(
-        raw_user_value=f.raw_user_value,
-        column_name=f.column_name,
-        table_fqn=f.table_fqn,
-        candidates=candidates_text,
-        question=state.get("effective_question") or state["question"],
-        reasoning_directive=REASONING_DIRECTIVE_BRIEF,
-        entity_hint_section=entity_hint_section,
-    )
+    prompt = [
+        SystemMessage(content=FILTER_DISAMBIGUATE_SYSTEM.format(reasoning_directive=REASONING_DIRECTIVE_BRIEF)),
+        HumanMessage(
+            content=FILTER_DISAMBIGUATE_HUMAN.format(
+                raw_user_value=f.raw_user_value,
+                column_name=f.column_name,
+                table_fqn=f.table_fqn,
+                candidates=candidates_text,
+                question=state.get("effective_question") or state["question"],
+                entity_hint_section=entity_hint_section,
+            )
+        ),
+    ]
 
     llm = get_llm("fast")
 

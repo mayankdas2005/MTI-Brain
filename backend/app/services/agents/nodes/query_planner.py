@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import re
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.prompts import QUERY_PLANNER_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import QUERY_PLANNER_HUMAN, QUERY_PLANNER_SYSTEM, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 
@@ -61,14 +62,17 @@ async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
         )
 
     from app.services.agents.helpers import build_instructions_section
-    prompt = QUERY_PLANNER_PROMPT.format_messages(
-        question=state.get("effective_question") or state["question"],
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        available_tables_section="",
-        entity_tokens_section="",
-        prior_columns_section=_prior_section,
-        instructions_section=build_instructions_section(state, "query structure planner"),
-    )
+    prompt = [
+        SystemMessage(content=QUERY_PLANNER_SYSTEM.format(
+            question=state.get("effective_question") or state["question"],
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            available_tables_section="",
+            entity_tokens_section="",
+            prior_columns_section=_prior_section,
+            instructions_section=build_instructions_section(state, "query structure planner"),
+        )),
+        HumanMessage(content=QUERY_PLANNER_HUMAN),
+    ]
 
     @llm_breaker
     async def _call():

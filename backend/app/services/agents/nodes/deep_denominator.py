@@ -139,9 +139,12 @@ async def deep_denominator(state: AnalyticsState) -> dict:
     try:
         @llm_breaker
         async def _call():
-            from langchain_core.messages import HumanMessage
+            from langchain_core.messages import HumanMessage, SystemMessage
             return await retry_async(
-                lambda: haiku.ainvoke([HumanMessage(content=prompt_text)]),
+                lambda: haiku.ainvoke([
+                    SystemMessage(content="You identify denominator context for ratio framing. Return only the requested XML block."),
+                    HumanMessage(content=prompt_text),
+                ]),
                 service="bedrock-deep-denominator",
                 max_attempts=2,
                 backoff_base=3.0,

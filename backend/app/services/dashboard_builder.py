@@ -21,10 +21,11 @@ from app.services.agents.bedrock import _region_from_arn
 from app.services.agents.helpers import _build_data_summary
 from app.services.dashboard_prompt import DASHBOARD_SYSTEM_PROMPT, build_input_markdown
 from langchain_aws import ChatBedrock
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from sqlalchemy import select
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "dashboard_template.html"
+_DASHBOARD_PREFILL = '<main class="wrap">'
 
 
 def _get_s3_client():
@@ -89,7 +90,7 @@ async def delete_from_s3(key: str) -> None:
         logger.warning("S3 delete failed for key=%s: %s", key, exc)
 
 
-def _extract_main(html: str) -> str:
+def _extract_main(html: str, prefill_opening: str | None = None) -> str:
     """Extract <main …>…</main> from LLM output using plain string ops — no regex.
 
     The prompt instructs the LLM to output ONLY the main block, so the raw
@@ -105,7 +106,12 @@ def _extract_main(html: str) -> str:
 
     start = text.find("<main")
     if start == -1:
-        return text                              # nothing to strip — return as-is
+        if not prefill_opening:
+            return text
+        content = text
+        if content.endswith("</main>"):
+            content = content[: -len("</main>")]
+        return f"{prefill_opening}{content}</main>"
 
     # Find the matching </main> — take the LAST one so nested tags are included
     end = text.rfind("</main>")
@@ -462,8 +468,9 @@ async def generate_and_store(
     system_prompt = DASHBOARD_SYSTEM_PROMPT
     human_msg = (
         f"INPUT DATA:\n\n{input_md}\n\n"
-        "Generate the dashboard HTML now. "
-        "Output ONLY the HTML starting with <main class=\"wrap\"> and ending with </main>. "
+        "Continue the dashboard HTML from the provided opening tag. "
+        "Do not repeat the opening <main class=\"wrap\"> tag. "
+        "Output only the remaining body content and close with </main>. "
         "No explanations, no markdown fences."
     )
     logger.info(
@@ -509,7 +516,7 @@ async def generate_and_store(
         raw_html = str(raw_content)
 
     logger.info(f"[dashboard] STEP 4 — LLM responded | raw length={len(raw_html)} chars | preview={raw_html[:200].replace(chr(10),' ')!r}")
-    body_html = _extract_main(raw_html)
+    body_html = _extract_main(raw_html, prefill_opening=_DASHBOARD_PREFILL)
     body_html = _repair_html(body_html)
     logger.info(f"[dashboard] STEP 4 — extracted body | length={len(body_html)} chars | starts_with_main={'<main' in body_html[:20]}")
 

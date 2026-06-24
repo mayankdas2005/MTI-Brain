@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import json
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import _build_entity_tokens_section, build_mission_context, merge_neo4j_raw_graph
-from app.services.agents.prompts import ANCHOR_RESOLVER_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import ANCHOR_RESOLVER_HUMAN, ANCHOR_RESOLVER_SYSTEM, QUERY_PLANNER_HUMAN, QUERY_PLANNER_SYSTEM, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 
@@ -370,19 +371,32 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     )
 
     _prior_anchor_section = _build_prior_anchor_section(semantic_context)
+    _pat_ar = semantic_context.get("_matched_pattern") or {}
+    logger.info(
+        "anchor_resolver | pattern_injection | thread={} | tier={} | tables_used={} | anti_count={} | anti_types={} | section_built={}",
+        state["thread_id"],
+        semantic_context.get("_matched_pattern_tier") or "none",
+        _pat_ar.get("tables_used") or [],
+        len(semantic_context.get("_matched_anti_patterns") or []),
+        [a.get("error_type") for a in (semantic_context.get("_matched_anti_patterns") or [])],
+        bool(_prior_anchor_section),
+    )
 
     from app.services.agents.helpers import build_instructions_section
-    anchor_prompt = ANCHOR_RESOLVER_PROMPT.format_messages(
-        question=question,
-        tables_section=_build_tables_section(semantic_context),
-        business_terms_section=_build_terms_section(semantic_context),
-        entity_hints_section=_build_entity_hints_section(semantic_context),
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        intents_section=_build_intents_section(semantic_context),
-        query_intent_section=query_intent_section,
-        prior_anchor_section=_prior_anchor_section,
-        instructions_section=build_instructions_section(state, "table selector"),
-    )
+    anchor_prompt = [
+        SystemMessage(content=ANCHOR_RESOLVER_SYSTEM.format(
+            question=question,
+            tables_section=_build_tables_section(semantic_context),
+            business_terms_section=_build_terms_section(semantic_context),
+            entity_hints_section=_build_entity_hints_section(semantic_context),
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            intents_section=_build_intents_section(semantic_context),
+            query_intent_section=query_intent_section,
+            prior_anchor_section=_prior_anchor_section,
+            instructions_section=build_instructions_section(state, "table selector"),
+        )),
+        HumanMessage(content=ANCHOR_RESOLVER_HUMAN),
+    ]
     _mission = build_mission_context(
         state,
         role="Select the anchor tables from Neo4j candidates that are semantically central to this query",
@@ -435,7 +449,6 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         + anchor_prompt[0].content
     )
 
-    from app.services.agents.prompts import QUERY_PLANNER_PROMPT
     available_tables_lines = [
         f"  {t.get('fqn')} — {(t.get('business_context') or t.get('description') or '')[:80]}"
         for t in (semantic_context.get("tables") or [])[:20]
@@ -445,13 +458,17 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         "AVAILABLE TABLES (verify groupings/entities against these):\n" + "\n".join(available_tables_lines)
         if available_tables_lines else ""
     )
-    plan_prompt = QUERY_PLANNER_PROMPT.format_messages(
-        question=question,
-        available_tables_section=available_tables_section,
-        entity_tokens_section=_build_entity_tokens_section(entity_tokens),
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        prior_columns_section="",
-    )
+    plan_prompt = [
+        SystemMessage(content=QUERY_PLANNER_SYSTEM.format(
+            question=question,
+            available_tables_section=available_tables_section,
+            entity_tokens_section=_build_entity_tokens_section(entity_tokens),
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            prior_columns_section="",
+            instructions_section="",
+        )),
+        HumanMessage(content=QUERY_PLANNER_HUMAN),
+    ]
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
