@@ -1,5 +1,16 @@
 [
   {
+    "version": "2026.06.24",
+    "date": "2026-06-24",
+    "entries": [
+      {
+        "type": "new",
+        "title": "Pattern library",
+        "body": "The AI now learns from every successful query. The Pattern Library shows all query patterns and anti-patterns that guide SQL generation and answers — visible under Settings → Pattern Library. Each pattern captures intent, complexity, tables used, how many times it has been seen, and whether any repairs were needed. Anti-patterns are tracked separately so the AI avoids repeating past mistakes. Search by question text to find any pattern in the library."
+      }
+    ]
+  },
+  {
     "version": "2026.06.22",
     "date": "2026-06-22",
     "entries": [
