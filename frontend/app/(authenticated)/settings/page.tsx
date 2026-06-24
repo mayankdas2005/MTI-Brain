@@ -24,6 +24,8 @@ import {
   Plus,
   Trash2,
   Loader2,
+  Database,
+  ShieldAlert,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -50,6 +52,8 @@ import {
 import { useInstructionsStore } from '@/lib/store/instructions';
 import type { UserInstruction } from '@/lib/api/instructions';
 import { listFeedbackHistory, getFeedbackPatterns, type FeedbackHistoryPage, type FeedbackPattern } from '@/lib/api/feedback-history';
+import { listQueryPatterns, listAntiPatterns, listEnabledQueryPatterns, listEnabledAntiPatterns, setQueryPatternEnabled, setAntiPatternEnabled, deleteQueryPattern, deleteAntiPattern, type PatternRecord, type PatternPage } from '@/lib/api/pattern-library';
+import { getStoredUser } from '@/lib/auth';
 import { ThumbsUp, ThumbsDown } from 'lucide-react';
 import {
   getPermission,
@@ -65,12 +69,14 @@ type SectionId =
   | 'appearance'
   | 'notifications'
   | 'instructions'
+  | 'query-patterns'
   | 'about';
 
 interface SectionDef {
   id: SectionId;
   label: string;
   icon: ComponentType<{ className?: string }>;
+  adminOnly?: boolean;
 }
 
 const SECTIONS: SectionDef[] = [
@@ -79,6 +85,7 @@ const SECTIONS: SectionDef[] = [
   { id: 'display', label: 'Display', icon: Eye },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'query-patterns', label: 'Pattern library', icon: Database },
   { id: 'about', label: 'About', icon: Info },
 ];
 
@@ -92,6 +99,17 @@ const TONE_OPTIONS: { value: ResponseTone; label: string; description: string }[
 const ROW_OPTIONS = [50, 100, 200, 500];
 
 export default function SettingsPage() {
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    const user = getStoredUser();
+    setIsAdmin((user?.groups ?? []).includes('admin'));
+  }, []);
+
+  const visibleSections = useMemo(
+    () => SECTIONS.filter((s) => !s.adminOnly || isAdmin),
+    [isAdmin],
+  );
+
   const responseTone = usePreferencesStore((s) => s.responseTone);
   const setResponseTone = usePreferencesStore((s) => s.setResponseTone);
   const showSQL = usePreferencesStore((s) => s.showSQL);
@@ -148,8 +166,8 @@ export default function SettingsPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const hash = window.location.hash.replace(/^#/, '') as SectionId;
-    if (SECTIONS.some((s) => s.id === hash)) setActiveSection(hash);
-  }, []);
+    if (visibleSections.some((s) => s.id === hash)) setActiveSection(hash);
+  }, [visibleSections]);
 
   const matches = useMemo(() => makeMatcher(query), [query]);
   const v = (keywords: string) => matches(keywords);
@@ -174,6 +192,9 @@ export default function SettingsPage() {
       v('notify when answers finish notifications stream completion') ||
       v('play sound ping audio notifications') ||
       v('browser permission notifications'),
+    'query-patterns':
+      v('query patterns antipatterns anti-patterns sql patterns') ||
+      v('pattern library training enabled'),
     about: v('about version mti brain'),
   };
 
@@ -241,7 +262,7 @@ export default function SettingsPage() {
 
         {/* Nav items */}
         <ul className="flex-1 px-2 pt-1 space-y-0.5 overflow-y-auto">
-          {SECTIONS.map((s) => {
+          {visibleSections.map((s) => {
             const Icon = s.icon;
             const isActive = !isSearching && activeSection === s.id;
             const isDimmed = isSearching && !sectionVisible[s.id];
@@ -289,7 +310,7 @@ export default function SettingsPage() {
       </nav>
 
       {/* Right panel */}
-      <div className="flex-1 overflow-y-auto">
+      <div className={`flex-1 ${!isSearching && activeSection === 'query-patterns' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto'}`}>
         {isSearching ? (
           <SearchResults
             visibleCount={visibleCount}
@@ -361,21 +382,30 @@ function SectionPanel({
   notifyOnComplete: 'when-hidden' | 'off'; setNotifyOnComplete: (v: 'when-hidden' | 'off') => void;
   notifySound: boolean; setNotifySound: (v: boolean) => void;
 }) {
+  const isQP = activeSection === 'query-patterns';
+  const isAdminUser = (getStoredUser()?.groups ?? []).includes('admin');
+
   const titles: Record<SectionId, { title: string; description: string }> = {
     'response-style': { title: 'Response style', description: 'How MTI Brain frames its answers.' },
     instructions: { title: 'Instructions', description: 'Standing rules applied to every response across all chats.' },
     display: { title: 'Display', description: 'Control what\'s shown alongside responses.' },
     appearance: { title: 'Appearance', description: 'Adjust layout density and accessibility.' },
     notifications: { title: 'Notifications', description: 'Configure how MTI Brain alerts you.' },
+    'query-patterns': {
+      title: 'Pattern library',
+      description: isAdminUser
+        ? 'Used to enable, disable or delete query patterns and anti-patterns.'
+        : 'Query patterns and anti-patterns enabled for training.',
+    },
     about: { title: 'About', description: '' },
   };
 
   const { title, description } = titles[activeSection];
 
   return (
-    <div className="px-8 pt-5 pb-8">
+    <div className={isQP ? 'h-full flex flex-col px-8 pt-5 overflow-hidden' : 'px-8 pt-5 pb-8'}>
       {/* Section heading */}
-      <div className="mb-6 pb-4 border-b border-border max-w-3xl">
+      <div className="mb-6 pb-4 border-b border-border max-w-3xl shrink-0">
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {description && (
           <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
@@ -383,7 +413,7 @@ function SectionPanel({
       </div>
 
       {/* Section content */}
-      <div className="max-w-3xl">
+      <div className={isQP ? 'max-w-3xl flex-1 min-h-0 flex flex-col overflow-hidden' : 'max-w-3xl'}>
         {activeSection === 'response-style' && (
           <ToneGrid
             options={TONE_OPTIONS}
@@ -421,6 +451,7 @@ function SectionPanel({
           />
         )}
         {activeSection === 'instructions' && <InstructionsPanel />}
+        {activeSection === 'query-patterns' && <QueryPatternsPanel />}
         {activeSection === 'about' && <AboutBlock />}
       </div>
     </div>
@@ -524,6 +555,11 @@ function SearchResults({
       {sectionVisible.instructions && (
         <SearchGroup title="Instructions">
           <InstructionsPanel />
+        </SearchGroup>
+      )}
+      {sectionVisible['query-patterns'] && (
+        <SearchGroup title="Query patterns">
+          <QueryPatternsPanel />
         </SearchGroup>
       )}
       {sectionVisible.about && (
@@ -948,6 +984,745 @@ function NotificationsPanel({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Query Patterns panel ────────────────────────────────────────────────────
+
+const QP_PAGE_SIZE = 10000;
+
+function NonAdminPatternView() {
+  const [activeTab, setActiveTab] = useState<'patterns' | 'antipatterns'>('patterns');
+  const [qpItems, setQpItems] = useState<PatternRecord[]>([]);
+  const [apItems, setApItems] = useState<PatternRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    Promise.all([listEnabledQueryPatterns(), listEnabledAntiPatterns()])
+      .then(([qp, ap]) => { setQpItems(qp.items); setApItems(ap.items); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const total = qpItems.length + apItems.length;
+  const noop = () => {};
+
+  const visibleQP = qpItems.filter((item) => matchesPatternSearch(item, search));
+  const visibleAP = apItems.filter((item) => matchesPatternSearch(item, search));
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 gap-0">
+      {/* Info banner */}
+      <div className="flex items-start gap-2.5 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 mb-3 shrink-0">
+        <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+        <div>
+          <p className="text-xs font-medium text-foreground">
+            {total > 0
+              ? `${qpItems.length} query pattern${qpItems.length !== 1 ? 's' : ''} and ${apItems.length} anti-pattern${apItems.length !== 1 ? 's' : ''} are enabled for training.`
+              : 'No patterns are currently enabled for training.'}
+          </p>
+          <p className="text-[11px] text-muted-foreground/60 mt-0.5">
+            These patterns guide the AI when generating SQL and answers.
+          </p>
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="relative shrink-0 mb-1">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search patterns…"
+          className="pl-8 pr-8 h-9 text-sm"
+        />
+        {search && (
+          <button
+            onClick={() => setSearch('')}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-border/50 shrink-0">
+        {(['patterns', 'antipatterns'] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-3 py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md border-b-2 -mb-px ${
+              activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {tab === 'patterns' ? (
+              <span className="flex items-center gap-1.5">
+                <Database className="w-3 h-3" />
+                Query patterns
+                <span className="tabular-nums text-muted-foreground/60">({visibleQP.length})</span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <ShieldAlert className="w-3 h-3" />
+                Anti-patterns
+                <span className="tabular-nums text-muted-foreground/60">({visibleAP.length})</span>
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Card list */}
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pt-3 pr-1 pb-4">
+        {loading ? (
+          <div className="flex justify-center py-10">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : activeTab === 'patterns' ? (
+          visibleQP.length === 0
+            ? <p className="text-xs text-muted-foreground/50 py-8 text-center">{search ? 'No patterns match your search.' : 'No query patterns enabled for training.'}</p>
+            : visibleQP.map((item, i) => (
+                <PatternCard
+                  key={(item.id as string) ?? i}
+                  record={item}
+                  variant="pattern"
+                  selected={false}
+                  onSelect={noop}
+                  readOnly
+                />
+              ))
+        ) : (
+          visibleAP.length === 0
+            ? <p className="text-xs text-muted-foreground/50 py-8 text-center">{search ? 'No patterns match your search.' : 'No anti-patterns enabled for training.'}</p>
+            : visibleAP.map((item, i) => (
+                <PatternCard
+                  key={(item.id as string) ?? i}
+                  record={item}
+                  variant="antipattern"
+                  selected={false}
+                  onSelect={noop}
+                  readOnly
+                />
+              ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+type FilterVal = 'all' | 'enabled' | 'disabled';
+
+function QueryPatternsPanel() {
+  // ── Access check (must be first, before any conditional return) ──────────
+  const [accessMode, setAccessMode] = useState<'checking' | 'admin' | 'user'>('checking');
+
+  // ── All admin-panel state (hooks must always be called) ──────────────────
+  const [activeTab, setActiveTab] = useState<'patterns' | 'antipatterns'>('patterns');
+  const [patternsData, setPatternsData] = useState<PatternPage | null>(null);
+  const [antiData, setAntiData] = useState<PatternPage | null>(null);
+  const [loadingP, setLoadingP] = useState(false);
+  const [loadingA, setLoadingA] = useState(false);
+  const [selectedP, setSelectedP] = useState<Set<string>>(new Set());
+  const [selectedA, setSelectedA] = useState<Set<string>>(new Set());
+  const [filterP, setFilterP] = useState<FilterVal>('all');
+  const [filterA, setFilterA] = useState<FilterVal>('all');
+  const [searchP, setSearchP] = useState('');
+  const [searchA, setSearchA] = useState('');
+  const [enablingP, setEnablingP] = useState(false);
+  const [enablingA, setEnablingA] = useState(false);
+  const [disablingP, setDisablingP] = useState(false);
+  const [disablingA, setDisablingA] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<'patterns' | 'antipatterns' | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const loadPatterns = useCallback(async () => {
+    setLoadingP(true);
+    try {
+      const result = await listQueryPatterns(0, QP_PAGE_SIZE);
+      setPatternsData(result);
+    } catch { } finally { setLoadingP(false); }
+  }, []);
+
+  const loadAnti = useCallback(async () => {
+    setLoadingA(true);
+    try {
+      const result = await listAntiPatterns(0, QP_PAGE_SIZE);
+      setAntiData(result);
+    } catch { } finally { setLoadingA(false); }
+  }, []);
+
+  // Access check effect — runs once on mount
+  useEffect(() => {
+    listQueryPatterns(0, 1)
+      .then(() => setAccessMode('admin'))
+      .catch((err: unknown) => {
+        const status = (err as { status?: number })?.status;
+        setAccessMode(status === 403 ? 'user' : 'admin');
+      });
+  }, []);
+
+  // Only load admin data once access is confirmed
+  useEffect(() => { if (accessMode === 'admin') loadPatterns(); }, [accessMode, loadPatterns]);
+  useEffect(() => { if (accessMode === 'admin') loadAnti(); }, [accessMode, loadAnti]);
+
+
+  const handleSelect = (set: Set<string>, setFn: (s: Set<string>) => void) =>
+    (id: string, checked: boolean) => {
+      const next = new Set(set);
+      checked ? next.add(id) : next.delete(id);
+      setFn(next);
+    };
+
+  const handleBulkEnable = async (tab: 'patterns' | 'antipatterns') => {
+    const ids = tab === 'patterns' ? [...selectedP] : [...selectedA];
+    const setLoading = tab === 'patterns' ? setEnablingP : setEnablingA;
+    setLoading(true);
+    try {
+      await Promise.all(ids.map((id) =>
+        tab === 'patterns' ? setQueryPatternEnabled(id, true) : setAntiPatternEnabled(id, true)
+      ));
+      const setData = tab === 'patterns' ? setPatternsData : setAntiData;
+      setData((prev) => prev ? {
+        ...prev,
+        items: prev.items.map((item) =>
+          ids.includes(item.id as string) ? { ...item, is_enabled: true } : item
+        ),
+      } : prev);
+    } catch { } finally { setLoading(false); }
+  };
+
+  const handleBulkDisable = async (tab: 'patterns' | 'antipatterns') => {
+    const ids = tab === 'patterns' ? [...selectedP] : [...selectedA];
+    const setLoading = tab === 'patterns' ? setDisablingP : setDisablingA;
+    setLoading(true);
+    try {
+      await Promise.all(ids.map((id) =>
+        tab === 'patterns' ? setQueryPatternEnabled(id, false) : setAntiPatternEnabled(id, false)
+      ));
+      const setData = tab === 'patterns' ? setPatternsData : setAntiData;
+      setData((prev) => prev ? {
+        ...prev,
+        items: prev.items.map((item) =>
+          ids.includes(item.id as string) ? { ...item, is_enabled: false } : item
+        ),
+      } : prev);
+    } catch { } finally { setLoading(false); }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!deleteConfirm) return;
+    const ids = deleteConfirm === 'patterns' ? [...selectedP] : [...selectedA];
+    setBulkDeleting(true);
+    try {
+      await Promise.all(ids.map((id) =>
+        deleteConfirm === 'patterns' ? deleteQueryPattern(id) : deleteAntiPattern(id)
+      ));
+      if (deleteConfirm === 'patterns') {
+        setPatternsData((prev) => prev ? { ...prev, items: prev.items.filter((x) => !ids.includes(x.id as string)), total: prev.total - ids.length } : prev);
+        setSelectedP(new Set());
+      } else {
+        setAntiData((prev) => prev ? { ...prev, items: prev.items.filter((x) => !ids.includes(x.id as string)), total: prev.total - ids.length } : prev);
+        setSelectedA(new Set());
+      }
+    } catch { } finally {
+      setBulkDeleting(false);
+      setDeleteConfirm(null);
+    }
+  };
+
+  const renderTab = (tab: 'patterns' | 'antipatterns') => {
+    const isP = tab === 'patterns';
+    const data = isP ? patternsData : antiData;
+    const loading = isP ? loadingP : loadingA;
+    const selected = isP ? selectedP : selectedA;
+    const setSelected = isP ? setSelectedP : setSelectedA;
+    const enabling = isP ? enablingP : enablingA;
+    const disabling = isP ? disablingP : disablingA;
+    const filter = isP ? filterP : filterA;
+    const setFilter = isP ? setFilterP : setFilterA;
+    const search = isP ? searchP : searchA;
+    const setSearch = isP ? setSearchP : setSearchA;
+
+    if (loading && !data) return (
+      <div className="flex justify-center py-10">
+        <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+    if (!data || data.total === 0) return (
+      <p className="text-xs text-muted-foreground/50 py-8 text-center">
+        No {isP ? 'query patterns' : 'anti-patterns'} recorded yet.
+      </p>
+    );
+
+    const filteredItems = data.items.filter((item) => {
+      if (filter === 'enabled' && item.is_enabled !== true) return false;
+      if (filter === 'disabled' && item.is_enabled === true) return false;
+      return matchesPatternSearch(item, search);
+    });
+
+    const enabledCount = data.items.filter((x) => x.is_enabled === true).length;
+    const disabledCount = data.items.length - enabledCount;
+
+    return (
+      <div className="flex flex-col h-full min-h-0">
+        {/* Fixed controls — never scroll */}
+        <div className="shrink-0 space-y-2 pb-2">
+          <BulkActionBar
+            count={selected.size}
+            total={filteredItems.length}
+            variant={isP ? 'pattern' : 'antipattern'}
+            enabling={enabling}
+            disabling={disabling}
+            onSelectAll={() => setSelected(new Set(filteredItems.map((x) => x.id as string).filter(Boolean)))}
+            onClearAll={() => setSelected(new Set())}
+            onEnable={() => handleBulkEnable(tab)}
+            onDisable={() => handleBulkDisable(tab)}
+            onDelete={() => setDeleteConfirm(tab)}
+          />
+
+          {/* Filter pills + search */}
+          <div className="flex items-center gap-1.5 flex-wrap justify-between">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {([
+                { value: 'all',      label: `All (${data.items.length})` },
+                { value: 'enabled',  label: `Enabled (${enabledCount})` },
+                { value: 'disabled', label: `Disabled (${disabledCount})` },
+              ] as { value: FilterVal; label: string }[]).map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => { setFilter(value); setSelected(new Set()); }}
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
+                    filter === value
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted/50 text-muted-foreground hover:bg-muted/80 hover:text-foreground'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+              <Input
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setSelected(new Set()); }}
+                placeholder="Search…"
+                className="pl-7 pr-7 h-7 text-xs w-75"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Scrollable cards */}
+        {filteredItems.length === 0 ? (
+          <p className="text-xs text-muted-foreground/50 py-6 text-center">
+            No {filter} {isP ? 'query patterns' : 'anti-patterns'}.
+          </p>
+        ) : (
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 pb-4">
+            {filteredItems.map((item, i) => (
+              <PatternCard
+                key={(item.id as string) ?? i}
+                record={item}
+                variant={isP ? 'pattern' : 'antipattern'}
+                selected={selected.has(item.id as string)}
+                onSelect={handleSelect(selected, setSelected)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  if (accessMode === 'checking') return (
+    <div className="flex justify-center py-10">
+      <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+    </div>
+  );
+  if (accessMode === 'user') return <NonAdminPatternView />;
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 gap-0">
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-border/50 shrink-0">
+        {(['patterns', 'antipatterns'] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-3 py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md border-b-2 -mb-px ${
+              activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {tab === 'patterns' ? (
+              <span className="flex items-center gap-1.5">
+                <Database className="w-3 h-3" />
+                Query patterns
+                {patternsData && <span className="tabular-nums text-muted-foreground/60">({patternsData.total})</span>}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <ShieldAlert className="w-3 h-3" />
+                Anti-patterns
+                {antiData && <span className="tabular-nums text-muted-foreground/60">({antiData.total})</span>}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-hidden pt-3">
+        {activeTab === 'patterns' && renderTab('patterns')}
+        {activeTab === 'antipatterns' && renderTab('antipatterns')}
+      </div>
+
+      {/* Delete confirmation dialog */}
+      <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deleteConfirm === 'patterns' ? selectedP.size : selectedA.size} {deleteConfirm === 'patterns' ? 'query pattern' : 'anti-pattern'}{(deleteConfirm === 'patterns' ? selectedP.size : selectedA.size) !== 1 ? 's' : ''}?</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block font-medium text-destructive">⚠ This action cannot be undone.</span>
+              <span className="block">Once deleted, these patterns are permanently removed from the database and cannot be recovered.</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {bulkDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : null}
+              Delete permanently
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+function matchesPatternSearch(item: PatternRecord, q: string): boolean {
+  if (!q.trim()) return true;
+  const lower = q.toLowerCase();
+  const fields = [
+    item.question_text, item.intent, item.complexity,
+    item.error_type, item.error_detail, item.filter_summary,
+    item.measure_summary, item.dimension_summary, item.tables_involved,
+  ];
+  if (fields.some((f) => f && String(f).toLowerCase().includes(lower))) return true;
+  if (Array.isArray(item.tables_used)) {
+    return item.tables_used.some((t) => String(t).toLowerCase().includes(lower));
+  }
+  return false;
+}
+
+// Keys rendered as code blocks in the expanded view
+const SQL_KEYS = new Set(['sql_text', 'sql_cte_outline', 'directive_summary', 'join_outline', 'filter_summary', 'measure_summary', 'dimension_summary']);
+// Keys shown in the collapsed summary row
+const SUMMARY_KEYS_QP = ['intent', 'complexity', 'occurrence_count', 'liked_count', 'disliked_count', 'confidence_score', 'promotion_status', 'repair_count', 'last_seen'];
+const SUMMARY_KEYS_AP = ['error_type', 'intent', 'complexity', 'occurrence_count', 'success_count', 'failing_element', 'last_seen'];
+// Keys rendered as tag chips
+const TAG_KEYS = new Set(['tables_used']);
+
+function renderValue(key: string, val: unknown): React.ReactNode {
+  if (val === null || val === undefined || val === '') return null;
+  if (Array.isArray(val)) {
+    if (val.length === 0) return null;
+    if (TAG_KEYS.has(key)) {
+      return (
+        <div className="flex flex-wrap gap-1">
+          {val.map((t, i) => (
+            <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50 text-muted-foreground/60 font-mono">{String(t)}</span>
+          ))}
+        </div>
+      );
+    }
+    return val.map(String).join(', ');
+  }
+  if (typeof val === 'boolean') return val ? 'true' : 'false';
+  return String(val);
+}
+
+function PatternCard({ record, variant, selected, onSelect, readOnly = false }: {
+  record: PatternRecord;
+  variant: 'pattern' | 'antipattern';
+  selected: boolean;
+  onSelect: (id: string, checked: boolean) => void;
+  readOnly?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const questionText = record.question_text as string | null | undefined;
+  const patternId = record.id as string | undefined;
+  const isAnti = variant === 'antipattern';
+  const resolved = isAnti && Number(record.success_count ?? 0) > 0;
+  const isEnabled = record.is_enabled === true;
+
+  const summaryKeys = isAnti ? SUMMARY_KEYS_AP : SUMMARY_KEYS_QP;
+
+  const allKeys = Object.keys(record).sort((a, b) => {
+    const aLast = SQL_KEYS.has(a) ? 1 : 0;
+    const bLast = SQL_KEYS.has(b) ? 1 : 0;
+    if (aLast !== bLast) return aLast - bLast;
+    return a.localeCompare(b);
+  });
+
+  const borderClass = selected
+    ? 'border-primary/60 bg-primary/5'
+    : isAnti
+      ? resolved ? 'border-border/30 bg-muted/5' : 'border-red-500/20 bg-red-500/5'
+      : 'border-border/50 bg-muted/10';
+
+  return (
+    <div className={`rounded-lg border transition-colors ${borderClass}`}>
+      <div className="flex items-start gap-3 px-3 pt-3 pb-0">
+        {/* Checkbox — hidden in read-only mode */}
+        {!readOnly && (
+          <div className="shrink-0 pt-0.5" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={(e) => patternId && onSelect(patternId, e.target.checked)}
+              className="w-3.5 h-3.5 rounded border-border accent-primary cursor-pointer"
+              aria-label="Select pattern"
+            />
+          </div>
+        )}
+
+        {/* Expandable content */}
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setExpanded((v) => !v)}
+          onKeyDown={(e) => e.key === 'Enter' && setExpanded((v) => !v)}
+          className="flex-1 min-w-0 pb-3 outline-none cursor-pointer"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-foreground leading-snug">
+                {questionText || <span className="italic text-muted-foreground/50">No question text</span>}
+              </p>
+              {isEnabled && !readOnly && (
+                <span className="inline-block text-[9px] uppercase tracking-wide font-medium text-emerald-600 dark:text-emerald-400 mt-0.5">Enabled</span>
+              )}
+            </div>
+            <ChevronRight className={`w-3.5 h-3.5 shrink-0 text-muted-foreground/40 transition-transform mt-0.5 ${expanded ? 'rotate-90' : ''}`} />
+          </div>
+
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
+            {summaryKeys.map((k) => {
+              const v = record[k];
+              if (v === null || v === undefined || v === '') return null;
+              const display = k === 'confidence_score'
+                ? `${(Number(v) * 100).toFixed(0)}% conf`
+                : k === 'last_seen'
+                  ? `Last seen ${relativeDate(String(v))}`
+                  : k === 'occurrence_count'
+                    ? `Seen ${v}×`
+                    : k === 'success_count' && Number(v) > 0
+                      ? `Resolved ${v}×`
+                    : k === 'liked_count' || k === 'disliked_count'
+                      ? null
+                      : `${k.replace(/_/g, ' ')}: ${v}`;
+              if (!display) return null;
+              return <span key={k} className="text-[11px] text-muted-foreground/60">{display}</span>;
+            })}
+            {!isAnti && (Number(record.liked_count ?? 0) > 0 || Number(record.disliked_count ?? 0) > 0) && (
+              <span className="text-[11px]">
+                <span className="text-emerald-600 dark:text-emerald-400">↑{record.liked_count as number}</span>
+                {' '}
+                <span className="text-red-500">↓{record.disliked_count as number}</span>
+              </span>
+            )}
+          </div>
+
+          {Array.isArray(record.tables_used) && record.tables_used.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {(record.tables_used as string[]).map((t) => (
+                <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50 text-muted-foreground/60 font-mono">{t}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border/30 ml-6 mr-3 mb-3 pt-3">
+          <div className="divide-y divide-border/20">
+            {allKeys.map((k) => {
+              const v = record[k];
+              if (v === null || v === undefined || v === '') return null;
+              if (SQL_KEYS.has(k)) {
+                return (
+                  <div key={k} className="py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium mb-1">{k}</p>
+                    <div className="rounded-md bg-muted/40 border border-border/40 overflow-x-auto">
+                      <pre className="p-3 text-[11px] font-mono text-foreground/80 leading-relaxed whitespace-pre">{String(v)}</pre>
+                    </div>
+                  </div>
+                );
+              }
+              const rendered = renderValue(k, v);
+              if (!rendered) return null;
+              return (
+                <div key={k} className="flex gap-3 py-1.5">
+                  <span className="text-[11px] text-muted-foreground/45 w-40 shrink-0 font-mono pt-px">{k}</span>
+                  <span className="text-[11px] text-foreground/80 flex-1 min-w-0 break-words leading-relaxed">{rendered}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BulkActionBar({ count, total, onSelectAll, onClearAll, onEnable, onDisable, onDelete, enabling, disabling, variant }: {
+  count: number;
+  total: number;
+  onSelectAll: () => void;
+  onClearAll: () => void;
+  onEnable: () => void;
+  onDisable: () => void;
+  onDelete: () => void;
+  enabling: boolean;
+  disabling: boolean;
+  variant: 'pattern' | 'antipattern';
+}) {
+  const [showEnableInfo, setShowEnableInfo] = useState(false);
+  const hasSelection = count > 0;
+
+  return (
+    <div className="rounded-lg border bg-background space-y-2 px-4 py-3 border-border/60">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        {/* Left: selection count + select-all / clear */}
+        <div className="flex items-center gap-3 text-xs">
+          {hasSelection ? (
+            <>
+              <span className="font-medium text-foreground">{count} selected</span>
+              {count < total && (
+                <button onClick={onSelectAll} className="text-primary hover:underline">
+                  Select all {total}
+                </button>
+              )}
+              <button onClick={onClearAll} className="text-muted-foreground hover:text-foreground transition-colors">
+                Clear
+              </button>
+            </>
+          ) : (
+            <button onClick={onSelectAll} className="text-muted-foreground hover:text-foreground transition-colors">
+              Select all {total}
+            </button>
+          )}
+        </div>
+
+        {/* Right: actions — only active when something is selected */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1.5"
+              onClick={onEnable}
+              disabled={!hasSelection || enabling}
+            >
+              {enabling ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+              Enable
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1.5"
+              onClick={onDisable}
+              disabled={!hasSelection || disabling}
+            >
+              {disabling ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+              Disable
+            </Button>
+            <button
+              onClick={() => setShowEnableInfo((v) => !v)}
+              className={`transition-colors ${showEnableInfo ? 'text-primary' : 'text-muted-foreground/50 hover:text-primary'}`}
+              title="What does enabling do?"
+            >
+              <Info className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs text-destructive border-destructive/40 hover:bg-destructive/10 gap-1.5"
+            onClick={onDelete}
+            disabled={!hasSelection}
+          >
+            <Trash2 className="w-3 h-3" />
+            Delete
+          </Button>
+        </div>
+      </div>
+
+      {showEnableInfo && (
+        <div className="flex items-start gap-2 rounded-md bg-primary/8 border border-primary/20 px-3 py-2">
+          <Info className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5" />
+          <p className="text-[11px] text-foreground/70 leading-relaxed">
+            <span className="font-medium text-foreground">Enable</span> — marks the selected {variant === 'pattern' ? 'query patterns' : 'anti-patterns'} as active so the AI pipeline uses them when generating answers. Enabled patterns are matched against incoming queries to guide SQL generation and improve response accuracy.
+            <br />
+            <span className="font-medium text-foreground">Disable</span> — deactivates the selected patterns so they are no longer used by the AI pipeline, without deleting them.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PatternPagination({
+  page, totalPages, total, loading, onPrev, onNext,
+}: {
+  page: number; totalPages: number; total: number;
+  loading: boolean; onPrev: () => void; onNext: () => void;
+}) {
+  if (totalPages <= 1) {
+    return (
+      <p className="text-[10px] text-muted-foreground/40 text-center pt-1">{total} total</p>
+    );
+  }
+  return (
+    <div className="flex items-center justify-between pt-2">
+      <button
+        onClick={onPrev}
+        disabled={page <= 1 || loading}
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-default transition-colors"
+      >
+        <ChevronLeft className="w-3.5 h-3.5" />
+        Previous
+      </button>
+      <span className="text-[11px] text-muted-foreground/60 tabular-nums">
+        {page} / {totalPages} · {total} total
+      </span>
+      <button
+        onClick={onNext}
+        disabled={page >= totalPages || loading}
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-default transition-colors"
+      >
+        Next
+        <ChevronRight className="w-3.5 h-3.5" />
+      </button>
     </div>
   );
 }

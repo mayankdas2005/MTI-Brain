@@ -89,6 +89,7 @@ def search_query_patterns(embedding: list[float], threshold: float = 0.65, limit
     SEARCH qp IN (VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding LIMIT {limit})
     SCORE AS score
     WHERE score > $threshold
+      AND qp.is_enabled = true
     WITH qp, score,
          score
          * (1.0 + log(1.0 + coalesce(qp.occurrence_count, 1)) * 0.1)
@@ -136,7 +137,8 @@ def search_query_patterns_fts(question: str, limit: int = 5) -> list[dict]:
     cypher = f"""
     CALL db.index.fulltext.queryNodes('querypattern_question_fts', $q)
     YIELD node AS qp, score
-    WHERE coalesce(qp.promotion_status, 'active') <> 'demoted'
+    WHERE qp.is_enabled = true
+      AND coalesce(qp.promotion_status, 'active') <> 'demoted'
       AND coalesce(qp.occurrence_count, 0) >= 1
     RETURN qp.id AS id, qp.question_text AS question_text,
            qp.sql_text AS sql_text,
@@ -264,7 +266,8 @@ def search_query_patterns_by_tables(
         return []
     query = f"""
     MATCH (qp:QueryPattern)
-    WHERE size(qp.tables_used) > 0
+    WHERE qp.is_enabled = true
+      AND size(qp.tables_used) > 0
       AND ANY(t IN qp.tables_used WHERE t IN $tables)
       AND coalesce(qp.promotion_status, 'active') <> 'demoted'
     WITH qp,
@@ -332,7 +335,8 @@ def search_anti_patterns_by_tables(
         return []
     query = f"""
     MATCH (ap:AntiPattern)
-    WHERE ap.tables_involved IS NOT NULL AND ap.tables_involved <> ''
+    WHERE ap.is_enabled = true
+      AND ap.tables_involved IS NOT NULL AND ap.tables_involved <> ''
       AND (ap.success_count IS NULL OR ap.success_count < 3)
     WITH ap, [t IN split(ap.tables_involved, ',') | trim(t)] AS ap_tables
     WHERE ANY(t IN ap_tables WHERE t IN $tables)
@@ -390,6 +394,7 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
     SEARCH ap IN (VECTOR INDEX `antipattern_cohere_embedding` FOR $embedding LIMIT 5)
     SCORE AS score
     WHERE score > 0.65
+      AND ap.is_enabled = true
       AND (ap.success_count IS NULL OR ap.success_count < 3)
     WITH ap, score,
          score
@@ -422,7 +427,8 @@ def search_anti_patterns_fts(question: str, limit: int = 5) -> list[dict]:
     cypher = f"""
     CALL db.index.fulltext.queryNodes('antipattern_question_fts', $q)
     YIELD node AS ap, score
-    WHERE (ap.success_count IS NULL OR ap.success_count < 3)
+    WHERE ap.is_enabled = true
+      AND (ap.success_count IS NULL OR ap.success_count < 3)
     RETURN ap.id AS id, ap.question_text AS query_text,
            ap.error_type AS error_type,
            coalesce(ap.error_detail, ap.error_summary, '') AS error_summary,

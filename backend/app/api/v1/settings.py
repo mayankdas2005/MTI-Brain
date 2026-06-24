@@ -1,5 +1,6 @@
 """Settings API — CRUD for user standing instructions + feedback history."""
 
+import asyncio
 import math
 import uuid
 from datetime import datetime, timezone
@@ -304,6 +305,261 @@ async def get_feedback_patterns(
         )
         for g in patterns[:20]
     ]
+
+
+_SKIP_KEYS = {"cohere_embedding"}
+
+
+def _serialize_props(props: dict) -> dict:
+    """Convert Neo4j property types to JSON-safe values, drop embedding vectors."""
+    out = {}
+    for k, v in props.items():
+        if k in _SKIP_KEYS:
+            continue
+        if hasattr(v, "iso_format"):
+            out[k] = v.iso_format()
+        elif isinstance(v, list):
+            out[k] = [item.iso_format() if hasattr(item, "iso_format") else item for item in v]
+        else:
+            out[k] = v
+    return out
+
+
+class PatternListPage(BaseModel):
+    items: list
+    total: int
+    skip: int
+    limit: int
+
+
+@router.get("/admin/query-patterns", response_model=PatternListPage)
+async def list_query_patterns(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=10000, ge=1, le=10000),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List all QueryPattern nodes — returns every property, admin only."""
+    if "admin" not in current_user.groups:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.services.agents.neo4j_client import _neo4j_run
+
+    def _fetch():
+        count_rows = _neo4j_run("MATCH (qp:QueryPattern) RETURN count(qp) AS total", {})
+        total = count_rows[0]["total"] if count_rows else 0
+
+        rows = _neo4j_run(
+            """
+            MATCH (qp:QueryPattern)
+            RETURN properties(qp) AS props, coalesce(qp.occurrence_count, 0) AS _sort
+            ORDER BY _sort DESC
+            SKIP $skip LIMIT $limit
+            """,
+            {"skip": skip, "limit": limit},
+        )
+        items = [_serialize_props(dict(r["props"] or {})) for r in rows]
+        return total, items
+
+    total, items = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    return PatternListPage(items=items, total=total, skip=skip, limit=limit)
+
+
+@router.get("/admin/anti-patterns", response_model=PatternListPage)
+async def list_anti_patterns(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=10000, ge=1, le=10000),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List all AntiPattern nodes — returns every property, admin only."""
+    if "admin" not in current_user.groups:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.services.agents.neo4j_client import _neo4j_run
+
+    def _fetch():
+        count_rows = _neo4j_run("MATCH (ap:AntiPattern) RETURN count(ap) AS total", {})
+        total = count_rows[0]["total"] if count_rows else 0
+
+        rows = _neo4j_run(
+            """
+            MATCH (ap:AntiPattern)
+            RETURN properties(ap) AS props, coalesce(ap.occurrence_count, 0) AS _sort
+            ORDER BY _sort DESC
+            SKIP $skip LIMIT $limit
+            """,
+            {"skip": skip, "limit": limit},
+        )
+        items = [_serialize_props(dict(r["props"] or {})) for r in rows]
+        return total, items
+
+    total, items = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    return PatternListPage(items=items, total=total, skip=skip, limit=limit)
+
+
+@router.get("/query-patterns/enabled")
+async def list_enabled_query_patterns(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List enabled QueryPattern nodes — any authenticated user."""
+    from app.services.agents.neo4j_client import _neo4j_run
+
+    def _fetch():
+        rows = _neo4j_run(
+            """
+            MATCH (qp:QueryPattern {is_enabled: true})
+            RETURN properties(qp) AS props
+            ORDER BY coalesce(qp.occurrence_count, 0) DESC
+            """,
+            {},
+        )
+        items = [_serialize_props(dict(r["props"] or {})) for r in rows]
+        return items
+
+    items = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/anti-patterns/enabled")
+async def list_enabled_anti_patterns(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List enabled AntiPattern nodes — any authenticated user."""
+    from app.services.agents.neo4j_client import _neo4j_run
+
+    def _fetch():
+        rows = _neo4j_run(
+            """
+            MATCH (ap:AntiPattern {is_enabled: true})
+            RETURN properties(ap) AS props
+            ORDER BY coalesce(ap.occurrence_count, 0) DESC
+            """,
+            {},
+        )
+        items = [_serialize_props(dict(r["props"] or {})) for r in rows]
+        return items
+
+    items = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    return {"items": items, "total": len(items)}
+
+
+class PatternEnabledUpdate(BaseModel):
+    is_enabled: bool
+
+
+@router.patch("/admin/query-patterns/{pattern_id}/enabled")
+async def set_query_pattern_enabled(
+    pattern_id: str,
+    body: PatternEnabledUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Set is_enabled on a QueryPattern node — admin only."""
+    if "admin" not in current_user.groups:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.services.agents.neo4j_client import _neo4j_run, _neo4j_write
+
+    def _update():
+        rows = _neo4j_run(
+            "MATCH (qp:QueryPattern {id: $id}) RETURN count(qp) AS found",
+            {"id": pattern_id},
+        )
+        if not rows or rows[0]["found"] == 0:
+            return False
+        _neo4j_write(
+            "MATCH (qp:QueryPattern {id: $id}) SET qp.is_enabled = $is_enabled",
+            id=pattern_id,
+            is_enabled=body.is_enabled,
+        )
+        return True
+
+    found = await asyncio.get_event_loop().run_in_executor(None, _update)
+    if not found:
+        raise HTTPException(status_code=404, detail="QueryPattern not found")
+    return {"id": pattern_id, "is_enabled": body.is_enabled}
+
+
+@router.patch("/admin/anti-patterns/{pattern_id}/enabled")
+async def set_anti_pattern_enabled(
+    pattern_id: str,
+    body: PatternEnabledUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Set is_enabled on an AntiPattern node — admin only."""
+    if "admin" not in current_user.groups:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.services.agents.neo4j_client import _neo4j_run, _neo4j_write
+
+    def _update():
+        rows = _neo4j_run(
+            "MATCH (ap:AntiPattern {id: $id}) RETURN count(ap) AS found",
+            {"id": pattern_id},
+        )
+        if not rows or rows[0]["found"] == 0:
+            return False
+        _neo4j_write(
+            "MATCH (ap:AntiPattern {id: $id}) SET ap.is_enabled = $is_enabled",
+            id=pattern_id,
+            is_enabled=body.is_enabled,
+        )
+        return True
+
+    found = await asyncio.get_event_loop().run_in_executor(None, _update)
+    if not found:
+        raise HTTPException(status_code=404, detail="AntiPattern not found")
+    return {"id": pattern_id, "is_enabled": body.is_enabled}
+
+
+@router.delete("/admin/query-patterns/{pattern_id}", status_code=204)
+async def delete_query_pattern(
+    pattern_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Delete a QueryPattern node — admin only."""
+    if "admin" not in current_user.groups:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.services.agents.neo4j_client import _neo4j_run, _neo4j_write
+
+    def _delete():
+        rows = _neo4j_run(
+            "MATCH (qp:QueryPattern {id: $id}) RETURN count(qp) AS found",
+            {"id": pattern_id},
+        )
+        if not rows or rows[0]["found"] == 0:
+            return False
+        _neo4j_write("MATCH (qp:QueryPattern {id: $id}) DETACH DELETE qp", id=pattern_id)
+        return True
+
+    found = await asyncio.get_event_loop().run_in_executor(None, _delete)
+    if not found:
+        raise HTTPException(status_code=404, detail="QueryPattern not found")
+
+
+@router.delete("/admin/anti-patterns/{pattern_id}", status_code=204)
+async def delete_anti_pattern(
+    pattern_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Delete an AntiPattern node — admin only."""
+    if "admin" not in current_user.groups:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.services.agents.neo4j_client import _neo4j_run, _neo4j_write
+
+    def _delete():
+        rows = _neo4j_run(
+            "MATCH (ap:AntiPattern {id: $id}) RETURN count(ap) AS found",
+            {"id": pattern_id},
+        )
+        if not rows or rows[0]["found"] == 0:
+            return False
+        _neo4j_write("MATCH (ap:AntiPattern {id: $id}) DETACH DELETE ap", id=pattern_id)
+        return True
+
+    found = await asyncio.get_event_loop().run_in_executor(None, _delete)
+    if not found:
+        raise HTTPException(status_code=404, detail="AntiPattern not found")
 
 
 @router.delete("/instructions/{instruction_id}", status_code=204)

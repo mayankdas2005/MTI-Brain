@@ -18,6 +18,7 @@ _USERS: dict[str, dict] = {
         "password": "$2b$12$cIf.CmlZ0pO2sAWQy4Yzr.TRNpeL/Tx9r8omOPdzbpgQiKKIsXGgq",
         "name": "Admin User",
         "email": "admin@milestone.tech",
+        "groups": ["admin"],
     },
 }
 

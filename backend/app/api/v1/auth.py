@@ -46,18 +46,20 @@ async def login(
         )
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
+    user_groups = user_data.get("groups", [])
+
     user = await auth_service.upsert_user(
         db,
         email=user_data["email"],
         name=user_data["name"],
-        groups=[],
+        groups=user_groups,
     )
 
     token = auth_service.create_jwt_token(
         user_id=str(user.id),
         email=user_data["email"],
         name=user_data["name"],
-        groups=[],
+        groups=user_groups,
     )
 
     logger.info(f"User authenticated: {user_data['email']}")
@@ -68,7 +70,7 @@ async def login(
             "user_id": str(user.id),
             "email": user_data["email"],
             "name": user_data["name"],
-            "groups": [],
+            "groups": user_groups,
         },
     )
 

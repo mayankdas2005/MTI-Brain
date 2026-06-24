@@ -340,6 +340,7 @@ def search_tables_from_query_patterns(embedding: list[float]) -> list[dict]:
     SEARCH qp IN (VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding LIMIT 2)
     SCORE AS score
     WHERE score > 0.85
+      AND qp.is_enabled = true
     UNWIND qp.tables_used AS table_fqn
     MATCH (t:Table {{fqn: table_fqn}})
     RETURN {_TABLE_RETURN}, score, qp.id AS matched_via LIMIT 15
