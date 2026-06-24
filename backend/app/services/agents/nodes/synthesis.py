@@ -20,7 +20,7 @@ from app.services.agents.helpers import _build_data_profile, build_mission_conte
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP,
     SYNTHESIS_PROMPT, INSIGHT_EXTRACTOR_PROMPT,
-    _SYNTHESIS_PERSONA_STRUCTURES,
+    _SYNTHESIS_PERSONA_STRUCTURES, _DEEP_ANALYSIS_PERSONA_RULES,
 )
 from app.services.agents.state import AnalyticsState
 
@@ -64,6 +64,9 @@ DEEP ANALYSIS MODE — additionally extract these two fields into the JSON objec
   a positive headline trend that reverses when the top contributor is excluded.
   Write one concrete sentence with specific numbers if found (e.g. "2 counterparties account for 72%
   of $42M — excluding them, the remainder is flat MoM"). Set to null if no meaningful challenge exists.
+  DEDUP RULE: The concentration_challenge MUST surface a DIFFERENT angle than findings[0].
+  If the concentration insight is already the headline finding, set this field to null — do not repeat it.
+  The purpose is "devil's advocate" — a counterpoint that CHALLENGES the main narrative, not confirms it.
 
 "sql_explanation": In 2-3 sentences of plain business language (no SQL, no column names), describe:
   (1) what was counted or summed and from which business concept, (2) what time window or key filter
@@ -218,34 +221,34 @@ def _build_deep_analysis_sections(
             + rows_md
         )
 
-    # SQL plain English explanation
-    if sql_explanation:
-        parts.append(
-            "\n\n<details>\n<summary>How this was computed</summary>\n\n"
-            + sql_explanation.strip()
-            + "\n</details>"
-        )
+    # # SQL plain English explanation
+    # if sql_explanation:
+    #     parts.append(
+    #         "\n\n<details>\n<summary>How this was computed</summary>\n\n"
+    #         + sql_explanation.strip()
+    #         + "\n</details>"
+    #     )
 
-    # Assumption audit
-    if assumption_lines:
-        bullet_list = "\n".join(f"- {ln}" for ln in assumption_lines)
-        parts.append(
-            "\n\n<details>\n<summary>Assumptions & Scope</summary>\n\n"
-            + bullet_list
-            + "\n</details>"
-        )
+    # # Assumption audit
+    # if assumption_lines:
+    #     bullet_list = "\n".join(f"- {ln}" for ln in assumption_lines)
+    #     parts.append(
+    #         "\n\n<details>\n<summary>Assumptions & Scope</summary>\n\n"
+    #         + bullet_list
+    #         + "\n</details>"
+    #     )
 
-    # Tribal knowledge sources — list documents used so the reader can trace citations
-    if tribal_facts:
-        citation_lines = [
-            f"- **{f.get('label', 'Document')}**"
-            for f in tribal_facts[:8]
-        ]
-        parts.append(
-            "\n\n<details>\n<summary>Knowledge Sources</summary>\n\n"
-            + "\n".join(citation_lines)
-            + "\n</details>"
-        )
+    # # Tribal knowledge sources — list documents used so the reader can trace citations
+    # if tribal_facts:
+    #     citation_lines = [
+    #         f"- **{f.get('label', 'Document')}**"
+    #         for f in tribal_facts[:8]
+    #     ]
+    #     parts.append(
+    #         "\n\n<details>\n<summary>Knowledge Sources</summary>\n\n"
+    #         + "\n".join(citation_lines)
+    #         + "\n</details>"
+    #     )
 
     return "".join(parts) if parts else ""
 
@@ -427,6 +430,15 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     else:
         deep_extraction = ""
 
+    # Build tables_section for follow_up_paths scope constraint
+    _ir_list = state.get("semantic_ir_list") or []
+    if _ir_list:
+        _first = _ir_list[0]
+        _anchor = _first.get("anchor_tables", []) if isinstance(_first, dict) else list(getattr(_first, "anchor_tables", []))
+        tables_section = ", ".join(_anchor) if _anchor else "see data profile above"
+    else:
+        tables_section = "see data profile above"
+
     # ── Phase 1: Insight Extraction (Haiku — fast, data-facing) ──────────────
     # Haiku reads the raw data and produces a structured insights JSON.
     # This is the only phase that sees the raw data profile.
@@ -443,6 +455,7 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         tribal_facts_section=tribal_facts_section,
         conversation_context=conversation_section,
         deep_analysis_extraction=deep_extraction,
+        tables_section=tables_section,
     )
 
     haiku = get_llm("fast")
@@ -542,6 +555,11 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     persona_structure = _SYNTHESIS_PERSONA_STRUCTURES.get(
         _persona_key, _SYNTHESIS_PERSONA_STRUCTURES["analyst"]
     )
+    # Deep analysis: append integration rules so the LLM knows about
+    # supplementary sections (However block, collapsibles, tribal sources).
+    # Normal mode never sees these — saves tokens and avoids confusion.
+    if is_deep:
+        persona_structure += _DEEP_ANALYSIS_PERSONA_RULES.get(_persona_key, "")
 
     writer_prompt = SYNTHESIS_PROMPT.format_messages(
         persona=state.get("persona", "analyst"),

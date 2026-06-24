@@ -27,15 +27,17 @@ def _extract_pg_error_code(error_summary: str) -> str:
     return m.group(1) if m else ""
 
 
-def anti_pattern_merge_key(error_type: str, intent: str, tables_involved: str, error_summary: str) -> str:
+def anti_pattern_merge_key(error_type: str, question_text: str, tables_involved: str, error_summary: str) -> str:
     """Deterministic merge key for AntiPattern dedup.
 
+    Uses question_text (user-typed, deterministic) NOT intent (LLM-generated, non-deterministic).
     Includes pg error code so UNION mismatch (42804) and GROUP BY error (42803)
-    for the same intent+tables create separate nodes.
+    for the same question+tables create separate nodes.
     """
     tables_sorted = ",".join(sorted(t.strip() for t in (tables_involved or "").split(",") if t.strip()))
     pg_code = _extract_pg_error_code(error_summary)
-    raw = f"{error_type}::{intent or 'unknown'}::{tables_sorted}::{pg_code}"
+    q_norm = (question_text or "").strip().lower()
+    raw = f"{error_type}::{q_norm}::{tables_sorted}::{pg_code}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -78,26 +80,30 @@ async def write_audit_log(state: AnalyticsState, sql: str, row_count: int, statu
         logger.warning("audit | log write failed | error={}", e)
 
 
-def _qp_merge_key(anchor_tables: list[str], intent: str) -> str:
-    """Deterministic merge key for QueryPattern dedup: hash of sorted tables + intent."""
+def _qp_merge_key(anchor_tables: list[str], question_text: str) -> str:
+    """Deterministic merge key for QueryPattern dedup: hash of sorted tables + normalised question.
+
+    Uses question_text (user-typed, deterministic) NOT intent (LLM-generated, non-deterministic).
+    Same question asked twice — even on different threads — always produces the same key → MERGE
+    updates the existing node rather than creating a duplicate.
+    """
     tables_csv = ",".join(sorted(t.strip() for t in anchor_tables if t.strip()))
-    raw = f"{tables_csv}::{(intent or '').strip()}"
+    q_norm = (question_text or "").strip().lower()
+    raw = f"{tables_csv}::{q_norm}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def _extract_fp_fields(fingerprint: dict | None) -> dict:
-    """Extract flat string fields from intent_fingerprint for Neo4j storage."""
-    fp = fingerprint or {}
-    def _to_str(v) -> str:
-        if isinstance(v, list):
-            return ", ".join(str(x) for x in v if x)
-        return str(v) if v else ""
+def _extract_fp_fields_from_ir(ir: SemanticIR) -> dict:
+    """Build clean fp_* fields from structured SemanticIR — column names only, no schema/table noise."""
     return {
-        "fp_measures":    _to_str(fp.get("measures")),
-        "fp_filters":     _to_str(fp.get("filters")),
-        "fp_time_period": _to_str(fp.get("time_period")),
-        "fp_dimensions":  _to_str(fp.get("dimensions")),
+        "fp_measures":    ", ".join(sorted({m.column_name for m in ir.measures if m.column_name})),
+        "fp_filters":     ", ".join(sorted({f.column_name for f in ir.filters if f.column_name})),
+        "fp_time_period": ir.time_filter.column_name if ir.time_filter else "",
+        "fp_dimensions":  ", ".join(sorted({d.column_name for d in ir.dimensions if d.column_name})),
     }
+
+
+_EMPTY_FP = {"fp_measures": "", "fp_filters": "", "fp_time_period": "", "fp_dimensions": ""}
 
 
 async def write_query_pattern(
@@ -115,8 +121,8 @@ async def write_query_pattern(
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
-        _fp = _extract_fp_fields(state.get("intent_fingerprint"))
-        _merge_key = _qp_merge_key(list(ir.anchor_tables), ir.intent)
+        _fp = _extract_fp_fields_from_ir(ir)
+        _merge_key = _qp_merge_key(list(ir.anchor_tables), state["question"])
         pattern_data = {
             "id": pattern_id or str(uuid.uuid4()),
             "merge_key": _merge_key,
@@ -191,10 +197,13 @@ async def write_anti_pattern(
         embedding = await _get_embedding(state["question"])
         tables_involved = ",".join(ir_dict.get("anchor_tables", []))
         intent = ir_dict.get("intent", "")
-        _fp = _extract_fp_fields(state.get("intent_fingerprint"))
+        try:
+            _fp = _extract_fp_fields_from_ir(SemanticIR(**ir_dict)) if ir_dict else _EMPTY_FP
+        except Exception:
+            _fp = _EMPTY_FP
         pattern_data = {
             "id": str(uuid.uuid4()),
-            "merge_key": anti_pattern_merge_key(error_type, intent, tables_involved, error_msg),
+            "merge_key": anti_pattern_merge_key(error_type, state["question"], tables_involved, error_msg),
             "question_text": state["question"],
             "sql_text": sql or "",
             "error_type": error_type,

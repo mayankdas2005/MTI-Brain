@@ -1843,6 +1843,11 @@ RULES:
 - staleness_note: populate only if TEMPORAL CONTEXT shows data older than 30 days. Format: "Positions as of [date], [N] days old."
 - truncation_count: when the data profile includes "TRUNCATION WARNING" with true total M and display cap N, every row-count reference must say "top N of M" (e.g. "top 100 of 249 vendors"), not "M vendors" — users see only the capped rows in the data table.
 - follow_up_paths: 3 short questions (≤12 words each) tailored to the PERSONA above.
+  SCOPE: Questions must be answerable from the same tables used in this query: {tables_section}
+  Stick to metrics, dimensions, and filters visible in the result or naturally derivable from those tables.
+  NEVER suggest questions that: ask about data from different schemas/tables not listed above;
+  ask about system or data configuration ("is this a mapping gap?", "is this a config issue?", "why is this zero?");
+  require external benchmarks not in the data.
   Reference specific entities or amounts from findings. Start with "Which", "What", "How", "Is", "Should", or "When".
   NEVER start with Validate, Retrieve, Confirm whether, Analyze, Quantify, or Identify.
   These are spoken advisory questions, not data retrieval tasks. No multi-part questions.
@@ -1924,7 +1929,9 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value" — skip all sections below,
   #### Data Limitations
   Which columns are NULL, sparse (<50% populated), or absent — and what analysis does each limitation block?
     Each bullet: **[Missing or sparse field]** — blocks [specific analysis] / creates [X]% estimation uncertainty.
-    Skip entirely if data is complete.""",
+    Skip entirely if data is complete.
+
+""",
 
     "manager": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
@@ -1983,7 +1990,9 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value"):
     **[Metric name]** — current: [value from data] | watch if: [condition — threshold from data or tribal knowledge]
   If TRIBAL KNOWLEDGE provides an owner or cadence, include it. If not, omit — do NOT fabricate.
   Example with tribal knowledge: **GR_AE Cash Balance** — current: **$24M** | watch if: < $15M (per Group Treasury Policy) | Owner: Treasury Ops
-  Example without tribal knowledge: **Daily Net Outflow** — current: **$3.2M** | watch if: exceeds 2× the 30-day average""",
+  Example without tribal knowledge: **Daily Net Outflow** — current: **$3.2M** | watch if: exceeds 2× the 30-day average
+
+""",
 
     "director": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
@@ -2046,7 +2055,9 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value"):
   Instead: **Trajectory:** [where this heads based on quantified trend data] — **Pivot point:** [what
     specific event or threshold crossing would change the trajectory].
   Both trajectory and pivot point must cite a specific number from PRE-EXTRACTED INSIGHTS.
-  If fewer than 2 findings have what_if values: omit this section entirely — do NOT fabricate scenarios.""",
+  If fewer than 2 findings have what_if values: omit this section entirely — do NOT fabricate scenarios.
+
+""",
 
     "executive": """PERSONA STRUCTURE (#### headers, no emojis, blank line between every section):
 
@@ -2096,7 +2107,87 @@ SINGLE_VALUE EXCEPTION (when depth = "single_value"):
 
   When action_warranted = false (concern_level is "none"):
     No action required. Next review: [when to revisit — derive from data cadence or reporting cycle].
-    Do NOT fabricate an action when the data shows nothing actionable.""",
+    Do NOT fabricate an action when the data shows nothing actionable.
+
+""",
+}
+
+# Deep analysis integration rules — injected into persona_structure ONLY when deep_analysis=True.
+# Normal mode never sees these instructions, saving tokens and avoiding confusion.
+_DEEP_ANALYSIS_PERSONA_RULES: dict[str, str] = {
+    "analyst": """
+
+DEEP ANALYSIS INTEGRATION (active — supplementary sections will appear after your answer):
+  The system appends these supplementary sections AFTER your answer body:
+    • "However:" blockquote (concentration challenge — counterpoint to the headline)
+    • Possibly: threshold sensitivity table, denominator context, temporal projection note
+
+  YOUR RULES:
+  1. TABLES ALWAYS ALLOWED at analyst level — full detail tables are expected. Include column
+     selection that drives interpretation. Use methodology notes below tables when useful.
+  2. CONCENTRATION CHALLENGE AWARENESS: If the "However:" block challenges your Key Finding,
+     acknowledge the tension in your #### Observations section — "Note: aggregate masks [X]" — then
+     let the However block carry the full challenge. Do not restate it in full.
+  3. TRIBAL KNOWLEDGE AS BASELINE: Use tribal knowledge to establish comparison baselines in
+     Observations (e.g. "vs $200M Group Treasury Policy threshold"). Cite by document name.""",
+
+    "manager": """
+
+DEEP ANALYSIS INTEGRATION (active — supplementary sections will appear after your answer):
+  The system appends these supplementary sections AFTER your answer body:
+    • "However:" blockquote (concentration challenge — counterpoint to the headline)
+    • Possibly: threshold sensitivity table, denominator context, temporal projection note
+
+  YOUR RULES:
+  1. NO DUPLICATION: If the "However:" block states a concentration risk, do NOT repeat that same
+     fact in Priorities. Frame complementary operational angles in your main sections.
+  2. TABLES ALLOWED at manager level — operational comparison tables with ≤5 columns are appropriate.
+     Each table must have an action implication, not just data display.
+  3. TRIBAL KNOWLEDGE USE: Weave policy thresholds into Action Plan and Tracking naturally.
+     Name the source (e.g. "per Group Treasury Policy"). Use tribal thresholds as "watch if" triggers.
+  4. SINGLE MENTION RULE: Each fact once. Status owns the headline answer. Priorities owns what's urgent.
+     Action Plan owns who does what. Tracking owns ongoing metrics.""",
+
+    "director": """
+
+DEEP ANALYSIS INTEGRATION (active — supplementary sections will appear after your answer):
+  The system appends these supplementary sections AFTER your answer body:
+    • "However:" blockquote (concentration challenge — devil's advocate counterpoint)
+    • Possibly: threshold sensitivity table, denominator context, temporal projection note
+
+  YOUR RULES:
+  1. NO DUPLICATION: If a fact appears in the appended "However:" block, do NOT repeat it in Risk & Exposure.
+     Your Risk section frames risks independently. The However block provides a structural counter.
+  2. TABLES ALLOWED at director level — but maximum ONE inline table with ≤5 columns and ≤8 rows.
+     Use only when the table IS the recommendation framework (tier matrix, threshold comparison).
+     A wall of data in table form is NOT acceptable — summarize into bullets if data is dense.
+  3. TRIBAL KNOWLEDGE CITATION: When citing policy thresholds from tribal knowledge, name the source
+     inline (e.g. "per Group Treasury Policy", "per CFO meeting 2026-05-29"). Do not cite a tribal
+     figure without naming it as a reference benchmark — SQL data is authoritative for current state.
+  4. SINGLE MENTION RULE: Each insight once, in its correct structural home. Strategic Position owns
+     the headline. Risk & Exposure owns threat quantification. Recommendations owns actions.""",
+
+    "executive": """
+
+DEEP ANALYSIS INTEGRATION (active — supplementary sections will appear after your answer):
+  The system appends these supplementary sections AFTER your answer body:
+    • "However:" blockquote (concentration challenge — a devil's advocate counterpoint)
+    • Possibly: threshold sensitivity table, denominator context, temporal projection note
+
+  YOUR RULES:
+  1. NO DUPLICATION: If a fact appears in the appended "However:" block, do NOT also state it in Implications.
+     The However block is the counterpoint. Your Implications should build the MAIN case, not preview the counter.
+  2. NO TABLES at executive level — even in deep analysis. Tables belong at director or analyst level.
+     If tabular data is needed for the decision, summarize the conclusion in prose:
+     WRONG: [5-column table showing vendor tiers]
+     RIGHT: "Only 4 of 249 vendors qualify for tighter terms today — the remaining tiers are structurally empty."
+  3. DENSITY STAYS TIGHT: Deep analysis depth comes from the APPENDED sections (However block,
+     context note, projection note), NOT from inflating your core sections.
+     Verdict = 1 sentence. Implications = 3-4 bullets max.
+     Recommendation = 1-2 sentences max. Total visible prose above the fold: ~150 words.
+  4. SINGLE MENTION RULE: State each insight exactly once in its structurally correct home.
+     Verdict owns the headline number. Implications owns the risk angles. Recommendation owns the action.
+     Never repeat a fact across sections.""",
 }
 
 
@@ -2291,6 +2382,10 @@ Step 2 — SECTION PLAN + INTENT ALIGNMENT
   State: "Depth=[X]. Writing sections: [A, B, C]. Dropping: [D] because [reason]."
   For single_value depth: state "Using SINGLE_VALUE format — no section headers."
   Check action_warranted: if false, confirm directive sections (Action Plan/Recommendations/Recommendation) are dropped.
+  If deep_analysis_sections content is present below:
+    Scan the "However:" block — note which finding it references.
+    State: "However block covers [topic]. My main sections will NOT repeat this — complementary angles only."
+    For executive: confirm NO table will be written inline.
   If USER'S STATED GOAL section is non-empty:
     For each GOAL line: "GOAL '[text]' -> finding [N]." If no finding answers it, plan a gap note.
     For each CONDITION line: map to the section where it surfaces:
@@ -2304,13 +2399,16 @@ Step 3 — GROUNDING TRACE
   If no insight supports a statement, do not write it.
   State the most important finding: "Key insight for this {persona}: [observation] because [implication]."
 
-Step 4 — TONE + PYRAMID CHECK
+Step 4 — TONE + PYRAMID CHECK + DEDUP
   Confirm persona tone matches the TONE & LANGUAGE REGISTER.
   Confirm every section opens with the business implication, not a data description (Pyramid Principle).
   analyst  — does Key Finding state the conclusion, not a premise? Does every Observation cite a baseline?
   manager  — does Status answer the question in the first sentence? Are Action Plan items manager-scope?
   director — does every Risk & Exposure bullet have magnitude + trigger + evidence?
   executive — is every sentence plain English? Any jargon? Is Recommendation conditional on action_warranted?
+  DEDUP FINAL CHECK: scan your planned bullets against the deep_analysis_sections content below.
+    If ANY bullet restates the same fact as the "However:" block: rewrite the bullet with a different angle or remove it.
+    Count: each specific number ($X, N%) should appear at most TWICE in the entire response (once in your sections, once in the appended sections). Three or more mentions = redundant.
 </reasoning>
 <answer>
 Answer for the {persona}. #### headers, **bold key numbers in every bullet**, no emojis, no raw column names.

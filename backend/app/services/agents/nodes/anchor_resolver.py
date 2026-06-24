@@ -503,7 +503,10 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         pm = re.search(r"<output>(.*?)</output>", plan_raw, re.DOTALL | re.IGNORECASE)
         plan_str = pm.group(1).strip() if pm else plan_raw
         try:
-            query_plan = json_repair.loads(plan_str) or {}
+            _qp_raw = json_repair.loads(plan_str)
+            if isinstance(_qp_raw, list):
+                _qp_raw = _qp_raw[0] if _qp_raw else {}
+            query_plan = _qp_raw if isinstance(_qp_raw, dict) else {}
         except Exception:
             logger.warning("anchor_resolver | query_plan JSON parse failed (non-fatal) | thread={}", state["thread_id"])
 
