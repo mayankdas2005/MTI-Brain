@@ -157,7 +157,8 @@ backend/
 │   └── versions/
 │       └── 0001_baseline.py             # Full schema baseline migration
 ├── scripts/
-│   └── render_graph.py                  # Export pipeline DAG diagram
+│   ├── render_graph.py                  # Export pipeline DAG diagram
+│   └── ingest_tribal_knowledge.py       # Embed + upsert tribal knowledge .md files into pgvector
 ├── alembic.ini
 ├── config.yml                           # Non-secret configuration (committed)
 ├── .env.example                         # Secrets template (not committed)
@@ -932,3 +933,79 @@ To export a visual diagram of the LangGraph DAG:
 ```bash
 python scripts/render_graph.py
 ```
+
+---
+
+## Scripts
+
+### `scripts/ingest_tribal_knowledge.py`
+
+#### Why this script exists
+
+The `tribal_retrieval` pipeline node (active in **Deep Analysis** mode) answers questions about internal policies, limits, decisions, commitments, and watchlist items by doing a semantic search over a pgvector table called `mti_brain_tribal_knowledge`. This script is the **one-time (and re-runnable) loader** that populates that table from Markdown source files.
+
+Without running this script, `tribal_retrieval` will always return empty context and Deep Analysis mode will produce answers with no institutional knowledge grounding.
+
+#### What it does — step by step
+
+1. **Discovers files** — recursively scans `data/Synthetic Company Tribal Knowledge/` (relative to repo root) for every `*.md` file.
+2. **Parses YAML frontmatter** — strips the `--- … ---` block at the top of each file and keeps it as structured metadata; the body text below becomes the embeddable content.
+3. **Embeds content** — calls `embed_texts_sync()` (Cohere Embed v4 via AWS Bedrock) to produce a 1536-dimensional vector for each file body.
+4. **Upserts into PostgreSQL** — writes each record to `mti_brain_tribal_knowledge` with:
+   - `source_file` — relative path from repo root (used as the unique key for upserts)
+   - `file_name` — basename of the file
+   - `folder` — immediate parent directory name (used as a category label)
+   - `content` — full stripped body text
+   - `embedding` — 1536-dim pgvector column
+   - `search_vector` — `tsvector` column built from `content` for full-text search
+   - `metadata` — JSONB of the parsed frontmatter
+
+The upsert is **idempotent**: re-running the script on the same files updates existing rows rather than duplicating them. It is safe to re-run after adding or editing files.
+
+#### Prerequisites
+
+| Requirement | Detail |
+|-------------|--------|
+| `backend/.env` | Must have `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, and `AWS_BEARER_TOKEN_BEDROCK` set |
+| Database migration applied | `mti_brain_tribal_knowledge` table must exist — run `alembic upgrade head` first |
+| `data/Synthetic Company Tribal Knowledge/` | Directory must exist at repo root and contain at least one `*.md` file |
+| Python environment | Run from the `backend/` virtualenv so `app.*` imports resolve |
+
+#### Usage
+
+Run from the **repo root**:
+
+```bash
+# From repo root, with backend venv activated
+python backend/scripts/ingest_tribal_knowledge.py
+```
+
+Expected output:
+
+```
+Found 12 .md files. Embedding via Cohere Embed v4...
+Embedding complete. Inserting into PostgreSQL...
+  OK  data/Synthetic Company Tribal Knowledge/policies/cash-policy.md
+  OK  data/Synthetic Company Tribal Knowledge/limits/counterparty-limits.md
+  ...
+Done: 12 inserted/updated, 0 failed out of 12 files.
+```
+
+#### What to change if needed
+
+| Scenario | What to change |
+|----------|---------------|
+| Tribal knowledge files live in a different directory | Update `DATA_DIR` at the top of the script (line ~38): `DATA_DIR = REPO_ROOT / "your" / "new" / "path"` |
+| The table is renamed | Change every reference to `mti_brain_tribal_knowledge` in `_insert_records()` |
+| Folder categorization logic needs adjustment | Edit `_collect_files()`: the `folder` field defaults to `path.parent.name`; change it to a deeper path slice or a frontmatter field if your folder hierarchy changes |
+| Adding new metadata fields from frontmatter | `metadata` already stores the entire frontmatter JSONB — no script change needed; add downstream queries against the `metadata` column in `tribal_retrieval` |
+| Embedding model changes | `embed_texts_sync` is defined in `app/services/embeddings.py`; update the ARN there rather than in this script |
+| Batch size / rate limiting | Currently embeds all files in a single `embed_texts_sync` call; if you have hundreds of files, split `contents` into batches before calling `embed_texts_sync` in a loop |
+
+#### What it enables in the pipeline
+
+After ingestion, the following capabilities become active:
+
+- **Deep Analysis mode** — the `tribal_retrieval` node (`nodes/tribal_retrieval.py`) does a pgvector similarity search over `mti_brain_tribal_knowledge` using the user's question embedding; matching chunks are injected into the pipeline state as `tribal_context`
+- **Policy/Limit/Decision grounding** — `synthesis` and `directive_writer` see institutional constraints (e.g. counterparty limits, cash-balance policies, approved entity lists) drawn from the ingested files
+- **Full-text fallback** — the `search_vector` column enables keyword-based retrieval as a fallback when semantic similarity is insufficient
