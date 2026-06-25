@@ -26,8 +26,11 @@ import {
   Loader2,
   Database,
   ShieldAlert,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { highlightQueryInText } from '@/lib/utils/highlight';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -52,7 +55,7 @@ import {
 import { useInstructionsStore } from '@/lib/store/instructions';
 import type { UserInstruction } from '@/lib/api/instructions';
 import { listFeedbackHistory, getFeedbackPatterns, type FeedbackHistoryPage, type FeedbackPattern } from '@/lib/api/feedback-history';
-import { listQueryPatterns, listAntiPatterns, listEnabledQueryPatterns, listEnabledAntiPatterns, setQueryPatternEnabled, setAntiPatternEnabled, deleteQueryPattern, deleteAntiPattern, type PatternRecord, type PatternPage } from '@/lib/api/pattern-library';
+import { listQueryPatterns, listAntiPatterns, listEnabledQueryPatterns, listEnabledAntiPatterns, setQueryPatternEnabled, setAntiPatternEnabled, deleteQueryPattern, deleteAntiPattern, type PatternRecord } from '@/lib/api/pattern-library';
 import { getStoredUser } from '@/lib/auth';
 import { ThumbsUp, ThumbsDown } from 'lucide-react';
 import {
@@ -413,7 +416,7 @@ function SectionPanel({
       </div>
 
       {/* Section content */}
-      <div className={isQP ? 'max-w-3xl flex-1 min-h-0 flex flex-col overflow-hidden' : 'max-w-3xl'}>
+      <div className={isQP ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : 'max-w-3xl'}>
         {activeSection === 'response-style' && (
           <ToneGrid
             options={TONE_OPTIONS}
@@ -990,7 +993,13 @@ function NotificationsPanel({
 
 // ─── Query Patterns panel ────────────────────────────────────────────────────
 
-const QP_PAGE_SIZE = 10000;
+const BATCH_SIZE = 5;
+
+type PatternLoadState = {
+  items: PatternRecord[];
+  total: number;       // true total from first API response
+  allFetched: boolean; // true when items.length >= total
+};
 
 function NonAdminPatternView() {
   const [activeTab, setActiveTab] = useState<'patterns' | 'antipatterns'>('patterns');
@@ -998,6 +1007,8 @@ function NonAdminPatternView() {
   const [apItems, setApItems] = useState<PatternRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [detail, setDetail] = useState<{ record: PatternRecord; variant: 'pattern' | 'antipattern' } | null>(null);
 
   useEffect(() => {
     Promise.all([listEnabledQueryPatterns(), listEnabledAntiPatterns()])
@@ -1006,109 +1017,132 @@ function NonAdminPatternView() {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const total = qpItems.length + apItems.length;
   const noop = () => {};
 
-  const visibleQP = qpItems.filter((item) => matchesPatternSearch(item, search));
-  const visibleAP = apItems.filter((item) => matchesPatternSearch(item, search));
+  const visibleQP = qpItems.filter((item) => matchesPatternSearch(item, debouncedSearch));
+  const visibleAP = apItems.filter((item) => matchesPatternSearch(item, debouncedSearch));
+
+  const handleOpen = (record: PatternRecord, variant: 'pattern' | 'antipattern') =>
+    setDetail((prev) => prev?.record.id === record.id ? null : { record, variant });
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-0">
-      {/* Info banner */}
-      <div className="flex items-start gap-2.5 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 mb-3 shrink-0">
-        <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-        <div>
-          <p className="text-xs font-medium text-foreground">
-            {total > 0
-              ? `${qpItems.length} query pattern${qpItems.length !== 1 ? 's' : ''} and ${apItems.length} anti-pattern${apItems.length !== 1 ? 's' : ''} are enabled for training.`
-              : 'No patterns are currently enabled for training.'}
-          </p>
-          <p className="text-[11px] text-muted-foreground/60 mt-0.5">
-            These patterns guide the AI when generating SQL and answers.
-          </p>
+    <div className="flex flex-1 min-h-0 overflow-hidden">
+      {/* Left: card list */}
+      <div className="w-[48rem] shrink-0 flex flex-col min-h-0 overflow-hidden pr-4">
+        {/* Info banner */}
+        <div className="flex items-start gap-2.5 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 mb-3 shrink-0">
+          <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-medium text-foreground">
+              {total > 0
+                ? `${qpItems.length} query pattern${qpItems.length !== 1 ? 's' : ''} and ${apItems.length} anti-pattern${apItems.length !== 1 ? 's' : ''} are enabled for training.`
+                : 'No patterns are currently enabled for training.'}
+            </p>
+            <p className="text-[11px] text-muted-foreground/60 mt-0.5">
+              These patterns guide the AI when generating SQL and answers.
+            </p>
+          </div>
+        </div>
+
+        {/* Search */}
+        <div className="relative shrink-0 mb-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search patterns…"
+            className="pl-8 pr-8 h-9 text-sm"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Tabs */}
+        <div className="flex items-center gap-1 border-b border-border/50 shrink-0">
+          {(['patterns', 'antipatterns'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-3 py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md border-b-2 -mb-px ${
+                activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {tab === 'patterns' ? (
+                <span className="flex items-center gap-1.5">
+                  <Database className="w-3 h-3" />
+                  Query patterns
+                  <span className="tabular-nums text-muted-foreground/60">({visibleQP.length})</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <ShieldAlert className="w-3 h-3" />
+                  Anti-patterns
+                  <span className="tabular-nums text-muted-foreground/60">({visibleAP.length})</span>
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* Card list */}
+        <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pt-3 pr-1 pb-4">
+          {loading ? (
+            <div className="flex justify-center py-10">
+              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+            </div>
+          ) : activeTab === 'patterns' ? (
+            visibleQP.length === 0
+              ? <p className="text-xs text-muted-foreground/50 py-8 text-center">{search ? 'No patterns match your search.' : 'No query patterns enabled for training.'}</p>
+              : visibleQP.map((item, i) => (
+                  <PatternCard
+                    key={(item.id as string) ?? i}
+                    record={item}
+                    variant="pattern"
+                    selected={false}
+                    onSelect={noop}
+                    readOnly
+                    query={debouncedSearch}
+                    onOpen={handleOpen}
+                  />
+                ))
+          ) : (
+            visibleAP.length === 0
+              ? <p className="text-xs text-muted-foreground/50 py-8 text-center">{search ? 'No patterns match your search.' : 'No anti-patterns enabled for training.'}</p>
+              : visibleAP.map((item, i) => (
+                  <PatternCard
+                    key={(item.id as string) ?? i}
+                    record={item}
+                    variant="antipattern"
+                    selected={false}
+                    onSelect={noop}
+                    readOnly
+                    query={debouncedSearch}
+                    onOpen={handleOpen}
+                  />
+                ))
+          )}
         </div>
       </div>
 
-      {/* Search */}
-      <div className="relative shrink-0 mb-1">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search patterns…"
-          className="pl-8 pr-8 h-9 text-sm"
-        />
-        {search && (
-          <button
-            onClick={() => setSearch('')}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        )}
-      </div>
-
-      {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-border/50 shrink-0">
-        {(['patterns', 'antipatterns'] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-3 py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md border-b-2 -mb-px ${
-              activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {tab === 'patterns' ? (
-              <span className="flex items-center gap-1.5">
-                <Database className="w-3 h-3" />
-                Query patterns
-                <span className="tabular-nums text-muted-foreground/60">({visibleQP.length})</span>
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5">
-                <ShieldAlert className="w-3 h-3" />
-                Anti-patterns
-                <span className="tabular-nums text-muted-foreground/60">({visibleAP.length})</span>
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* Card list */}
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pt-3 pr-1 pb-4">
-        {loading ? (
-          <div className="flex justify-center py-10">
-            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-          </div>
-        ) : activeTab === 'patterns' ? (
-          visibleQP.length === 0
-            ? <p className="text-xs text-muted-foreground/50 py-8 text-center">{search ? 'No patterns match your search.' : 'No query patterns enabled for training.'}</p>
-            : visibleQP.map((item, i) => (
-                <PatternCard
-                  key={(item.id as string) ?? i}
-                  record={item}
-                  variant="pattern"
-                  selected={false}
-                  onSelect={noop}
-                  readOnly
-                />
-              ))
-        ) : (
-          visibleAP.length === 0
-            ? <p className="text-xs text-muted-foreground/50 py-8 text-center">{search ? 'No patterns match your search.' : 'No anti-patterns enabled for training.'}</p>
-            : visibleAP.map((item, i) => (
-                <PatternCard
-                  key={(item.id as string) ?? i}
-                  record={item}
-                  variant="antipattern"
-                  selected={false}
-                  onSelect={noop}
-                  readOnly
-                />
-              ))
-        )}
-      </div>
+      {/* Right: detail pane */}
+      <PatternDetailPane
+        record={detail?.record ?? null}
+        variant={detail?.variant ?? 'pattern'}
+        query={debouncedSearch}
+        onClose={() => setDetail(null)}
+      />
     </div>
   );
 }
@@ -1121,16 +1155,21 @@ function QueryPatternsPanel() {
 
   // ── All admin-panel state (hooks must always be called) ──────────────────
   const [activeTab, setActiveTab] = useState<'patterns' | 'antipatterns'>('patterns');
-  const [patternsData, setPatternsData] = useState<PatternPage | null>(null);
-  const [antiData, setAntiData] = useState<PatternPage | null>(null);
+  const [patternsData, setPatternsData] = useState<PatternLoadState | null>(null);
+  const [antiData, setAntiData] = useState<PatternLoadState | null>(null);
   const [loadingP, setLoadingP] = useState(false);
   const [loadingA, setLoadingA] = useState(false);
+  const pAbortRef = useRef<AbortController | null>(null);
+  const aAbortRef = useRef<AbortController | null>(null);
   const [selectedP, setSelectedP] = useState<Set<string>>(new Set());
   const [selectedA, setSelectedA] = useState<Set<string>>(new Set());
   const [filterP, setFilterP] = useState<FilterVal>('all');
   const [filterA, setFilterA] = useState<FilterVal>('all');
   const [searchP, setSearchP] = useState('');
   const [searchA, setSearchA] = useState('');
+  const [debouncedSearchP, setDebouncedSearchP] = useState('');
+  const [debouncedSearchA, setDebouncedSearchA] = useState('');
+  const [detail, setDetail] = useState<{ record: PatternRecord; variant: 'pattern' | 'antipattern' } | null>(null);
   const [enablingP, setEnablingP] = useState(false);
   const [enablingA, setEnablingA] = useState(false);
   const [disablingP, setDisablingP] = useState(false);
@@ -1139,18 +1178,58 @@ function QueryPatternsPanel() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const loadPatterns = useCallback(async () => {
+    pAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    pAbortRef.current = ctrl;
     setLoadingP(true);
+    setPatternsData(null);
+    let skip = 0;
     try {
-      const result = await listQueryPatterns(0, QP_PAGE_SIZE);
-      setPatternsData(result);
+      while (true) {
+        if (ctrl.signal.aborted) return;
+        const result = await listQueryPatterns(skip, BATCH_SIZE);
+        if (ctrl.signal.aborted) return;
+        skip += result.items.length;
+        setPatternsData(prev => {
+          const seen = new Set((prev?.items ?? []).map(x => x.id));
+          const fresh = result.items.filter(x => !seen.has(x.id));
+          return {
+            items: [...(prev?.items ?? []), ...fresh],
+            total: result.total,
+            allFetched: skip >= result.total,
+          };
+        });
+        if (skip <= BATCH_SIZE) setLoadingP(false);
+        if (skip >= result.total || result.items.length === 0) break;
+      }
     } catch { } finally { setLoadingP(false); }
   }, []);
 
   const loadAnti = useCallback(async () => {
+    aAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    aAbortRef.current = ctrl;
     setLoadingA(true);
+    setAntiData(null);
+    let skip = 0;
     try {
-      const result = await listAntiPatterns(0, QP_PAGE_SIZE);
-      setAntiData(result);
+      while (true) {
+        if (ctrl.signal.aborted) return;
+        const result = await listAntiPatterns(skip, BATCH_SIZE);
+        if (ctrl.signal.aborted) return;
+        skip += result.items.length;
+        setAntiData(prev => {
+          const seen = new Set((prev?.items ?? []).map(x => x.id));
+          const fresh = result.items.filter(x => !seen.has(x.id));
+          return {
+            items: [...(prev?.items ?? []), ...fresh],
+            total: result.total,
+            allFetched: skip >= result.total,
+          };
+        });
+        if (skip <= BATCH_SIZE) setLoadingA(false);
+        if (skip >= result.total || result.items.length === 0) break;
+      }
     } catch { } finally { setLoadingA(false); }
   }, []);
 
@@ -1168,6 +1247,15 @@ function QueryPatternsPanel() {
   useEffect(() => { if (accessMode === 'admin') loadPatterns(); }, [accessMode, loadPatterns]);
   useEffect(() => { if (accessMode === 'admin') loadAnti(); }, [accessMode, loadAnti]);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearchP(searchP), 300);
+    return () => clearTimeout(timer);
+  }, [searchP]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearchA(searchA), 300);
+    return () => clearTimeout(timer);
+  }, [searchA]);
 
   const handleSelect = (set: Set<string>, setFn: (s: Set<string>) => void) =>
     (id: string, checked: boolean) => {
@@ -1245,6 +1333,7 @@ function QueryPatternsPanel() {
     const setFilter = isP ? setFilterP : setFilterA;
     const search = isP ? searchP : searchA;
     const setSearch = isP ? setSearchP : setSearchA;
+    const debouncedSearch = isP ? debouncedSearchP : debouncedSearchA;
 
     if (loading && !data) return (
       <div className="flex justify-center py-10">
@@ -1260,11 +1349,12 @@ function QueryPatternsPanel() {
     const filteredItems = data.items.filter((item) => {
       if (filter === 'enabled' && item.is_enabled !== true) return false;
       if (filter === 'disabled' && item.is_enabled === true) return false;
-      return matchesPatternSearch(item, search);
+      return matchesPatternSearch(item, debouncedSearch);
     });
 
     const enabledCount = data.items.filter((x) => x.is_enabled === true).length;
     const disabledCount = data.items.length - enabledCount;
+    const stillLoading = !data.allFetched;
 
     return (
       <div className="flex flex-col h-full min-h-0">
@@ -1287,9 +1377,9 @@ function QueryPatternsPanel() {
           <div className="flex items-center gap-1.5 flex-wrap justify-between">
             <div className="flex items-center gap-1.5 flex-wrap">
               {([
-                { value: 'all',      label: `All (${data.items.length})` },
-                { value: 'enabled',  label: `Enabled (${enabledCount})` },
-                { value: 'disabled', label: `Disabled (${disabledCount})` },
+                { value: 'all',      label: `All (${data.total})` },
+                { value: 'enabled',  label: `Enabled (${enabledCount}${stillLoading ? '+' : ''})` },
+                { value: 'disabled', label: `Disabled (${disabledCount}${stillLoading ? '+' : ''})` },
               ] as { value: FilterVal; label: string }[]).map(({ value, label }) => (
                 <button
                   key={value}
@@ -1327,12 +1417,12 @@ function QueryPatternsPanel() {
         </div>
 
         {/* Scrollable cards */}
-        {filteredItems.length === 0 ? (
+        {filteredItems.length === 0 && !stillLoading ? (
           <p className="text-xs text-muted-foreground/50 py-6 text-center">
-            No {filter} {isP ? 'query patterns' : 'anti-patterns'}.
+            No {filter === 'all' ? '' : filter + ' '}{isP ? 'query patterns' : 'anti-patterns'}{debouncedSearch ? ' match your search' : ''}.
           </p>
         ) : (
-          <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 pb-4">
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 pb-2">
             {filteredItems.map((item, i) => (
               <PatternCard
                 key={(item.id as string) ?? i}
@@ -1340,8 +1430,15 @@ function QueryPatternsPanel() {
                 variant={isP ? 'pattern' : 'antipattern'}
                 selected={selected.has(item.id as string)}
                 onSelect={handleSelect(selected, setSelected)}
+                query={debouncedSearch}
+                onOpen={(r, v) => setDetail((prev) => prev?.record.id === r.id ? null : { record: r, variant: v })}
               />
             ))}
+            {stillLoading && (
+              <div className="flex justify-center py-3">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground/40" />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1356,40 +1453,51 @@ function QueryPatternsPanel() {
   if (accessMode === 'user') return <NonAdminPatternView />;
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-0">
-      {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-border/50 shrink-0">
-        {(['patterns', 'antipatterns'] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-3 py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md border-b-2 -mb-px ${
-              activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {tab === 'patterns' ? (
-              <span className="flex items-center gap-1.5">
-                <Database className="w-3 h-3" />
-                Query patterns
-                {patternsData && <span className="tabular-nums text-muted-foreground/60">({patternsData.total})</span>}
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5">
-                <ShieldAlert className="w-3 h-3" />
-                Anti-patterns
-                {antiData && <span className="tabular-nums text-muted-foreground/60">({antiData.total})</span>}
-              </span>
-            )}
-          </button>
-        ))}
+    <div className="flex flex-1 min-h-0 overflow-hidden">
+      {/* Left: tabs + card list */}
+      <div className="w-[48rem] shrink-0 flex flex-col min-h-0 overflow-hidden pr-4">
+        {/* Tabs */}
+        <div className="flex items-center gap-1 border-b border-border/50 shrink-0">
+          {(['patterns', 'antipatterns'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-3 py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md border-b-2 -mb-px ${
+                activeTab === tab ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {tab === 'patterns' ? (
+                <span className="flex items-center gap-1.5">
+                  <Database className="w-3 h-3" />
+                  Query patterns
+                  {patternsData && <span className="tabular-nums text-muted-foreground/60">({patternsData.total})</span>}
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <ShieldAlert className="w-3 h-3" />
+                  Anti-patterns
+                  {antiData && <span className="tabular-nums text-muted-foreground/60">({antiData.total})</span>}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-hidden pt-3">
+          {activeTab === 'patterns' && renderTab('patterns')}
+          {activeTab === 'antipatterns' && renderTab('antipatterns')}
+        </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden pt-3">
-        {activeTab === 'patterns' && renderTab('patterns')}
-        {activeTab === 'antipatterns' && renderTab('antipatterns')}
-      </div>
+      {/* Right: detail pane */}
+      <PatternDetailPane
+        record={detail?.record ?? null}
+        variant={detail?.variant ?? 'pattern'}
+        query={activeTab === 'patterns' ? debouncedSearchP : debouncedSearchA}
+        onClose={() => setDetail(null)}
+      />
 
-      {/* Delete confirmation dialog */}
+      {/* Delete confirmation dialog (portal, unaffected by layout) */}
       <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1419,14 +1527,13 @@ function QueryPatternsPanel() {
 function matchesPatternSearch(item: PatternRecord, q: string): boolean {
   if (!q.trim()) return true;
   const lower = q.toLowerCase();
-  const fields = [
-    item.question_text, item.intent, item.complexity,
-    item.error_type, item.error_detail, item.filter_summary,
-    item.measure_summary, item.dimension_summary, item.tables_involved,
-  ];
-  if (fields.some((f) => f && String(f).toLowerCase().includes(lower))) return true;
-  if (Array.isArray(item.tables_used)) {
-    return item.tables_used.some((t) => String(t).toLowerCase().includes(lower));
+  for (const val of Object.values(item)) {
+    if (val === null || val === undefined || val === '') continue;
+    if (Array.isArray(val)) {
+      if (val.some((t) => String(t).toLowerCase().includes(lower))) return true;
+    } else if (String(val).toLowerCase().includes(lower)) {
+      return true;
+    }
   }
   return false;
 }
@@ -1458,73 +1565,91 @@ function renderValue(key: string, val: unknown): React.ReactNode {
   return String(val);
 }
 
-function PatternCard({ record, variant, selected, onSelect, readOnly = false }: {
-  record: PatternRecord;
+function SqlCopyButton({ sql }: { sql: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(sql).then(() => {
+      setCopied(true);
+      toast.success('Copied');
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => toast.error('Copy failed'));
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      className="flex items-center gap-1 text-[10px] text-muted-foreground/50 hover:text-foreground transition-colors"
+      aria-label="Copy SQL"
+    >
+      {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+function PatternDetailPane({ record, variant, query, onClose }: {
+  record: PatternRecord | null;
   variant: 'pattern' | 'antipattern';
-  selected: boolean;
-  onSelect: (id: string, checked: boolean) => void;
-  readOnly?: boolean;
+  query: string;
+  onClose: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const questionText = record.question_text as string | null | undefined;
-  const patternId = record.id as string | undefined;
   const isAnti = variant === 'antipattern';
-  const resolved = isAnti && Number(record.success_count ?? 0) > 0;
-  const isEnabled = record.is_enabled === true;
-
+  const questionText = record?.question_text as string | null | undefined;
+  const isEnabled = record?.is_enabled === true;
+  const resolved = isAnti && Number(record?.success_count ?? 0) > 0;
   const summaryKeys = isAnti ? SUMMARY_KEYS_AP : SUMMARY_KEYS_QP;
 
-  const allKeys = Object.keys(record).sort((a, b) => {
+  const HEADER_KEYS = new Set([
+    'question_text', 'tables_used',
+    ...SUMMARY_KEYS_QP, ...SUMMARY_KEYS_AP,
+  ]);
+
+  const allKeys = record ? Object.keys(record).filter((k) => !HEADER_KEYS.has(k)).sort((a, b) => {
     const aLast = SQL_KEYS.has(a) ? 1 : 0;
     const bLast = SQL_KEYS.has(b) ? 1 : 0;
     if (aLast !== bLast) return aLast - bLast;
     return a.localeCompare(b);
-  });
-
-  const borderClass = selected
-    ? 'border-primary/60 bg-primary/5'
-    : isAnti
-      ? resolved ? 'border-border/30 bg-muted/5' : 'border-red-500/20 bg-red-500/5'
-      : 'border-border/50 bg-muted/10';
+  }) : [];
 
   return (
-    <div className={`rounded-lg border transition-colors ${borderClass}`}>
-      <div className="flex items-start gap-3 px-3 pt-3 pb-0">
-        {/* Checkbox — hidden in read-only mode */}
-        {!readOnly && (
-          <div className="shrink-0 pt-0.5" onClick={(e) => e.stopPropagation()}>
-            <input
-              type="checkbox"
-              checked={selected}
-              onChange={(e) => patternId && onSelect(patternId, e.target.checked)}
-              className="w-3.5 h-3.5 rounded border-border accent-primary cursor-pointer"
-              aria-label="Select pattern"
-            />
-          </div>
-        )}
-
-        {/* Expandable content */}
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => setExpanded((v) => !v)}
-          onKeyDown={(e) => e.key === 'Enter' && setExpanded((v) => !v)}
-          className="flex-1 min-w-0 pb-3 outline-none cursor-pointer"
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-foreground leading-snug">
-                {questionText || <span className="italic text-muted-foreground/50">No question text</span>}
-              </p>
-              {isEnabled && !readOnly && (
-                <span className="inline-block text-[9px] uppercase tracking-wide font-medium text-emerald-600 dark:text-emerald-400 mt-0.5">Enabled</span>
+    <div className={`flex-1 min-w-0 overflow-hidden flex flex-col ${record ? 'border-l border-border/50' : ''}`}>
+      {!record ? null : (
+        /* Single scroll container — header + fields scroll together so a tall
+           header never squeezes the fields out of view */
+        <div className="grow h-0 overflow-y-auto">
+          {/* Badges + close */}
+          <div className="flex items-start justify-between gap-2 px-5 pt-5 mb-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wide ${
+                isAnti
+                  ? resolved ? 'bg-muted/60 text-muted-foreground' : 'bg-red-500/10 text-red-500'
+                  : 'bg-primary/10 text-primary'
+              }`}>
+                {isAnti ? (resolved ? 'resolved anti-pattern' : 'anti-pattern') : 'query pattern'}
+              </span>
+              {isEnabled && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wide bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  enabled
+                </span>
               )}
             </div>
-            <ChevronRight className={`w-3.5 h-3.5 shrink-0 text-muted-foreground/40 transition-transform mt-0.5 ${expanded ? 'rotate-90' : ''}`} />
+            <button
+              onClick={onClose}
+              className="shrink-0 p-1 rounded-sm opacity-60 hover:opacity-100 hover:bg-muted/60 transition-opacity"
+              aria-label="Close"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
 
-          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
+          {/* Title */}
+          <p className="text-sm font-medium leading-snug px-5">
+            {questionText
+              ? highlightQueryInText(questionText, query)
+              : <span className="italic text-muted-foreground/50">No question text</span>}
+          </p>
+
+          {/* Summary chips */}
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 px-5">
             {summaryKeys.map((k) => {
               const v = record[k];
               if (v === null || v === undefined || v === '') return null;
@@ -1540,7 +1665,7 @@ function PatternCard({ record, variant, selected, onSelect, readOnly = false }: 
                       ? null
                       : `${k.replace(/_/g, ' ')}: ${v}`;
               if (!display) return null;
-              return <span key={k} className="text-[11px] text-muted-foreground/60">{display}</span>;
+              return <span key={k} className="text-[11px] text-muted-foreground/60">{highlightQueryInText(display, query)}</span>;
             })}
             {!isAnti && (Number(record.liked_count ?? 0) > 0 || Number(record.disliked_count ?? 0) > 0) && (
               <span className="text-[11px]">
@@ -1551,28 +1676,37 @@ function PatternCard({ record, variant, selected, onSelect, readOnly = false }: 
             )}
           </div>
 
+          {/* Tables */}
           {Array.isArray(record.tables_used) && record.tables_used.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-1.5">
+            <div className="flex flex-wrap gap-1 mt-2 px-5">
               {(record.tables_used as string[]).map((t) => (
-                <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50 text-muted-foreground/60 font-mono">{t}</span>
+                <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50 text-muted-foreground/60 font-mono">
+                  {highlightQueryInText(t, query)}
+                </span>
               ))}
             </div>
           )}
-        </div>
-      </div>
 
-      {expanded && (
-        <div className="border-t border-border/30 ml-6 mr-3 mb-3 pt-3">
-          <div className="divide-y divide-border/20">
+          {/* Divider */}
+          <div className="border-b border-border/50 mt-4 mx-5" />
+
+          {/* Fields */}
+          <div className="px-5 py-4 space-y-1">
             {allKeys.map((k) => {
               const v = record[k];
               if (v === null || v === undefined || v === '') return null;
               if (SQL_KEYS.has(k)) {
+                const sql = String(v);
                 return (
                   <div key={k} className="py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium mb-1">{k}</p>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium">{k.replace(/_/g, ' ')}</p>
+                      <SqlCopyButton sql={sql} />
+                    </div>
                     <div className="rounded-md bg-muted/40 border border-border/40 overflow-x-auto">
-                      <pre className="p-3 text-[11px] font-mono text-foreground/80 leading-relaxed whitespace-pre">{String(v)}</pre>
+                      <pre className="p-3 text-[11px] font-mono text-foreground/80 leading-relaxed whitespace-pre">
+                        {highlightQueryInText(sql, query)}
+                      </pre>
                     </div>
                   </div>
                 );
@@ -1580,9 +1714,11 @@ function PatternCard({ record, variant, selected, onSelect, readOnly = false }: 
               const rendered = renderValue(k, v);
               if (!rendered) return null;
               return (
-                <div key={k} className="flex gap-3 py-1.5">
-                  <span className="text-[11px] text-muted-foreground/45 w-40 shrink-0 font-mono pt-px">{k}</span>
-                  <span className="text-[11px] text-foreground/80 flex-1 min-w-0 break-words leading-relaxed">{rendered}</span>
+                <div key={k} className="flex gap-3 py-1.5 border-b border-border/20 last:border-0">
+                  <span className="text-[11px] text-muted-foreground/45 w-32 shrink-0 font-mono pt-px">{k.replace(/_/g, ' ')}</span>
+                  <span className="text-[11px] text-foreground/80 flex-1 min-w-0 break-words leading-relaxed">
+                    {typeof v === 'string' ? highlightQueryInText(v, query) : rendered}
+                  </span>
                 </div>
               );
             })}
@@ -1590,6 +1726,107 @@ function PatternCard({ record, variant, selected, onSelect, readOnly = false }: 
         </div>
       )}
     </div>
+  );
+}
+
+function PatternCard({ record, variant, selected, onSelect, readOnly = false, query = '', onOpen }: {
+  record: PatternRecord;
+  variant: 'pattern' | 'antipattern';
+  selected: boolean;
+  onSelect: (id: string, checked: boolean) => void;
+  readOnly?: boolean;
+  query?: string;
+  onOpen: (record: PatternRecord, variant: 'pattern' | 'antipattern') => void;
+}) {
+  const questionText = record.question_text as string | null | undefined;
+  const patternId = record.id as string | undefined;
+  const isAnti = variant === 'antipattern';
+  const resolved = isAnti && Number(record.success_count ?? 0) > 0;
+  const isEnabled = record.is_enabled === true;
+
+  const summaryKeys = isAnti ? SUMMARY_KEYS_AP : SUMMARY_KEYS_QP;
+
+  const borderClass = selected
+    ? 'border-primary/60 bg-primary/5'
+    : isAnti
+      ? resolved ? 'border-border/30 bg-muted/5' : 'border-red-500/20 bg-red-500/5'
+      : 'border-border/50 bg-muted/10';
+
+  return (
+    <div className={`rounded-lg border transition-colors ${borderClass}`}>
+      <div className="flex items-start gap-3 px-3 pt-3 pb-0">
+        {!readOnly && (
+          <div className="shrink-0 pt-0.5" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={(e) => patternId && onSelect(patternId, e.target.checked)}
+              className="w-3.5 h-3.5 rounded border-border accent-primary cursor-pointer"
+              aria-label="Select pattern"
+            />
+          </div>
+        )}
+
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onOpen(record, variant)}
+          onKeyDown={(e) => e.key === 'Enter' && onOpen(record, variant)}
+          className="flex-1 min-w-0 pb-3 outline-none cursor-pointer"
+        >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-foreground leading-snug">
+                  {questionText
+                    ? highlightQueryInText(questionText, query)
+                    : <span className="italic text-muted-foreground/50">No question text</span>}
+                </p>
+                {isEnabled && !readOnly && (
+                  <span className="inline-block text-[9px] uppercase tracking-wide font-medium text-emerald-600 dark:text-emerald-400 mt-0.5">Enabled</span>
+                )}
+              </div>
+
+            </div>
+
+            <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
+              {summaryKeys.map((k) => {
+                const v = record[k];
+                if (v === null || v === undefined || v === '') return null;
+                const display = k === 'confidence_score'
+                  ? `${(Number(v) * 100).toFixed(0)}% conf`
+                  : k === 'last_seen'
+                    ? `Last seen ${relativeDate(String(v))}`
+                    : k === 'occurrence_count'
+                      ? `Seen ${v}×`
+                      : k === 'success_count' && Number(v) > 0
+                        ? `Resolved ${v}×`
+                      : k === 'liked_count' || k === 'disliked_count'
+                        ? null
+                        : `${k.replace(/_/g, ' ')}: ${v}`;
+                if (!display) return null;
+                return <span key={k} className="text-[11px] text-muted-foreground/60">{highlightQueryInText(display, query)}</span>;
+              })}
+              {!isAnti && (Number(record.liked_count ?? 0) > 0 || Number(record.disliked_count ?? 0) > 0) && (
+                <span className="text-[11px]">
+                  <span className="text-emerald-600 dark:text-emerald-400">↑{record.liked_count as number}</span>
+                  {' '}
+                  <span className="text-red-500">↓{record.disliked_count as number}</span>
+                </span>
+              )}
+            </div>
+
+            {Array.isArray(record.tables_used) && record.tables_used.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {(record.tables_used as string[]).map((t) => (
+                  <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50 text-muted-foreground/60 font-mono">
+                    {highlightQueryInText(t, query)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
   );
 }
 

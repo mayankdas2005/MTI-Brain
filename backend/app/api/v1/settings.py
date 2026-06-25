@@ -352,7 +352,7 @@ async def list_query_patterns(
             """
             MATCH (qp:QueryPattern)
             RETURN properties(qp) AS props, coalesce(qp.occurrence_count, 0) AS _sort
-            ORDER BY _sort DESC
+            ORDER BY _sort DESC, qp.id ASC
             SKIP $skip LIMIT $limit
             """,
             {"skip": skip, "limit": limit},
@@ -384,7 +384,7 @@ async def list_anti_patterns(
             """
             MATCH (ap:AntiPattern)
             RETURN properties(ap) AS props, coalesce(ap.occurrence_count, 0) AS _sort
-            ORDER BY _sort DESC
+            ORDER BY _sort DESC, ap.id ASC
             SKIP $skip LIMIT $limit
             """,
             {"skip": skip, "limit": limit},
