@@ -819,7 +819,7 @@
           borderWidth: 3,
           borderWidthSelected: 4,
           color: colorObj,
-          font: { color: 'rgba(0,0,0,0.82)', size: 40, face: 'Inter,system-ui,sans-serif', bold: false, multi: false },
+          font: { color: 'rgba(0,0,0,0.82)', size: 30, face: 'Inter,system-ui,sans-serif', bold: false, multi: false },
           widthConstraint: { maximum: 160 }
         };
         // Use server-pre-computed positions when available — no browser physics needed
@@ -844,7 +844,7 @@
           nodeObj.size = 80;
           nodeObj.borderWidth = 7;
           nodeObj.widthConstraint = { maximum: 200 };
-          nodeObj.font = { color: 'rgba(0,0,0,0.82)', size: 45, face: 'Inter,system-ui,sans-serif', bold: true, multi: false };
+          nodeObj.font = { color: 'rgba(0,0,0,0.82)', size: 34, face: 'Inter,system-ui,sans-serif', bold: true, multi: false };
           nodeObj.shadow = { enabled: true, color: 'rgba(245,158,11,0.35)', size: 12, x: 0, y: 0 };
           origColors[nd.identity] = nodeObj.color;
         }
@@ -856,15 +856,15 @@
         // ── Visual hierarchy by label type ─────────────────────────────
         if (primaryLabel === 'Column') {
           nodeObj.size = 44;
-          nodeObj.font = { ...nodeObj.font, size: 35 };
+          nodeObj.font = { ...nodeObj.font, size: 26 };
           nodeObj.widthConstraint = { maximum: 120 };
         } else if (primaryLabel === 'Domain' || primaryLabel === 'Community') {
           nodeObj.size = 56;
-          nodeObj.font = { ...nodeObj.font, size: 35, vadjust: 0 };
+          nodeObj.font = { ...nodeObj.font, size: 26, vadjust: 0 };
           nodeObj.widthConstraint = { maximum: 140 };
         } else if (primaryLabel === 'Intent' || primaryLabel === 'BusinessTerm') {
           nodeObj.size = 50;
-          nodeObj.font = { ...nodeObj.font, size: 33 };
+          nodeObj.font = { ...nodeObj.font, size: 24 };
           nodeObj.widthConstraint = { maximum: 130 };
         }
 
@@ -1230,7 +1230,7 @@
         size: 100,
         borderWidth: 3,
         borderWidthSelected: 4,
-        font: { size: 40, face: 'Inter,system-ui', color: 'rgba(0,0,0,0.82)', bold: { face: 'Inter,system-ui' } }
+        font: { size: 30, face: 'Inter,system-ui', color: 'rgba(0,0,0,0.82)', bold: { face: 'Inter,system-ui' } }
       },
       minZoom: 0.4,
       maxZoom: 3.0
