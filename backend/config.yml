@@ -21,6 +21,9 @@ server:
     - "http://127.0.0.1:3000"
     - "http://100.21.28.155:3000"
     - "https://ai.milestnapps.com"
+    - "http://0.0.0.0:3000"
+    - "http://49.43.240.180:3000"
+    - "http://103.163.65.154:3000"
 
 auth:
   jwt_algorithm: HS256

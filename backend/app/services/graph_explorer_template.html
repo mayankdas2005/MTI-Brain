@@ -815,11 +815,11 @@
           properties: nd.properties,
           neo4jId: nd.identity,
           shape: 'circle',        // label INSIDE the circle
-          size: 30,
+          size: 100,
           borderWidth: 3,
           borderWidthSelected: 4,
           color: colorObj,
-          font: { color: 'rgba(0,0,0,0.82)', size: 16, face: 'Inter,system-ui,sans-serif', bold: false, multi: false },
+          font: { color: 'rgba(0,0,0,0.82)', size: 40, face: 'Inter,system-ui,sans-serif', bold: false, multi: false },
           widthConstraint: { maximum: 160 }
         };
         // Use server-pre-computed positions when available — no browser physics needed
@@ -841,10 +841,10 @@
             highlight: { background: colorObj.background, border: '#d97706' },
             hover: { background: colorObj.background, border: '#f59e0b' },
           };
-          nodeObj.size = 40;
+          nodeObj.size = 80;
           nodeObj.borderWidth = 7;
           nodeObj.widthConstraint = { maximum: 200 };
-          nodeObj.font = { color: 'rgba(0,0,0,0.82)', size: 18, face: 'Inter,system-ui,sans-serif', bold: true, multi: false };
+          nodeObj.font = { color: 'rgba(0,0,0,0.82)', size: 45, face: 'Inter,system-ui,sans-serif', bold: true, multi: false };
           nodeObj.shadow = { enabled: true, color: 'rgba(245,158,11,0.35)', size: 12, x: 0, y: 0 };
           origColors[nd.identity] = nodeObj.color;
         }
@@ -855,16 +855,16 @@
 
         // ── Visual hierarchy by label type ─────────────────────────────
         if (primaryLabel === 'Column') {
-          nodeObj.size = 22;
-          nodeObj.font = { ...nodeObj.font, size: 14 };
+          nodeObj.size = 44;
+          nodeObj.font = { ...nodeObj.font, size: 35 };
           nodeObj.widthConstraint = { maximum: 120 };
         } else if (primaryLabel === 'Domain' || primaryLabel === 'Community') {
-          nodeObj.size = 28;
-          nodeObj.font = { ...nodeObj.font, size: 14, vadjust: 0 };
+          nodeObj.size = 56;
+          nodeObj.font = { ...nodeObj.font, size: 35, vadjust: 0 };
           nodeObj.widthConstraint = { maximum: 140 };
         } else if (primaryLabel === 'Intent' || primaryLabel === 'BusinessTerm') {
-          nodeObj.size = 25;
-          nodeObj.font = { ...nodeObj.font, size: 13 };
+          nodeObj.size = 50;
+          nodeObj.font = { ...nodeObj.font, size: 33 };
           nodeObj.widthConstraint = { maximum: 130 };
         }
 
@@ -883,6 +883,44 @@
         nodes.push(nodeObj);
       }
 
+      function buildEdgeLabel(type, props) {
+        if (props.description) return props.description;
+        switch (type) {
+          case 'JOINS_TO': {
+            const cols = (props.from_col && props.to_col)
+              ? `${props.from_col} → ${props.to_col}` : '';
+            const kind = props.is_declared ? ' (FK)' : props.is_inferred ? ' (inferred)' : '';
+            const conf = props.confidence != null
+              ? ` ${Math.round(props.confidence * 100)}%` : '';
+            return [cols, kind, conf].join('').trim() || 'joins';
+          }
+          case 'HAS_COLUMN':
+            return props.role ? `has column · ${props.role}` : 'has column';
+          case 'RELEVANT_TO': {
+            const score = props.relevance_score != null
+              ? ` ${Math.round(props.relevance_score * 100)}%` : '';
+            return `relevant to${score}`;
+          }
+          case 'BRIDGES_TO': {
+            const hub = props.hub_table_fqn
+              ? props.hub_table_fqn.split('.').pop() : null;
+            return hub ? `bridges via ${hub}` : 'bridges to';
+          }
+          case 'REFERENCES_TABLE':
+            return props.source_column_name
+              ? `references via ${props.source_column_name}` : 'references';
+          case 'ROLLUP_OF':
+            return props.window_type ? `rollup · ${props.window_type}` : 'rollup of';
+          case 'BELONGS_TO':           return 'belongs to';
+          case 'CONTAINS_TABLE':       return 'contains';
+          case 'SEMANTICALLY_SIMILAR': return 'similar column';
+          case 'STRUCTURALLY_SIMILAR': return 'similar table';
+          case 'CLASSIFIED_AS':        return 'classified as';
+          default:
+            return type.replace(/_/g, ' ').toLowerCase();
+        }
+      }
+
       const edgeSet = new Set();
       records.forEach(record => {
         addNode(record.n); addNode(record.m);
@@ -892,6 +930,7 @@
           if (edgeSet.has(edgeKey)) return;
           edgeSet.add(edgeKey);
           const relType = record.r.type;
+          const relProps = record.r.properties || {};
           // Edge thickness by relationship importance
           let edgeWidth = 1.5;
           let edgeColor = '#b0b8c4';
@@ -903,7 +942,7 @@
             from: record.r.start,
             to: record.r.end,
             label: '',            // hidden by default — shown on hover via hoverEdge
-            _label: record.r.type, // store real label for hover display
+            _label: buildEdgeLabel(relType, relProps),
             type: record.r.type,
             properties: record.r.properties,
             neo4jId: record.r.identity,
@@ -1182,16 +1221,16 @@
       edges: {
         smooth: { enabled: true, type: 'dynamic', roundness: 0.5 },
         // Edge labels hidden by default — appear on hover/select for declutter
-        font: { align: 'top', size: 11, color: '#6b7280', strokeWidth: 3, strokeColor: '#ffffff' },
+        font: { align: 'top', size: 30, color: '#6b7280', strokeWidth: 3, strokeColor: '#ffffff' },
         arrows: { to: { enabled: true, scaleFactor: 0.7 } },
         color: { color: '#b0b8c4', highlight: '#57C7E3', hover: '#7a8898' }
       },
       nodes: {
         shape: 'circle',
-        size: 30,
+        size: 100,
         borderWidth: 3,
         borderWidthSelected: 4,
-        font: { size: 16, face: 'Inter,system-ui', color: 'rgba(0,0,0,0.82)', bold: { face: 'Inter,system-ui' } }
+        font: { size: 40, face: 'Inter,system-ui', color: 'rgba(0,0,0,0.82)', bold: { face: 'Inter,system-ui' } }
       },
       minZoom: 0.4,
       maxZoom: 3.0

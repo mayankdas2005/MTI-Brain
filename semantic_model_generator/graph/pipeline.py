@@ -58,6 +58,7 @@ from .enrich.llm_enricher import (
     enrich_domain,
     enrich_intents,
     enrich_query_templates,
+    enrich_relationships,
     enrich_tables,
     generate_business_glossary,
 )
@@ -777,6 +778,13 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             log.info("Created %d Domain nodes from enrichment.", len(enriched_domains))
 
         loader.initialize_table_defaults()
+
+        # ── Relationship enrichment (JOINS_TO descriptions) ────────────────────
+        rel_cache = checkpoint.get("relationships", {})
+        rel_enriched = enrich_relationships(all_fk_edges, chat_client, rel_cache)
+        checkpoint["relationships"] = rel_enriched
+        _save_checkpoint(checkpoint)
+        loader.load_relationship_descriptions(list(rel_enriched.values()))
 
         # ── Phase 3: Domain voting + community enrichment + domain enrichment ──
         log.info("ENRICH Phase 3 — domain voting + community + domain enrichment …")

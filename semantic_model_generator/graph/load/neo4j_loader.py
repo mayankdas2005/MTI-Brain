@@ -553,6 +553,32 @@ class Neo4jLoader:
                 t.updated_at         = $now
         """, rows, now=now)
 
+    def load_relationship_descriptions(self, descriptions: list[dict]):
+        """Write LLM-generated description onto JOINS_TO edges.
+        Each dict: {from_table, from_col, to_table, to_col, description}."""
+        now = _NOW()
+        rows = [
+            {
+                "from_table": d["from_table"],
+                "from_col":   d["from_col"],
+                "to_table":   d["to_table"],
+                "to_col":     d["to_col"],
+                "description": d.get("description", ""),
+                "updated_at":  now,
+            }
+            for d in descriptions
+            if d.get("description") and not d.get("_enrichment_failed")
+        ]
+        if not rows:
+            return
+        n = self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (:Table {fqn: r.from_table})-[j:JOINS_TO {from_col: r.from_col, to_col: r.to_col}]->(:Table {fqn: r.to_table})
+            SET j.description = r.description,
+                j.updated_at  = r.updated_at
+        """, rows)
+        log.info("Updated description on %d JOINS_TO edges.", n)
+
     def update_domain_description(self, domain_name: str, description: str):
         now = _NOW()
         self._run("""
