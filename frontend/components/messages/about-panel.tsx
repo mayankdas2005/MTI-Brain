@@ -40,6 +40,7 @@ import { copyText } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { formatRelativeTime } from '@/lib/utils/relative-time';
 import { useNow } from '@/lib/hooks/use-now';
+import { getStoredUser } from '@/lib/auth';
 import type { Message } from '@/lib/store/threads';
 
 
@@ -76,6 +77,7 @@ interface AboutPanelProps {
 export function AboutPanel({ open, onOpenChange, message, question }: AboutPanelProps) {
   const m = message.metadata_;
   const now = useNow();
+  const isAdmin = (getStoredUser()?.groups ?? []).includes('admin');
   const handleCopy = async (text: string, label: string) => {
     const ok = await copyText(text);
     if (ok) toast.success(`${label} copied`);
@@ -148,7 +150,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 }
               />
             )}
-            {m?.langfuse_trace_url && (
+            {isAdmin && m?.langfuse_trace_url && (
               <KV
                 label="Trace"
                 value={

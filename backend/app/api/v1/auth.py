@@ -18,6 +18,7 @@ class LoginRequest(BaseModel):
 
     username: str = Field(..., min_length=1, max_length=128)
     password: str = Field(..., min_length=1, max_length=128)
+    role: str = Field("user", pattern="^(admin|user)$")
 
 
 class AuthResponse(BaseModel):
@@ -39,10 +40,10 @@ async def login(
     body: LoginRequest,
     db: AsyncSession = Depends(get_async_session),
 ):
-    user_data = await auth_service.authenticate_user(body.username, body.password)
+    user_data = await auth_service.authenticate_user(db, body.username, body.password, body.role)
     if not user_data:
         logger.warning(
-            f"Failed login for username={body.username!r} from {request.client.host if request.client else 'unknown'}"
+            f"Failed login for username={body.username!r}, role={body.role!r} from {request.client.host if request.client else 'unknown'}"
         )
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
@@ -53,6 +54,7 @@ async def login(
         email=user_data["email"],
         name=user_data["name"],
         groups=user_groups,
+        password_hash=user_data.get("password"),
     )
 
     token = auth_service.create_jwt_token(

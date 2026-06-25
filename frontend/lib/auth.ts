@@ -150,10 +150,10 @@ export function consumeLoginError(): string | null {
 
 // ─── Login ───
 
-export async function login(username: string, password: string): Promise<void> {
+export async function login(username: string, password: string, role: 'admin' | 'user'): Promise<void> {
   const data = await apiFetch<{ token: string; user: User }>('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, role }),
   });
   setStoredToken(data.token);
   setStoredUser(data.user);

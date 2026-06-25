@@ -15,6 +15,7 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 export default function LoginPage() {
   const router = useRouter();
+  const [role, setRole] = useState<'admin' | 'user'>('admin');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -42,7 +43,7 @@ export default function LoginPage() {
 
   const handlePasswordLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || loading) return;
+    if (!username.trim() || !password || loading) return;
     setLoading(true);
     setError('');
 
@@ -50,7 +51,7 @@ export default function LoginPage() {
     // The authenticated layout's spinner covers the in-flight token fetch.
     // On failure, the gate's catch stores the error; the login page reads
     // it back via consumeLoginError() when it remounts.
-    const gate = login(username.trim(), password)
+    const gate = login(username.trim(), password, role)
       .then(() => {})
       .catch((err: unknown) => {
         if (err instanceof ApiError) {
@@ -106,6 +107,22 @@ export default function LoginPage() {
 
             <form onSubmit={handlePasswordLogin} className="space-y-3 text-left">
               <div className="space-y-1">
+                <Label htmlFor="role">Role</Label>
+                <select
+                  id="role"
+                  value={role}
+                  onChange={(e) => {
+                    const nextRole = e.target.value as 'admin' | 'user';
+                    setRole(nextRole);
+                    setError('');
+                  }}
+                  className="flex h-10 w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  <option value="admin">Admin</option>
+                  <option value="user">User</option>
+                </select>
+              </div>
+              <div className="space-y-1">
                 <Label htmlFor="username">Username</Label>
                 <Input
                   id="username"
@@ -113,6 +130,7 @@ export default function LoginPage() {
                   autoComplete="username"
                   value={username}
                   onChange={(e) => { setUsername(e.target.value); setError(''); }}
+                  placeholder="Enter username or email"
                   className="h-10 rounded-xl"
                 />
               </div>
@@ -125,6 +143,7 @@ export default function LoginPage() {
                     autoComplete="current-password"
                     value={password}
                     onChange={(e) => { setPassword(e.target.value); setError(''); }}
+                    placeholder="Enter password"
                     className="h-10 rounded-xl pr-10"
                   />
                   <button
@@ -140,7 +159,7 @@ export default function LoginPage() {
               {error && <p className="text-destructive text-xs">{error}</p>}
               <Button
                 type="submit"
-                disabled={loading}
+                disabled={loading || !username.trim() || !password}
                 className="w-full h-11 rounded-xl text-sm font-medium"
               >
                 {loading ? 'Signing in…' : 'Sign in'}
