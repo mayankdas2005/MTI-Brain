@@ -1,4 +1,4 @@
-"""Node: tribal_retrieval — hybrid pgvector + FTS retrieval from tribal knowledge store.
+ """Node: tribal_retrieval — hybrid pgvector + FTS retrieval from tribal knowledge store.
 
 Primary path (when deep_analysis=True): embeds the question via Cohere and runs a
 hybrid search against mti_brain_tribal_knowledge — vector cosine similarity (top 5)
