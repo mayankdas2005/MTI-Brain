@@ -81,7 +81,7 @@ interface SectionDef {
 
 const SECTIONS: SectionDef[] = [
   { id: 'response-style', label: 'Response style', icon: MessageSquare },
-  { id: 'instructions', label: 'Instructions', icon: BookText },
+  { id: 'instructions', label: 'Instructions', icon: BookText, adminOnly: true },
   { id: 'display', label: 'Display', icon: Eye },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -176,7 +176,7 @@ export default function SettingsPage() {
     'response-style': TONE_OPTIONS.some((o) =>
       matches(`response style tone ${o.label} ${o.description}`),
     ),
-    instructions: v('instructions standing rules claude apply always'),
+    instructions: isAdmin && v('instructions standing rules claude apply always'),
     display:
       v('show sql queries display') ||
       v('auto show charts visualizations') ||

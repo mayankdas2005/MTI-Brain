@@ -35,6 +35,8 @@ class MTIBrainUser(Base):
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Stores a bcrypt hash in the DB column named "password".
+    password_hash: Mapped[str | None] = mapped_column("password", Text, nullable=True)
     groups: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     organization: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_login: Mapped[datetime] = mapped_column(
