@@ -408,7 +408,7 @@ function SectionPanel({
   return (
     <div className={isQP ? 'h-full flex flex-col px-8 pt-5 overflow-hidden' : 'px-8 pt-5 pb-8'}>
       {/* Section heading */}
-      <div className="mb-6 pb-4 border-b border-border max-w-3xl shrink-0">
+      <div className="mb-6 pb-4 border-b border-border shrink-0">
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {description && (
           <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
@@ -416,7 +416,7 @@ function SectionPanel({
       </div>
 
       {/* Section content */}
-      <div className={isQP ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : 'max-w-3xl'}>
+      <div className={isQP ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : ''}>
         {activeSection === 'response-style' && (
           <ToneGrid
             options={TONE_OPTIONS}
@@ -587,6 +587,13 @@ function SearchGroup({ title, children }: { title: string; children: ReactNode }
 
 // ─── Section content components ──────────────────────────────────────────
 
+const TONE_EXAMPLES: Record<string, string> = {
+  analyst: 'Revenue declined 8.3% MoM. Primary driver: APAC segment — down $1.2M. SQL attached.',
+  manager: 'Revenue is down 8% from last month, mostly from APAC. Action needed on Q3 targets.',
+  director: 'Q3 revenue is tracking below plan. APAC is the main headwind — worth a closer look.',
+  executive: "We're behind on Q3. APAC needs attention.",
+};
+
 function ToneGrid({
   options, value, onChange, hydrated, defaultValue,
 }: {
@@ -598,34 +605,41 @@ function ToneGrid({
 }) {
   if (options.length === 0) return null;
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+    <div className="flex flex-wrap gap-4">
       {options.map((o) => {
         const isSelected = value === o.value && hydrated;
         const isDefault = o.value === defaultValue;
         return (
-          <div key={o.value} className="flex flex-col">
-            <button
-              onClick={() => onChange(o.value)}
-              aria-pressed={isSelected}
-              className={`flex-1 rounded-xl px-4 py-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background transition-colors ${
-                isSelected
-                  ? 'ring-2 ring-primary bg-primary/8 text-foreground border border-primary/30'
-                  : 'bg-muted/40 hover:bg-muted/70 text-muted-foreground border border-transparent'
-              }`}
-            >
-              <span className="text-sm font-semibold block text-foreground">{o.label}</span>
-              <span className="text-xs text-muted-foreground leading-snug block mt-1">
-                {o.description}
+          <button
+            key={o.value}
+            onClick={() => onChange(o.value)}
+            aria-pressed={isSelected}
+            className={`w-74 shrink-0 grow-0 relative rounded-2xl p-5 text-left transition-all duration-200 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
+              isSelected
+                ? 'bg-primary shadow-sm'
+                : 'bg-muted/25 border border-border hover:bg-muted/40 hover:border-border/80'
+            }`}
+          >
+            {isDefault && (
+              <span className={`absolute top-3.5 right-3.5 text-[9px] uppercase tracking-widest font-semibold ${isSelected ? 'text-primary-foreground/60' : 'text-muted-foreground/35'}`}>
+                default
               </span>
-            </button>
-            {/* Always render — keeps card heights equal whether or not this is the default */}
-            <span
-              aria-hidden={!isDefault}
-              className="block text-center mt-1 text-[9px] uppercase tracking-wider text-muted-foreground/50 select-none h-4 leading-4"
-            >
-              {isDefault ? 'default' : ''}
+            )}
+            <span className={`text-4xl font-black block mb-4 leading-none select-none ${isSelected ? 'text-primary-foreground/20' : 'text-foreground/8'}`}>
+              {o.label[0]}
             </span>
-          </div>
+            <span className={`text-sm font-semibold block ${isSelected ? 'text-primary-foreground' : 'text-foreground'}`}>
+              {o.label}
+            </span>
+            <span className={`text-xs block mt-1 leading-snug ${isSelected ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
+              {o.description}
+            </span>
+            {TONE_EXAMPLES[o.value] && (
+              <span className={`text-[11px] block mt-4 pt-3.5 border-t leading-relaxed italic ${isSelected ? 'border-primary-foreground/20 text-primary-foreground/55' : 'border-border/40 text-muted-foreground/40'}`}>
+                &ldquo;{TONE_EXAMPLES[o.value]}&rdquo;
+              </span>
+            )}
+          </button>
         );
       })}
     </div>
@@ -653,159 +667,121 @@ function DisplayContent({
   defaultDataView: DefaultDataView; setDefaultDataView: (v: DefaultDataView) => void;
   maxResultRows: number; setMaxResultRows: (v: number) => void;
 }) {
+  const visibilitySettings = [
+    { key: 'show sql queries display', label: 'Show SQL', desc: 'Display the generated SQL query alongside each result.', checked: showSQL, set: setShowSQL, isDefault: showSQL === PREFERENCES_DEFAULTS.showSQL },
+    { key: 'show data table results display', label: 'Show data table', desc: 'Display the raw data table alongside results.', checked: showData, set: setShowData, isDefault: showData === PREFERENCES_DEFAULTS.showData },
+    { key: 'auto show charts visualizations', label: 'Auto-show charts', desc: 'Automatically render visualizations when the result fits a chart.', checked: autoShowCharts, set: setAutoShowCharts, isDefault: autoShowCharts === PREFERENCES_DEFAULTS.autoShowCharts },
+    { key: 'follow-up suggestions follow up', label: 'Follow-up suggestions', desc: 'Show AI-suggested follow-up questions after each response.', checked: showFollowUps, set: setShowFollowUps, isDefault: showFollowUps === PREFERENCES_DEFAULTS.showFollowUps },
+    { key: 'show reasoning thinking process', label: 'Show reasoning', desc: 'Display the thinking-process panel for each query.', checked: showReasoning, set: setShowReasoning, isDefault: showReasoning === PREFERENCES_DEFAULTS.showReasoning },
+  ];
   return (
-    <div className="space-y-6">
-      <div className="divide-y divide-border/50">
-        {v('show sql queries display') && (
-          <ToggleRow
-            label="Show SQL"
-            description="Display the generated SQL alongside results."
-            checked={showSQL}
-            onCheckedChange={setShowSQL}
-            isDefault={showSQL === PREFERENCES_DEFAULTS.showSQL}
-          />
-        )}
-        {v('show data table results display') && (
-          <ToggleRow
-            label="Show Data"
-            description="Display the data table alongside results."
-            checked={showData}
-            onCheckedChange={setShowData}
-            isDefault={showData === PREFERENCES_DEFAULTS.showData}
-          />
-        )}
-        {v('auto show charts visualizations') && (
-          <ToggleRow
-            label="Auto-show charts"
-            description="Automatically render data visualizations when the result fits a chart."
-            checked={autoShowCharts}
-            onCheckedChange={setAutoShowCharts}
-            isDefault={autoShowCharts === PREFERENCES_DEFAULTS.autoShowCharts}
-          />
-        )}
-        {v('follow-up suggestions follow up') && (
-          <ToggleRow
-            label="Follow-up suggestions"
-            description="Show suggested follow-up questions after responses."
-            checked={showFollowUps}
-            onCheckedChange={setShowFollowUps}
-            isDefault={showFollowUps === PREFERENCES_DEFAULTS.showFollowUps}
-          />
-        )}
-        {v('show reasoning thinking process') && (
-          <ToggleRow
-            label="Show reasoning"
-            description="Display the thinking-process panel for each query."
-            checked={showReasoning}
-            onCheckedChange={setShowReasoning}
-            isDefault={showReasoning === PREFERENCES_DEFAULTS.showReasoning}
-          />
-        )}
+    <div className="space-y-10">
+      {/* Visibility — grid of toggle cards */}
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/35 mb-4">Visibility</p>
+        <div className="flex flex-wrap gap-3">
+          {visibilitySettings.map(({ key, label, desc, checked, set, isDefault }) =>
+            v(key) ? (
+              <div key={key} className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5 flex flex-col gap-4 hover:bg-muted/30 transition-colors">
+                <div className="flex-1">
+                  <div className="flex items-start justify-between gap-2 mb-1.5">
+                    <p className="text-sm font-medium text-foreground leading-snug">{label}</p>
+                    {isDefault === false && (
+                      <span className="shrink-0 text-[9px] uppercase tracking-widest font-semibold text-primary/50 mt-0.5">changed</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
+                </div>
+                <div className="flex justify-center">
+                  <SegmentControl checked={checked} onCheckedChange={set} />
+                </div>
+              </div>
+            ) : null
+          )}
+        </div>
       </div>
 
-      {v('thinking placement inline sidebar position') && (
-        <SettingBlock
-          label="Thinking panel placement"
-          description="Choose where the reasoning/thinking steps are displayed."
-        >
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md mt-3">
-            {([
-              {
-                value: 'inline' as ThinkingPlacement,
-                label: 'Inline',
-                description: 'Show thinking steps directly in the conversation stream, above the response.',
-              },
-              {
-                value: 'sidebar' as ThinkingPlacement,
-                label: 'Side panel',
-                description: 'Show thinking steps in a dedicated sidebar panel beside the conversation.',
-              },
-            ]).map((option) => {
-              const isSelected = thinkingPlacement === option.value;
-              const isDefault = option.value === PREFERENCES_DEFAULTS.thinkingPlacement;
-              return (
-                <div key={option.value} className="flex flex-col">
-                  <button
-                    onClick={() => setThinkingPlacement(option.value)}
-                    aria-pressed={isSelected}
-                    className={`flex-1 rounded-xl px-4 py-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background transition-colors ${
-                      isSelected
-                        ? 'ring-2 ring-primary bg-primary/8 text-foreground border border-primary/30'
-                        : 'bg-muted/40 hover:bg-muted/70 text-muted-foreground border border-transparent'
-                    }`}
-                  >
-                    <span className="text-sm font-semibold block text-foreground">{option.label}</span>
-                    <span className="text-xs text-muted-foreground leading-snug block mt-1">
-                      {option.description}
-                    </span>
-                  </button>
-                  <DefaultTag visible={isDefault} />
-                </div>
-              );
-            })}
-          </div>
-        </SettingBlock>
-      )}
+      {/* Layout & Limits — option cards */}
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/35 mb-4">Layout & limits</p>
+        <div className="flex flex-wrap gap-4">
+          {v('thinking placement inline sidebar position') && (
+            <div className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5">
+              <p className="text-sm font-medium text-foreground mb-0.5">Thinking panel</p>
+              <p className="text-xs text-muted-foreground mb-4">Where reasoning steps are shown.</p>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { value: 'inline' as ThinkingPlacement, label: 'Inline', sub: 'In the stream' },
+                  { value: 'sidebar' as ThinkingPlacement, label: 'Side panel', sub: 'Beside chat' },
+                ]).map((opt) => {
+                  const sel = thinkingPlacement === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      onClick={() => setThinkingPlacement(opt.value)}
+                      className={`rounded-xl p-3 text-left text-xs transition-all outline-none focus-visible:ring-2 focus-visible:ring-ring ${sel ? 'bg-primary text-primary-foreground font-semibold' : 'bg-muted/40 hover:bg-muted/60 text-foreground border border-border/50 hover:border-border'}`}
+                    >
+                      <span className="font-semibold block">{opt.label}</span>
+                      <span className={`mt-0.5 block text-[11px] ${sel ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>{opt.sub}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {thinkingPlacement === PREFERENCES_DEFAULTS.thinkingPlacement && (
+                <p className="text-[10px] text-muted-foreground/35 mt-2.5 text-right">default</p>
+              )}
+            </div>
+          )}
 
-      {v('default data view sql table') && (
-        <SettingBlock
-          label="Default data view"
-          description="Which tab opens first when query data arrives."
-        >
-          <div className="grid grid-cols-2 gap-2 max-w-xs mt-2">
-            {(['sql', 'table'] as DefaultDataView[]).map((view) => {
-              const isSelected = defaultDataView === view;
-              const isDefault = view === PREFERENCES_DEFAULTS.defaultDataView;
-              return (
-                <div key={view} className="flex flex-col">
-                  <button
-                    onClick={() => setDefaultDataView(view)}
-                    aria-pressed={isSelected}
-                    className={`rounded-lg px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors ${
-                      isSelected
-                        ? 'ring-2 ring-primary bg-primary/8 font-medium text-foreground border border-primary/30'
-                        : 'bg-muted/40 hover:bg-muted/70 text-muted-foreground border border-transparent'
-                    }`}
-                  >
-                    {view === 'sql' ? 'SQL' : 'Data'}
-                  </button>
-                  <DefaultTag visible={isDefault} />
-                </div>
-              );
-            })}
-          </div>
-        </SettingBlock>
-      )}
+          {v('default data view sql table') && (
+            <div className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5">
+              <p className="text-sm font-medium text-foreground mb-0.5">Default data view</p>
+              <p className="text-xs text-muted-foreground mb-4">Which tab opens first when data arrives.</p>
+              <div className="grid grid-cols-2 gap-2">
+                {(['sql', 'table'] as DefaultDataView[]).map((view) => {
+                  const sel = defaultDataView === view;
+                  return (
+                    <button
+                      key={view}
+                      onClick={() => setDefaultDataView(view)}
+                      className={`rounded-xl py-3 text-sm font-medium text-center transition-all outline-none focus-visible:ring-2 focus-visible:ring-ring ${sel ? 'bg-primary text-primary-foreground font-semibold' : 'bg-muted/40 hover:bg-muted/60 text-foreground border border-border/50 hover:border-border'}`}
+                    >
+                      {view === 'sql' ? 'SQL' : 'Data table'}
+                    </button>
+                  );
+                })}
+              </div>
+              {defaultDataView === PREFERENCES_DEFAULTS.defaultDataView && (
+                <p className="text-[10px] text-muted-foreground/35 mt-2.5 text-right">default</p>
+              )}
+            </div>
+          )}
 
-      {v('max result rows per query') && (
-        <SettingBlock
-          label="Max rows per query"
-          description="Higher values return more data but take longer."
-        >
-          <div className="grid grid-cols-4 gap-2 max-w-xs mt-2">
-            {ROW_OPTIONS.map((rows) => {
-              const isSelected = maxResultRows === rows;
-              const isDefault = rows === PREFERENCES_DEFAULTS.maxResultRows;
-              return (
-                <div key={rows} className="flex flex-col">
-                  <button
-                    onClick={() => setMaxResultRows(rows)}
-                    aria-pressed={isSelected}
-                    className={`rounded-lg px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors tabular-nums ${
-                      isSelected
-                        ? 'ring-2 ring-primary bg-primary/8 font-medium text-foreground border border-primary/30'
-                        : 'bg-muted/40 hover:bg-muted/70 text-muted-foreground border border-transparent'
-                    }`}
-                  >
-                    {rows}
-                  </button>
-                  <DefaultTag visible={isDefault} />
-                </div>
-              );
-            })}
-          </div>
-        </SettingBlock>
-      )}
+          {v('max result rows per query') && (
+            <div className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5">
+              <p className="text-sm font-medium text-foreground mb-0.5">Max rows per query</p>
+              <p className="text-xs text-muted-foreground mb-4">Higher values return more data but take longer.</p>
+              <div className="grid grid-cols-4 gap-1.5">
+                {ROW_OPTIONS.map((rows) => {
+                  const sel = maxResultRows === rows;
+                  return (
+                    <button
+                      key={rows}
+                      onClick={() => setMaxResultRows(rows)}
+                      className={`rounded-xl py-2.5 text-xs font-medium tabular-nums transition-all outline-none focus-visible:ring-2 focus-visible:ring-ring ${sel ? 'bg-primary text-primary-foreground font-semibold' : 'bg-muted/40 hover:bg-muted/60 text-foreground border border-border/50 hover:border-border'}`}
+                    >
+                      {rows}
+                    </button>
+                  );
+                })}
+              </div>
+              {maxResultRows === PREFERENCES_DEFAULTS.maxResultRows && (
+                <p className="text-[10px] text-muted-foreground/35 mt-2.5 text-right">default</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -818,51 +794,93 @@ function AppearanceContent({
   highContrast: boolean; setHighContrast: (v: boolean) => void;
 }) {
   return (
-    <div className="divide-y divide-border/50">
+    <div className="space-y-10">
+      {/* Density — large visual preview cards */}
       {v('density compact comfortable spacing rows') && (
-        <div className="pb-5">
-          <SettingBlock
-            label="Density"
-            description="Compact tightens row padding for more on screen at once."
-          >
-            <div className="grid grid-cols-2 gap-2 max-w-xs mt-2">
-              {(['comfortable', 'compact'] as Density[]).map((d) => {
-                const isSelected = density === d;
-                const isDefault = d === PREFERENCES_DEFAULTS.density;
-                return (
-                  <div key={d} className="flex flex-col">
-                    <button
-                      onClick={() => setDensity(d)}
-                      aria-pressed={isSelected}
-                      className={`rounded-lg px-3 py-2 text-sm outline-none capitalize transition-colors ${
-                        isSelected
-                          ? 'ring-2 ring-primary bg-primary/8 font-medium text-foreground border border-primary/30'
-                          : 'bg-muted/40 hover:bg-muted/70 text-muted-foreground border border-transparent'
-                      }`}
-                    >
-                      {d}
-                    </button>
-                    <DefaultTag visible={isDefault} />
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/35 mb-4">Density</p>
+          <div className="flex flex-wrap gap-4">
+            {(['comfortable', 'compact'] as Density[]).map((d) => {
+              const sel = density === d;
+              const isDefault = d === PREFERENCES_DEFAULTS.density;
+              const lines = d === 'comfortable' ? [70, 50, 85, 60] : [70, 50, 85, 60, 40, 75];
+              const gap = d === 'comfortable' ? 'gap-2.5' : 'gap-1.5';
+              return (
+                <button
+                  key={d}
+                  onClick={() => setDensity(d)}
+                  aria-pressed={sel}
+                  className={`w-74 shrink-0 grow-0 relative rounded-2xl p-5 text-left transition-all duration-200 outline-none focus-visible:ring-2 focus-visible:ring-ring ${sel ? 'bg-primary shadow-sm' : 'bg-muted/25 border border-border hover:bg-muted/40 hover:border-border/80'}`}
+                >
+                  {isDefault && (
+                    <span className={`absolute top-3.5 right-3.5 text-[9px] uppercase tracking-widest font-semibold ${sel ? 'text-primary-foreground/60' : 'text-muted-foreground/35'}`}>
+                      default
+                    </span>
+                  )}
+                  <div className={`flex flex-col ${gap} mb-4`}>
+                    {lines.map((w, i) => (
+                      <div
+                        key={i}
+                        className={`h-1.5 rounded-full ${sel ? 'bg-primary-foreground/30' : 'bg-foreground/10'}`}
+                        style={{ width: `${w}%` }}
+                      />
+                    ))}
                   </div>
-                );
-              })}
-            </div>
-          </SettingBlock>
+                  <p className={`text-sm font-semibold capitalize ${sel ? 'text-primary-foreground' : 'text-foreground'}`}>{d}</p>
+                  <p className={`text-xs mt-0.5 ${sel ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
+                    {d === 'comfortable' ? 'Generous spacing, easier to scan.' : 'Tighter rows, more content visible.'}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
+
+      {/* Accessibility */}
       {v('high contrast accessibility bold text sharp') && (
-        <ToggleRow
-          label="High contrast"
-          description="Makes text darker and borders sharper — easier to read in bright environments."
-          checked={highContrast}
-          onCheckedChange={setHighContrast}
-        />
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/35 mb-4">Accessibility</p>
+          <div className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5 flex flex-col gap-4 hover:bg-muted/30 transition-colors">
+            <div className="flex-1">
+              <p className="text-sm font-medium text-foreground mb-1.5">High contrast</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">Makes text darker and borders sharper — easier to read in bright environments.</p>
+            </div>
+            <div className="flex justify-center">
+              <SegmentControl checked={highContrast} onCheckedChange={setHighContrast} labelOn="On" labelOff="Off" />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
 // ─── Primitive components ────────────────────────────────────────────────
+
+function SegmentControl({
+  checked, onCheckedChange, disabled, labelOn = 'On', labelOff = 'Off',
+}: {
+  checked: boolean; onCheckedChange: (v: boolean) => void;
+  disabled?: boolean; labelOn?: string; labelOff?: string;
+}) {
+  return (
+    <div className={`w-fit inline-flex rounded-full p-0.5 bg-muted border border-border ${disabled ? 'opacity-40 pointer-events-none' : ''}`}>
+      <button
+        onClick={() => onCheckedChange(true)}
+        className={`w-9 py-1 rounded-full text-xs font-medium text-center transition-all ${checked ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+      >
+        {labelOn}
+      </button>
+      <button
+        onClick={() => onCheckedChange(false)}
+        className={`w-9 py-1 rounded-full text-xs font-medium text-center transition-all ${!checked ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+      >
+        {labelOff}
+      </button>
+    </div>
+  );
+}
 
 function SettingBlock({
   label, description, children,
@@ -891,35 +909,6 @@ function DefaultTag({ visible }: { visible: boolean }) {
   );
 }
 
-function ToggleRow({
-  label, description, checked, onCheckedChange, disabled, isDefault,
-}: {
-  label: string; description: string;
-  checked: boolean; onCheckedChange: (v: boolean) => void;
-  disabled?: boolean; isDefault?: boolean;
-}) {
-  return (
-    <div className={`flex items-center justify-between gap-4 py-3.5 ${disabled ? 'opacity-50' : ''}`}>
-      <div className="min-w-0">
-        <p className="text-sm text-foreground flex items-center gap-2">
-          {label}
-          {isDefault === false && (
-            <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
-              changed
-            </span>
-          )}
-        </p>
-        <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
-      </div>
-      <Switch
-        checked={checked}
-        onCheckedChange={onCheckedChange}
-        disabled={disabled}
-        aria-label={label}
-      />
-    </div>
-  );
-}
 
 function NotificationsPanel({
   notifyOnComplete, setNotifyOnComplete, notifySound, setNotifySound, v,
@@ -942,49 +931,89 @@ function NotificationsPanel({
   const enabled = notifyOnComplete === 'when-hidden';
 
   return (
-    <div className="divide-y divide-border/50">
-      {v('notify when answers finish notifications stream completion') && (
-        <ToggleRow
-          label="Notify when answers finish"
-          description="Pings you when a stream completes and you're not on that chat."
-          checked={enabled}
-          onCheckedChange={(val) => setNotifyOnComplete(val ? 'when-hidden' : 'off')}
-          isDefault={(enabled ? 'when-hidden' : 'off') === PREFERENCES_DEFAULTS.notifyOnComplete}
-        />
-      )}
-      {v('play sound ping audio notifications') && (
-        <ToggleRow
-          label="Play a sound"
-          description={enabled ? 'Soft ping alongside notifications.' : 'Enable notifications above to use this.'}
-          checked={enabled && notifySound}
-          onCheckedChange={setNotifySound}
-          disabled={!enabled}
-          isDefault={notifySound === PREFERENCES_DEFAULTS.notifySound}
-        />
-      )}
+    <div className="space-y-10">
+      {/* Preferences — notification toggle cards */}
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/35 mb-4">Preferences</p>
+        <div className="flex flex-wrap gap-3">
+          {v('notify when answers finish notifications stream completion') && (
+            <div className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5 flex flex-col gap-4 hover:bg-muted/30 transition-colors">
+              <div className="flex-1">
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <p className="text-sm font-medium text-foreground">Notify on completion</p>
+                  {(enabled ? 'when-hidden' : 'off') !== PREFERENCES_DEFAULTS.notifyOnComplete && (
+                    <span className="text-[9px] uppercase tracking-widest font-semibold text-primary/50 mt-0.5">changed</span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">Pings you when a stream completes and you're not on that chat.</p>
+              </div>
+              <div className="flex justify-center">
+                <SegmentControl
+                  checked={enabled}
+                  onCheckedChange={(val) => setNotifyOnComplete(val ? 'when-hidden' : 'off')}
+                />
+              </div>
+            </div>
+          )}
+          {v('play sound ping audio notifications') && (
+            <div className={`w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5 flex flex-col gap-4 transition-colors ${!enabled ? 'opacity-50' : 'hover:bg-muted/30'}`}>
+              <div className="flex-1">
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <p className="text-sm font-medium text-foreground">Play a sound</p>
+                  {notifySound !== PREFERENCES_DEFAULTS.notifySound && (
+                    <span className="text-[9px] uppercase tracking-widest font-semibold text-primary/50 mt-0.5">changed</span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {enabled ? 'Soft ping alongside the notification.' : 'Enable notifications to use this.'}
+                </p>
+              </div>
+              <div className="flex justify-center">
+                <SegmentControl checked={enabled && notifySound} onCheckedChange={setNotifySound} disabled={!enabled} />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Browser permission */}
       {v('browser permission notifications') && (
-        <div className="flex items-center justify-between gap-4 py-3.5">
-          <div className="min-w-0">
-            <p className="text-sm text-foreground">Browser permission</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {permission === 'granted' && 'Allowed — to revoke, click the lock icon in the address bar.'}
-              {permission === 'default' && 'Not yet granted — click Enable to allow.'}
-              {permission === 'denied' && "Blocked — change in your browser's site settings to re-enable."}
-              {permission === 'unsupported' && "Your browser doesn't support desktop notifications."}
-            </p>
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/35 mb-4">Browser</p>
+          <div className="w-150 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5 flex items-start justify-between gap-6">
+            <div className="flex items-start gap-3.5 min-w-0">
+              <Bell className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">Notification permission</p>
+                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                  {permission === 'granted' && 'Allowed — to revoke, click the lock icon in the address bar.'}
+                  {permission === 'default' && 'Not yet granted. Allow browser notifications to receive alerts.'}
+                  {permission === 'denied' && "Blocked — open your browser's site settings to re-enable."}
+                  {permission === 'unsupported' && "Your browser doesn't support desktop notifications."}
+                </p>
+              </div>
+            </div>
+            <div className="shrink-0">
+              {permission === 'granted' && (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-full">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden />
+                  Allowed
+                </span>
+              )}
+              {permission === 'denied' && (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-destructive bg-destructive/10 px-3 py-1.5 rounded-full">
+                  <span className="w-1.5 h-1.5 rounded-full bg-destructive" aria-hidden />
+                  Blocked
+                </span>
+              )}
+              {permission === 'unsupported' && (
+                <span className="text-xs text-muted-foreground/50">Unavailable</span>
+              )}
+              {permission === 'default' && (
+                <Button size="sm" onClick={handleEnable}>Enable</Button>
+              )}
+            </div>
           </div>
-          {permission === 'default' && (
-            <Button size="sm" onClick={handleEnable} className="shrink-0">Enable</Button>
-          )}
-          {permission === 'granted' && (
-            <span className="shrink-0 inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden />
-              Allowed
-            </span>
-          )}
-          {permission === 'denied' && (
-            <span className="shrink-0 text-xs text-muted-foreground">Blocked</span>
-          )}
         </div>
       )}
     </div>
@@ -1001,7 +1030,35 @@ type PatternLoadState = {
   allFetched: boolean; // true when items.length >= total
 };
 
+function useResizablePanel(defaultPx = 750) {
+  const [leftWidth, setLeftWidth] = useState(defaultPx);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current || !containerRef.current) return;
+      const { left, width } = containerRef.current.getBoundingClientRect();
+      setLeftWidth(Math.max(280, Math.min(ev.clientX - left, width - 280)));
+    };
+    const onUp = () => {
+      dragging.current = false;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
+
+  const reset = useCallback(() => setLeftWidth(defaultPx), [defaultPx]);
+
+  return { leftWidth, containerRef, onDragStart, reset };
+}
+
 function NonAdminPatternView() {
+  const { leftWidth, containerRef, onDragStart, reset } = useResizablePanel();
   const [activeTab, setActiveTab] = useState<'patterns' | 'antipatterns'>('patterns');
   const [qpItems, setQpItems] = useState<PatternRecord[]>([]);
   const [apItems, setApItems] = useState<PatternRecord[]>([]);
@@ -1009,6 +1066,10 @@ function NonAdminPatternView() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [detail, setDetail] = useState<{ record: PatternRecord; variant: 'pattern' | 'antipattern' } | null>(null);
+
+  useEffect(() => {
+    if (!detail) reset();
+  }, [detail, reset]);
 
   useEffect(() => {
     Promise.all([listEnabledQueryPatterns(), listEnabledAntiPatterns()])
@@ -1032,9 +1093,9 @@ function NonAdminPatternView() {
     setDetail((prev) => prev?.record.id === record.id ? null : { record, variant });
 
   return (
-    <div className="flex flex-1 min-h-0 overflow-hidden">
+    <div ref={containerRef} className="flex flex-1 min-h-0 overflow-hidden">
       {/* Left: card list */}
-      <div className="w-[48rem] shrink-0 flex flex-col min-h-0 overflow-hidden pr-4">
+      <div style={{ width: leftWidth }} className="shrink-0 flex flex-col min-h-0 overflow-hidden pr-4">
         {/* Info banner */}
         <div className="flex items-start gap-2.5 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 mb-3 shrink-0">
           <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
@@ -1136,6 +1197,14 @@ function NonAdminPatternView() {
         </div>
       </div>
 
+      {/* Drag handle — always visible */}
+      <div
+        onMouseDown={onDragStart}
+        className="w-1 shrink-0 cursor-col-resize group relative flex items-center justify-center hover:bg-primary/20 transition-colors"
+      >
+        <div className="w-px h-full bg-border/50 group-hover:bg-primary/40 transition-colors" />
+      </div>
+
       {/* Right: detail pane */}
       <PatternDetailPane
         record={detail?.record ?? null}
@@ -1154,6 +1223,7 @@ function QueryPatternsPanel() {
   const [accessMode, setAccessMode] = useState<'checking' | 'admin' | 'user'>('checking');
 
   // ── All admin-panel state (hooks must always be called) ──────────────────
+  const { leftWidth, containerRef, onDragStart, reset } = useResizablePanel();
   const [activeTab, setActiveTab] = useState<'patterns' | 'antipatterns'>('patterns');
   const [patternsData, setPatternsData] = useState<PatternLoadState | null>(null);
   const [antiData, setAntiData] = useState<PatternLoadState | null>(null);
@@ -1176,6 +1246,10 @@ function QueryPatternsPanel() {
   const [disablingA, setDisablingA] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<'patterns' | 'antipatterns' | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  useEffect(() => {
+    if (!detail) reset();
+  }, [detail, reset]);
 
   const loadPatterns = useCallback(async () => {
     pAbortRef.current?.abort();
@@ -1453,9 +1527,9 @@ function QueryPatternsPanel() {
   if (accessMode === 'user') return <NonAdminPatternView />;
 
   return (
-    <div className="flex flex-1 min-h-0 overflow-hidden">
+    <div ref={containerRef} className="flex flex-1 min-h-0 overflow-hidden">
       {/* Left: tabs + card list */}
-      <div className="w-[48rem] shrink-0 flex flex-col min-h-0 overflow-hidden pr-4">
+      <div style={{ width: leftWidth }} className="shrink-0 flex flex-col min-h-0 overflow-hidden pr-4">
         {/* Tabs */}
         <div className="flex items-center gap-1 border-b border-border/50 shrink-0">
           {(['patterns', 'antipatterns'] as const).map((tab) => (
@@ -1487,6 +1561,14 @@ function QueryPatternsPanel() {
           {activeTab === 'patterns' && renderTab('patterns')}
           {activeTab === 'antipatterns' && renderTab('antipatterns')}
         </div>
+      </div>
+
+      {/* Drag handle — always visible */}
+      <div
+        onMouseDown={onDragStart}
+        className="w-1 shrink-0 cursor-col-resize group relative flex items-center justify-center hover:bg-primary/20 transition-colors"
+      >
+        <div className="w-px h-full bg-border/50 group-hover:bg-primary/40 transition-colors" />
       </div>
 
       {/* Right: detail pane */}
@@ -1611,7 +1693,7 @@ function PatternDetailPane({ record, variant, query, onClose }: {
   }) : [];
 
   return (
-    <div className={`flex-1 min-w-0 overflow-hidden flex flex-col ${record ? 'border-l border-border/50' : ''}`}>
+    <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
       {!record ? null : (
         /* Single scroll container — header + fields scroll together so a tall
            header never squeezes the fields out of view */
@@ -2158,143 +2240,146 @@ function InstructionsPanel() {
   }
 
   return (
-    <div className="space-y-4">
-      {/* Info strip */}
-      <p className="text-xs text-muted-foreground">
-        Sent to the AI on every query. When an instruction conflicts with learned feedback, the instruction wins — review what the AI has learned below and disable instructions here to let feedback take over.
-      </p>
+    <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-x-10 gap-y-8">
+      {/* Left: Instructions list */}
+      <div className="space-y-4 min-w-0">
+        {/* Info strip */}
+        <p className="text-xs text-muted-foreground">
+          Sent to the AI on every query. When an instruction conflicts with learned feedback, the instruction wins.
+        </p>
 
-      {/* Header row: status + budget bar + add button */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex-1 min-w-0 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-muted-foreground">
-              {instructions.length === 0
-                ? 'No instructions yet. Add one to get started.'
-                : `${instructions.filter((i) => i.enabled).length} of ${instructions.length} active`}
-            </p>
-            {budgetOver && (
-              <span className="text-[11px] text-destructive font-medium">Too many active instructions</span>
-            )}
-            {!budgetOver && budgetPct >= 80 && (
-              <span className="text-[11px] text-amber-500">Getting heavy — consider disabling some</span>
+        {/* Header row: status + budget bar + add button */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1 min-w-0 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                {instructions.length === 0
+                  ? 'No instructions yet. Add one to get started.'
+                  : `${instructions.filter((i) => i.enabled).length} of ${instructions.length} active`}
+              </p>
+              {budgetOver && (
+                <span className="text-[11px] text-destructive font-medium">Too many active instructions</span>
+              )}
+              {!budgetOver && budgetPct >= 80 && (
+                <span className="text-[11px] text-amber-500">Getting heavy — consider disabling some</span>
+              )}
+            </div>
+            {instructions.some((i) => i.enabled) && (
+              <div className="h-1 w-full rounded-full bg-muted/50 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${budgetBarColor}`}
+                  style={{ width: `${budgetPct}%` }}
+                />
+              </div>
             )}
           </div>
-          {instructions.some((i) => i.enabled) && (
-            <div className="h-1 w-full rounded-full bg-muted/50 overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${budgetBarColor}`}
-                style={{ width: `${budgetPct}%` }}
-              />
-            </div>
-          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleStartAdding}
+            className="shrink-0 flex items-center gap-1.5 h-8 text-xs"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add instruction
+          </Button>
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={handleStartAdding}
-          className="shrink-0 flex items-center gap-1.5 h-8 text-xs"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          Add instruction
-        </Button>
-      </div>
 
-      {/* New instruction form */}
-      {adding && (
-        <div className="rounded-xl border border-primary/40 bg-primary/5 p-4 space-y-3">
-          <input
-            ref={newTitleRef}
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="Instruction name (e.g. Acronym Glossary)"
-            className="w-full bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground/50 outline-none border-b border-border/60 pb-0.5"
-          />
-          <div>
-            <textarea
-              value={newContent}
-              maxLength={CONTENT_LIMIT}
-              onChange={(e) => {
-                setNewContent(e.target.value);
-                e.target.style.height = 'auto';
-                e.target.style.height = `${e.target.scrollHeight}px`;
-              }}
-              placeholder="What should MTI Brain always do? (e.g. List all acronyms as a table at the end of every response)"
-              rows={3}
-              className="w-full resize-none bg-transparent text-xs text-muted-foreground placeholder:text-muted-foreground/40 outline-none leading-relaxed border-none focus:text-foreground"
-              style={{ minHeight: '4rem' }}
+        {/* New instruction form */}
+        {adding && (
+          <div className="rounded-xl border border-primary/40 bg-primary/5 p-4 space-y-3">
+            <input
+              ref={newTitleRef}
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="Instruction name (e.g. Acronym Glossary)"
+              className="w-full bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground/50 outline-none border-b border-border/60 pb-0.5"
             />
-            <div className="flex justify-end">
-              <span className={`text-[10px] tabular-nums ${newContent.length >= CONTENT_LIMIT ? 'text-amber-500 font-medium' : 'text-muted-foreground/40'}`}>
-                {CONTENT_LIMIT - newContent.length} remaining
-              </span>
+            <div>
+              <textarea
+                value={newContent}
+                maxLength={CONTENT_LIMIT}
+                onChange={(e) => {
+                  setNewContent(e.target.value);
+                  e.target.style.height = 'auto';
+                  e.target.style.height = `${e.target.scrollHeight}px`;
+                }}
+                placeholder="What should MTI Brain always do? (e.g. List all acronyms as a table at the end of every response)"
+                rows={3}
+                className="w-full resize-none bg-transparent text-xs text-muted-foreground placeholder:text-muted-foreground/40 outline-none leading-relaxed border-none focus:text-foreground"
+                style={{ minHeight: '4rem' }}
+              />
+              <div className="flex justify-end">
+                <span className={`text-[10px] tabular-nums ${newContent.length >= CONTENT_LIMIT ? 'text-amber-500 font-medium' : 'text-muted-foreground/40'}`}>
+                  {CONTENT_LIMIT - newContent.length} remaining
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { setAdding(false); setNewTitle(''); setNewContent(''); }}
+                className="h-7 text-xs"
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                className="h-7 text-xs"
+                disabled={saving || !newTitle.trim() || !newContent.trim()}
+              >
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Save'}
+              </Button>
             </div>
           </div>
-          <div className="flex items-center justify-end gap-2">
+        )}
+
+        {/* Instruction cards */}
+        <div className="space-y-3">
+          {instructions.map((instr) => (
+            <InstructionCard
+              key={instr.id}
+              instruction={instr}
+              onToggle={(enabled) => {
+                updateInstruction(instr.id, { enabled }).catch(() => toast.error('Failed to update'));
+              }}
+              onUpdate={(patch) => {
+                updateInstruction(instr.id, patch).catch(() => toast.error('Failed to save changes'));
+              }}
+              onDelete={() => {
+                removeInstruction(instr.id).catch(() => toast.error('Failed to delete'));
+              }}
+            />
+          ))}
+        </div>
+
+        {instructions.length === 0 && !adding && (
+          <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed border-border/40 rounded-xl">
+            <BookText className="w-8 h-8 text-muted-foreground/30 mb-3" />
+            <p className="text-sm text-muted-foreground/60">No instructions yet</p>
+            <p className="text-xs text-muted-foreground/40 mt-1">
+              Instructions apply to every response across all chats
+            </p>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => { setAdding(false); setNewTitle(''); setNewContent(''); }}
-              className="h-7 text-xs"
-              disabled={saving}
+              onClick={handleStartAdding}
+              className="mt-4 flex items-center gap-1.5 text-xs"
             >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleAdd}
-              className="h-7 text-xs"
-              disabled={saving || !newTitle.trim() || !newContent.trim()}
-            >
-              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Save'}
+              <Plus className="w-3.5 h-3.5" />
+              Add your first instruction
             </Button>
           </div>
-        </div>
-      )}
-
-      {/* Instruction cards */}
-      <div className="space-y-3">
-        {instructions.map((instr) => (
-          <InstructionCard
-            key={instr.id}
-            instruction={instr}
-            onToggle={(enabled) => {
-              updateInstruction(instr.id, { enabled }).catch(() => toast.error('Failed to update'));
-            }}
-            onUpdate={(patch) => {
-              updateInstruction(instr.id, patch).catch(() => toast.error('Failed to save changes'));
-            }}
-            onDelete={() => {
-              removeInstruction(instr.id).catch(() => toast.error('Failed to delete'));
-            }}
-          />
-        ))}
+        )}
       </div>
 
-      {instructions.length === 0 && !adding && (
-        <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed border-border/40 rounded-xl">
-          <BookText className="w-8 h-8 text-muted-foreground/30 mb-3" />
-          <p className="text-sm text-muted-foreground/60">No instructions yet</p>
-          <p className="text-xs text-muted-foreground/40 mt-1">
-            Instructions apply to every response across all chats
-          </p>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={handleStartAdding}
-            className="mt-4 flex items-center gap-1.5 text-xs"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add your first instruction
-          </Button>
-        </div>
-      )}
-
-      {/* Feedback history — collapsible */}
-      <FeedbackHistorySection />
-
-      {/* Progressive promotion — suggest patterns as standing instructions */}
-      <FeedbackPatternsSection onAddInstruction={handleAddFromPattern} />
+      {/* Right: Feedback & learned patterns */}
+      <div className="border-l border-border/40 pl-8 space-y-2 min-w-0">
+        <FeedbackHistorySection />
+        <FeedbackPatternsSection onAddInstruction={handleAddFromPattern} />
+      </div>
     </div>
   );
 }
@@ -2574,17 +2659,60 @@ function AboutBlock() {
   const [quote] = useState(
     () => VERSION_QUOTES[Math.floor(Math.random() * VERSION_QUOTES.length)],
   );
+  const stack = ['LangGraph', 'AWS Bedrock', 'Claude AI', 'Neo4j', 'Redshift', 'Next.js', 'PostgreSQL'];
   return (
-    <div className="space-y-3 text-sm text-muted-foreground">
-      <p className="text-foreground font-medium">MTI Brain</p>
-      <p>AI-powered decision intelligence platform.</p>
-      <p
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors cursor-default"
-      >
-        {hovered ? <span className="italic">{quote}</span> : `Version ${process.env.NEXT_PUBLIC_APP_VERSION}`}
-      </p>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-16 gap-y-8">
+      {/* Left: Product info */}
+      <div className="space-y-6">
+        <div>
+          <p className="text-base font-semibold text-foreground">MTI Brain</p>
+          <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
+            AI-powered decision intelligence platform. Ask questions about your business data in plain English and get structured insights, SQL, and charts.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/50">Powered by</p>
+          <div className="flex flex-wrap gap-1.5">
+            {stack.map((tag) => (
+              <span
+                key={tag}
+                className="px-2.5 py-1 text-xs rounded-lg bg-muted/60 text-muted-foreground border border-border/50"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Right: Version card */}
+      <div className="space-y-4">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/50">Version info</p>
+        <div className="rounded-xl border border-border bg-muted/20 p-5 space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-xs text-muted-foreground">Version</span>
+            <span
+              onMouseEnter={() => setHovered(true)}
+              onMouseLeave={() => setHovered(false)}
+              className="text-xs font-mono text-foreground cursor-default"
+            >
+              {hovered
+                ? <span className="italic font-sans text-muted-foreground">{quote}</span>
+                : (process.env.NEXT_PUBLIC_APP_VERSION ?? '—')}
+            </span>
+          </div>
+          <div className="h-px bg-border/40" />
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-xs text-muted-foreground">Platform</span>
+            <span className="text-xs text-foreground">Web</span>
+          </div>
+          <div className="h-px bg-border/40" />
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-xs text-muted-foreground">Support</span>
+            <span className="text-xs text-foreground">mtiinnovation.com</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
