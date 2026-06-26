@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Eye, EyeOff } from 'lucide-react';
 import { isAuthenticated, login, setLoginGate, setLoginError, consumeLoginError } from '@/lib/auth';
 import { ApiError } from '@/lib/api/client';
@@ -108,19 +109,28 @@ export default function LoginPage() {
             <form onSubmit={handlePasswordLogin} className="space-y-3 text-left">
               <div className="space-y-1">
                 <Label htmlFor="role">Role</Label>
-                <select
-                  id="role"
+                <Select
                   value={role}
-                  onChange={(e) => {
-                    const nextRole = e.target.value as 'admin' | 'user';
-                    setRole(nextRole);
+                  onValueChange={(value: 'admin' | 'user') => {
+                    setRole(value);
                     setError('');
                   }}
-                  className="flex h-10 w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 >
-                  <option value="admin">Admin</option>
-                  <option value="user">User</option>
-                </select>
+                  <SelectTrigger
+                    id="role"
+                    className="h-10 w-full rounded-xl"
+                  >
+                    <SelectValue placeholder="Select role" />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-xl p-1 shadow-md">
+                    <SelectItem value="admin" className="rounded-lg px-3 py-1.5 focus:bg-accent/70 data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground">
+                      Admin
+                    </SelectItem>
+                    <SelectItem value="user" className="rounded-lg px-3 py-1.5 focus:bg-accent/70 data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground">
+                      User
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="username">Username</Label>

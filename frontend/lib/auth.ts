@@ -192,6 +192,7 @@ export async function logout(): Promise<void> {
     // Analytics reset is best-effort.
   }
   if (typeof window !== 'undefined') {
-    window.location.href = '/';
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+    window.location.href = basePath || '/';
   }
 }

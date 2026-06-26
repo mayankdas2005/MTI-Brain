@@ -54,7 +54,6 @@ async def login(
         email=user_data["email"],
         name=user_data["name"],
         groups=user_groups,
-        password_hash=user_data.get("password"),
     )
 
     token = auth_service.create_jwt_token(
