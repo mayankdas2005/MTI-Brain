@@ -13,8 +13,8 @@ from .client import _neo4j_run, _neo4j_run_single
 def get_direct_joins(table_fqns: list[str]) -> list[dict]:
     """Batch query JOINS_TO edges where both endpoints are in table_fqns.
 
-    Returns from_fqn, to_fqn, from_col, to_col, join_type, confidence.
-    Uses declared manually-curated joins from lpp_semantic_model.yml.
+    Returns from_fqn, to_fqn, from_col, to_col, join_type, confidence, description.
+    description is null for edges that have not yet been enriched by enrich_relationships().
     """
     if not table_fqns:
         return []
@@ -24,7 +24,8 @@ def get_direct_joins(table_fqns: list[str]) -> list[dict]:
     RETURN t1.fqn AS from_fqn, t2.fqn AS to_fqn,
            r.from_col AS from_col, r.to_col AS to_col,
            r.recommended_join_type AS join_type,
-           r.confidence AS confidence
+           r.confidence AS confidence,
+           r.description AS description
     ORDER BY r.confidence DESC
     """
     t0 = time.monotonic()

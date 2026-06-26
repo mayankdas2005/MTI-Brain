@@ -7,3 +7,4 @@ rdflib>=7.6.0
 tenacity>=9.1.4
 tqdm>=4.67.3
 redshift-connector>=2.1.13
+json-repair>=0.61.0
