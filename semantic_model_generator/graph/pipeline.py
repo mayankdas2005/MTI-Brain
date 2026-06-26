@@ -58,6 +58,7 @@ from .enrich.llm_enricher import (
     enrich_domain,
     enrich_intents,
     enrich_query_templates,
+    enrich_join_paths,
     enrich_relationships,
     enrich_tables,
     generate_business_glossary,
@@ -128,6 +129,8 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             log.info("Communities cache cleared from checkpoint.")
         _save_checkpoint(cp)
 
+    chat_client = None  # initialized lazily in ENRICH; re-used or created in PATHS
+    checkpoint = _load_checkpoint()  # shared across steps; ENRICH reloads it too
     loader = None if dry_run else Neo4jLoader(
         neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password, neo4j_cfg.db
     )
@@ -876,6 +879,19 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
         path_builder.close()
         gds._drop_graph("join_graph")
         loader.initialize_joinpath_defaults()
+
+        # ── JoinPath description enrichment ────────────────────────────────
+        _jp_client = chat_client or _langchain_bedrock(bedrock_cfg)
+        jp_rows = loader._run("""
+            MATCH (jp:JoinPath)
+            RETURN jp.id AS id, jp.from_fqn AS from_fqn, jp.to_fqn AS to_fqn,
+                   jp.path_tables AS path_tables, jp.hop_count AS hop_count
+        """)
+        jp_cache = checkpoint.get("join_path_descriptions", {})
+        jp_enriched = enrich_join_paths(jp_rows, _jp_client, jp_cache)
+        checkpoint["join_path_descriptions"] = jp_enriched
+        _save_checkpoint(checkpoint)
+        loader.load_join_path_descriptions(list(jp_enriched.values()))
 
         log.info("PATHS done in %.1fs", time.time() - t)
 

@@ -921,3 +921,79 @@ def enrich_relationships(edges: list, chat_client, cache: dict) -> dict:
 
     log.info("Relationship enrichment: %d / %d processed.", len(results), len(edges))
     return results
+
+
+# ── JoinPath enrichment ─────────────────────────────────────────────────────────
+
+_JP_BATCH = 15
+
+_JP_PROMPT_TEMPLATE = """\
+You are a data model expert. For each join path below, write a concise description \
+(≤15 words) that a business analyst would understand. Describe what the path connects \
+in plain English, e.g. "links sales orders to customers via the account ledger".
+
+Join paths:
+{paths_json}
+
+Return a JSON array only, no other text:
+[{{"jp_id": "<jp_id value>", "description": "<label>"}}]"""
+
+
+def enrich_join_paths(join_paths: list[dict], chat_client, cache: dict) -> dict:
+    """
+    Enrich JoinPath nodes with human-readable one-liner descriptions.
+    Each dict in join_paths: {id, from_fqn, to_fqn, path_tables, hop_count}.
+    Returns {jp_id: {id, from_fqn, to_fqn, description}}.
+    """
+    from json_repair import loads as _json_repair_loads
+
+    to_process = [jp for jp in join_paths if jp["id"] not in cache]
+    results = dict(cache)
+
+    for i in range(0, len(to_process), _JP_BATCH):
+        batch = to_process[i : i + _JP_BATCH]
+        paths_data = [
+            {
+                "jp_id":      jp["id"],
+                "from_table": jp["from_fqn"].split(".")[-1],
+                "to_table":   jp["to_fqn"].split(".")[-1],
+                "via_tables": [t.split(".")[-1] for t in (jp.get("path_tables") or [])],
+                "hop_count":  jp.get("hop_count", 0),
+            }
+            for jp in batch
+        ]
+        prompt = _JP_PROMPT_TEMPLATE.format(paths_json=json.dumps(paths_data, indent=2))
+        try:
+            response = chat_client.invoke(prompt)
+            raw_text = response.content if hasattr(response, "content") else str(response)
+            parsed = _json_repair_loads(raw_text)
+            items = parsed if isinstance(parsed, list) else (parsed.get("join_paths") or [])
+            for item in items:
+                jp_id = item.get("jp_id", "")
+                jp = next((j for j in batch if j["id"] == jp_id), None)
+                if jp:
+                    results[jp_id] = {
+                        "id":          jp["id"],
+                        "from_fqn":    jp["from_fqn"],
+                        "to_fqn":      jp["to_fqn"],
+                        "description": item.get("description", ""),
+                    }
+            log.info(
+                "JoinPath enrichment: batch %d/%d done (%d/%d paths).",
+                i // _JP_BATCH + 1, -(-len(to_process) // _JP_BATCH),
+                min(i + _JP_BATCH, len(to_process)), len(to_process),
+            )
+        except Exception as exc:
+            log.error("JoinPath batch %d failed: %s", i // _JP_BATCH + 1, exc, exc_info=True)
+            for jp in batch:
+                if jp["id"] not in results:
+                    results[jp["id"]] = {
+                        "id":                 jp["id"],
+                        "from_fqn":           jp["from_fqn"],
+                        "to_fqn":             jp["to_fqn"],
+                        "description":        "",
+                        "_enrichment_failed": True,
+                    }
+
+    log.info("JoinPath enrichment: %d / %d processed.", len(results), len(join_paths))
+    return results

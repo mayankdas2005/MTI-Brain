@@ -614,10 +614,12 @@ async def generate_and_store(
             continue
         jp_node = _node(jp_id(jpid), ["JoinPath"], jp)
         linked = False
+        jp_desc = jp.get("description", "")
         for t_fqn in (jp.get("path_tables") or []):
             records.append(_triplet(
                 jp_node,
-                _edge(ids.next_edge_id(), "LINKS_TABLE", jp_id(jpid), table_id(t_fqn), {}),
+                _edge(ids.next_edge_id(), "LINKS_TABLE", jp_id(jpid), table_id(t_fqn),
+                      {"description": jp_desc} if jp_desc else {}),
                 _node(table_id(t_fqn), ["Table"], _t_props(t_fqn)),
             ))
             linked = True
@@ -1169,11 +1171,13 @@ async def _generate_from_old_snapshot(
         if not jpid:
             continue
         jp_node = _node(jp_id(jpid), ["JoinPath"], jp)
+        jp_desc = jp.get("description", "")
         linked = False
         for fqn in (jp.get("path_tables") or []):
             records.append(_triplet(
                 jp_node,
-                _edge(ids.next_edge_id(), "LINKS_TABLE", jp_id(jpid), table_id(fqn), {}),
+                _edge(ids.next_edge_id(), "LINKS_TABLE", jp_id(jpid), table_id(fqn),
+                      {"description": jp_desc} if jp_desc else {}),
                 _node(table_id(fqn), ["Table"], _t_props(fqn)),
             ))
             linked = True

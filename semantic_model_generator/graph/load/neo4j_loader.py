@@ -579,6 +579,25 @@ class Neo4jLoader:
         """, rows)
         log.info("Updated description on %d JOINS_TO edges.", n)
 
+    def load_join_path_descriptions(self, descriptions: list[dict]):
+        """Write LLM-generated description onto JoinPath nodes.
+        Each dict: {id, description}."""
+        now = _NOW()
+        rows = [
+            {"id": d["id"], "description": d.get("description", ""), "updated_at": now}
+            for d in descriptions
+            if d.get("description") and not d.get("_enrichment_failed")
+        ]
+        if not rows:
+            return
+        n = self._batch_write("""
+            UNWIND $rows AS r
+            MATCH (jp:JoinPath {id: r.id})
+            SET jp.description = r.description,
+                jp.updated_at  = r.updated_at
+        """, rows)
+        log.info("Updated description on %d JoinPath nodes.", n)
+
     def update_domain_description(self, domain_name: str, description: str):
         now = _NOW()
         self._run("""
@@ -1391,6 +1410,7 @@ class Neo4jLoader:
                 jp.quality_score      = coalesce(jp.quality_score, 0.0),
                 jp.hop_count          = coalesce(jp.hop_count, 0),
                 jp.k_rank             = coalesce(jp.k_rank, 1),
-                jp.join_clauses       = coalesce(jp.join_clauses, [])
+                jp.join_clauses       = coalesce(jp.join_clauses, []),
+                jp.description        = coalesce(jp.description, '')
         """)
         log.debug("JoinPath property defaults initialized.")
