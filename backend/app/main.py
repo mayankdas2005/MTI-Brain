@@ -2,9 +2,11 @@
 
 import asyncio
 import sys
-from app.core.langfuse_integration import init_langfuse, shutdown_langfuse
+
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from app.core.langfuse_integration import init_langfuse, shutdown_langfuse
 
 from contextlib import asynccontextmanager
 

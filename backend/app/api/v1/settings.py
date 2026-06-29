@@ -2,8 +2,26 @@
 
 import asyncio
 import math
+import re as _re
 import uuid
 from datetime import datetime, timezone
+
+_LUCENE_SAFE = _re.compile(r'[^\w\s]', _re.UNICODE)
+
+
+def _and_fts(text: str) -> str:
+    """Build a Lucene query where ALL words must match (AND semantics).
+
+    Uses + prefix so every token is required, plus ~ fuzzy for tokens >= 3 chars.
+    'invoice number' → '+invoice~ +number~'
+    """
+    tokens = []
+    for raw in text.split():
+        t = _LUCENE_SAFE.sub("", raw)
+        if not t:
+            continue
+        tokens.append(f"+{t}~" if len(t) >= 3 else f"+{t}")
+    return " ".join(tokens) if tokens else text
 
 from app.api.v1.deps import CurrentUser, get_current_user
 from app.db import get_async_session, get_read_session
@@ -328,6 +346,8 @@ def _serialize_props(props: dict) -> dict:
 class PatternListPage(BaseModel):
     items: list
     total: int
+    enabled_total: int
+    disabled_total: int
     skip: int
     limit: int
 
@@ -335,65 +355,159 @@ class PatternListPage(BaseModel):
 @router.get("/admin/query-patterns", response_model=PatternListPage)
 async def list_query_patterns(
     skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=10000, ge=1, le=10000),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str = Query(default=""),
+    filter: str = Query(default="all", pattern="^(all|enabled|disabled)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List all QueryPattern nodes — returns every property, admin only."""
+    """List QueryPattern nodes with pagination, search, and enabled filter — admin only."""
     if "admin" not in current_user.groups:
         raise HTTPException(status_code=403, detail="Admin access required")
 
     from app.services.agents.neo4j_client import _neo4j_run
 
     def _fetch():
-        count_rows = _neo4j_run("MATCH (qp:QueryPattern) RETURN count(qp) AS total", {})
-        total = count_rows[0]["total"] if count_rows else 0
+        q = search.strip()
+        use_fts = bool(q)
+        fts_q = _and_fts(q) if use_fts else ""
 
-        rows = _neo4j_run(
-            """
-            MATCH (qp:QueryPattern)
-            RETURN properties(qp) AS props, coalesce(qp.occurrence_count, 0) AS _sort
-            ORDER BY _sort DESC, qp.id ASC
-            SKIP $skip LIMIT $limit
-            """,
-            {"skip": skip, "limit": limit},
+        filter_extra = (
+            "AND qp.is_enabled = true" if filter == "enabled"
+            else "AND (qp.is_enabled = false OR qp.is_enabled IS NULL)" if filter == "disabled"
+            else ""
         )
-        items = [_serialize_props(dict(r["props"] or {})) for r in rows]
-        return total, items
 
-    total, items = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-    return PatternListPage(items=items, total=total, skip=skip, limit=limit)
+        params = {"q": fts_q, "skip": skip, "limit": limit}
+
+        if use_fts:
+            count_rows = _neo4j_run(
+                f"CALL db.index.fulltext.queryNodes('querypattern_fts', $q) YIELD node AS qp "
+                f"WHERE true {filter_extra} RETURN count(qp) AS total",
+                params,
+            )
+            enabled_rows = _neo4j_run(
+                "CALL db.index.fulltext.queryNodes('querypattern_fts', $q) YIELD node AS qp "
+                "WHERE qp.is_enabled = true RETURN count(qp) AS n",
+                params,
+            )
+            disabled_rows = _neo4j_run(
+                "CALL db.index.fulltext.queryNodes('querypattern_fts', $q) YIELD node AS qp "
+                "WHERE (qp.is_enabled = false OR qp.is_enabled IS NULL) RETURN count(qp) AS n",
+                params,
+            )
+            rows = _neo4j_run(
+                f"CALL db.index.fulltext.queryNodes('querypattern_fts', $q) YIELD node AS qp, score "
+                f"WHERE true {filter_extra} "
+                f"RETURN properties(qp) AS props, score AS _sort "
+                f"ORDER BY _sort DESC SKIP $skip LIMIT $limit",
+                params,
+            )
+        else:
+            filter_where = f"WHERE {filter_extra[4:]}" if filter_extra else ""
+            count_rows = _neo4j_run(
+                f"MATCH (qp:QueryPattern) {filter_where} RETURN count(qp) AS total", params
+            )
+            enabled_rows = _neo4j_run(
+                "MATCH (qp:QueryPattern) WHERE qp.is_enabled = true RETURN count(qp) AS n", params
+            )
+            disabled_rows = _neo4j_run(
+                "MATCH (qp:QueryPattern) WHERE (qp.is_enabled = false OR qp.is_enabled IS NULL) RETURN count(qp) AS n",
+                params,
+            )
+            rows = _neo4j_run(
+                f"MATCH (qp:QueryPattern) {filter_where} "
+                f"RETURN properties(qp) AS props, coalesce(qp.occurrence_count, 0) AS _sort "
+                f"ORDER BY _sort DESC, qp.id ASC SKIP $skip LIMIT $limit",
+                params,
+            )
+
+        total = count_rows[0]["total"] if count_rows else 0
+        enabled_total = enabled_rows[0]["n"] if enabled_rows else 0
+        disabled_total = disabled_rows[0]["n"] if disabled_rows else 0
+        items = [_serialize_props(dict(r["props"] or {})) for r in rows]
+        return total, enabled_total, disabled_total, items
+
+    total, enabled_total, disabled_total, items = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    return PatternListPage(items=items, total=total, enabled_total=enabled_total, disabled_total=disabled_total, skip=skip, limit=limit)
 
 
 @router.get("/admin/anti-patterns", response_model=PatternListPage)
 async def list_anti_patterns(
     skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=10000, ge=1, le=10000),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str = Query(default=""),
+    filter: str = Query(default="all", pattern="^(all|enabled|disabled)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List all AntiPattern nodes — returns every property, admin only."""
+    """List AntiPattern nodes with pagination, search, and enabled filter — admin only."""
     if "admin" not in current_user.groups:
         raise HTTPException(status_code=403, detail="Admin access required")
 
     from app.services.agents.neo4j_client import _neo4j_run
 
     def _fetch():
-        count_rows = _neo4j_run("MATCH (ap:AntiPattern) RETURN count(ap) AS total", {})
-        total = count_rows[0]["total"] if count_rows else 0
+        q = search.strip()
+        use_fts = bool(q)
+        fts_q = _and_fts(q) if use_fts else ""
 
-        rows = _neo4j_run(
-            """
-            MATCH (ap:AntiPattern)
-            RETURN properties(ap) AS props, coalesce(ap.occurrence_count, 0) AS _sort
-            ORDER BY _sort DESC, ap.id ASC
-            SKIP $skip LIMIT $limit
-            """,
-            {"skip": skip, "limit": limit},
+        filter_extra = (
+            "AND ap.is_enabled = true" if filter == "enabled"
+            else "AND (ap.is_enabled = false OR ap.is_enabled IS NULL)" if filter == "disabled"
+            else ""
         )
-        items = [_serialize_props(dict(r["props"] or {})) for r in rows]
-        return total, items
 
-    total, items = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-    return PatternListPage(items=items, total=total, skip=skip, limit=limit)
+        params = {"q": fts_q, "skip": skip, "limit": limit}
+
+        if use_fts:
+            count_rows = _neo4j_run(
+                f"CALL db.index.fulltext.queryNodes('antipattern_fts', $q) YIELD node AS ap "
+                f"WHERE true {filter_extra} RETURN count(ap) AS total",
+                params,
+            )
+            enabled_rows = _neo4j_run(
+                "CALL db.index.fulltext.queryNodes('antipattern_fts', $q) YIELD node AS ap "
+                "WHERE ap.is_enabled = true RETURN count(ap) AS n",
+                params,
+            )
+            disabled_rows = _neo4j_run(
+                "CALL db.index.fulltext.queryNodes('antipattern_fts', $q) YIELD node AS ap "
+                "WHERE (ap.is_enabled = false OR ap.is_enabled IS NULL) RETURN count(ap) AS n",
+                params,
+            )
+            rows = _neo4j_run(
+                f"CALL db.index.fulltext.queryNodes('antipattern_fts', $q) YIELD node AS ap, score "
+                f"WHERE true {filter_extra} "
+                f"RETURN properties(ap) AS props, score AS _sort "
+                f"ORDER BY _sort DESC SKIP $skip LIMIT $limit",
+                params,
+            )
+        else:
+            filter_where = f"WHERE {filter_extra[4:]}" if filter_extra else ""
+            count_rows = _neo4j_run(
+                f"MATCH (ap:AntiPattern) {filter_where} RETURN count(ap) AS total", params
+            )
+            enabled_rows = _neo4j_run(
+                "MATCH (ap:AntiPattern) WHERE ap.is_enabled = true RETURN count(ap) AS n", params
+            )
+            disabled_rows = _neo4j_run(
+                "MATCH (ap:AntiPattern) WHERE (ap.is_enabled = false OR ap.is_enabled IS NULL) RETURN count(ap) AS n",
+                params,
+            )
+            rows = _neo4j_run(
+                f"MATCH (ap:AntiPattern) {filter_where} "
+                f"RETURN properties(ap) AS props, coalesce(ap.occurrence_count, 0) AS _sort "
+                f"ORDER BY _sort DESC, ap.id ASC SKIP $skip LIMIT $limit",
+                params,
+            )
+
+        total = count_rows[0]["total"] if count_rows else 0
+        enabled_total = enabled_rows[0]["n"] if enabled_rows else 0
+        disabled_total = disabled_rows[0]["n"] if disabled_rows else 0
+        items = [_serialize_props(dict(r["props"] or {})) for r in rows]
+        return total, enabled_total, disabled_total, items
+
+    total, enabled_total, disabled_total, items = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    return PatternListPage(items=items, total=total, enabled_total=enabled_total, disabled_total=disabled_total, skip=skip, limit=limit)
 
 
 @router.get("/query-patterns/enabled")

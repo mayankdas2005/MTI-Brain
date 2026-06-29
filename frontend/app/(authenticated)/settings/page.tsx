@@ -8,6 +8,7 @@ import {
   useState,
   type ComponentType,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import {
   Search,
@@ -28,8 +29,16 @@ import {
   ShieldAlert,
   Copy,
   Check,
+  Ban,
 } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import { highlightQueryInText } from '@/lib/utils/highlight';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -1028,12 +1037,15 @@ function NotificationsPanel({
 
 // ─── Query Patterns panel ────────────────────────────────────────────────────
 
-const BATCH_SIZE = 5;
+const BATCH_SIZE = 20;
 
 type PatternLoadState = {
   items: PatternRecord[];
-  total: number;       // true total from first API response
-  allFetched: boolean; // true when items.length >= total
+  total: number;
+  enabledTotal: number;
+  disabledTotal: number;
+  allFetched: boolean;
+  nextSkip: number;
 };
 
 function useResizablePanel(defaultPx = 750) {
@@ -1237,6 +1249,10 @@ function QueryPatternsPanel() {
   const [loadingA, setLoadingA] = useState(false);
   const pAbortRef = useRef<AbortController | null>(null);
   const aAbortRef = useRef<AbortController | null>(null);
+  const pSentinelRef = useRef<HTMLDivElement>(null);
+  const aSentinelRef = useRef<HTMLDivElement>(null);
+  const [selectModeP, setSelectModeP] = useState(false);
+  const [selectModeA, setSelectModeA] = useState(false);
   const [selectedP, setSelectedP] = useState<Set<string>>(new Set());
   const [selectedA, setSelectedA] = useState<Set<string>>(new Set());
   const [filterP, setFilterP] = useState<FilterVal>('all');
@@ -1257,61 +1273,65 @@ function QueryPatternsPanel() {
     if (!detail) reset();
   }, [detail, reset]);
 
-  const loadPatterns = useCallback(async () => {
+  const loadPatterns = useCallback(async (skip: number, search: string, filter: FilterVal) => {
     pAbortRef.current?.abort();
     const ctrl = new AbortController();
     pAbortRef.current = ctrl;
     setLoadingP(true);
-    setPatternsData(null);
-    let skip = 0;
     try {
-      while (true) {
-        if (ctrl.signal.aborted) return;
-        const result = await listQueryPatterns(skip, BATCH_SIZE);
-        if (ctrl.signal.aborted) return;
-        skip += result.items.length;
-        setPatternsData(prev => {
-          const seen = new Set((prev?.items ?? []).map(x => x.id));
-          const fresh = result.items.filter(x => !seen.has(x.id));
-          return {
-            items: [...(prev?.items ?? []), ...fresh],
-            total: result.total,
-            allFetched: skip >= result.total,
-          };
-        });
-        if (skip <= BATCH_SIZE) setLoadingP(false);
-        if (skip >= result.total || result.items.length === 0) break;
-      }
-    } catch { } finally { setLoadingP(false); }
+      const result = await listQueryPatterns(skip, BATCH_SIZE, search, filter);
+      if (ctrl.signal.aborted) return;
+      setPatternsData(prev => {
+        const base = skip === 0 ? [] : (prev?.items ?? []);
+        const seen = new Set(base.map(x => String(x.id)));
+        const fresh = result.items.filter(x => !seen.has(String(x.id)));
+        const next = [...base, ...fresh];
+        return {
+          items: next,
+          total: result.total,
+          enabledTotal: result.enabled_total,
+          disabledTotal: result.disabled_total,
+          allFetched: next.length >= result.total,
+          nextSkip: next.length,
+        };
+      });
+    } catch { } finally { if (!ctrl.signal.aborted) setLoadingP(false); }
   }, []);
 
-  const loadAnti = useCallback(async () => {
+  const loadAnti = useCallback(async (skip: number, search: string, filter: FilterVal) => {
     aAbortRef.current?.abort();
     const ctrl = new AbortController();
     aAbortRef.current = ctrl;
     setLoadingA(true);
-    setAntiData(null);
-    let skip = 0;
     try {
-      while (true) {
-        if (ctrl.signal.aborted) return;
-        const result = await listAntiPatterns(skip, BATCH_SIZE);
-        if (ctrl.signal.aborted) return;
-        skip += result.items.length;
-        setAntiData(prev => {
-          const seen = new Set((prev?.items ?? []).map(x => x.id));
-          const fresh = result.items.filter(x => !seen.has(x.id));
-          return {
-            items: [...(prev?.items ?? []), ...fresh],
-            total: result.total,
-            allFetched: skip >= result.total,
-          };
-        });
-        if (skip <= BATCH_SIZE) setLoadingA(false);
-        if (skip >= result.total || result.items.length === 0) break;
-      }
-    } catch { } finally { setLoadingA(false); }
+      const result = await listAntiPatterns(skip, BATCH_SIZE, search, filter);
+      if (ctrl.signal.aborted) return;
+      setAntiData(prev => {
+        const base = skip === 0 ? [] : (prev?.items ?? []);
+        const seen = new Set(base.map(x => String(x.id)));
+        const fresh = result.items.filter(x => !seen.has(String(x.id)));
+        const next = [...base, ...fresh];
+        return {
+          items: next,
+          total: result.total,
+          enabledTotal: result.enabled_total,
+          disabledTotal: result.disabled_total,
+          allFetched: next.length >= result.total,
+          nextSkip: next.length,
+        };
+      });
+    } catch { } finally { if (!ctrl.signal.aborted) setLoadingA(false); }
   }, []);
+
+  const loadMoreP = useCallback(() => {
+    if (!patternsData || patternsData.allFetched || loadingP) return;
+    void loadPatterns(patternsData.nextSkip, debouncedSearchP, filterP);
+  }, [patternsData, loadingP, loadPatterns, debouncedSearchP, filterP]);
+
+  const loadMoreA = useCallback(() => {
+    if (!antiData || antiData.allFetched || loadingA) return;
+    void loadAnti(antiData.nextSkip, debouncedSearchA, filterA);
+  }, [antiData, loadingA, loadAnti, debouncedSearchA, filterA]);
 
   // Access check effect — runs once on mount
   useEffect(() => {
@@ -1323,9 +1343,15 @@ function QueryPatternsPanel() {
       });
   }, []);
 
-  // Only load admin data once access is confirmed
-  useEffect(() => { if (accessMode === 'admin') loadPatterns(); }, [accessMode, loadPatterns]);
-  useEffect(() => { if (accessMode === 'admin') loadAnti(); }, [accessMode, loadAnti]);
+  // Reload from skip=0 when accessMode becomes 'admin' or search/filter changes
+  useEffect(() => {
+    if (accessMode !== 'admin') return;
+    void loadPatterns(0, debouncedSearchP, filterP);
+  }, [accessMode, debouncedSearchP, filterP, loadPatterns]);
+  useEffect(() => {
+    if (accessMode !== 'admin') return;
+    void loadAnti(0, debouncedSearchA, filterA);
+  }, [accessMode, debouncedSearchA, filterA, loadAnti]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearchP(searchP), 300);
@@ -1336,6 +1362,28 @@ function QueryPatternsPanel() {
     const timer = setTimeout(() => setDebouncedSearchA(searchA), 300);
     return () => clearTimeout(timer);
   }, [searchA]);
+
+  useEffect(() => {
+    const sentinel = pSentinelRef.current;
+    if (!sentinel) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) loadMoreP(); },
+      { rootMargin: '200px' }
+    );
+    obs.observe(sentinel);
+    return () => obs.disconnect();
+  }, [loadMoreP]);
+
+  useEffect(() => {
+    const sentinel = aSentinelRef.current;
+    if (!sentinel) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) loadMoreA(); },
+      { rootMargin: '200px' }
+    );
+    obs.observe(sentinel);
+    return () => obs.disconnect();
+  }, [loadMoreA]);
 
   const handleSelect = (set: Set<string>, setFn: (s: Set<string>) => void) =>
     (id: string, checked: boolean) => {
@@ -1352,13 +1400,13 @@ function QueryPatternsPanel() {
       await Promise.all(ids.map((id) =>
         tab === 'patterns' ? setQueryPatternEnabled(id, true) : setAntiPatternEnabled(id, true)
       ));
-      const setData = tab === 'patterns' ? setPatternsData : setAntiData;
-      setData((prev) => prev ? {
-        ...prev,
-        items: prev.items.map((item) =>
-          ids.includes(item.id as string) ? { ...item, is_enabled: true } : item
-        ),
-      } : prev);
+      if (tab === 'patterns') {
+        setSelectedP(new Set());
+        await loadPatterns(0, debouncedSearchP, filterP);
+      } else {
+        setSelectedA(new Set());
+        await loadAnti(0, debouncedSearchA, filterA);
+      }
     } catch { } finally { setLoading(false); }
   };
 
@@ -1370,13 +1418,13 @@ function QueryPatternsPanel() {
       await Promise.all(ids.map((id) =>
         tab === 'patterns' ? setQueryPatternEnabled(id, false) : setAntiPatternEnabled(id, false)
       ));
-      const setData = tab === 'patterns' ? setPatternsData : setAntiData;
-      setData((prev) => prev ? {
-        ...prev,
-        items: prev.items.map((item) =>
-          ids.includes(item.id as string) ? { ...item, is_enabled: false } : item
-        ),
-      } : prev);
+      if (tab === 'patterns') {
+        setSelectedP(new Set());
+        await loadPatterns(0, debouncedSearchP, filterP);
+      } else {
+        setSelectedA(new Set());
+        await loadAnti(0, debouncedSearchA, filterA);
+      }
     } catch { } finally { setLoading(false); }
   };
 
@@ -1389,11 +1437,11 @@ function QueryPatternsPanel() {
         deleteConfirm === 'patterns' ? deleteQueryPattern(id) : deleteAntiPattern(id)
       ));
       if (deleteConfirm === 'patterns') {
-        setPatternsData((prev) => prev ? { ...prev, items: prev.items.filter((x) => !ids.includes(x.id as string)), total: prev.total - ids.length } : prev);
         setSelectedP(new Set());
+        await loadPatterns(0, debouncedSearchP, filterP);
       } else {
-        setAntiData((prev) => prev ? { ...prev, items: prev.items.filter((x) => !ids.includes(x.id as string)), total: prev.total - ids.length } : prev);
         setSelectedA(new Set());
+        await loadAnti(0, debouncedSearchA, filterA);
       }
     } catch { } finally {
       setBulkDeleting(false);
@@ -1401,7 +1449,7 @@ function QueryPatternsPanel() {
     }
   };
 
-  const renderTab = (tab: 'patterns' | 'antipatterns') => {
+  const renderTab = (tab: 'patterns' | 'antipatterns', sentinelRef: RefObject<HTMLDivElement | null>) => {
     const isP = tab === 'patterns';
     const data = isP ? patternsData : antiData;
     const loading = isP ? loadingP : loadingA;
@@ -1414,90 +1462,174 @@ function QueryPatternsPanel() {
     const search = isP ? searchP : searchA;
     const setSearch = isP ? setSearchP : setSearchA;
     const debouncedSearch = isP ? debouncedSearchP : debouncedSearchA;
+    const selectMode = isP ? selectModeP : selectModeA;
+    const setSelectMode = isP ? setSelectModeP : setSelectModeA;
 
     if (loading && !data) return (
-      <div className="flex justify-center py-10">
-        <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+      <div className="flex flex-col h-full min-h-0">
+        <Skeleton className="h-11 w-full rounded-lg mb-3" />
+        <div className="flex items-center justify-between mb-2 min-h-8">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-4 w-12" />
+        </div>
+        <div className="flex gap-1.5 mb-3">
+          <Skeleton className="h-6 w-16 rounded-full" />
+          <Skeleton className="h-6 w-20 rounded-full" />
+          <Skeleton className="h-6 w-20 rounded-full" />
+        </div>
+        <div className="flex-1 min-h-0 overflow-hidden space-y-2">
+          {[1, 0.85, 0.7, 0.55].map((opacity, i) => (
+            <div key={i} className="rounded-lg border border-border/50 p-4 space-y-2" style={{ opacity }}>
+              <Skeleton className="h-4 w-4/5" />
+              <Skeleton className="h-4 w-3/5" />
+              <Skeleton className="h-3 w-12 mt-1" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-11/12" />
+              <div className="flex gap-1.5 pt-1">
+                <Skeleton className="h-5 w-20 rounded" />
+                <Skeleton className="h-5 w-24 rounded" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     );
-    if (!data || data.total === 0) return (
-      <p className="text-xs text-muted-foreground/50 py-8 text-center">
-        No {isP ? 'query patterns' : 'anti-patterns'} recorded yet.
-      </p>
-    );
 
-    const filteredItems = data.items.filter((item) => {
-      if (filter === 'enabled' && item.is_enabled !== true) return false;
-      if (filter === 'disabled' && item.is_enabled === true) return false;
-      return matchesPatternSearch(item, debouncedSearch);
-    });
-
-    const enabledCount = data.items.filter((x) => x.is_enabled === true).length;
-    const disabledCount = data.items.length - enabledCount;
-    const stillLoading = !data.allFetched;
+    const filteredItems = data?.items ?? [];
+    const total = data?.total ?? 0;
+    const enabledTotal = data?.enabledTotal ?? 0;
+    const disabledTotal = data?.disabledTotal ?? 0;
+    const stillLoading = !(data?.allFetched ?? true);
+    const hasSelection = selected.size > 0;
+    const allSelected = filteredItems.length > 0 && filteredItems.every((x) => selected.has(x.id as string));
 
     return (
       <div className="flex flex-col h-full min-h-0">
-        {/* Fixed controls — never scroll */}
-        <div className="shrink-0 space-y-2 pb-2">
-          <BulkActionBar
-            count={selected.size}
-            total={filteredItems.length}
-            variant={isP ? 'pattern' : 'antipattern'}
-            enabling={enabling}
-            disabling={disabling}
-            onSelectAll={() => setSelected(new Set(filteredItems.map((x) => x.id as string).filter(Boolean)))}
-            onClearAll={() => setSelected(new Set())}
-            onEnable={() => handleBulkEnable(tab)}
-            onDisable={() => handleBulkDisable(tab)}
-            onDelete={() => setDeleteConfirm(tab)}
+        {/* Search — full-width */}
+        <div className="relative shrink-0 mb-3">
+          <div className="absolute left-3 top-3 h-4 w-4 text-muted-foreground pointer-events-none">
+            {loading && data ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+          </div>
+          <Input
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setSelected(new Set()); }}
+            placeholder={`Search ${isP ? 'patterns' : 'anti-patterns'}…`}
+            className={`pl-10 h-11 text-sm transition-all ${search ? 'pr-9' : ''}`}
           />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-3 top-3 h-4 w-4 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
 
-          {/* Filter pills + search */}
-          <div className="flex items-center gap-1.5 flex-wrap justify-between">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {([
-                { value: 'all',      label: `All (${data.total})` },
-                { value: 'enabled',  label: `Enabled (${enabledCount}${stillLoading ? '+' : ''})` },
-                { value: 'disabled', label: `Disabled (${disabledCount}${stillLoading ? '+' : ''})` },
-              ] as { value: FilterVal; label: string }[]).map(({ value, label }) => (
-                <button
-                  key={value}
-                  onClick={() => { setFilter(value); setSelected(new Set()); }}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
-                    filter === value
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted/50 text-muted-foreground hover:bg-muted/80 hover:text-foreground'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {/* Search */}
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
-              <Input
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setSelected(new Set()); }}
-                placeholder="Search…"
-                className="pl-7 pr-7 h-7 text-xs w-75"
-              />
-              {search && (
-                <button
-                  onClick={() => setSearch('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
-                  <X className="w-3 h-3" />
-                </button>
+        {/* Selection bar */}
+        {(total > 0 || selectMode) && (
+          <div className="flex items-center justify-between shrink-0 mb-2 min-h-8">
+            <div className="flex items-center gap-3">
+              {selectMode ? (
+                <>
+                  <Checkbox
+                    checked={allSelected}
+                    onCheckedChange={() => allSelected
+                      ? setSelected(new Set())
+                      : setSelected(new Set(filteredItems.map((x) => String(x.id)).filter(Boolean)))
+                    }
+                    className="h-5 w-5"
+                  />
+                  <span className="text-sm text-foreground font-medium">
+                    {hasSelection ? `${selected.size} selected` : 'Select all'}
+                  </span>
+                  {hasSelection && (
+                    <div className="flex items-center gap-1 ml-1">
+                      {filter !== 'enabled' && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button variant="ghost" size="sm" className="h-8 w-8 p-0"
+                              onClick={() => handleBulkEnable(tab)} disabled={enabling}>
+                              {enabling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">Enable selected</TooltipContent>
+                        </Tooltip>
+                      )}
+                      {filter !== 'disabled' && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button variant="ghost" size="sm" className="h-8 w-8 p-0"
+                              onClick={() => handleBulkDisable(tab)} disabled={disabling}>
+                              {disabling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Ban className="w-4 h-4" />}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">Disable selected</TooltipContent>
+                        </Tooltip>
+                      )}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="sm"
+                            className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                            onClick={() => setDeleteConfirm(tab)}>
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">Delete selected</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <span className="text-sm text-muted-foreground">
+                  {enabledTotal + disabledTotal} {isP ? 'pattern' : 'anti-pattern'}{(enabledTotal + disabledTotal) !== 1 ? 's' : ''}
+                </span>
               )}
             </div>
+
+            <button
+              onClick={() => {
+                if (selectMode) { setSelectMode(false); setSelected(new Set()); }
+                else setSelectMode(true);
+              }}
+              className={`flex items-center gap-1 text-sm transition-colors ${
+                selectMode
+                  ? 'text-muted-foreground hover:text-foreground'
+                  : 'text-primary hover:underline'
+              }`}
+            >
+              {selectMode ? <><X className="w-4 h-4" /> Cancel</> : 'Select'}
+            </button>
           </div>
+        )}
+
+        {/* Filter pills */}
+        <div className="flex items-center gap-1.5 flex-wrap shrink-0 mb-3">
+          {([
+            { value: 'all',      label: `All (${enabledTotal + disabledTotal})` },
+            { value: 'enabled',  label: `Enabled (${enabledTotal})` },
+            { value: 'disabled', label: `Disabled (${disabledTotal})` },
+          ] as { value: FilterVal; label: string }[]).map(({ value, label }) => (
+            <button
+              key={value}
+              onClick={() => { setFilter(value); setSelected(new Set()); }}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
+                filter === value
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted/50 text-muted-foreground hover:bg-muted/80 hover:text-foreground'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
         {/* Scrollable cards */}
-        {filteredItems.length === 0 && !stillLoading ? (
+        {(!data || total === 0) ? (
+          <p className="text-xs text-muted-foreground/50 py-8 text-center">
+            No {isP ? 'query patterns' : 'anti-patterns'} recorded yet.
+          </p>
+        ) : filteredItems.length === 0 && !stillLoading ? (
           <p className="text-xs text-muted-foreground/50 py-6 text-center">
             No {filter === 'all' ? '' : filter + ' '}{isP ? 'query patterns' : 'anti-patterns'}{debouncedSearch ? ' match your search' : ''}.
           </p>
@@ -1509,11 +1641,15 @@ function QueryPatternsPanel() {
                 record={item}
                 variant={isP ? 'pattern' : 'antipattern'}
                 selected={selected.has(item.id as string)}
-                onSelect={handleSelect(selected, setSelected)}
+                onSelect={(id, checked) => {
+                  handleSelect(selected, setSelected)(id, checked);
+                  if (checked) setSelectMode(true);
+                }}
                 query={debouncedSearch}
                 onOpen={(r, v) => setDetail((prev) => prev?.record.id === r.id ? null : { record: r, variant: v })}
               />
             ))}
+            <div ref={sentinelRef} className="h-1" />
             {stillLoading && (
               <div className="flex justify-center py-3">
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground/40" />
@@ -1550,13 +1686,13 @@ function QueryPatternsPanel() {
                 <span className="flex items-center gap-1.5">
                   <Database className="w-3 h-3" />
                   Query patterns
-                  {patternsData && <span className="tabular-nums text-muted-foreground/60">({patternsData.total})</span>}
+                  {patternsData && <span className="tabular-nums text-muted-foreground/60">({patternsData.enabledTotal + patternsData.disabledTotal})</span>}
                 </span>
               ) : (
                 <span className="flex items-center gap-1.5">
                   <ShieldAlert className="w-3 h-3" />
                   Anti-patterns
-                  {antiData && <span className="tabular-nums text-muted-foreground/60">({antiData.total})</span>}
+                  {antiData && <span className="tabular-nums text-muted-foreground/60">({antiData.enabledTotal + antiData.disabledTotal})</span>}
                 </span>
               )}
             </button>
@@ -1564,8 +1700,8 @@ function QueryPatternsPanel() {
         </div>
 
         <div className="flex-1 min-h-0 overflow-hidden pt-3">
-          {activeTab === 'patterns' && renderTab('patterns')}
-          {activeTab === 'antipatterns' && renderTab('antipatterns')}
+          {activeTab === 'patterns' && renderTab('patterns', pSentinelRef)}
+          {activeTab === 'antipatterns' && renderTab('antipatterns', aSentinelRef)}
         </div>
       </div>
 

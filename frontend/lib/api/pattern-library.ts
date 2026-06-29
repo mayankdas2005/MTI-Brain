@@ -5,16 +5,20 @@ export type PatternRecord = Record<string, unknown>;
 export interface PatternPage {
   items: PatternRecord[];
   total: number;
+  enabled_total: number;
+  disabled_total: number;
   skip: number;
   limit: number;
 }
 
-export async function listQueryPatterns(skip = 0, limit = 50): Promise<PatternPage> {
-  return apiFetch<PatternPage>(`/settings/admin/query-patterns?skip=${skip}&limit=${limit}`);
+export async function listQueryPatterns(skip = 0, limit = 20, search = '', filter = 'all'): Promise<PatternPage> {
+  const params = new URLSearchParams({ skip: String(skip), limit: String(limit), search, filter });
+  return apiFetch<PatternPage>(`/settings/admin/query-patterns?${params}`);
 }
 
-export async function listAntiPatterns(skip = 0, limit = 50): Promise<PatternPage> {
-  return apiFetch<PatternPage>(`/settings/admin/anti-patterns?skip=${skip}&limit=${limit}`);
+export async function listAntiPatterns(skip = 0, limit = 20, search = '', filter = 'all'): Promise<PatternPage> {
+  const params = new URLSearchParams({ skip: String(skip), limit: String(limit), search, filter });
+  return apiFetch<PatternPage>(`/settings/admin/anti-patterns?${params}`);
 }
 
 export async function setQueryPatternEnabled(id: string, is_enabled: boolean): Promise<void> {
