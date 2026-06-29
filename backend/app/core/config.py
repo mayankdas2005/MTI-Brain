@@ -45,6 +45,7 @@ _mdl_rt = _yml.get("model_routing", {})
 _prompt_cache = _yml.get("prompt_cache", {})
 _pipeline = _yml.get("pipeline", {})
 _feature_toggles = _yml.get("feature_toggles", {})
+_graph_viewer = _yml.get("graph_viewer", {})
 _ckpt_cfg = _db.get("checkpoint_pool", {})
 _neo4j_cfg = _yml.get("neo4j", {}).get("pool", {})
 _redis_cfg = _yml.get("redis", {}).get("pool", {})
@@ -121,6 +122,11 @@ class Settings(BaseSettings):
     LANGFUSE_ENABLED: bool = Field(default=_feature_toggles.get("langfuse_enabled", False))
     DATA_QUALITY_CHECKER_ENABLED: bool = Field(default=_feature_toggles.get("data_quality_checker_enabled", False))
     CONFIDENCE_SCORE_ENABLED: bool = Field(default=_feature_toggles.get("confidence_score_enabled", False))
+
+    # ── Graph viewer (config.yml → graph_viewer) ──────────────────────────────
+    GRAPH_VIEWER_LLM_ENRICHMENT_ENABLED: bool = Field(
+        default=_graph_viewer.get("enable_llm_enrichment_for_nodes", True)
+    )
 
     # ── Langfuse observability (.env) ────────────────────────────────────────
     LANGFUSE_PUBLIC_KEY: str = Field(default="")

@@ -32,6 +32,7 @@ import boto3
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.langfuse_integration import create_callback_handler as _create_lf_handler
 from app.core.logger import logger
 from app.db.session import async_read_session_factory
 from app.models.conversation import MTIBrainMessage
@@ -97,6 +98,71 @@ async def delete_from_s3(key: str) -> None:
         await loop.run_in_executor(None, partial(_sync_s3_delete, key, bucket))
     except Exception as exc:
         logger.warning("graph_context | S3 delete failed key={} error={}", key, exc)
+
+
+# ── Bedrock edge-label enrichment ────────────────────────────────────────────
+
+def _make_bedrock_client():
+    from langchain_aws import ChatBedrock
+    return ChatBedrock(
+        model_id=settings.AWS_BEDROCK_SONNET_ARN,
+        provider="anthropic",
+        region_name=settings.AWS_REGION,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        model_kwargs={"max_tokens": 2048},
+        max_retries=2,
+    )
+
+
+_EDGE_LABEL_BATCH = 20
+
+_EDGE_LABEL_PROMPT = """\
+You are a data model expert. For each relationship below between two business data nodes, \
+write a concise phrase (10-12 words) a business analyst would understand. Describe what \
+the relationship means in plain English, \
+e.g. "groups payment records into the treasury operations domain".
+
+Relationships:
+{rels_json}
+
+Return a JSON array only, no other text:
+[{{"edge_key": "<edge_key value>", "description": "<phrase>"}}]"""
+
+
+def _enrich_edge_labels(edge_inputs: list[dict], chat_client, lf_handler=None) -> dict[str, str]:
+    """Generate 10-12 word business descriptions for graph edges that lack one.
+
+    edge_inputs: list of {edge_key, rel_type, from_label, from_description,
+                           to_label, to_description}
+    Returns {edge_key: description_string}.
+    """
+    try:
+        from json_repair import loads as _json_repair_loads
+    except ImportError:
+        _json_repair_loads = json.loads
+
+    _invoke_cfg = {"callbacks": [lf_handler]} if lf_handler else {}
+    results: dict[str, str] = {}
+    for i in range(0, len(edge_inputs), _EDGE_LABEL_BATCH):
+        batch = edge_inputs[i : i + _EDGE_LABEL_BATCH]
+        prompt = _EDGE_LABEL_PROMPT.format(rels_json=json.dumps(batch, indent=2))
+        try:
+            response = chat_client.invoke(prompt, config=_invoke_cfg)
+            raw_text = response.content if hasattr(response, "content") else str(response)
+            parsed = _json_repair_loads(raw_text)
+            items = parsed if isinstance(parsed, list) else []
+            for item in items:
+                key = item.get("edge_key", "")
+                desc = item.get("description", "")
+                if key and desc:
+                    results[key] = desc
+        except Exception as exc:
+            logger.warning(
+                "graph_context_builder | edge_label_enrichment_batch_failed | batch={} | err={}",
+                i // _EDGE_LABEL_BATCH + 1, exc,
+            )
+    return results
 
 
 # ── Embedding strip ───────────────────────────────────────────────────────────
@@ -168,7 +234,7 @@ def _compute_layout(records: list[dict]) -> dict[int, tuple[float, float]]:
 
     n = len(G.nodes)
     # k controls ideal edge length; larger k → more spread.  seed → deterministic.
-    pos = nx.spring_layout(G, k=1 / max(1, n ** 0.5), iterations=80, seed=42)
+    pos = nx.spring_layout(G, k=1.5 / max(1, n ** 0.5), iterations=80, seed=42)
 
     # Scale normalized [-1, 1] → vis.js pixel coords
     scale = max(800, n * 55)
@@ -852,6 +918,66 @@ async def generate_and_store(
         conversation_id, len(records), _raw_edge_count,
     )
 
+    # 5d. Runtime LLM enrichment for edges without a description
+    _node_desc: dict[int, str] = {}
+    _node_label: dict[int, str] = {}
+    for _rec in records:
+        for _nk in ("n", "m"):
+            _nd = _rec.get(_nk)
+            if _nd and _nd.get("identity") is not None:
+                _nid = _nd["identity"]
+                if _nid not in _node_desc:
+                    _p = _nd.get("properties") or {}
+                    _node_desc[_nid] = (_p.get("description") or "")[:200]
+                    _node_label[_nid] = (_nd.get("labels") or ["Node"])[0]
+
+    _edges_to_enrich: list[dict] = []
+    _edge_id_to_key: dict[int, str] = {}
+    for _rec in records:
+        _r = _rec.get("r")
+        if not _r:
+            continue
+        _rprops = _r.get("properties") or {}
+        if (len(_rprops.get("description") or "") >= 10) or _rprops.get("_retrieved_only"):
+            continue
+        _sid, _eid = _r.get("start"), _r.get("end")
+        _fd, _td = _node_desc.get(_sid, ""), _node_desc.get(_eid, "")
+        if not _fd or not _td:
+            continue
+        _ekey = f"{_sid}-{_eid}-{_r['type']}"
+        _edges_to_enrich.append({
+            "edge_key":         _ekey,
+            "rel_type":         _r["type"],
+            "from_label":       _node_label.get(_sid, "Node"),
+            "from_description": _fd,
+            "to_label":         _node_label.get(_eid, "Node"),
+            "to_description":   _td,
+        })
+        _edge_id_to_key[_r["identity"]] = _ekey
+
+    if _edges_to_enrich and settings.GRAPH_VIEWER_LLM_ENRICHMENT_ENABLED:
+        try:
+            _chat = _make_bedrock_client()
+            _lf_cb = _create_lf_handler()
+            _descriptions = await loop.run_in_executor(
+                None, _enrich_edge_labels, _edges_to_enrich, _chat, _lf_cb
+            )
+            for _rec in records:
+                _r = _rec.get("r")
+                if _r and _r.get("identity") in _edge_id_to_key:
+                    _ekey = _edge_id_to_key[_r["identity"]]
+                    if _ekey in _descriptions:
+                        _r.setdefault("properties", {})["description"] = _descriptions[_ekey]
+            logger.info(
+                "graph_context_builder | edge_labels_enriched | conv={} | enriched={}",
+                conversation_id, len(_descriptions),
+            )
+        except Exception as exc:
+            logger.warning(
+                "graph_context_builder | edge_label_enrichment_failed | conv={} | err={}",
+                conversation_id, exc,
+            )
+
     # 6. Compute server-side layout and embed positions before serialization
     _inject_layout(records, _compute_layout(records))
 
@@ -1185,6 +1311,66 @@ async def _generate_from_old_snapshot(
             records.append(_triplet(jp_node, None, None))
 
     logger.info("graph_context_builder | legacy | conv={} | records={}", conversation_id, len(records))
+
+    # 5d. Runtime LLM enrichment for edges without a description
+    _node_desc: dict[int, str] = {}
+    _node_label: dict[int, str] = {}
+    for _rec in records:
+        for _nk in ("n", "m"):
+            _nd = _rec.get(_nk)
+            if _nd and _nd.get("identity") is not None:
+                _nid = _nd["identity"]
+                if _nid not in _node_desc:
+                    _p = _nd.get("properties") or {}
+                    _node_desc[_nid] = (_p.get("description") or "")[:200]
+                    _node_label[_nid] = (_nd.get("labels") or ["Node"])[0]
+
+    _edges_to_enrich: list[dict] = []
+    _edge_id_to_key: dict[int, str] = {}
+    for _rec in records:
+        _r = _rec.get("r")
+        if not _r:
+            continue
+        _rprops = _r.get("properties") or {}
+        if (len(_rprops.get("description") or "") >= 10) or _rprops.get("_retrieved_only"):
+            continue
+        _sid, _eid = _r.get("start"), _r.get("end")
+        _fd, _td = _node_desc.get(_sid, ""), _node_desc.get(_eid, "")
+        if not _fd or not _td:
+            continue
+        _ekey = f"{_sid}-{_eid}-{_r['type']}"
+        _edges_to_enrich.append({
+            "edge_key":         _ekey,
+            "rel_type":         _r["type"],
+            "from_label":       _node_label.get(_sid, "Node"),
+            "from_description": _fd,
+            "to_label":         _node_label.get(_eid, "Node"),
+            "to_description":   _td,
+        })
+        _edge_id_to_key[_r["identity"]] = _ekey
+
+    if _edges_to_enrich and settings.GRAPH_VIEWER_LLM_ENRICHMENT_ENABLED:
+        try:
+            _chat = _make_bedrock_client()
+            _lf_cb = _create_lf_handler()
+            _descriptions = await loop.run_in_executor(
+                None, _enrich_edge_labels, _edges_to_enrich, _chat, _lf_cb
+            )
+            for _rec in records:
+                _r = _rec.get("r")
+                if _r and _r.get("identity") in _edge_id_to_key:
+                    _ekey = _edge_id_to_key[_r["identity"]]
+                    if _ekey in _descriptions:
+                        _r.setdefault("properties", {})["description"] = _descriptions[_ekey]
+            logger.info(
+                "graph_context_builder | edge_labels_enriched | conv={} | enriched={}",
+                conversation_id, len(_descriptions),
+            )
+        except Exception as exc:
+            logger.warning(
+                "graph_context_builder | edge_label_enrichment_failed | conv={} | err={}",
+                conversation_id, exc,
+            )
 
     _inject_layout(records, _compute_layout(records))
 
