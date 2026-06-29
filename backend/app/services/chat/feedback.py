@@ -79,6 +79,13 @@ async def save_feedback(
     langfuse_trace_id: str | None = row.langfuse_trace_id if row else None
     pattern_id: str | None = row.pattern_id if row else None
 
+    _sql = (row.sql or "") if row else ""
+    _tables = (row.tables_used or "") if row else ""
+    _intent = (row.intent or "") if row else ""
+    _complexity = (row.complexity or "") if row else ""
+    _conf_score = int(row.confidence_score) if (row and row.confidence_score) else 0
+    _tables_list: list[str] = [t.strip() for t in _tables.split(",") if t.strip()] if _tables else []
+
     question_result = await db.execute(
         text(
             "SELECT content FROM mti_brain_message "
@@ -131,14 +138,6 @@ async def save_feedback(
         )
 
     await db.flush()
-
-    _sql = (row.sql or "") if row else ""
-    _tables = (row.tables_used or "") if row else ""
-    _intent = (row.intent or "") if row else ""
-    _complexity = (row.complexity or "") if row else ""
-    _conf_score = int(row.confidence_score) if (row and row.confidence_score) else 0
-    # Parse comma-separated tables_used string into a list for the array column
-    _tables_list: list[str] = [t.strip() for t in _tables.split(",") if t.strip()] if _tables else []
 
     # Only sql/general dislikes write to Neo4j — answer/chart dislikes are presentation-only
     _is_sql_signal = _ftype in ("sql", "general")
@@ -498,45 +497,60 @@ def build_feedback_context_for_node(all_feedback: list[dict], node_type: str) ->
 
 
 def _build_context_string(feedback_items: list[dict]) -> str:
-    """Build the final prompt-injectable string from a pre-filtered list."""
+    """Build the final prompt-injectable string from a pre-filtered list.
+
+    Items with ``_distilled=True`` are rendered as a DISTILLED PREFERENCE PROFILE
+    preamble; remaining items are rendered as the standard feedback block.
+    """
     if not feedback_items:
         return ""
 
-    weighted = sorted(
-        feedback_items,
-        key=lambda f: (_decay_weight(f.get("created_at")), 1 if f.get("comment") else 0),
-        reverse=True,
-    )
-    weighted = _resolve_contradictions(weighted)
+    distilled = [f for f in feedback_items if f.get("_distilled")]
+    regular   = [f for f in feedback_items if not f.get("_distilled")]
 
-    injectable = [f for f in weighted if f.get("comment")]
-    if not injectable:
-        return ""
+    output_parts: list[str] = []
 
-    dislikes = [f for f in injectable if not f["liked"]]
-    likes = [f for f in injectable if f["liked"]]
+    if distilled:
+        profile = "\n".join(item["comment"] for item in distilled if item.get("comment"))
+        if profile:
+            output_parts.append(
+                "DISTILLED USER PREFERENCE PROFILE (apply every point to your response):\n"
+                + profile
+            )
 
-    if not dislikes and not likes:
-        return ""
+    if regular:
+        weighted = sorted(
+            regular,
+            key=lambda f: (_decay_weight(f.get("created_at")), 1 if f.get("comment") else 0),
+            reverse=True,
+        )
+        weighted = _resolve_contradictions(weighted)
+        injectable = [f for f in weighted if f.get("comment")]
 
-    def _label(fb: dict) -> str:
-        age = _days_old(fb.get("created_at"))
-        source = "this thread" if fb.get("source") == "thread" else "similar question"
-        age_note = f" (~{age}d ago)" if age > _FEEDBACK_OLD_DAYS else ""
-        return f"    - [{source}]{age_note} {fb['comment']}"
+        if injectable:
+            dislikes = [f for f in injectable if not f["liked"]]
+            likes    = [f for f in injectable if f["liked"]]
 
-    lines: list[str] = ["USER FEEDBACK (apply to your response):"]
-    if dislikes:
-        lines.append("  <hard_constraints>")
-        lines.append("  NEVER DO (users explicitly rejected this):")
-        for fb in dislikes[:5]:
-            lines.append(_label(fb))
-        lines.append("  </hard_constraints>")
-    if likes:
-        lines.append("  <preferences>")
-        lines.append("  PREFERRED PATTERNS (users liked this approach):")
-        for fb in likes[:3]:
-            lines.append(_label(fb))
-        lines.append("  </preferences>")
+            if dislikes or likes:
+                def _label(fb: dict) -> str:
+                    age      = _days_old(fb.get("created_at"))
+                    source   = "this thread" if fb.get("source") == "thread" else "similar question"
+                    age_note = f" (~{age}d ago)" if age > _FEEDBACK_OLD_DAYS else ""
+                    return f"    - [{source}]{age_note} {fb['comment']}"
 
-    return "\n".join(lines)
+                lines: list[str] = ["USER FEEDBACK (apply to your response):"]
+                if dislikes:
+                    lines.append("  <hard_constraints>")
+                    lines.append("  NEVER DO (users explicitly rejected this):")
+                    for fb in dislikes[:5]:
+                        lines.append(_label(fb))
+                    lines.append("  </hard_constraints>")
+                if likes:
+                    lines.append("  <preferences>")
+                    lines.append("  PREFERRED PATTERNS (users liked this approach):")
+                    for fb in likes[:3]:
+                        lines.append(_label(fb))
+                    lines.append("  </preferences>")
+                output_parts.append("\n".join(lines))
+
+    return "\n\n".join(output_parts)

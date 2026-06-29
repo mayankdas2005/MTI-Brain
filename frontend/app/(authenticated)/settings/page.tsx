@@ -2188,21 +2188,6 @@ function PatternPagination({
   );
 }
 
-const VERSION_QUOTES = [
-  '"We are the architects of the future." — CEO',
-  '"The numbers don\'t lie. But they do tell stories." — CFO',
-  '"Revenue is a team sport." — CRO',
-  '"People first, always." — CPO',
-  '"Operational excellence is not optional." — COO',
-  '"Strategy is nothing without execution." — Chief of Staff',
-  '"The cloud is just someone else\'s computer. Ours runs better." — President, DW/Cloud',
-  '"Ship it. Then make it beautiful." — President, Apps & DE',
-  '"Process is poetry in disguise." — EVP, BPS',
-  '"Solutions aren\'t found - they\'re engineered." — EVP, Industry Solutions',
-  '"Growth is a mindset." — VP, Corp Dev',
-  '"We skipped v1. Too many features, not enough bugs." — QA Team',
-];
-
 // ─── Instructions panel ──────────────────────────────────────────────────
 
 const CONTENT_LIMIT = 500;
@@ -2797,34 +2782,14 @@ function FeedbackPatternsSection({
 }
 
 function AboutBlock() {
-  const [hovered, setHovered] = useState(false);
-  const [quote] = useState(
-    () => VERSION_QUOTES[Math.floor(Math.random() * VERSION_QUOTES.length)],
-  );
-  const stack = ['LangGraph', 'Neo4j', 'PostgreSQL', 'Next.js', 'AWS Bedrock'];
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-16 gap-y-8">
       {/* Left: Product info */}
-      <div className="space-y-6">
-        <div>
-          <p className="text-base font-semibold text-foreground">MTI Brain</p>
-          <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
-            AI-powered decision intelligence platform. Ask questions about your business data in plain English and get structured insights, SQL, and charts.
-          </p>
-        </div>
-        <div className="space-y-2">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/50">Powered by</p>
-          <div className="flex flex-wrap gap-1.5">
-            {stack.map((tag) => (
-              <span
-                key={tag}
-                className="px-2.5 py-1 text-xs rounded-lg bg-muted/60 text-muted-foreground border border-border/50"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        </div>
+      <div>
+        <p className="text-base font-semibold text-foreground">MTI Brain</p>
+        <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
+          AI-powered decision intelligence platform. Ask questions about your business data in plain English and get structured insights, SQL, and charts.
+        </p>
       </div>
 
       {/* Right: Version card */}
@@ -2833,14 +2798,8 @@ function AboutBlock() {
         <div className="rounded-xl border border-border bg-muted/20 p-5 space-y-3">
           <div className="flex items-center justify-between gap-4">
             <span className="text-xs text-muted-foreground">Version</span>
-            <span
-              onMouseEnter={() => setHovered(true)}
-              onMouseLeave={() => setHovered(false)}
-              className="text-xs font-mono text-foreground cursor-default"
-            >
-              {hovered
-                ? <span className="italic font-sans text-muted-foreground">{quote}</span>
-                : (process.env.NEXT_PUBLIC_APP_VERSION ?? '—')}
+            <span className="text-xs font-mono text-foreground">
+              {process.env.NEXT_PUBLIC_APP_VERSION ?? '—'}
             </span>
           </div>
           <div className="h-px bg-border/40" />

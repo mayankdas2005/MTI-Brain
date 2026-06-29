@@ -8,7 +8,7 @@ mti_brain_user.distilled_preferences for injection into future pipelines.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from app.core.logger import logger
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 _DISTILL_DELTA = 5
 _MAX_FEEDBACK_ROWS = 50
+_DISTILL_CUTOFF_DAYS = 180  # items older than ~180d have <5% weight under 45d half-life
 
 _DISTILL_PROMPT = """You are summarising feedback that a user has given about AI-generated analytics responses.
 Below are the user's feedback comments (likes and dislikes). Produce exactly 5–8 concise bullet points
@@ -63,11 +64,14 @@ async def _distill_user_feedback(
 ) -> None:
     from app.models.conversation import MTIBrainFeedback, MTIBrainThread
 
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_DISTILL_CUTOFF_DAYS)
+
     rows = await db.execute(
-        select(MTIBrainFeedback.liked, MTIBrainFeedback.comment)
+        select(MTIBrainFeedback.liked, MTIBrainFeedback.comment, MTIBrainFeedback.created_at)
         .join(MTIBrainThread, MTIBrainFeedback.thread_id == MTIBrainThread.id)
         .where(MTIBrainThread.user_id == user_id)
         .where(MTIBrainFeedback.comment.is_not(None))
+        .where(MTIBrainFeedback.created_at >= cutoff)
         .order_by(MTIBrainFeedback.created_at.desc())
         .limit(_MAX_FEEDBACK_ROWS)
     )
@@ -75,10 +79,17 @@ async def _distill_user_feedback(
     if not feedback_rows:
         return
 
+    now = datetime.now(timezone.utc)
     lines = []
-    for liked, comment in feedback_rows:
+    for liked, comment, created_at in feedback_rows:
         sentiment = "LIKED" if liked else "DISLIKED"
-        lines.append(f"[{sentiment}] {comment}")
+        if created_at:
+            ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+            age_days = (now - ts).days
+            age_str = f" (~{age_days}d ago)" if age_days > 7 else " (recent)"
+        else:
+            age_str = ""
+        lines.append(f"[{sentiment}]{age_str} {comment}")
     feedback_text = "\n".join(lines)
 
     try:

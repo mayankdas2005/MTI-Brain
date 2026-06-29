@@ -102,12 +102,25 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
 
     from app.services.chat.feedback import build_feedback_context
 
-    # Distilled preferences branch: if a fresh distilled profile is present in state
-    # (freshness is validated in chat.py before pipeline init), skip raw feedback
-    # injection — nodes will use distilled_preferences from state instead.
     if distilled_preferences:
-        feedback_context: list[dict] = []
         _distilled_active = True
+        # Inject the distilled profile as a synthetic item so every downstream node
+        # receives it via build_feedback_context_for_node without any per-node changes.
+        # _distilled=True causes _build_context_string to render it as a dedicated
+        # DISTILLED USER PREFERENCE PROFILE preamble before the regular feedback block.
+        _distilled_item: dict = {
+            "id": "_distilled",
+            "liked": True,
+            "comment": distilled_preferences,
+            "feedback_type": "general",
+            "_distilled": True,
+            "created_at": None,
+            "source": "distilled",
+        }
+        # GAP #3: also keep current-thread feedback — it captures the most recent
+        # in-session signals which may override or extend the distilled profile.
+        _thread_context = build_feedback_context(thread_feedback or [], similar_feedback or [])
+        feedback_context: list[dict] = [_distilled_item] + _thread_context
     else:
         feedback_context = build_feedback_context(thread_feedback or [], similar_feedback or [])
         _distilled_active = False

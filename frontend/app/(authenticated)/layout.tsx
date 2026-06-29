@@ -25,7 +25,6 @@ import { useTheme } from 'next-themes';
 import { useStreamCompletionNotice } from '@/lib/hooks/use-stream-completion-notice';
 import { useDashboardNotice } from '@/lib/hooks/use-dashboard-notice';
 import { useGraphContextNotice } from '@/lib/hooks/use-graph-context-notice';
-import { CreditsOverlay } from '@/components/credits-overlay';
 import { OnboardingTour } from '@/components/onboarding-tour';
 import { InstallPrompt } from '@/components/install-prompt';
 import { LiveAnnouncer } from '@/components/live-announcer';
@@ -50,8 +49,6 @@ export default function AuthenticatedLayout({
   const shortcutsOpen = useUIStore((s) => s.shortcutsOpen);
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen);
   const toggleShortcuts = useUIStore((s) => s.toggleShortcuts);
-  const [creditsOpen, setCreditsOpen] = useState(false);
-
   const isMobile = useIsMobile();
   const isTablet = useIsTablet();
   const mobileSidebarOpen = useUIStore((s) => s.mobileSidebarOpen);
@@ -206,25 +203,7 @@ export default function AuthenticatedLayout({
     },
   });
 
-  // Easter eggs: Konami code + Cmd+Shift+B Milestone facts
   useEffect(() => {
-    // Konami: ↑↑↓↓←→←→BA
-    const KONAMI = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
-    let konamiPos = 0;
-    let konamiTimer: ReturnType<typeof setTimeout> | null = null;
-
-    // Milestone facts for Cmd+Shift+B
-    const MTI_FACTS = [
-      '🚀 Milestone Technologies has been powering smarter IT since 1997',
-      '🌍 Milestone operates in 36 countries across 6 continents',
-      '🏢 Headquartered in Fremont, California - the heart of Silicon Valley',
-      '👥 3500+ employees delivering IT services and digital solutions at scale',
-      '🏆 Great Place to Work certified in the USA, India, Ireland, the Philippines, the UK and Mexico',
-      '🤖 Milestone specializes in AI/Automation, Cloud Infrastructure, and Application Services',
-      '🤝 Trusted by 200+ of the world\'s leading companies to deliver technology at scale',
-      '💡 Sameer Kishore was appointed CEO in 2020, driving Milestone\'s next era of growth',
-    ];
-
     const handler = (e: KeyboardEvent) => {
       const isCmdMod = navigator.platform.toUpperCase().indexOf('MAC') >= 0 ? e.metaKey : e.ctrlKey;
 
@@ -241,34 +220,11 @@ export default function AuthenticatedLayout({
         return;
       }
 
-      // Skip if user is typing in an input (only matters for the easter
-      // eggs / nav shortcuts below - Cmd+/ is handled above unconditionally).
+      // Skip if user is typing in an input
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-      // Konami code detection
-      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-      if (key === KONAMI[konamiPos]) {
-        konamiPos++;
-        if (konamiTimer) clearTimeout(konamiTimer);
-        konamiTimer = setTimeout(() => { konamiPos = 0; }, 3000);
-        if (konamiPos === KONAMI.length) {
-          konamiPos = 0;
-          setCreditsOpen(true);
-        }
-      } else if (key === KONAMI[0]) {
-        konamiPos = 1; // restart from first match
-      } else {
-        konamiPos = 0;
-      }
-
       const isCmd = navigator.platform.toUpperCase().indexOf('MAC') >= 0 ? e.metaKey : e.ctrlKey;
-
-      // Cmd+Shift+B → Milestone fact
-      if (isCmd && e.shiftKey && (e.key === 'B' || e.key === 'b')) {
-        e.preventDefault();
-        toast.info(MTI_FACTS[Math.floor(Math.random() * MTI_FACTS.length)]);
-      }
 
       // Cmd+Shift+P → /projects
       if (isCmd && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
@@ -300,10 +256,7 @@ export default function AuthenticatedLayout({
     };
 
     window.addEventListener('keydown', handler);
-    return () => {
-      window.removeEventListener('keydown', handler);
-      if (konamiTimer) clearTimeout(konamiTimer);
-    };
+    return () => { window.removeEventListener('keydown', handler); };
   }, []);
 
   if (!authChecked) {
@@ -396,7 +349,6 @@ export default function AuthenticatedLayout({
 
       <SearchModal />
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
-      <CreditsOverlay open={creditsOpen} onClose={() => setCreditsOpen(false)} />
       <OnboardingTourGate />
       <InstallPrompt />
       <LiveAnnouncer />
