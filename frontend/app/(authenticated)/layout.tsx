@@ -10,7 +10,7 @@ import { ShortcutsDialog } from '@/components/shortcuts-dialog';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useEffect, useState, startTransition } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { isAuthenticated, getStoredUser, getLoginGate, setLoginGate } from '@/lib/auth';
+import { isAuthenticated, getStoredUser } from '@/lib/auth';
 import { useUIStore } from '@/lib/store/ui';
 import { useIsMobile, useIsTablet } from '@/hooks/use-mobile';
 import { usePreferencesStore } from '@/lib/store/preferences';
@@ -107,9 +107,6 @@ export default function AuthenticatedLayout({
 
   // Redirect unauthenticated users - runs client-side only
   useEffect(() => {
-    // React StrictMode double-invokes effects. The `cancelled` flag ensures
-    // only the final (active) invocation acts - the first run's callback is
-    // a no-op once cleanup fires, so the gate and prime() fire exactly once.
     let cancelled = false;
 
     const prime = () => {
@@ -142,20 +139,6 @@ export default function AuthenticatedLayout({
         instrStore.fetchInstructions();
       }
     };
-
-    // If a login is in-flight (optimistic navigation from the login page),
-    // wait for it to complete before checking auth. Clear the gate only
-    // inside the callback so the second StrictMode run still finds it.
-    const gate = getLoginGate();
-    if (gate) {
-      gate.then(() => {
-        if (cancelled) return;
-        setLoginGate(null);
-        if (!isAuthenticated()) { router.replace('/'); return; }
-        prime();
-      });
-      return () => { cancelled = true; };
-    }
 
     if (!isAuthenticated()) { router.replace('/'); return; }
     prime();

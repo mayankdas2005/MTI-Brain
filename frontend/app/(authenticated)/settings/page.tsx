@@ -621,8 +621,8 @@ function ToneGrid({
             }`}
           >
             {isDefault && (
-              <span className={`absolute top-3.5 right-3.5 text-[9px] uppercase tracking-widest font-semibold ${isSelected ? 'text-primary-foreground/60' : 'text-muted-foreground/35'}`}>
-                default
+              <span className={`absolute top-3.5 right-3.5 text-[10px] uppercase tracking-widest font-semibold ${isSelected ? 'text-primary-foreground/60' : 'text-muted-foreground/40'}`}>
+                Default
               </span>
             )}
             <span className={`text-4xl font-black block mb-4 leading-none select-none ${isSelected ? 'text-primary-foreground/20' : 'text-foreground/8'}`}>
@@ -687,7 +687,7 @@ function DisplayContent({
                   <div className="flex items-start justify-between gap-2 mb-1.5">
                     <p className="text-sm font-medium text-foreground leading-snug">{label}</p>
                     {isDefault === false && (
-                      <span className="shrink-0 text-[9px] uppercase tracking-widest font-semibold text-primary/50 mt-0.5">changed</span>
+                      <span className="shrink-0 text-[10px] uppercase tracking-widest font-semibold text-primary/60 mt-0.5">changed</span>
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
@@ -707,7 +707,12 @@ function DisplayContent({
         <div className="flex flex-wrap gap-4">
           {v('thinking placement inline sidebar position') && (
             <div className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5">
-              <p className="text-sm font-medium text-foreground mb-0.5">Thinking panel</p>
+              <div className="flex items-start justify-between gap-2 mb-0.5">
+                <p className="text-sm font-medium text-foreground">Thinking panel</p>
+                <span className={`shrink-0 text-[10px] uppercase tracking-widest font-semibold mt-0.5 ${thinkingPlacement === PREFERENCES_DEFAULTS.thinkingPlacement ? 'text-muted-foreground/40' : 'text-primary/60'}`}>
+                  {thinkingPlacement === PREFERENCES_DEFAULTS.thinkingPlacement ? 'Default' : 'Changed'}
+                </span>
+              </div>
               <p className="text-xs text-muted-foreground mb-4">Where reasoning steps are shown.</p>
               <div className="grid grid-cols-2 gap-2">
                 {([
@@ -727,15 +732,17 @@ function DisplayContent({
                   );
                 })}
               </div>
-              {thinkingPlacement === PREFERENCES_DEFAULTS.thinkingPlacement && (
-                <p className="text-[10px] text-muted-foreground/35 mt-2.5 text-right">default</p>
-              )}
             </div>
           )}
 
           {v('default data view sql table') && (
             <div className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5">
-              <p className="text-sm font-medium text-foreground mb-0.5">Default data view</p>
+              <div className="flex items-start justify-between gap-2 mb-0.5">
+                <p className="text-sm font-medium text-foreground">Default data view</p>
+                <span className={`shrink-0 text-[10px] uppercase tracking-widest font-semibold mt-0.5 ${defaultDataView === PREFERENCES_DEFAULTS.defaultDataView ? 'text-muted-foreground/40' : 'text-primary/60'}`}>
+                  {defaultDataView === PREFERENCES_DEFAULTS.defaultDataView ? 'Default' : 'Changed'}
+                </span>
+              </div>
               <p className="text-xs text-muted-foreground mb-4">Which tab opens first when data arrives.</p>
               <div className="grid grid-cols-2 gap-2">
                 {(['sql', 'table'] as DefaultDataView[]).map((view) => {
@@ -751,15 +758,17 @@ function DisplayContent({
                   );
                 })}
               </div>
-              {defaultDataView === PREFERENCES_DEFAULTS.defaultDataView && (
-                <p className="text-[10px] text-muted-foreground/35 mt-2.5 text-right">default</p>
-              )}
             </div>
           )}
 
           {v('max result rows per query') && (
             <div className="w-74 shrink-0 grow-0 rounded-2xl border border-border bg-muted/20 p-5">
-              <p className="text-sm font-medium text-foreground mb-0.5">Max rows per query</p>
+              <div className="flex items-start justify-between gap-2 mb-0.5">
+                <p className="text-sm font-medium text-foreground">Max rows per query</p>
+                <span className={`shrink-0 text-[10px] uppercase tracking-widest font-semibold mt-0.5 ${maxResultRows === PREFERENCES_DEFAULTS.maxResultRows ? 'text-muted-foreground/40' : 'text-primary/60'}`}>
+                  {maxResultRows === PREFERENCES_DEFAULTS.maxResultRows ? 'Default' : 'Changed'}
+                </span>
+              </div>
               <p className="text-xs text-muted-foreground mb-4">Higher values return more data but take longer.</p>
               <div className="grid grid-cols-4 gap-1.5">
                 {ROW_OPTIONS.map((rows) => {
@@ -775,9 +784,6 @@ function DisplayContent({
                   );
                 })}
               </div>
-              {maxResultRows === PREFERENCES_DEFAULTS.maxResultRows && (
-                <p className="text-[10px] text-muted-foreground/35 mt-2.5 text-right">default</p>
-              )}
             </div>
           )}
         </div>
@@ -814,7 +820,7 @@ function AppearanceContent({
                 >
                   {isDefault && (
                     <span className={`absolute top-3.5 right-3.5 text-[9px] uppercase tracking-widest font-semibold ${sel ? 'text-primary-foreground/60' : 'text-muted-foreground/35'}`}>
-                      default
+                      Default
                     </span>
                   )}
                   <div className={`flex flex-col ${gap} mb-4`}>
@@ -942,7 +948,7 @@ function NotificationsPanel({
                 <div className="flex items-start justify-between gap-2 mb-1.5">
                   <p className="text-sm font-medium text-foreground">Notify on completion</p>
                   {(enabled ? 'when-hidden' : 'off') !== PREFERENCES_DEFAULTS.notifyOnComplete && (
-                    <span className="text-[9px] uppercase tracking-widest font-semibold text-primary/50 mt-0.5">changed</span>
+                    <span className="text-[10px] uppercase tracking-widest font-semibold text-primary/60 mt-0.5">changed</span>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">Pings you when a stream completes and you're not on that chat.</p>
@@ -961,7 +967,7 @@ function NotificationsPanel({
                 <div className="flex items-start justify-between gap-2 mb-1.5">
                   <p className="text-sm font-medium text-foreground">Play a sound</p>
                   {notifySound !== PREFERENCES_DEFAULTS.notifySound && (
-                    <span className="text-[9px] uppercase tracking-widest font-semibold text-primary/50 mt-0.5">changed</span>
+                    <span className="text-[10px] uppercase tracking-widest font-semibold text-primary/60 mt-0.5">changed</span>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
@@ -2659,7 +2665,7 @@ function AboutBlock() {
   const [quote] = useState(
     () => VERSION_QUOTES[Math.floor(Math.random() * VERSION_QUOTES.length)],
   );
-  const stack = ['LangGraph', 'AWS Bedrock', 'Claude AI', 'Neo4j', 'Redshift', 'Next.js', 'PostgreSQL'];
+  const stack = ['LangGraph', 'Neo4j', 'PostgreSQL', 'Next.js', 'AWS Bedrock'];
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-16 gap-y-8">
       {/* Left: Product info */}
@@ -2706,11 +2712,11 @@ function AboutBlock() {
             <span className="text-xs text-muted-foreground">Platform</span>
             <span className="text-xs text-foreground">Web</span>
           </div>
-          <div className="h-px bg-border/40" />
+          {/* <div className="h-px bg-border/40" />
           <div className="flex items-center justify-between gap-4">
             <span className="text-xs text-muted-foreground">Support</span>
             <span className="text-xs text-foreground">mtiinnovation.com</span>
-          </div>
+          </div> */}
         </div>
       </div>
     </div>

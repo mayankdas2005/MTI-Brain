@@ -2,7 +2,7 @@
 
 import { useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { type LucideIcon, RotateCcw, Copy, Keyboard, Plus, BarChart3, Table2, Sun, Moon } from 'lucide-react';
+import { type LucideIcon, RotateCcw, Copy, Keyboard, Plus, BarChart3, Table2, Sun, Moon, LogOut } from 'lucide-react';
 import { usePrefersReducedMotion } from '@/lib/hooks/use-prefers-reduced-motion';
 
 export interface SlashCommand {
@@ -55,6 +55,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     label: '/dark',
     description: 'Switch to dark theme',
     icon: Moon,
+  },
+  {
+    id: 'logout',
+    trigger: 'logout',
+    label: '/logout',
+    description: 'Log out of MTI Brain',
+    icon: LogOut,
   },
   {
     id: 'help',

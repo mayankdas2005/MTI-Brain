@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Eye, EyeOff } from 'lucide-react';
-import { isAuthenticated, login, setLoginGate, setLoginError, consumeLoginError } from '@/lib/auth';
+import { isAuthenticated, login } from '@/lib/auth';
 import { ApiError } from '@/lib/api/client';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
@@ -21,54 +21,57 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [slowLogin, setSlowLogin] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Stays false until we've confirmed the user is NOT authenticated.
-  // Prevents a one-frame flash of the login form for users who are already
-  // signed in - they'll see nothing, then be redirected to /new.
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // Show any error surfaced from a failed optimistic login attempt.
-    const pendingError = consumeLoginError();
-    if (pendingError) setError(pendingError);
-
     if (isAuthenticated()) {
       router.replace('/new');
-      // Don't setReady - the page is about to unmount.
     } else {
       setReady(true);
     }
   }, [router]);
 
+  useEffect(() => {
+    return () => {
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+    };
+  }, []);
+
   if (!ready) return null;
 
-  const handlePasswordLogin = (e: React.FormEvent) => {
+  const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password || loading) return;
     setLoading(true);
     setError('');
+    setSlowLogin(false);
 
-    // Fire the API call in the background and navigate immediately.
-    // The authenticated layout's spinner covers the in-flight token fetch.
-    // On failure, the gate's catch stores the error; the login page reads
-    // it back via consumeLoginError() when it remounts.
-    const gate = login(username.trim(), password, role)
-      .then(() => {})
-      .catch((err: unknown) => {
-        if (err instanceof ApiError) {
-          if (err.status === 401) {
-            setLoginError('Invalid username or password.');
-          } else if (err.status === 429) {
-            setLoginError('Too many login attempts. Please wait a moment and try again.');
-          } else {
-            setLoginError('Login failed. Please try again.');
-          }
+    slowTimerRef.current = setTimeout(() => setSlowLogin(true), 6000);
+
+    try {
+      await login(username.trim(), password, role);
+      router.replace('/new');
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        if (err.status === 401) {
+          setError('Invalid username or password.');
+        } else if (err.status === 429) {
+          setError('Too many login attempts. Please wait a moment and try again.');
         } else {
-          setLoginError('Network error. Please check your connection and try again.');
+          setError('Login failed. Please try again.');
         }
-      });
-    setLoginGate(gate);
-    router.replace('/new');
+      } else {
+        setError('Network error. Please check your connection and try again.');
+      }
+    } finally {
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+      setSlowLogin(false);
+      setLoading(false);
+    }
   };
 
   return (
@@ -174,6 +177,11 @@ export default function LoginPage() {
               >
                 {loading ? 'Signing in…' : 'Sign in'}
               </Button>
+              {slowLogin && (
+                <p className="text-muted-foreground text-xs text-center">
+                  Still connecting — the server may be waking up…
+                </p>
+              )}
             </form>
 
             <div className="relative flex items-center gap-3">

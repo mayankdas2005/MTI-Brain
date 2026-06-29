@@ -69,6 +69,7 @@ export function copyAsEmail(markdown: string): void {
   document.body.removeChild(el);
 }
 import { useTTS } from '@/lib/hooks/use-tts';
+import { logout } from '@/lib/auth';
 import {
   SlashCommandPopover,
   matchSlashCommands,
@@ -366,6 +367,9 @@ export function ChatComposer() {
           break;
         case 'dark':
           setTheme('dark');
+          break;
+        case 'logout':
+          void logout();
           break;
       }
     },

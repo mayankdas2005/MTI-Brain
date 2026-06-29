@@ -19,9 +19,12 @@ server:
   cors_origins:
     - "http://localhost:3000"
     - "http://127.0.0.1:3000"
+    - "http://0.0.0.0:3000"
     - "http://100.21.28.155:3000"
     - "https://ai.milestnapps.com"
-    - "http://0.0.0.0:3000"
+    - "http://mtibrain.mtitechlab.com"
+    - "https://mtibrain.mtitechlab.com"
+
 
 auth:
   jwt_algorithm: HS256
