@@ -58,10 +58,14 @@ def search_query_templates_fulltext(query_text: str) -> list[dict]:
            qt.template_confidence AS template_confidence,
            score LIMIT 5
     """
-    t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
-    logger.debug("neo4j | fn=search_query_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
-    return [dict(r) for r in results]
+    try:
+        t0 = time.monotonic()
+        results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
+        logger.debug("neo4j | fn=search_query_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_query_templates_fulltext fts failed | error={}", e)
+        return []
 
 
 @neo4j_breaker
@@ -537,10 +541,14 @@ def search_business_terms_fulltext(query_text: str) -> list[dict]:
            bt.term_type AS term_type, bt.description AS description,
            score LIMIT 5
     """
-    t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
-    logger.debug("neo4j | fn=search_business_terms_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
-    return [dict(r) for r in results]
+    try:
+        t0 = time.monotonic()
+        results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
+        logger.debug("neo4j | fn=search_business_terms_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_business_terms_fulltext fts failed | error={}", e)
+        return []
 
 
 @neo4j_breaker

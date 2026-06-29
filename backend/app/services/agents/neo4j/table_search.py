@@ -10,6 +10,10 @@ from app.core.logger import logger
 from .client import _neo4j_run
 
 _LUCENE_SAFE = _re.compile(r'[^\w\s]', _re.UNICODE)
+# Lucene fuzzy clauses = sum of vocabulary terms within edit-distance-1 of each
+# query token.  Empirically ~100 expansions/token against this index vocabulary.
+# Neo4j default maxClauseCount = 1024.  Cap at 8 tokens → ≤800 clauses.
+_MAX_FTS_TOKENS = 8
 
 
 def _fuzzy_fts(text: str, min_len: int = 3) -> str:
@@ -18,6 +22,9 @@ def _fuzzy_fts(text: str, min_len: int = 3) -> str:
     Strips any non-word, non-whitespace Unicode character (em-dashes, curly
     quotes, math operators, etc.) so user input of any form doesn't produce a
     ParseException in the Neo4j FTS index.
+
+    Token count is capped at _MAX_FTS_TOKENS to prevent TooManyClauses errors
+    when long natural-language questions are passed as the FTS query.
     """
     tokens = []
     for raw in text.split():
@@ -25,6 +32,8 @@ def _fuzzy_fts(text: str, min_len: int = 3) -> str:
         if not t:
             continue
         tokens.append(t + "~" if len(t) >= min_len else t)
+        if len(tokens) >= _MAX_FTS_TOKENS:
+            break
     return " ".join(tokens) if tokens else text
 
 # Shared RETURN clause for table properties — used by all table search functions.
@@ -69,10 +78,14 @@ def search_tables_fulltext(query_text: str) -> list[dict]:
     YIELD node AS t, score
     RETURN {_TABLE_RETURN}, score, 'direct_fts' AS matched_via LIMIT 10
     """
-    t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
-    logger.debug("neo4j | fn=search_tables_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
-    return [dict(r) for r in results]
+    try:
+        t0 = time.monotonic()
+        results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
+        logger.debug("neo4j | fn=search_tables_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_tables_fulltext fts failed | error={}", e)
+        return []
 
 
 @neo4j_breaker
