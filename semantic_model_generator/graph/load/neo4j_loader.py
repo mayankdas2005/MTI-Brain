@@ -553,6 +553,18 @@ class Neo4jLoader:
                 t.updated_at         = $now
         """, rows, now=now)
 
+    def mark_tables_enrichment_failed(self, fqns: list[str], now: str):
+        """Mark tables whose LLM enrichment failed so they are visible in Neo4j
+        and will be retried on the next pipeline run."""
+        if not fqns:
+            return
+        self._run("""
+            UNWIND $fqns AS fqn
+            MATCH (t:Table {fqn: fqn})
+            SET t.enrichment_status = 'failed',
+                t.updated_at        = $now
+        """, fqns=fqns, now=now)
+
     def load_relationship_descriptions(self, descriptions: list[dict]):
         """Write LLM-generated description onto JOINS_TO edges.
         Each dict: {from_table, from_col, to_table, to_col, description}."""

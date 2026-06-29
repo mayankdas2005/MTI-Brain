@@ -85,6 +85,7 @@ python -m semantic_model_generator.graph.pipeline [--steps STEPS] [--dry-run] [-
 | `--reset-glossary` | Clear only the glossary cache from the checkpoint so glossary re-enriches |
 | `--reset-communities` | Clear only the community descriptions cache so communities re-enrich |
 | `--tables` | Comma-separated fully-qualified table names (`schema.table`) to restrict extraction and enrichment to a subset |
+| `--extend` | Run all steps from the step given in `--steps` onwards (inclusive). Requires exactly one step name in `--steps`. |
 
 ### Examples
 
@@ -106,6 +107,9 @@ python -m semantic_model_generator.graph.pipeline --steps enrich,embed --reset-c
 
 # Process only specific tables
 python -m semantic_model_generator.graph.pipeline --tables lpp.company,lpp.bank_account
+
+# Re-run from enrich to the end (enrich, paths, rollup, intents, glossary, templates, embed)
+python -m semantic_model_generator.graph.pipeline --steps enrich --extend
 ```
 
 ---

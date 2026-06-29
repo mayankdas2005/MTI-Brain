@@ -719,7 +719,10 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             ))
             tm_by_fqn[tm.fqn] = tm
 
-        tables_not_cached = [t for t in tables_llm_input if t["fqn"] not in table_cache]
+        tables_not_cached = [
+            t for t in tables_llm_input
+            if t["fqn"] not in table_cache or table_cache[t["fqn"]].get("_enrichment_failed")
+        ]
         total_t = len(tables_not_cached)
         log.info("ENRICH Phase 2: %d to enrich, %d from cache.",
                  total_t, len(tables_llm_input) - total_t)
@@ -733,10 +736,12 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             stats["llm_calls"] += len(batch)
 
             pending_tbl_rows = []
+            failed_fqns = []
             for tbl_input in batch:
                 fqn = tbl_input["fqn"]
                 enr = table_cache.get(fqn, {})
                 if enr.get("_enrichment_failed"):
+                    failed_fqns.append(fqn)
                     continue
                 tm_obj = tm_by_fqn.get(fqn)
                 desc   = enr.get("description", "")
@@ -753,6 +758,9 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
 
             if pending_tbl_rows:
                 loader.batch_update_table_enrichment(pending_tbl_rows, _NOW())
+            if failed_fqns:
+                loader.mark_tables_enrichment_failed(failed_fqns, _NOW())
+                log.warning("ENRICH Phase 2: %d tables marked failed: %s", len(failed_fqns), failed_fqns)
             checkpoint["tables"] = table_cache
             _save_checkpoint(checkpoint)
             done_count = min(batch_start + TABLE_BATCH, total_t)
@@ -1532,9 +1540,18 @@ def main():
         help="Comma-separated FQNs to update (e.g. lpp.ap_invoice,lpp.third_party). "
              "Scopes extract/infer/load/enrich/embed to only these tables.",
     )
+    parser.add_argument(
+        "--extend",
+        action="store_true",
+        help="Run all steps from the step given in --steps onwards (inclusive). "
+             "Requires --steps to name exactly one step.",
+    )
     args = parser.parse_args()
 
     if args.steps.strip().lower() == "all":
+        if args.extend:
+            print("--extend cannot be used with --steps all.", file=sys.stderr)
+            sys.exit(1)
         steps = _ALL_STEPS
     else:
         steps = [s.strip() for s in args.steps.split(",")]
@@ -1542,6 +1559,12 @@ def main():
         if invalid:
             print(f"Unknown steps: {invalid}. Valid: {_ALL_STEPS}", file=sys.stderr)
             sys.exit(1)
+        if args.extend:
+            if len(steps) != 1:
+                print("--extend requires exactly one step in --steps.", file=sys.stderr)
+                sys.exit(1)
+            start_idx = _ALL_STEPS.index(steps[0])
+            steps = _ALL_STEPS[start_idx:]
 
     table_filter = [t.strip() for t in args.tables.split(",")] if args.tables else None
 
