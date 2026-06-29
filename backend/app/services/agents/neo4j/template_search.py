@@ -58,10 +58,14 @@ def search_query_templates_fulltext(query_text: str) -> list[dict]:
            qt.template_confidence AS template_confidence,
            score LIMIT 5
     """
-    t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
-    logger.debug("neo4j | fn=search_query_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
-    return [dict(r) for r in results]
+    try:
+        t0 = time.monotonic()
+        results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
+        logger.debug("neo4j | fn=search_query_templates_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_query_templates_fulltext fts failed | error={}", e)
+        return []
 
 
 @neo4j_breaker
@@ -89,6 +93,7 @@ def search_query_patterns(embedding: list[float], threshold: float = 0.65, limit
     SEARCH qp IN (VECTOR INDEX `querypattern_cohere_embedding` FOR $embedding LIMIT {limit})
     SCORE AS score
     WHERE score > $threshold
+      AND qp.is_enabled = true
     WITH qp, score,
          score
          * (1.0 + log(1.0 + coalesce(qp.occurrence_count, 1)) * 0.1)
@@ -109,6 +114,13 @@ def search_query_patterns(embedding: list[float], threshold: float = 0.65, limit
            qp.recompile_count AS recompile_count,
            qp.repair_count AS repair_count,
            qp.promotion_status AS promotion_status,
+           qp.occurrence_count AS occurrence_count,
+           qp.liked_count AS liked_count,
+           coalesce(qp.cross_thread_likes, 0) AS cross_thread_likes,
+           coalesce(qp.cross_thread_dislikes, 0) AS cross_thread_dislikes,
+           CASE WHEN qp.last_seen IS NOT NULL
+                THEN duration.between(qp.last_seen, datetime()).days
+                ELSE null END AS last_seen_days,
            score AS raw_score,
            boosted_score AS score
     ORDER BY boosted_score DESC
@@ -121,6 +133,86 @@ def search_query_patterns(embedding: list[float], threshold: float = 0.65, limit
     except Exception as e:
         logger.warning("neo4j | search_query_patterns failed (no patterns yet) | error={}", e)
         return []
+
+
+@neo4j_breaker
+def search_query_patterns_fts(question: str, limit: int = 5) -> list[dict]:
+    """Fulltext search for QueryPatterns by question_text."""
+    cypher = f"""
+    CALL db.index.fulltext.queryNodes('querypattern_question_fts', $q)
+    YIELD node AS qp, score
+    WHERE qp.is_enabled = true
+      AND coalesce(qp.promotion_status, 'active') <> 'demoted'
+      AND coalesce(qp.occurrence_count, 0) >= 1
+    RETURN qp.id AS id, qp.question_text AS question_text,
+           qp.sql_text AS sql_text,
+           qp.sql_cte_outline AS sql_cte_outline,
+           qp.join_outline AS join_outline,
+           qp.filter_summary AS filter_summary,
+           qp.measure_summary AS measure_summary,
+           qp.dimension_summary AS dimension_summary,
+           qp.directive_summary AS directive_summary,
+           qp.tables_used AS tables_used,
+           qp.intent AS intent, qp.complexity AS complexity,
+           qp.recompile_count AS recompile_count,
+           qp.repair_count AS repair_count,
+           qp.promotion_status AS promotion_status,
+           qp.occurrence_count AS occurrence_count,
+           qp.liked_count AS liked_count,
+           coalesce(qp.cross_thread_likes, 0) AS cross_thread_likes,
+           coalesce(qp.cross_thread_dislikes, 0) AS cross_thread_dislikes,
+           null AS last_seen_days,
+           score AS raw_score,
+           score AS score
+    ORDER BY score DESC LIMIT {limit}
+    """
+    t0 = time.monotonic()
+    try:
+        results = _neo4j_run(cypher, {"q": _fuzzy_fts(question)})
+        logger.debug("neo4j | fn=search_query_patterns_fts | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_query_patterns_fts failed | error={}", e)
+        return []
+
+
+def search_query_patterns_hybrid(
+    embedding: list[float],
+    question: str,
+    threshold: float = 0.65,
+    limit: int = 5,
+) -> list[dict]:
+    """Hybrid QueryPattern retrieval: vector cosine + FTS merged by best score per pattern id.
+
+    Vector scores are on [0,1] (cosine). FTS scores are Lucene BM25 (unbounded above 1).
+    Normalise FTS to [0,1] by capping at 5.0 before merging so neither signal dominates.
+    """
+    vec_results = search_query_patterns(embedding, threshold=threshold, limit=limit)
+    fts_results = search_query_patterns_fts(question, limit=limit)
+
+    _FTS_CAP = 5.0
+    merged: dict[str, dict] = {}
+    for r in vec_results:
+        pid = r.get("id")
+        if pid:
+            merged[pid] = dict(r)
+
+    for r in fts_results:
+        pid = r.get("id")
+        if not pid:
+            continue
+        fts_norm = min((r.get("raw_score") or 0.0), _FTS_CAP) / _FTS_CAP
+        if pid in merged:
+            if fts_norm > merged[pid].get("score", 0):
+                merged[pid]["score"] = fts_norm
+        else:
+            entry = dict(r)
+            entry["score"] = fts_norm
+            merged[pid] = entry
+
+    results = sorted(merged.values(), key=lambda x: x.get("score", 0), reverse=True)[:limit]
+    logger.debug("neo4j | fn=search_query_patterns_hybrid | vec={} | fts={} | merged={}", len(vec_results), len(fts_results), len(results))
+    return results
 
 
 def find_canonical_pattern_id(
@@ -160,6 +252,133 @@ def find_canonical_pattern_id(
 
 
 @neo4j_breaker
+def search_query_patterns_by_tables(
+    tables: list[str],
+    limit: int = 5,
+    min_overlap: float = 0.5,
+) -> list[dict]:
+    """Table-based QueryPattern lookup — Path B of hybrid retrieval.
+
+    Finds patterns where >= min_overlap fraction of the stored pattern's tables
+    are present in the current anchor_tables list.  Order-independent set
+    intersection: works for subsets (current has 2, pattern has 3 → 0.67)
+    and supersets (current has 4, pattern has 3 → 1.0).
+
+    Runs in parallel with the vector search; results are merged by the caller.
+    """
+    if not tables:
+        return []
+    query = f"""
+    MATCH (qp:QueryPattern)
+    WHERE qp.is_enabled = true
+      AND size(qp.tables_used) > 0
+      AND ANY(t IN qp.tables_used WHERE t IN $tables)
+      AND coalesce(qp.promotion_status, 'active') <> 'demoted'
+    WITH qp,
+         toFloat(size([t IN qp.tables_used WHERE t IN $tables]))
+         / size(qp.tables_used) AS table_overlap
+    WHERE table_overlap >= $min_overlap
+    WITH qp, table_overlap,
+         table_overlap
+         * (1.0 + log(1.0 + coalesce(qp.occurrence_count, 1)) * 0.1)
+         * CASE WHEN qp.last_seen IS NOT NULL
+                  AND duration.between(qp.last_seen, datetime()).days < 30
+                THEN 1.1 ELSE 1.0 END
+         AS boosted_score
+    RETURN qp.id AS id, qp.question_text AS question_text,
+           qp.sql_text AS sql_text,
+           qp.sql_cte_outline AS sql_cte_outline,
+           qp.join_outline AS join_outline,
+           qp.filter_summary AS filter_summary,
+           qp.measure_summary AS measure_summary,
+           qp.dimension_summary AS dimension_summary,
+           qp.directive_summary AS directive_summary,
+           qp.tables_used AS tables_used,
+           qp.intent AS intent, qp.complexity AS complexity,
+           qp.recompile_count AS recompile_count,
+           qp.repair_count AS repair_count,
+           qp.promotion_status AS promotion_status,
+           qp.occurrence_count AS occurrence_count,
+           qp.liked_count AS liked_count,
+           coalesce(qp.cross_thread_likes, 0) AS cross_thread_likes,
+           coalesce(qp.cross_thread_dislikes, 0) AS cross_thread_dislikes,
+           CASE WHEN qp.last_seen IS NOT NULL
+                THEN duration.between(qp.last_seen, datetime()).days
+                ELSE null END AS last_seen_days,
+           table_overlap AS raw_score,
+           boosted_score AS score
+    ORDER BY boosted_score DESC
+    LIMIT {limit}
+    """
+    t0 = time.monotonic()
+    try:
+        results = _neo4j_run(query, {"tables": tables, "min_overlap": min_overlap})
+        logger.debug(
+            "neo4j | fn=search_query_patterns_by_tables | ms={:.0f} | hits={}",
+            (time.monotonic() - t0) * 1000, len(results),
+        )
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_query_patterns_by_tables failed | error={}", e)
+        return []
+
+
+@neo4j_breaker
+def search_anti_patterns_by_tables(
+    tables: list[str],
+    limit: int = 5,
+    min_overlap: float = 0.5,
+) -> list[dict]:
+    """Table-based AntiPattern lookup — Path B of hybrid retrieval.
+
+    tables_involved is a comma-separated string on AntiPattern nodes.
+    Splits on comma, trims whitespace, then applies the same set-overlap logic
+    as search_query_patterns_by_tables.
+    """
+    if not tables:
+        return []
+    query = f"""
+    MATCH (ap:AntiPattern)
+    WHERE ap.is_enabled = true
+      AND ap.tables_involved IS NOT NULL AND ap.tables_involved <> ''
+      AND (ap.success_count IS NULL OR ap.success_count < 3)
+    WITH ap, [t IN split(ap.tables_involved, ',') | trim(t)] AS ap_tables
+    WHERE ANY(t IN ap_tables WHERE t IN $tables)
+    WITH ap, ap_tables,
+         toFloat(size([t IN ap_tables WHERE t IN $tables]))
+         / size(ap_tables) AS table_overlap
+    WHERE table_overlap >= $min_overlap
+    WITH ap, table_overlap,
+         table_overlap
+         * (1.0 + log(1.0 + coalesce(ap.occurrence_count, 1)) * 0.15)
+         * CASE WHEN ap.last_seen IS NOT NULL
+                  AND duration.between(ap.last_seen, datetime()).days < 30
+                THEN 1.1 ELSE 1.0 END
+         AS boosted_score
+    RETURN ap.id AS id, ap.question_text AS query_text,
+           ap.error_type AS error_type,
+           coalesce(ap.error_detail, ap.error_summary, '') AS error_summary,
+           ap.failing_element AS failing_element, ap.complexity AS complexity,
+           ap.occurrence_count AS occurrence_count,
+           ap.tables_involved AS tables_involved,
+           boosted_score AS score
+    ORDER BY boosted_score DESC
+    LIMIT {limit}
+    """
+    t0 = time.monotonic()
+    try:
+        results = _neo4j_run(query, {"tables": tables, "min_overlap": min_overlap})
+        logger.debug(
+            "neo4j | fn=search_anti_patterns_by_tables | ms={:.0f} | hits={}",
+            (time.monotonic() - t0) * 1000, len(results),
+        )
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_anti_patterns_by_tables failed | error={}", e)
+        return []
+
+
+@neo4j_breaker
 def get_query_patterns_by_ids(ids: list[str]) -> list[dict]:
     if not ids:
         return []
@@ -179,6 +398,8 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
     SEARCH ap IN (VECTOR INDEX `antipattern_cohere_embedding` FOR $embedding LIMIT 5)
     SCORE AS score
     WHERE score > 0.65
+      AND ap.is_enabled = true
+      AND (ap.success_count IS NULL OR ap.success_count < 3)
     WITH ap, score,
          score
          * (1.0 + log(1.0 + coalesce(ap.occurrence_count, 1)) * 0.15)
@@ -190,6 +411,7 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
            ap.error_type AS error_type, coalesce(ap.error_detail, ap.error_summary, '') AS error_summary,
            ap.failing_element AS failing_element, ap.complexity AS complexity,
            ap.occurrence_count AS occurrence_count,
+           ap.tables_involved AS tables_involved,
            boosted_score AS score
     ORDER BY boosted_score DESC
     """
@@ -201,6 +423,67 @@ def search_anti_patterns(embedding: list[float]) -> list[dict]:
     except Exception as e:
         logger.warning("neo4j | search_anti_patterns failed (no patterns yet) | error={}", e)
         return []
+
+
+@neo4j_breaker
+def search_anti_patterns_fts(question: str, limit: int = 5) -> list[dict]:
+    """Fulltext search for AntiPatterns by question_text."""
+    cypher = f"""
+    CALL db.index.fulltext.queryNodes('antipattern_question_fts', $q)
+    YIELD node AS ap, score
+    WHERE ap.is_enabled = true
+      AND (ap.success_count IS NULL OR ap.success_count < 3)
+    RETURN ap.id AS id, ap.question_text AS query_text,
+           ap.error_type AS error_type,
+           coalesce(ap.error_detail, ap.error_summary, '') AS error_summary,
+           ap.failing_element AS failing_element, ap.complexity AS complexity,
+           ap.occurrence_count AS occurrence_count,
+           ap.tables_involved AS tables_involved,
+           score AS score
+    ORDER BY score DESC LIMIT {limit}
+    """
+    t0 = time.monotonic()
+    try:
+        results = _neo4j_run(cypher, {"q": _fuzzy_fts(question)})
+        logger.debug("neo4j | fn=search_anti_patterns_fts | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_anti_patterns_fts failed | error={}", e)
+        return []
+
+
+def search_anti_patterns_hybrid(
+    embedding: list[float],
+    question: str,
+    limit: int = 5,
+) -> list[dict]:
+    """Hybrid AntiPattern retrieval: vector cosine + FTS merged by best score per id."""
+    vec_results = search_anti_patterns(embedding)
+    fts_results = search_anti_patterns_fts(question, limit=limit)
+
+    _FTS_CAP = 5.0
+    merged: dict[str, dict] = {}
+    for r in vec_results:
+        pid = r.get("id")
+        if pid:
+            merged[pid] = dict(r)
+
+    for r in fts_results:
+        pid = r.get("id")
+        if not pid:
+            continue
+        fts_norm = min((r.get("score") or 0.0), _FTS_CAP) / _FTS_CAP
+        if pid in merged:
+            if fts_norm > merged[pid].get("score", 0):
+                merged[pid]["score"] = fts_norm
+        else:
+            entry = dict(r)
+            entry["score"] = fts_norm
+            merged[pid] = entry
+
+    results = sorted(merged.values(), key=lambda x: x.get("score", 0), reverse=True)[:limit]
+    logger.debug("neo4j | fn=search_anti_patterns_hybrid | vec={} | fts={} | merged={}", len(vec_results), len(fts_results), len(results))
+    return results
 
 
 @neo4j_breaker
@@ -258,10 +541,14 @@ def search_business_terms_fulltext(query_text: str) -> list[dict]:
            bt.term_type AS term_type, bt.description AS description,
            score LIMIT 5
     """
-    t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
-    logger.debug("neo4j | fn=search_business_terms_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
-    return [dict(r) for r in results]
+    try:
+        t0 = time.monotonic()
+        results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
+        logger.debug("neo4j | fn=search_business_terms_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_business_terms_fulltext fts failed | error={}", e)
+        return []
 
 
 @neo4j_breaker

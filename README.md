@@ -250,9 +250,9 @@ docker compose up -d
 docker compose run --rm backend alembic upgrade head
 ```
 
-Open `http://localhost` and log in with `admin` / `admin123`.
+Open `http://localhost` and log in with an existing DB user.
 
-> **Security:** Default credentials are hardcoded for development only. Change them before any shared or production deployment.
+> **Security:** Do not use hardcoded credentials. Store only bcrypt password hashes in `mti_brain_user.password`.
 
 ### Path B — Manual development
 
@@ -273,7 +273,7 @@ cp frontend/.env.example frontend/.env
 cd frontend && npm install --legacy-peer-deps && npm run dev
 ```
 
-Open `http://localhost:3000` and log in with `admin` / `admin123`.
+Open `http://localhost:3000` and log in with an existing DB user.
 
 > **Windows dev note:** Use `127.0.0.1:8000` not `localhost:8000` in `NEXT_PUBLIC_API_URL`. VS Code / VS Code Insiders may intercept `localhost:8000` via its port-forwarding feature, silently blocking all backend traffic. Check VS Code's Ports panel (`View → Ports`) and stop any forwarding on port 8000 if it appears. Alternatively run the backend on `--port 8001` and update the env accordingly.
 

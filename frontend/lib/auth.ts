@@ -150,10 +150,10 @@ export function consumeLoginError(): string | null {
 
 // ─── Login ───
 
-export async function login(username: string, password: string): Promise<void> {
+export async function login(username: string, password: string, role: 'admin' | 'user'): Promise<void> {
   const data = await apiFetch<{ token: string; user: User }>('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, role }),
   });
   setStoredToken(data.token);
   setStoredUser(data.user);
@@ -192,6 +192,7 @@ export async function logout(): Promise<void> {
     // Analytics reset is best-effort.
   }
   if (typeof window !== 'undefined') {
-    window.location.href = '/';
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+    window.location.href = basePath || '/';
   }
 }

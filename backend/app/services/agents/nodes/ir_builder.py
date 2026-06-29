@@ -753,8 +753,21 @@ def _resolve_filter_values(
 
         partials = [fv for fv in filter_values if raw_lower in str(fv).lower()]
         if partials:
+            _sem = (col_meta.get("semantic_type") or "").lower()
+            _categorical = _sem in {"dimension", "flag", "code", "identifier", "category"}
+            if _categorical:
+                # Never substring-match a categorical/code/dimension column — defer to
+                # filter_resolver, which grounds it exactly or flags low-confidence.
+                # (The validator also blocks substring predicates on code columns.)
+                logger.info(
+                    "ir_builder | filter partial DEFERRED (categorical) | {}.{} | {} -> resolver",
+                    table_fqn, column, raw,
+                )
+                resolved.append(raw)
+                modes.append("unknown")
+                continue
             logger.info(
-                "ir_builder | filter partial (ILIKE) | {}.{} | {} -> candidates={}",
+                "ir_builder | filter partial (ILIKE, free-text) | {}.{} | {} -> candidates={}",
                 table_fqn, column, raw, partials[:3],
             )
             resolved.append(f"%{raw}%")
@@ -805,6 +818,8 @@ def _build_filter_specs(
             continue
         raw_op = (f.get("operator") or "=").strip()
         raw_value = f.get("raw_value", "")
+        if not isinstance(raw_value, str):
+            raw_value = str(raw_value)
         is_comparison = raw_op in _COMPARISON_OPS
         is_having = (f["table_fqn"], col_name) in agg_measure_cols
 
@@ -829,20 +844,24 @@ def _build_filter_specs(
             for _alias_str in (_col_meta.get("value_aliases") or []):
                 if " -> " in str(_alias_str):
                     _known.add(str(_alias_str).split(" -> ")[0].strip())
-            if _known and (db_value_hint in _known or any(k.lower() == db_value_hint.lower() for k in _known)):
-                _enum_guard = len(_known) <= 10
-                _op = "=" if _enum_guard else "ILIKE"
-                _val = db_value_hint if _enum_guard else f"%{db_value_hint}%"
-                filters.append(FilterSpec(
-                    table_fqn=f["table_fqn"],
-                    column_name=col_name,
-                    operator=_op,
-                    value=_val,
-                    raw_user_value=raw_value,
-                    resolved=True,
-                    is_having=is_having,
-                ))
-                continue
+            if _known:
+                _matched = next(
+                    (k for k in _known if k == db_value_hint or k.lower() == db_value_hint.lower()),
+                    None,
+                )
+                if _matched:
+                    # Grounded exact value from the specialist — always equality, regardless
+                    # of vocabulary size. A known discrete value is never substring/ILIKE-matched.
+                    filters.append(FilterSpec(
+                        table_fqn=f["table_fqn"],
+                        column_name=col_name,
+                        operator="=",
+                        value=_matched,
+                        raw_user_value=raw_value,
+                        resolved=True,
+                        is_having=is_having,
+                    ))
+                    continue
             # db_value not in known vocabulary — discard hint, fall through to existing resolution
 
         already_a_pattern = raw_op in ("LIKE", "ILIKE") and isinstance(raw_value, str) and "%" in raw_value

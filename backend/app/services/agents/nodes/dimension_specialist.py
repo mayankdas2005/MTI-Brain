@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -17,7 +18,7 @@ from app.services.agents.helpers import (
     build_mission_context,
     build_refinement_section,
 )
-from app.services.agents.prompts import DIMENSION_SPECIALIST_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import DIMENSION_SPECIALIST_HUMAN, DIMENSION_SPECIALIST_SYSTEM, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 
@@ -160,25 +161,55 @@ async def dimension_specialist(state: AnalyticsState, config: RunnableConfig) ->
                 f"<prior_failed>\nSimilar questions previously had SQL errors (interpretation may still be correct):\n{_anti_sql_lines}\n</prior_failed>"
             )
 
-    prompt = DIMENSION_SPECIALIST_PROMPT.format_messages(
-        question=state.get("effective_question") or state["question"],
-        intent_summary=intent_summary,
-        groupable_columns_section=_build_groupable_columns_section(enriched_schema),
-        joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
-        refinement_section=build_refinement_section(state, role="dimensions"),
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        measures_summary=measures_summary,
-        query_plan_section=_build_query_plan_section(state.get("query_plan")),
-        entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
-        prior_verified_section=prior_verified_section,
-        prior_trace_row=prior_trace_row,
+    logger.info(
+        "dimension_specialist | pattern_injection | thread={} | tier={} | dimension_summary={} | anti_count={} | anti_types={} | section_built={}",
+        state.get("thread_id"),
+        _tier or "none",
+        "present" if (_pat and _pat.get("dimension_summary")) else "absent",
+        len(_anti),
+        [a.get("error_type") for a in _anti],
+        bool(prior_verified_section),
     )
+
+    from app.services.agents.helpers import build_instructions_section
+    prompt = [
+        SystemMessage(content=DIMENSION_SPECIALIST_SYSTEM.format(
+            question=state.get("effective_question") or state["question"],
+            intent_summary=intent_summary,
+            groupable_columns_section=_build_groupable_columns_section(enriched_schema),
+            joinable_table_graph=build_joinable_table_graph_section(state.get("anchor_join_paths")),
+            refinement_section=build_refinement_section(state, role="dimensions"),
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            measures_summary=measures_summary,
+            query_plan_section=_build_query_plan_section(state.get("query_plan")),
+            entity_tokens_section=_build_entity_tokens_section(_effective_entity_tokens),
+            prior_verified_section=prior_verified_section,
+            prior_trace_row=prior_trace_row,
+            instructions_section=build_instructions_section(state, "dimension and grouping selector"),
+        )),
+        HumanMessage(content=DIMENSION_SPECIALIST_HUMAN),
+    ]
     _mission = build_mission_context(
         state,
         role="Identify grouping dimensions and temporal grain(s) for the query",
         feeds="intent_assembler → directive_writer (dimension_intent, temporal_grains)",
     )
-    prompt[0].content = _mission + "\n\n" + prompt[0].content
+    from app.services.agents.helpers import format_prior_context_block
+    _prior_ctx_block = format_prior_context_block(
+        state.get("prior_context_window") or state.get("prior_execution_context")
+    )
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    _feedback_block = _fb_for_node(state.get("feedback_context") or [], "sql")
+    _feedback_section = (
+        f"LEARNED SQL PREFERENCES (apply where relevant to dimension selection):\n<feedback_context>{_feedback_block}</feedback_context>\n"
+        if _feedback_block else ""
+    )
+    prompt[0].content = (
+        _mission + "\n\n"
+        + (_prior_ctx_block + "\n" if _prior_ctx_block else "")
+        + (_feedback_section if _feedback_section else "")
+        + prompt[0].content
+    )
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

@@ -58,6 +58,8 @@ export interface PreferenceSummary {
   thread_feedback_count: number;
   similar_feedback_count: number;
   feedback_applied: boolean;
+  distilled_active?: boolean;
+  distilled_rules?: string[];
   feedback_items: PreferenceFeedbackItem[];
 }
 
@@ -254,6 +256,7 @@ export interface EditRequest {
 export interface FeedbackRequest {
   liked: boolean;
   comment?: string;
+  feedback_type?: string;
 }
 
 export interface RenameRequest {

@@ -4,11 +4,12 @@ Max 2 clarifications per turn. Loops back to intent_resolver after response.
 """
 
 from __future__ import annotations
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import parse_tag
-from app.services.agents.prompts import CLARIFICATION_PROMPT
+from app.services.agents.prompts import CLARIFICATION_HUMAN, CLARIFICATION_SYSTEM
 from app.services.agents.state import AnalyticsState
 
 
@@ -19,20 +20,24 @@ async def clarification(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     semantic_context = state.get("semantic_context") or {}
     session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
-    recent_msgs = _format_recent_messages(state.get("messages", []))
-    conversation_context = session_summary if session_summary else recent_msgs
+    # Use DB-loaded conversation_history (bypasses checkpoint messages)
+    conversation_context = state.get("conversation_history") or session_summary or _format_recent_messages(state.get("messages", []))
 
     conversation_section = (
         f"CONVERSATION CONTEXT:\n<conversation_context>{conversation_context}</conversation_context>"
         if conversation_context else ""
     )
 
-    prompt = CLARIFICATION_PROMPT.format_messages(
-        question=state["question"],
-        persona=state.get("persona", "analyst"),
-        clarification_reason=reason,
-        conversation_section=conversation_section,
-    )
+    prompt = [
+        SystemMessage(
+            content=CLARIFICATION_SYSTEM.format(
+                persona=state.get("persona", "analyst"),
+                clarification_reason=reason,
+                conversation_section=conversation_section,
+            )
+        ),
+        HumanMessage(content=CLARIFICATION_HUMAN.format(question=state["question"])),
+    ]
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker

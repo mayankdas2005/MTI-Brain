@@ -23,13 +23,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 
 class MTIBrainExecutionLog(Base):
-    """One row per pipeline run (data_query type only).
+    """One row per pipeline run (analytics type only).
 
     Attributes:
         id: Primary key UUID.
         thread_id: Conversation thread (matches LangGraph thread_id).
         question: The user's natural-language question.
-        question_type: Classifier output (data_query, general_chat, rejected).
+        question_type: Classifier output (analytics, general_chat, rejected).
         schema_fqn: Chosen schema (e.g. ``datawarehouse.dw_ecard_app``).
         tables_used: Tables referenced in the final SQL.
         sql: The final SQL that was executed.
@@ -54,7 +54,7 @@ class MTIBrainExecutionLog(Base):
     )
     question: Mapped[str] = mapped_column(Text, nullable=False)
     question_type: Mapped[str] = mapped_column(
-        String(30), nullable=False, default="data_query"
+        String(30), nullable=False, default="analytics"
     )
     schema_fqn: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tables_used: Mapped[list[str] | None] = mapped_column(

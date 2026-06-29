@@ -10,7 +10,13 @@ import re as _re
 
 from app.core.logger import logger
 from app.services.agents.helpers import format_sql
-from app.services.agents.sql_validator_logic import try_fix_cte_refs, validate_sql, validate_column_names, validate_filter_types
+from app.services.agents.sql_validator_logic import (
+    try_fix_cte_refs,
+    validate_sql,
+    validate_column_names,
+    validate_filter_types,
+    validate_entity_filter_grounding,
+)
 from app.services.agents.state import AnalyticsState
 
 
@@ -118,6 +124,17 @@ async def sql_validator(state: AnalyticsState, config: RunnableConfig) -> dict:
             type_ok, type_err = validate_filter_types(sql, schema_cols)
             if not type_ok:
                 errors.append(f"SQL #{i+1}: {type_err}")
+                failed_indices.append(i)
+
+    if not errors:
+        # Gate 7 — entity-filter grounding: no substring ILIKE/LIKE on code/identifier columns.
+        schema_cols = (state.get("semantic_context") or {}).get("columns", [])
+        for i, sql in enumerate(fixed_sql_list):
+            if i in failed_indices:
+                continue
+            ground_ok, ground_err = validate_entity_filter_grounding(sql, schema_cols)
+            if not ground_ok:
+                errors.append(f"SQL #{i+1}: {ground_err}")
                 failed_indices.append(i)
 
     if not errors:

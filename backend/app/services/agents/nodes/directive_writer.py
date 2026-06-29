@@ -19,6 +19,7 @@ directive output format unchanged — same field names, same tag structure.
 
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -26,7 +27,8 @@ from app.core.logger import logger
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_DEEP,
     REASONING_DIRECTIVE_NORMAL,
-    SCHEMA_GAP_DETECTOR_PROMPT,
+    SCHEMA_GAP_DETECTOR_HUMAN,
+    SCHEMA_GAP_DETECTOR_SYSTEM,
 )
 from app.services.agents.state import AnalyticsState
 
@@ -317,13 +319,24 @@ async def _detect_schema_gaps(state: dict, config: RunnableConfig) -> str:
 
         llm = get_llm("fast")
 
-        prompt = SCHEMA_GAP_DETECTOR_PROMPT.format_messages(
-            intent_summary=intent_summary,
-            anchor_schema_section=schema_section,
-            confirmed_join_paths_section=confirmed_joins_section,
-            query_plan_section=query_plan_section,
-            reasoning_directive=reasoning,
+        from app.services.agents.helpers import build_instructions_section
+        prompt = [
+            SystemMessage(content=SCHEMA_GAP_DETECTOR_SYSTEM.format(
+                intent_summary=intent_summary,
+                anchor_schema_section=schema_section,
+                confirmed_join_paths_section=confirmed_joins_section,
+                query_plan_section=query_plan_section,
+                reasoning_directive=reasoning,
+                instructions_section=build_instructions_section(state, "schema gap detector"),
+            )),
+            HumanMessage(content=SCHEMA_GAP_DETECTOR_HUMAN),
+        ]
+        from app.services.agents.helpers import format_prior_context_block
+        _prior_ctx_block = format_prior_context_block(
+            state.get("prior_context_window") or state.get("prior_execution_context")
         )
+        if _prior_ctx_block:
+            prompt[0].content = _prior_ctx_block + "\n" + prompt[0].content
 
         @llm_breaker
         async def _call():
@@ -410,9 +423,35 @@ async def directive_writer(state: AnalyticsState, config: RunnableConfig) -> dic
         len(_directive_summary_lines),
     )
 
+    import re as _re
+
+    def _extract_col_tokens(text: str) -> list[str]:
+        tokens = _re.findall(r'\b[a-z][a-z0-9_]{2,}\b', text or "")
+        _stop = {"the", "for", "and", "not", "use", "sum", "avg", "max", "min", "count", "with",
+                 "from", "where", "join", "group", "order", "null", "case", "when", "then", "else",
+                 "are", "all", "any", "has", "its", "was", "per", "this", "that", "each", "into",
+                 "only", "over", "also", "most", "last", "base", "data", "type", "name", "date",
+                 "true", "false", "none", "both", "via", "used", "include", "such"}
+        return list(dict.fromkeys(t for t in tokens if t not in _stop))[:8]
+
+    _tf_period = ""
+    for _tfl in instructions_text.splitlines():
+        if _tfl.strip().upper().startswith("TIME_FILTER:"):
+            _tf_period = _tfl.split(":", 1)[1].strip()
+            break
+
+    _intent_fingerprint: dict = {
+        "anchor_tables": sorted(state.get("anchor_tables_resolved") or []),
+        "measures":      _extract_col_tokens(state.get("_measure_specialist_output") or ""),
+        "filters":       _extract_col_tokens(state.get("filter_directive_hint") or ""),
+        "dimensions":    _extract_col_tokens(state.get("_dimension_specialist_output") or ""),
+        "time_period":   _tf_period,
+    }
+
     return {
         "intent_directive": directive,
         "intent_directive_instructions": instructions_text,
         "intent_directive_context": full_context_text,
         "_directive_summary": directive_summary,
+        "intent_fingerprint": _intent_fingerprint,
     }

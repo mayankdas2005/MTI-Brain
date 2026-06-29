@@ -1,5 +1,27 @@
 [
   {
+    "version": "2026.06.24",
+    "date": "2026-06-24",
+    "entries": [
+      {
+        "type": "new",
+        "title": "Pattern library",
+        "body": "The AI now learns from every successful query. The Pattern Library shows all query patterns and anti-patterns that guide SQL generation and answers — visible under Settings → Pattern Library. Each pattern captures intent, complexity, tables used, how many times it has been seen, and whether any repairs were needed. Anti-patterns are tracked separately so the AI avoids repeating past mistakes. Search by question text to find any pattern in the library."
+      }
+    ]
+  },
+  {
+    "version": "2026.06.22",
+    "date": "2026-06-22",
+    "entries": [
+      {
+        "type": "new",
+        "title": "Standing instructions",
+        "body": "Define rules that apply to every response across all chats — not just one thread. Add instructions like \"always append an acronym table\" or \"prefer CTEs over subqueries\" from Settings → Instructions. Each instruction is sent to the AI before it writes an answer, generates SQL, or builds a chart. Instructions take priority over learned feedback; if they ever conflict, disable the instruction here to let your feedback take over instead. You can also see all the feedback you have given across conversations under Settings → Instructions → What the AI has learned from you."
+      }
+    ]
+  },
+  {
     "version": "2026.06.21",
     "date": "2026-06-21",
     "entries": [

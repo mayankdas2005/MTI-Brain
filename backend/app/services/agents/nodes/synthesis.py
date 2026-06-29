@@ -8,7 +8,7 @@ invents observations that aren't in the result set.
 """
 
 from __future__ import annotations
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 import datetime
@@ -19,8 +19,8 @@ from app.core.logger import logger
 from app.services.agents.helpers import _build_data_profile, build_mission_context, parse_tag
 from app.services.agents.prompts import (
     REASONING_DIRECTIVE_NORMAL, REASONING_DIRECTIVE_DEEP,
-    SYNTHESIS_PROMPT, INSIGHT_EXTRACTOR_PROMPT,
-    _SYNTHESIS_PERSONA_STRUCTURES,
+    SYNTHESIS_HUMAN, SYNTHESIS_SYSTEM, INSIGHT_EXTRACTOR_HUMAN, INSIGHT_EXTRACTOR_SYSTEM,
+    _SYNTHESIS_PERSONA_STRUCTURES, _DEEP_ANALYSIS_PERSONA_RULES,
 )
 from app.services.agents.state import AnalyticsState
 
@@ -64,6 +64,9 @@ DEEP ANALYSIS MODE — additionally extract these two fields into the JSON objec
   a positive headline trend that reverses when the top contributor is excluded.
   Write one concrete sentence with specific numbers if found (e.g. "2 counterparties account for 72%
   of $42M — excluding them, the remainder is flat MoM"). Set to null if no meaningful challenge exists.
+  DEDUP RULE: The concentration_challenge MUST surface a DIFFERENT angle than findings[0].
+  If the concentration insight is already the headline finding, set this field to null — do not repeat it.
+  The purpose is "devil's advocate" — a counterpoint that CHALLENGES the main narrative, not confirms it.
 
 "sql_explanation": In 2-3 sentences of plain business language (no SQL, no column names), describe:
   (1) what was counted or summed and from which business concept, (2) what time window or key filter
@@ -218,34 +221,34 @@ def _build_deep_analysis_sections(
             + rows_md
         )
 
-    # SQL plain English explanation
-    if sql_explanation:
-        parts.append(
-            "\n\n<details>\n<summary>How this was computed</summary>\n\n"
-            + sql_explanation.strip()
-            + "\n</details>"
-        )
+    # # SQL plain English explanation
+    # if sql_explanation:
+    #     parts.append(
+    #         "\n\n<details>\n<summary>How this was computed</summary>\n\n"
+    #         + sql_explanation.strip()
+    #         + "\n</details>"
+    #     )
 
-    # Assumption audit
-    if assumption_lines:
-        bullet_list = "\n".join(f"- {ln}" for ln in assumption_lines)
-        parts.append(
-            "\n\n<details>\n<summary>Assumptions & Scope</summary>\n\n"
-            + bullet_list
-            + "\n</details>"
-        )
+    # # Assumption audit
+    # if assumption_lines:
+    #     bullet_list = "\n".join(f"- {ln}" for ln in assumption_lines)
+    #     parts.append(
+    #         "\n\n<details>\n<summary>Assumptions & Scope</summary>\n\n"
+    #         + bullet_list
+    #         + "\n</details>"
+    #     )
 
-    # Tribal knowledge sources — list documents used so the reader can trace citations
-    if tribal_facts:
-        citation_lines = [
-            f"- **{f.get('label', 'Document')}**"
-            for f in tribal_facts[:6]
-        ]
-        parts.append(
-            "\n\n<details>\n<summary>Knowledge Sources</summary>\n\n"
-            + "\n".join(citation_lines)
-            + "\n</details>"
-        )
+    # # Tribal knowledge sources — list documents used so the reader can trace citations
+    # if tribal_facts:
+    #     citation_lines = [
+    #         f"- **{f.get('label', 'Document')}**"
+    #         for f in tribal_facts[:8]
+    #     ]
+    #     parts.append(
+    #         "\n\n<details>\n<summary>Knowledge Sources</summary>\n\n"
+    #         + "\n".join(citation_lines)
+    #         + "\n</details>"
+    #     )
 
     return "".join(parts) if parts else ""
 
@@ -340,8 +343,10 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     semantic_context = state.get("semantic_context") or {}
     session_summary = semantic_context.get("session_summary") or state.get("summary") or ""
     is_followup = semantic_context.get("is_followup", False)
-    feedback_context = state.get("feedback_context") or ""
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    feedback_context = _fb_for_node(state.get("feedback_context") or [], "answer")
     memory_context = semantic_context.get("memory_context") or ""
+    global_instructions = state.get("global_instructions") or ""
 
     if session_summary:
         followup_note = " This is a follow-up — open by connecting to the prior finding before presenting new data." if is_followup else ""
@@ -349,8 +354,12 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     else:
         conversation_section = ""
 
+    instructions_section = (
+        f"<user_instructions>\nApply only instructions relevant to your task as a response writer. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{global_instructions}\n</user_instructions>"
+        if global_instructions else ""
+    )
     feedback_section = (
-        f"USER PREFERENCES (past feedback — apply silently):\n<feedback_context>{feedback_context}</feedback_context>"
+        f"LEARNED PREFERENCES (from past feedback — apply within the bounds of standing instructions above):\n<feedback_context>{feedback_context}</feedback_context>"
         if feedback_context else ""
     )
     memory_section = (
@@ -359,21 +368,37 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     )
 
     tribal_facts = state.get("tribal_facts") or []
-    if tribal_facts and state.get("deep_analysis"):
+    query_type = state.get("query_type") or ""
+
+    # Fix 1: gate by query_type — lookups are pure data retrieval; tribal injection causes hallucination
+    inject_tribal = bool(tribal_facts) and state.get("deep_analysis") and query_type not in ("lookup",)
+
+    if inject_tribal:
+        # Fix 2: score threshold — only inject facts with sufficient retrieval confidence
+        relevant_facts = [f for f in tribal_facts if f.get("score", 1.0) >= 0.70]
         fact_blocks = []
-        for f in tribal_facts[:6]:
+        for f in relevant_facts[:8]:
             label = f.get("label", "Document")
             value = str(f.get("value", "")).strip()
-            fact_blocks.append(f"Document: {label}\n{value[:600]}")
-        tribal_facts_section = (
-            "TRIBAL KNOWLEDGE CONTEXT — WEAVE INTO YOUR NARRATIVE:\n"
-            "The following internal documents were retrieved because they are directly relevant "
-            "to this query. Explicitly reference specific thresholds, commitments, and decisions "
-            "from these documents where they contextualise or challenge the data findings. "
-            "Cite by document name (e.g. 'per Group Treasury Policy', 'per CFO meeting notes of 2026-05-29').\n\n"
-            + "\n\n---\n\n".join(fact_blocks)
-        )
-    elif tribal_facts:
+            fact_blocks.append(f"Document: {label}\n{value[:1500]}")
+        if fact_blocks:
+            # Fix 3: anti-hallucination guardrail — tribal numbers are NOT SQL data
+            tribal_facts_section = (
+                "TRIBAL KNOWLEDGE CONTEXT:\n"
+                "CRITICAL RULE — DATA AUTHORITY: Dollar figures, percentages, and dates in these documents "
+                "are historical reference values from meeting notes, forecasts, and policy memos — they are "
+                "NOT the current SQL query results. The SQL data is the ONLY authoritative source for current "
+                "state. If a tribal document contains a figure that differs from the SQL result, report the SQL "
+                "figure as the current value and cite the tribal figure as a named benchmark or threshold only. "
+                "NEVER substitute a tribal document figure for what the SQL returned.\n\n"
+                "Use these documents for: internal policy thresholds, management commitments, internal targets, "
+                "and analytical framing — not as data answers. Cite by document name "
+                "(e.g. 'per Group Treasury Policy', 'per CFO meeting notes of 2026-05-29').\n\n"
+                + "\n\n---\n\n".join(fact_blocks)
+            )
+        else:
+            tribal_facts_section = ""
+    elif tribal_facts and not state.get("deep_analysis"):
         facts_text = "\n".join(
             f"  [{f.get('type', '')}] {f.get('label', '')} — {f.get('value', '')} (status: {f.get('status', 'active')})"
             for f in tribal_facts
@@ -405,23 +430,36 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     else:
         deep_extraction = ""
 
+    # Build tables_section for follow_up_paths scope constraint
+    _ir_list = state.get("semantic_ir_list") or []
+    if _ir_list:
+        _first = _ir_list[0]
+        _anchor = _first.get("anchor_tables", []) if isinstance(_first, dict) else list(getattr(_first, "anchor_tables", []))
+        tables_section = ", ".join(_anchor) if _anchor else "see data profile above"
+    else:
+        tables_section = "see data profile above"
+
     # ── Phase 1: Insight Extraction (Haiku — fast, data-facing) ──────────────
     # Haiku reads the raw data and produces a structured insights JSON.
     # This is the only phase that sees the raw data profile.
 
-    extractor_prompt = INSIGHT_EXTRACTOR_PROMPT.format_messages(
-        question=state["question"],
-        persona=state.get("persona", "analyst"),
-        current_date_context=current_date_context,
-        flag_instructions_text=flag_instructions or "",
-        quality_context=quality_context,
-        no_data="YES" if no_data else "NO",
-        zero_row_probe_result=zero_row_probe_result,
-        data_profile=data_profile,
-        tribal_facts_section=tribal_facts_section,
-        conversation_context=conversation_section,
-        deep_analysis_extraction=deep_extraction,
-    )
+    extractor_prompt = [
+        SystemMessage(content=INSIGHT_EXTRACTOR_SYSTEM.format(
+            question=state["question"],
+            persona=state.get("persona", "analyst"),
+            current_date_context=current_date_context,
+            flag_instructions_text=flag_instructions or "",
+            quality_context=quality_context,
+            no_data="YES" if no_data else "NO",
+            zero_row_probe_result=zero_row_probe_result,
+            data_profile=data_profile,
+            tribal_facts_section=tribal_facts_section,
+            conversation_context=conversation_section,
+            deep_analysis_extraction=deep_extraction,
+            tables_section=tables_section,
+        )),
+        HumanMessage(content=INSIGHT_EXTRACTOR_HUMAN),
+    ]
 
     haiku = get_llm("fast")
     insights_json: str = "{}"
@@ -520,22 +558,31 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
     persona_structure = _SYNTHESIS_PERSONA_STRUCTURES.get(
         _persona_key, _SYNTHESIS_PERSONA_STRUCTURES["analyst"]
     )
+    # Deep analysis: append integration rules so the LLM knows about
+    # supplementary sections (However block, collapsibles, tribal sources).
+    # Normal mode never sees these — saves tokens and avoids confusion.
+    if is_deep:
+        persona_structure += _DEEP_ANALYSIS_PERSONA_RULES.get(_persona_key, "")
 
-    writer_prompt = SYNTHESIS_PROMPT.format_messages(
-        persona=state.get("persona", "analyst"),
-        question=state["question"],
-        no_data_context=no_data_context,
-        insights_json=insights_json,
-        reasoning_directive=reasoning_directive,
-        conversation_section=conversation_section,
-        memory_section=memory_section,
-        feedback_section=feedback_section,
-        tribal_facts_section=tribal_facts_section,
-        low_confidence_section=low_confidence_section,
-        query_intent_section=query_intent_section,
-        persona_structure=persona_structure,
-        deep_analysis_sections=deep_analysis_sections,
-    )
+    writer_prompt = [
+        SystemMessage(content=SYNTHESIS_SYSTEM.format(
+            persona=state.get("persona", "analyst"),
+            question=state["question"],
+            no_data_context=no_data_context,
+            insights_json=insights_json,
+            reasoning_directive=reasoning_directive,
+            instructions_section=instructions_section,
+            conversation_section=conversation_section,
+            memory_section=memory_section,
+            feedback_section=feedback_section,
+            tribal_facts_section=tribal_facts_section,
+            low_confidence_section=low_confidence_section,
+            query_intent_section=query_intent_section,
+            persona_structure=persona_structure,
+            deep_analysis_sections=deep_analysis_sections,
+        )),
+        HumanMessage(content=SYNTHESIS_HUMAN),
+    ]
     _mission = build_mission_context(
         state,
         role="Narrate the result as a direct, complete answer to the user's question — no fabrication, no omission",

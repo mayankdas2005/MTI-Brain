@@ -13,6 +13,7 @@ import { usePreferencesStore } from '@/lib/store/preferences';
 import { GHOST_PROMPTS } from '@/lib/suggestions';
 import { loadDraft, saveDraft, clearDraft } from '@/lib/store/drafts';
 import { useActivityStore } from '@/lib/store/activity';
+import { logout } from '@/lib/auth';
 import { useUIStore } from '@/lib/store/ui';
 import { track, Events } from '@/lib/analytics';
 import {
@@ -112,6 +113,9 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
           break;
         case 'dark':
           setTheme('dark');
+          break;
+        case 'logout':
+          void logout();
           break;
         case 'tone-analyst':
           setResponseTone('analyst');

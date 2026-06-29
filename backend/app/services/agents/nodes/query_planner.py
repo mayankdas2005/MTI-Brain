@@ -18,11 +18,31 @@ from __future__ import annotations
 
 import re
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents.prompts import QUERY_PLANNER_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import QUERY_PLANNER_HUMAN, QUERY_PLANNER_SYSTEM, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
+
+
+def _build_prior_columns_section(prior_output_columns: list[str]) -> str:
+    if not prior_output_columns:
+        return ""
+    cols_list = "\n".join(f"  - {c}" for c in prior_output_columns)
+    return (
+        "PRIOR QUESTION OUTPUT COLUMNS:\n"
+        f"{cols_list}\n"
+        "\n"
+        "INSTRUCTIONS — read all four rules before generating output_slots:\n"
+        "  1. Generate output_slots ENTIRELY from what the CURRENT question asks for — do this first.\n"
+        "  2. Then carry forward any prior identifier/dimension columns (entity codes, names, reference keys)\n"
+        "     that help the user recognise this result relative to the prior one.\n"
+        "  3. Do NOT carry forward prior measure columns (aggregations, totals, amounts, counts)\n"
+        "     unless the current question explicitly asks for that same metric.\n"
+        "  4. If the current question is on a completely different topic or different tables, ignore this section.\n"
+        "CRITICAL: Prior columns SUPPLEMENT output_slots — they do not define or constrain them.\n"
+    )
 
 
 async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
@@ -33,12 +53,26 @@ async def query_planner(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     llm = get_llm("fast")
 
-    prompt = QUERY_PLANNER_PROMPT.format_messages(
-        question=state.get("effective_question") or state["question"],
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        available_tables_section="",
-        entity_tokens_section="",
-    )
+    _prior_cols = state.get("prior_output_columns") or []
+    _prior_section = _build_prior_columns_section(_prior_cols)
+    if _prior_cols:
+        logger.info(
+            "query_planner | prior_columns_injected | thread={} | count={} | cols={}",
+            state["thread_id"], len(_prior_cols), _prior_cols,
+        )
+
+    from app.services.agents.helpers import build_instructions_section
+    prompt = [
+        SystemMessage(content=QUERY_PLANNER_SYSTEM.format(
+            question=state.get("effective_question") or state["question"],
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            available_tables_section="",
+            entity_tokens_section="",
+            prior_columns_section=_prior_section,
+            instructions_section=build_instructions_section(state, "query structure planner"),
+        )),
+        HumanMessage(content=QUERY_PLANNER_HUMAN),
+    ]
 
     @llm_breaker
     async def _call():

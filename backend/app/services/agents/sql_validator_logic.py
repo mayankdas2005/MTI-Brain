@@ -56,6 +56,12 @@ def _run_gates(sql: str) -> tuple[bool, str]:
         if forbidden in sql_upper:
             return False, f"Forbidden keyword detected: {forbidden.strip()}"
 
+    # Gate 2.5 — POSIX regex filtering is forbidden. `~*`/`~` with our %-wrapped patterns
+    # silently match nothing ('%' is a literal in POSIX regex) and is never emitted by the
+    # pipeline. Any occurrence is a bug — use ILIKE '%value%' instead.
+    if "~*" in sql or "!~" in sql:
+        return False, "POSIX regex operator (~*/!~) is forbidden — use ILIKE '%value%' instead"
+
     # Gate 3 — Schema prefix check
     if "lpp." not in sql.lower():
         logger.warning("sql_validator | no lpp. schema prefix found")
@@ -503,6 +509,84 @@ def validate_filter_types(sql: str, schema_columns: list[dict]) -> tuple[bool, s
                             f"Schema validation: column '{col_name}' is boolean — "
                             f"use TRUE or FALSE instead of string literal '{val}'"
                         )
+    except Exception:
+        pass
+
+    return True, ""
+
+
+def validate_entity_filter_grounding(sql: str, schema_columns: list[dict]) -> tuple[bool, str]:
+    """Gate 7: forbid substring ILIKE/LIKE on code/identifier columns.
+
+    A named-entity filter (geography, counterparty, currency, …) must be a grounded equality
+    on a dimension column — never ``code_col ILIKE '%token%'``. Substring-matching a
+    code/identifier column selects an arbitrary, contaminated population (e.g.
+    ``account_ref ILIKE '%USA%'`` matches whatever codes happen to contain "USA").
+
+    Returns (True, "") when valid or schema empty/unparseable; (False, msg) on violation.
+    Conservative: only fires when the column is unambiguously code/identifier in the schema.
+    """
+    if not schema_columns:
+        return True, ""
+
+    _CODE_SEMANTICS = {"code", "identifier"}
+    code_col_names: set[str] = set()
+    code_cols_by_table: dict[str, set[str]] = {}
+    for c in schema_columns:
+        fqn = (c.get("table_fqn") or "").lower()
+        name = (c.get("name") or "").lower()
+        sem = (c.get("semantic_type") or "").lower()
+        if not name or sem not in _CODE_SEMANTICS:
+            continue
+        code_col_names.add(name)
+        short = fqn.rsplit(".", 1)[-1] if "." in fqn else fqn
+        code_cols_by_table.setdefault(short, set()).add(name)
+        code_cols_by_table.setdefault(fqn, set()).add(name)
+
+    if not code_col_names:
+        return True, ""
+
+    import sqlglot
+    import sqlglot.expressions as exp
+
+    try:
+        for stmt in sqlglot.parse(sql, dialect="redshift"):
+            if stmt is None:
+                continue
+
+            alias_map: dict[str, str] = {}
+            for select in stmt.find_all(exp.Select):
+                for table in select.find_all(exp.Table):
+                    if table.find_ancestor(exp.Select) is not select:
+                        continue
+                    short = (table.name or "").lower()
+                    if not short:
+                        continue
+                    if table.alias:
+                        alias_map[table.alias.lower()] = short
+                    alias_map[short] = short
+
+            for like in stmt.find_all(exp.ILike, exp.Like):
+                col = like.this
+                if not isinstance(col, exp.Column):
+                    continue
+                col_name = (col.name or "").lower()
+                qualifier = (col.table or "").lower()
+
+                is_code = False
+                if qualifier:
+                    resolved = alias_map.get(qualifier, qualifier)
+                    if col_name in code_cols_by_table.get(resolved, set()):
+                        is_code = True
+                elif col_name in code_col_names:
+                    is_code = True
+
+                if is_code:
+                    return False, (
+                        f"Schema validation: column '{col_name}' is a code/identifier — do not "
+                        f"substring-match an entity with ILIKE on a code column; filter the grounded "
+                        f"dimension column with = instead"
+                    )
     except Exception:
         pass
 

@@ -40,10 +40,14 @@ def search_columns_fulltext(query_text: str) -> list[dict]:
            c.semantic_type AS semantic_type,
            score LIMIT 15
     """
-    t0 = time.monotonic()
-    results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
-    logger.debug("neo4j | fn=search_columns_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
-    return [dict(r) for r in results]
+    try:
+        t0 = time.monotonic()
+        results = _neo4j_run(cypher, {"query": _fuzzy_fts(query_text)})
+        logger.debug("neo4j | fn=search_columns_fulltext | ms={:.0f} | hits={}", (time.monotonic() - t0) * 1000, len(results))
+        return [dict(r) for r in results]
+    except Exception as e:
+        logger.warning("neo4j | search_columns_fulltext fts failed | error={}", e)
+        return []
 
 
 @neo4j_breaker

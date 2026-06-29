@@ -172,6 +172,7 @@ def write_query_pattern(run_fn: Callable, pattern_data: dict, is_update: bool = 
               qp.recompile_count  = $recompile_count,
               qp.repair_count     = $repair_count,
               qp.promotion_status = 'active',
+              qp.is_enabled       = true,
               qp.liked_count      = 0,
               qp.disliked_count   = 0,
               qp.first_seen       = datetime(),
@@ -206,6 +207,7 @@ def write_anti_pattern(run_fn: Callable, pattern_data: dict) -> None:
           ap.intent           = $intent,
           ap.complexity       = $complexity,
           ap.cohere_embedding = $cohere_embedding,
+          ap.is_enabled       = true,
           ap.first_seen       = datetime(),
           ap.occurrence_count = 1
         ON MATCH SET

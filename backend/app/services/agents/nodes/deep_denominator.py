@@ -12,7 +12,7 @@ from app.core.logger import logger
 from app.services.agents.helpers import parse_tag
 from app.services.agents.state import AnalyticsState
 
-_DENOMINATOR_PROMPT = """You are a financial data analyst. Given a specific filtered metric and its source tables, identify the natural denominator that would give this metric meaningful context as a percentage.
+_DENOMINATOR_PROMPT = """You are a financial data analyst. Given a specific filtered metric, identify the natural denominator that would give this metric meaningful context as a percentage.
 
 QUESTION: {question}
 
@@ -20,13 +20,21 @@ METRIC COMPUTED: {metric_description}
 ANCHOR TABLES: {anchor_tables}
 TIME FILTER USED: {time_filter}
 
+ORIGINAL SQL (already executed successfully — use ONLY the exact table aliases, column names, and join conditions shown here):
+```sql
+{original_sql}
+```
+
+AVAILABLE COLUMNS PER TABLE:
+{schema_summary}
+
 Your task:
 1. Identify the natural "total" that this metric is a subset of.
    Examples: wire transfers → total outbound payments; active accounts → all accounts; FX transactions → all transactions
-2. Write a single SQL SELECT query that computes this denominator total using the same time filter.
-   The query must use only the anchor tables listed above.
+2. Write a single SQL SELECT query that computes this denominator total using the SAME time filter.
+   CRITICAL: Copy join conditions and column names EXACTLY from the original SQL above — do NOT invent column names.
    Use COUNT(*) or SUM(same_column) as appropriate.
-   Apply the same time filter as the original query.
+   Remove WHERE conditions that filter to a subset (e.g. country, status) but keep time filters.
    Keep it simple — one CTE or direct SELECT.
 3. Name the denominator concept in plain English (e.g., "total outbound payments", "all accounts").
 
@@ -77,6 +85,26 @@ def _is_single_aggregate(state: AnalyticsState) -> bool:
     return 1 <= total_rows <= 3 and not state.get("no_data")
 
 
+def _get_original_sql(state: AnalyticsState) -> str:
+    sql_list = state.get("sql_list") or []
+    return sql_list[0].strip() if sql_list else "(not available)"
+
+
+def _get_schema_summary(state: AnalyticsState) -> str:
+    enriched = state.get("enriched_schema") or {}
+    columns = enriched.get("columns") or []
+    if not columns:
+        return "(not available)"
+    by_table: dict[str, list[str]] = {}
+    for col in columns:
+        table = col.get("table_fqn") or "unknown"
+        name = col.get("name") or ""
+        if name:
+            by_table.setdefault(table, []).append(name)
+    lines = [f"{table}: {', '.join(cols[:40])}" for table, cols in by_table.items()]
+    return "\n".join(lines) if lines else "(not available)"
+
+
 async def deep_denominator(state: AnalyticsState) -> dict:
     if not state.get("deep_analysis"):
         return {"denominator_context": None}
@@ -97,6 +125,8 @@ async def deep_denominator(state: AnalyticsState) -> dict:
         metric_description=metric_desc,
         anchor_tables=", ".join(anchor_tables),
         time_filter=time_filter_desc,
+        original_sql=_get_original_sql(state),
+        schema_summary=_get_schema_summary(state),
     )
 
     from app.services.agents.bedrock import get_llm
@@ -109,9 +139,12 @@ async def deep_denominator(state: AnalyticsState) -> dict:
     try:
         @llm_breaker
         async def _call():
-            from langchain_core.messages import HumanMessage
+            from langchain_core.messages import HumanMessage, SystemMessage
             return await retry_async(
-                lambda: haiku.ainvoke([HumanMessage(content=prompt_text)]),
+                lambda: haiku.ainvoke([
+                    SystemMessage(content="You identify denominator context for ratio framing. Return only the requested XML block."),
+                    HumanMessage(content=prompt_text),
+                ]),
                 service="bedrock-deep-denominator",
                 max_attempts=2,
                 backoff_base=3.0,

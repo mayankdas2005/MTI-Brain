@@ -40,6 +40,7 @@ import { copyText } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { formatRelativeTime } from '@/lib/utils/relative-time';
 import { useNow } from '@/lib/hooks/use-now';
+import { getStoredUser } from '@/lib/auth';
 import type { Message } from '@/lib/store/threads';
 
 
@@ -76,6 +77,7 @@ interface AboutPanelProps {
 export function AboutPanel({ open, onOpenChange, message, question }: AboutPanelProps) {
   const m = message.metadata_;
   const now = useNow();
+  const isAdmin = (getStoredUser()?.groups ?? []).includes('admin');
   const handleCopy = async (text: string, label: string) => {
     const ok = await copyText(text);
     if (ok) toast.success(`${label} copied`);
@@ -148,7 +150,7 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                 }
               />
             )}
-            {m?.langfuse_trace_url && (
+            {isAdmin && m?.langfuse_trace_url && (
               <KV
                 label="Trace"
                 value={
@@ -225,6 +227,23 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
                   ? 'Prior feedback applied to this response'
                   : 'No prior feedback found — responded without feedback context'}
               </div>
+
+              {/* Distilled behavioural rules — show the actual rules when a profile is active */}
+              {m.preference_summary.distilled_active && (m.preference_summary.distilled_rules?.length ?? 0) > 0 && (
+                <div className="mb-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-2">
+                    Behavioural Rules Applied
+                  </p>
+                  <div className="rounded-md border border-border/40 bg-muted/10 px-3 py-2 space-y-1.5">
+                    {m.preference_summary.distilled_rules!.map((rule, i) => (
+                      <div key={i} className="flex items-start gap-2 text-xs text-foreground/80 leading-relaxed">
+                        <span className="text-primary/60 shrink-0 font-bold mt-px">·</span>
+                        <span>{rule}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Signal breakdown grid — only show columns that have data */}
               {(m.preference_summary.thread_feedback_count > 0 ||
@@ -546,64 +565,122 @@ export function AboutPanel({ open, onOpenChange, message, question }: AboutPanel
             </Collapsible>
           )}
 
-          {/* Reasoning trace - full text the LLM produced, for debugging. */}
-          {message.reasoning && (
-            <Collapsible
-              title="Reasoning trace"
-              icon={ScrollText}
-              actions={
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleCopy(message.reasoning!, 'Reasoning trace');
-                  }}
-                  className="p-1 rounded text-muted-foreground"
-                  aria-label="Copy reasoning trace"
+          {/* Reasoning trace - grouped by node when pipeline_steps available */}
+          {(() => {
+            const stepsWithReasoning = m?.pipeline_steps?.filter((s) => s.reasoning?.trim());
+            if (stepsWithReasoning && stepsWithReasoning.length > 0) {
+              const fullText = stepsWithReasoning
+                .map((s) => `## ${s.message || s.node}\n\n${s.reasoning}`)
+                .join('\n\n---\n\n');
+              return (
+                <Collapsible
+                  title="Reasoning trace"
+                  icon={ScrollText}
+                  actions={
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopy(fullText, 'Reasoning trace');
+                      }}
+                      className="p-1 rounded text-muted-foreground"
+                      aria-label="Copy reasoning trace"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  }
                 >
-                  <Copy className="w-3.5 h-3.5" />
-                </button>
-              }
-            >
-              <div className="rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto">
-                <MarkdownRenderer content={message.reasoning!} />
-              </div>
-            </Collapsible>
-          )}
+                  <div className="space-y-3 max-h-[28rem] overflow-y-auto">
+                    {stepsWithReasoning.map((step, i) => (
+                      <div key={`${step.node}-${i}`} className="rounded-md border border-border bg-muted/40 overflow-hidden">
+                        <div className="px-3 py-1.5 bg-muted/60 border-b border-border/60 flex items-center gap-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            {step.message || step.node}
+                          </span>
+                          {step.duration_ms != null && (
+                            <span className="ml-auto text-[10px] font-mono tabular-nums text-muted-foreground/60">
+                              {(step.duration_ms / 1000).toFixed(2)}s
+                            </span>
+                          )}
+                        </div>
+                        <div className="p-2.5">
+                          <MarkdownRenderer content={step.reasoning!} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Collapsible>
+              );
+            }
+            // Fallback: legacy flat reasoning string
+            if (message.reasoning) {
+              return (
+                <Collapsible
+                  title="Reasoning trace"
+                  icon={ScrollText}
+                  actions={
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopy(message.reasoning!, 'Reasoning trace');
+                      }}
+                      className="p-1 rounded text-muted-foreground"
+                      aria-label="Copy reasoning trace"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  }
+                >
+                  <div className="rounded-md border border-border bg-muted/40 p-2.5 max-h-72 overflow-y-auto">
+                    <MarkdownRenderer content={message.reasoning!} />
+                  </div>
+                </Collapsible>
+              );
+            }
+            return null;
+          })()}
         </div>
       </SheetContent>
     </Sheet>
   );
 }
 
-const TRIBAL_VISIBLE_DEFAULT = 3;
-
 type TribalFact = { label: string; value: string };
 
 function TribalKnowledgeList({ facts }: { facts: TribalFact[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? facts : facts.slice(0, TRIBAL_VISIBLE_DEFAULT);
-  const hidden = facts.length - TRIBAL_VISIBLE_DEFAULT;
+  const [openFacts, setOpenFacts] = useState<Set<number>>(new Set([0]));
+
+  const toggle = (i: number) =>
+    setOpenFacts(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
 
   return (
-    <div className="space-y-3">
-      {visible.map((fact, i) => (
-        <div key={i} className="rounded-md border border-border/40 bg-muted/10 p-2.5 overflow-hidden min-w-0">
-          <p className="text-xs font-semibold text-foreground/80 mb-1.5 truncate">
-            {fact.label}
-          </p>
-          <div className="text-xs text-foreground/70 leading-relaxed prose prose-xs dark:prose-invert max-w-none [overflow-wrap:anywhere] [&_strong]:font-semibold [&_em]:italic [&_ul]:list-disc [&_ul]:pl-4 [&_li]:my-0.5 [&_h1]:text-xs [&_h2]:text-xs [&_h3]:text-xs [&_p]:my-1 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{fact.value}</ReactMarkdown>
+    <div className="space-y-1">
+      {facts.map((fact, i) => {
+        const isOpen = openFacts.has(i);
+        return (
+          <div key={i} className="rounded-md border border-border/40 overflow-hidden">
+            <button
+              onClick={() => toggle(i)}
+              className="w-full flex items-center gap-2 px-2.5 py-2 text-left bg-muted/10 hover:bg-muted/20 transition-colors"
+            >
+              {isOpen
+                ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground/60 shrink-0" />
+                : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/60 shrink-0" />}
+              <span className="text-xs font-semibold text-foreground/80 truncate flex-1">
+                {fact.label}
+              </span>
+            </button>
+            {isOpen && (
+              <div className="border-t border-border/30 p-2.5">
+                <MarkdownRenderer content={fact.value} />
+              </div>
+            )}
           </div>
-        </div>
-      ))}
-      {hidden > 0 && (
-        <button
-          onClick={() => setExpanded(e => !e)}
-          className="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1.5 border border-dashed border-border/40 rounded-md transition-colors"
-        >
-          {expanded ? 'Show less' : `Show ${hidden} more source${hidden !== 1 ? 's' : ''}`}
-        </button>
-      )}
+        );
+      })}
     </div>
   );
 }

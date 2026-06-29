@@ -29,6 +29,22 @@ def init_neo4j() -> None:
         _driver.verify_connectivity()
         with _driver.session(database=settings.NEO4J_DB) as _s:
             _s.run("RETURN 1").consume()
+            _s.run(
+                "CREATE FULLTEXT INDEX querypattern_question_fts IF NOT EXISTS "
+                "FOR (n:QueryPattern) ON EACH [n.question_text]"
+            ).consume()
+            _s.run(
+                "CREATE FULLTEXT INDEX antipattern_question_fts IF NOT EXISTS "
+                "FOR (n:AntiPattern) ON EACH [n.question_text]"
+            ).consume()
+            _s.run(
+                "CREATE FULLTEXT INDEX querypattern_fts IF NOT EXISTS "
+                "FOR (n:QueryPattern) ON EACH [n.question_text, n.intent]"
+            ).consume()
+            _s.run(
+                "CREATE FULLTEXT INDEX antipattern_fts IF NOT EXISTS "
+                "FOR (n:AntiPattern) ON EACH [n.question_text, n.intent]"
+            ).consume()
         logger.info("Neo4j driver initialized | uri={} | pool={}", settings.NEO4J_URI, settings.NEO4J_MAX_POOL_SIZE)
     except Exception as e:
         logger.error("Neo4j driver initialization failed: {}", e)

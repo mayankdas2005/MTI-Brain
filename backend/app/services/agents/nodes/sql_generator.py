@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import json
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import build_mission_context, format_sql, parse_tag
-from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns
-from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, CTE_COLUMN_PLANNER_PROMPT
+from app.services.agents.nodes.schema_context import build_schema_context, fetch_anti_patterns, fetch_query_patterns, fetch_feedback_by_tables
+from app.services.agents.prompts import REASONING_DIRECTIVE_SQL, CTE_COLUMN_PLANNER_HUMAN, CTE_COLUMN_PLANNER_SYSTEM
 from app.services.agents.prompts import (
+    SQL_GENERATE_HUMAN,
+    SQL_GENERATE_SYSTEM,
     _SQL_RULES_TREND, _SQL_RULES_RATIO, _SQL_RULES_FORECAST,
     _CTE_PLANNER_TREND, _CTE_PLANNER_MULTIGRAIN, _CTE_PLANNER_FORECAST,
 )
@@ -189,6 +192,21 @@ async def generate_sql_llm(
         state["pattern_matched"] = pattern_matched
         state["pattern_name"] = pattern_name
 
+        # Late-pass table-based feedback: supplement the early vector+FTS retrieval from
+        # lt_memory_retriever with feedback from threads that used the same anchor tables.
+        # Runs only on the first generation (not recompile) since anchor_tables don't change.
+        _table_fb = await fetch_feedback_by_tables(state)
+        if _table_fb:
+            _existing_fb = list(state.get("feedback_context") or [])
+            _seen_ids = {f["id"] for f in _existing_fb}
+            _new_items = [f for f in _table_fb if f["id"] not in _seen_ids]
+            if _new_items:
+                state["feedback_context"] = _existing_fb + _new_items
+                logger.info(
+                    "sql_generator | feedback_table_supplement | new_items={} | thread={}",
+                    len(_new_items), state.get("thread_id"),
+                )
+
     logger.info(
         "sql_generator | context_injection | anti_patterns={} | query_pattern={} | thread={}",
         "injected" if anti_patterns != "(none)" else "none",
@@ -234,8 +252,21 @@ async def generate_sql_llm(
     schema_reference = _build_schema_reference(schema_ctx)
     unresolved_joins_section = _build_unresolved_joins_section(unresolved_pairs, col_lookup)
     feedback_section = _build_feedback_section(state)
-    query_patterns_section = _build_query_patterns_section(query_patterns, pattern_matched, pattern_name)
+    # Force pattern to schema/join-path only when prior SQL exists AND the current question
+    # is related to the prior one (prior_execution_context set to None by B_prior for unrelated turns).
+    _force_hint = bool(
+        (state.get("prior_sql") or "").strip()
+        and state.get("prior_execution_context")
+    )
+    query_patterns_section = _build_query_patterns_section(
+        query_patterns, pattern_matched, pattern_name, force_hint=_force_hint
+    )
     prior_sql_section = _build_prior_sql_section(state)
+    _gi = state.get("global_instructions") or ""
+    instructions_section = (
+        f"<user_instructions>\nApply only instructions relevant to your task as a SQL generator. These are explicit user-defined rules — follow them precisely. When an instruction conflicts with learned feedback, follow the instruction; where possible, also satisfy the feedback's intent without violating the rule.\n{_gi}\n</user_instructions>"
+        if _gi else ""
+    )
 
     recompile_count = state.get("recompile_count", 0)
     # Always show candidate join paths when Neo4j found alternatives — prevents the SQL generator
@@ -274,25 +305,28 @@ async def generate_sql_llm(
     _anti_raw = anti_patterns if isinstance(anti_patterns, str) else ""
     sql_anti_patterns = "" if (not _anti_raw or _anti_raw.strip() in ("(none)", "")) else _anti_raw
 
-    from app.services.agents.prompts import SQL_GENERATE_PROMPT
-    prompt = SQL_GENERATE_PROMPT.format_messages(
-        question=state.get("effective_question") or state.get("question", ""),
-        cross_domain_section=cross_domain_section,
-        entity_hints_section=entity_hints_section,
-        directive_section=directive_section,
-        time_col_highlight_section=time_col_highlight_section,
-        query_blueprint=query_blueprint,
-        schema_reference=schema_reference,
-        anti_patterns=sql_anti_patterns,
-        reasoning_directive=reasoning_directive,
-        unresolved_joins_section=unresolved_joins_section,
-        feedback_section=feedback_section,
-        query_patterns_section=query_patterns_section,
-        prior_sql_section=prior_sql_section,
-        cte_column_plan=cte_column_plan,
-        candidate_join_paths_section=candidate_join_paths_section,
-        conditional_rules_section=_build_sql_rules_section(state, spec),
-    )
+    prompt = [
+        SystemMessage(content=SQL_GENERATE_SYSTEM.format(
+            question=state.get("effective_question") or state.get("question", ""),
+            cross_domain_section=cross_domain_section,
+            entity_hints_section=entity_hints_section,
+            directive_section=directive_section,
+            time_col_highlight_section=time_col_highlight_section,
+            query_blueprint=query_blueprint,
+            schema_reference=schema_reference,
+            anti_patterns=sql_anti_patterns,
+            reasoning_directive=reasoning_directive,
+            unresolved_joins_section=unresolved_joins_section,
+            instructions_section=instructions_section,
+            feedback_section=feedback_section,
+            query_patterns_section=query_patterns_section,
+            prior_sql_section=prior_sql_section,
+            cte_column_plan=cte_column_plan,
+            candidate_join_paths_section=candidate_join_paths_section,
+            conditional_rules_section=_build_sql_rules_section(state, spec),
+        )),
+        HumanMessage(content=SQL_GENERATE_HUMAN),
+    ]
 
     _mission = build_mission_context(
         state,
@@ -423,19 +457,22 @@ async def _plan_cte_columns(
             if _qi_lines else ""
         )
 
-        prompt = CTE_COLUMN_PLANNER_PROMPT.format_messages(
-            question=state.get("effective_question") or state.get("question", ""),
-            query_intent_section=query_intent_section,
-            directive_section=directive_section,
-            groupings_hint_section=groupings_hint_section,
-            prior_error_section=prior_error_section,
-            query_blueprint=planner_blueprint,
-            schema_reference=schema_reference,
-            anti_pattern_section=planner_anti_patterns,
-            query_pattern_section=planner_query_patterns,
-            conditional_planning_rules=_build_planner_rules_section(state, spec),
-            conditional_step_11=_CTE_PLANNER_TREND if _is_projection_query(state, spec) else "",
-        )
+        prompt = [
+            SystemMessage(content=CTE_COLUMN_PLANNER_SYSTEM.format(
+                question=state.get("effective_question") or state.get("question", ""),
+                query_intent_section=query_intent_section,
+                directive_section=directive_section,
+                groupings_hint_section=groupings_hint_section,
+                prior_error_section=prior_error_section,
+                query_blueprint=planner_blueprint,
+                schema_reference=schema_reference,
+                anti_pattern_section=planner_anti_patterns,
+                query_pattern_section=planner_query_patterns,
+                conditional_planning_rules=_build_planner_rules_section(state, spec),
+                conditional_step_11=_CTE_PLANNER_TREND if _is_projection_query(state, spec) else "",
+            )),
+            HumanMessage(content=CTE_COLUMN_PLANNER_HUMAN),
+        ]
         response = await retry_async(
             lambda: llm.ainvoke(prompt, config=config),
             service="bedrock-cte-planner",
@@ -1000,7 +1037,7 @@ def _build_query_blueprint(
     if filters:
         lines.append("FILTERS:")
         from collections import defaultdict
-        fuzzy_groups: dict[tuple, list] = defaultdict(list)   # → [fuzzy — use ~* regex]
+        fuzzy_groups: dict[tuple, list] = defaultdict(list)   # → [fuzzy — use ILIKE]
         exact_groups: dict[tuple, list] = defaultdict(list)
         other_filters: list[dict] = []
         for f in filters:
@@ -1059,16 +1096,16 @@ def _build_query_blueprint(
         for (tfqn, col), grp in fuzzy_groups.items():
             section = "HAVING" if grp[0].get("is_having") else "WHERE"
             if len(grp) == 1:
-                val = str(grp[0].get("value", ""))
-                clause = f"{tfqn}.{col} ~* '{val}'"
-                label = "[fuzzy — use ~* regex]"
+                val = _ilike_pattern(grp[0].get("value", ""))
+                clause = f"{tfqn}.{col} ILIKE '{val}'"
+                label = "[fuzzy — use ILIKE]"
             else:
                 parts = " OR ".join(
-                    "{}.{} ~* '{}'".format(tfqn, col, str(g.get("value", "")))
+                    "{}.{} ILIKE '{}'".format(tfqn, col, _ilike_pattern(g.get("value", "")))
                     for g in grp
                 )
                 clause = f"({parts})"
-                label = "[fuzzy — multiple, use OR ~* regex]"
+                label = "[fuzzy — multiple, use OR ILIKE]"
             lines.append(f"  {section}:   {clause}   {label}")
         lines.append("")
 
@@ -1222,6 +1259,18 @@ def _is_numeric_value(v) -> bool:
 def _sql_literal(v) -> str:
     """Quote v as a SQL string literal unless it is numeric or already a raw SQL expression."""
     return str(v) if _is_numeric_value(v) else f"'{v}'"
+
+
+def _ilike_pattern(v: str) -> str:
+    """Wrap a value in %...% for an ILIKE predicate, exactly once.
+
+    Values already carrying a % wildcard are passed through unchanged so we never
+    double-wrap (e.g. the resolver may already emit '%TOKEN%').
+    """
+    v = str(v).strip()
+    if "%" in v:
+        return v
+    return f"%{v}%"
 
 
 def _format_filter_line(f: dict) -> tuple[str, str]:
@@ -1507,11 +1556,12 @@ def _build_low_confidence_section(state: AnalyticsState) -> str:
 
 
 def _build_feedback_section(state: AnalyticsState) -> str:
-    fb = state.get("feedback_context") or ""
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    fb = _fb_for_node(state.get("feedback_context") or [], "sql")
     if not fb:
         return ""
     return (
-        f"USER SQL PREFERENCES (from prior feedback — apply silently):\n"
+        f"LEARNED SQL PREFERENCES (from prior feedback — apply within the bounds of standing instructions above):\n"
         f"<feedback_context>{fb}</feedback_context>"
     )
 
@@ -1520,6 +1570,7 @@ def _build_query_patterns_section(
     query_patterns: list,
     pattern_matched: bool = False,
     pattern_name: str | None = None,
+    force_hint: bool = False,
 ) -> str:
     if not query_patterns:
         return ""
@@ -1535,6 +1586,48 @@ def _build_query_patterns_section(
 
     if not (outline or join_outline or sql_text):
         return ""
+
+    from app.core.logger import logger as _sqg_logger
+    _sqg_logger.info(
+        "sql_generator | pattern_fields | tier={} | force_hint={} | sql_text={} | join_outline={} | filter_summary={} | measure_summary={} | dimension_summary={} | occurrence={} | repair={} | recompile={}",
+        ("exact" if top.get("raw_score", 0) >= 0.95 else "strong" if top.get("raw_score", 0) >= 0.85 else "hint"),
+        force_hint,
+        "present" if sql_text else "absent",
+        "present" if join_outline else "absent",
+        "present" if filter_summary else "absent",
+        "present" if top.get("measure_summary") else "absent",
+        "present" if top.get("dimension_summary") else "absent",
+        top.get("occurrence_count", 1),
+        recompile,
+        repair,
+    )
+
+    # Continuation conflict resolution: when prior_sql exists AND the current question is
+    # related to the prior one (prior_execution_context non-None after B_prior similarity
+    # filter), inject only join paths + schema metadata — the prior SQL defines CTE structure.
+    # This prevents two competing structural SQL references reaching the LLM simultaneously.
+    if force_hint:
+        lines = [
+            "QUERY PATTERN SCHEMA REFERENCE (continuing prior question — CTE structure from PRIOR SQL below):"
+        ]
+        if question_text:
+            lines.append(f"  Question:   \"{question_text}\"")
+        lines.append(f"  Tables:     {tables}")
+        if join_outline:
+            lines.append(f"  Join paths: {join_outline}")
+        if filter_summary:
+            lines.append(f"  Filters:    {filter_summary}")
+        _msummary = top.get("measure_summary") or ""
+        _dsummary = top.get("dimension_summary") or ""
+        if _msummary:
+            lines.append(f"  Measures:   {_msummary}")
+        if _dsummary:
+            lines.append(f"  Dimensions: {_dsummary}")
+        lines.append(
+            "Use the join paths and column names above to satisfy the new requirements. "
+            "CTE naming and structure come from the PRIOR QUESTION SQL — do not rename existing CTEs."
+        )
+        return "\n".join(lines)
 
     # Compute tier inline using raw_score + occurrence guard (mirrors context_fetcher logic).
     raw_score  = top.get("raw_score", 0)
@@ -1626,7 +1719,16 @@ def _build_prior_sql_section(state: AnalyticsState) -> str:
             "copy them from the prior SQL — no changes requested.\n"
         )
 
-    return ""
+    # Continuation — prior SQL as structural reference for related questions.
+    return (
+        "PRIOR QUESTION SQL — structural reference:\n"
+        "If the current question extends or drills into the prior one:\n"
+        "  - Preserve CTE names (e.g. cb_anchor, fx_latest, base_data) where the logic carries forward\n"
+        "  - Modify CTE contents (add JOINs, columns, change GROUP BY) as needed for new requirements\n"
+        "  - Do not rename existing CTEs; add new ones if a separate step is needed\n"
+        "If the current question uses different tables or is entirely unrelated, ignore this section.\n\n"
+        f"<prior_sql>\n{prior_sql}\n</prior_sql>\n"
+    )
 
 
 def _format_sql(sql: str) -> str:

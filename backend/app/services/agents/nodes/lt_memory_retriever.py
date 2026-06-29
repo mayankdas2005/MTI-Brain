@@ -25,10 +25,35 @@ from app.core.logger import logger
 from app.services.agents.state import AnalyticsState
 
 
+async def _mark_feedback_triggered(feedback_ids: list[str]) -> None:
+    """Background: increment trigger_count + set last_triggered_at on retrieved feedback rows."""
+    if not feedback_ids:
+        return
+    try:
+        from app.db import async_session_factory
+        from sqlalchemy import text
+        async with async_session_factory() as db:
+            placeholders = ", ".join(f":id{i}" for i in range(len(feedback_ids)))
+            params = {f"id{i}": fid for i, fid in enumerate(feedback_ids)}
+            await db.execute(
+                text(
+                    "UPDATE mti_brain_feedback "
+                    "SET trigger_count = trigger_count + 1, "
+                    "    last_triggered_at = now() "
+                    f"WHERE id::text IN ({placeholders})"
+                ),
+                params,
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("lt_memory_retriever | mark_triggered_failed | err={}: {}", type(exc).__name__, exc)
+
+
 async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> dict:
-    user_id   = state.get("user_id") or ""
-    thread_id = state.get("thread_id") or ""
-    question  = state.get("question") or ""
+    user_id               = state.get("user_id") or ""
+    thread_id             = state.get("thread_id") or ""
+    question              = state.get("question") or ""
+    distilled_preferences = state.get("distilled_preferences") or ""
 
     async def _lt_memory() -> str:
         # LT memory disabled — PostgresStore not stable; re-enable when store is confirmed healthy
@@ -67,8 +92,38 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
         _lt_memory(), _thread_fb(), _similar_fb()
     )
 
+    # Fire background trigger count update for all retrieved feedback rows
+    all_retrieved_ids = [
+        f["id"] for f in (thread_feedback or []) + (similar_feedback or [])
+        if f.get("id")
+    ]
+    if all_retrieved_ids:
+        asyncio.create_task(_mark_feedback_triggered(all_retrieved_ids))
+
     from app.services.chat.feedback import build_feedback_context
-    feedback_context = build_feedback_context(thread_feedback or [], similar_feedback or [])
+
+    if distilled_preferences:
+        _distilled_active = True
+        # Inject the distilled profile as a synthetic item so every downstream node
+        # receives it via build_feedback_context_for_node without any per-node changes.
+        # _distilled=True causes _build_context_string to render it as a dedicated
+        # DISTILLED USER PREFERENCE PROFILE preamble before the regular feedback block.
+        _distilled_item: dict = {
+            "id": "_distilled",
+            "liked": True,
+            "comment": distilled_preferences,
+            "feedback_type": "general",
+            "_distilled": True,
+            "created_at": None,
+            "source": "distilled",
+        }
+        # GAP #3: also keep current-thread feedback — it captures the most recent
+        # in-session signals which may override or extend the distilled profile.
+        _thread_context = build_feedback_context(thread_feedback or [], similar_feedback or [])
+        feedback_context: list[dict] = [_distilled_item] + _thread_context
+    else:
+        feedback_context = build_feedback_context(thread_feedback or [], similar_feedback or [])
+        _distilled_active = False
 
     # Count LT memory items (each line is one recalled interaction)
     lt_mem_count = len([l for l in (lt_mem or "").split("\n") if l.strip()]) if lt_mem else 0
@@ -80,12 +135,21 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
 
     # Structured summary for the about panel
     all_feedback = (thread_feedback or []) + (similar_feedback or [])
+    _distilled_rules: list[str] = []
+    if _distilled_active and distilled_preferences:
+        _distilled_rules = [
+            l.strip().lstrip("-•* \t").strip()
+            for l in distilled_preferences.strip().splitlines()
+            if l.strip()
+        ]
     preference_summary = {
         "long_term_memory_applied": bool(lt_mem),
         "long_term_memory_count":   lt_mem_count,
         "thread_feedback_count":    thread_fb_count,
         "similar_feedback_count":   similar_fb_count,
-        "feedback_applied":         bool(feedback_context),
+        "feedback_applied":         bool(feedback_context) or _distilled_active,
+        "distilled_active":         _distilled_active,
+        "distilled_rules":          _distilled_rules,
         "feedback_items": [
             {
                 "liked":            f["liked"],
@@ -102,7 +166,14 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
     # ── Natural language label for the UI pipeline step ───────────────────────
     _lines = []
 
-    # Markdown bullet list — rendered by MarkdownRenderer in the pipeline step UI
+    if _distilled_active:
+        if _distilled_rules:
+            _lines.append("- **Behavioural rules in effect:**")
+            for _rule in _distilled_rules[:8]:
+                _lines.append(f"  - {_rule}")
+        else:
+            _lines.append("- **Distilled profile active**")
+
     if thread_fb_count > 0:
         _liked_str   = f"{thread_liked} liked" if thread_liked > 0 else ""
         _dislike_str = f"{thread_disliked} disliked" if thread_disliked > 0 else ""
@@ -143,7 +214,7 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
                 _fb_lines.append(f"  - **{label}** [{source}]")
         _lines.append("- **Applying:**")
         _lines.extend(_fb_lines)
-    else:
+    elif not _distilled_active:
         _lines.append("- **No feedback found** — no prior ratings to apply")
     preference_label = "\n".join(_lines)
 
@@ -153,12 +224,14 @@ async def lt_memory_retriever(state: AnalyticsState, config: RunnableConfig) -> 
         "LT_MEMORY={} ({} interactions recalled) | "
         "THREAD_FB={} ({} liked / {} disliked) | "
         "SIMILAR_FB={} cross-thread | "
+        "DISTILLED={} | "
         "FEEDBACK_APPLIED={}",
         thread_id,
         "LOADED" if lt_mem else "NONE", lt_mem_count,
         thread_fb_count, thread_liked, thread_disliked,
         similar_fb_count,
-        "YES" if feedback_context else "NO",
+        "YES" if _distilled_active else "NO",
+        "YES" if (feedback_context or _distilled_active) else "NO",
     )
 
     return {

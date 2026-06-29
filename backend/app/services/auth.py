@@ -8,35 +8,54 @@ import jwt
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.user import MTIBrainUser
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# ─── Hardcoded users (dev only — replace with OIDC before production deploy) ───
 
-_USERS: dict[str, dict] = {
-    "admin": {
-        "password": "$2b$12$cIf.CmlZ0pO2sAWQy4Yzr.TRNpeL/Tx9r8omOPdzbpgQiKKIsXGgq",
-        "name": "Admin User",
-        "email": "admin@milestone.tech",
-    },
-}
+async def _check_password(password: str, password_hash: str) -> bool:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, bcrypt.checkpw, password.encode(), password_hash.encode()
+    )
 
 
-async def authenticate_user(username: str, password: str) -> dict | None:
+def _role_allowed(groups: list | None, role: str) -> bool:
+    return role in set(groups or [])
+
+
+async def authenticate_user(db: AsyncSession, username: str, password: str, role: str) -> dict | None:
     """Return the user dict if credentials are valid, else None.
 
     bcrypt.checkpw is CPU-bound and synchronous — offloaded to a thread
     pool so it does not block the async event loop.
     """
     key = (username or "").strip().lower()
-    user = _USERS.get(key)
-    if not user:
-        return None
-    loop = asyncio.get_event_loop()
-    match = await loop.run_in_executor(
-        None, bcrypt.checkpw, password.encode(), user["password"].encode()
+    selected_role = role if role in {"admin", "user"} else "user"
+    identity_keys = {key}
+
+    result = await db.execute(
+        select(MTIBrainUser).where(
+            or_(
+                func.lower(MTIBrainUser.email).in_(identity_keys),
+                func.lower(MTIBrainUser.keycloak_sub).in_(identity_keys),
+                func.lower(func.split_part(MTIBrainUser.email, "@", 1)).in_(identity_keys),
+                func.lower(func.split_part(MTIBrainUser.keycloak_sub, "@", 1)).in_(identity_keys),
+            )
+        )
     )
-    return user if match else None
+    db_user = result.scalar_one_or_none()
+
+    if db_user and db_user.password_hash:
+        if not _role_allowed(db_user.groups, selected_role):
+            return None
+        if await _check_password(password, db_user.password_hash):
+            return {
+                "email": db_user.email,
+                "name": db_user.name,
+                "groups": db_user.groups or [selected_role],
+            }
+        return None
+    return None
 
 
 # ─── JWT management ───
@@ -80,6 +99,7 @@ async def upsert_user(
     email: str,
     name: str,
     groups: list[str] | None = None,
+    password_hash: str | None = None,
 ) -> MTIBrainUser:
     """Create or update a user record on login (keyed by email)."""
     result = await db.execute(select(MTIBrainUser).where(MTIBrainUser.email == email))
@@ -87,20 +107,30 @@ async def upsert_user(
     now = datetime.now(timezone.utc)
 
     if user:
+        values: dict[str, object] = {
+            "name": name,
+            "groups": groups,
+            "last_login": now,
+        }
+        if password_hash is not None:
+            values["password_hash"] = password_hash
         await db.execute(
             update(MTIBrainUser)
             .where(MTIBrainUser.id == user.id)
-            .values(name=name, groups=groups, last_login=now)
+            .values(**values)
         )
         await db.flush()
         user.name = name
         user.groups = groups
+        if password_hash is not None:
+            user.password_hash = password_hash
         user.last_login = now
     else:
         user = MTIBrainUser(
             keycloak_sub=email,
             email=email,
             name=name,
+            password_hash=password_hash,
             groups=groups,
             last_login=now,
             created_at=now,
@@ -108,5 +138,10 @@ async def upsert_user(
         db.add(user)
         await db.flush()
         logger.info(f"New user created: {email}")
+        try:
+            from app.services.chat.instructions import seed_default_instructions
+            await seed_default_instructions(db, user.id)
+        except Exception as e:
+            logger.warning(f"Failed to seed default instructions for {email}: {e}")
 
     return user

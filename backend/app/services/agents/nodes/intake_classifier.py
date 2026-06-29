@@ -202,9 +202,7 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
     memory_task = asyncio.create_task(lt_memory_retriever(state, config))
 
     ctx = _get_classifier_context()
-    conversation_context = _format_conversation(
-        state.get("messages", []), state.get("summary") or ""
-    )
+    conversation_context = state.get("conversation_history") or "(no prior context)"
 
     prompt = INTAKE_CLASSIFY_PROMPT.format_messages(
         question=question,
@@ -258,7 +256,7 @@ def _extract_memory_keys(memory_output: dict) -> dict:
     """Extract state keys produced by lt_memory_retriever."""
     return {
         "lt_memory_context":  memory_output.get("lt_memory_context", ""),
-        "feedback_context":   memory_output.get("feedback_context", ""),
+        "feedback_context":   memory_output.get("feedback_context", []),
         "preference_summary": memory_output.get("preference_summary"),
     }
 

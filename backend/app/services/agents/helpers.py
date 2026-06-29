@@ -355,12 +355,20 @@ def _build_data_profile(
                     mn, mx = min(vals), max(vals)
                     mean = sum(vals) / len(vals)
             if mn is not None:
+                src_note = " (full result)" if was_truncated and stats_source == "full_result" else ""
                 parts = [f"Min: {mn}", f"Max: {mx}"]
                 if mean is not None:
                     parts.append(f"Mean: {round(float(mean), 2)}")
                 if median is not None:
                     parts.append(f"Median: {round(float(median), 2)}")
-                lines.append(f"    {'   '.join(parts)}")
+                lines.append(f"    {'   '.join(parts)}{src_note}")
+                if was_truncated and stats_source == "full_result":
+                    display_vals = [float(r[i]) for r in rows if i < len(r) and r[i] is not None]
+                    if display_vals:
+                        d_min = min(display_vals)
+                        d_max = max(display_vals)
+                        d_mean = round(sum(display_vals) / len(display_vals), 2)
+                        lines.append(f"    ⚠ Display rows only: Min: {d_min}   Max: {d_max}   Mean: {d_mean} — use for chart decisions")
 
         elif any(t in norm for t in ("date", "time", "timestamp")):
             mn, mx = meta.get("min"), meta.get("max")
@@ -373,6 +381,12 @@ def _build_data_profile(
                 )
                 src_note = " (full result)" if was_truncated and stats_source == "full_result" else ""
                 lines.append(f"    Range: {mn}  →  {mx}   Distinct: {distinct_periods} periods{src_note}")
+                if was_truncated and stats_source == "full_result":
+                    actual_dates = sorted(set(str(r[i]) for r in rows if i < len(r) and r[i] is not None))
+                    a_distinct = len(actual_dates)
+                    a_min = actual_dates[0] if actual_dates else mn
+                    a_max = actual_dates[-1] if actual_dates else mx
+                    lines.append(f"    ⚠ Display rows only: Range: {a_min}  →  {a_max}   Distinct: {a_distinct} periods — use for chart decisions")
 
         else:  # varchar / text / string
             distinct = meta.get("distinct_count")
@@ -380,6 +394,10 @@ def _build_data_profile(
             if distinct:
                 src_note = " (full result)" if was_truncated and stats_source == "full_result" else ""
                 lines.append(f"    Distinct values: {distinct}{src_note}")
+                if was_truncated and stats_source == "full_result":
+                    display_distinct = len(set(str(r[i]) for r in rows if i < len(r) and r[i] is not None))
+                    if display_distinct != distinct:
+                        lines.append(f"    ⚠ Display rows only: Distinct: {display_distinct} — use for chart decisions")
             if top_vals:
                 tv_text = "  |  ".join(f"{v} ({n} rows)" for v, n in top_vals[:5])
                 lines.append(f"    Top values:  {tv_text}")
@@ -442,6 +460,9 @@ def _infer_col_type_from_rows(rows: list[list], col_idx: int) -> str:
 
 # ─── Tag parsing ──────────────────────────────────────────────────────────────
 
+_SQL_LEADING_KEYWORDS = {"SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "EXPLAIN"}
+
+
 def parse_tag(text: str, tag: str) -> str:
     """Extract content from an XML-style tag in LLM output.
 
@@ -451,14 +472,22 @@ def parse_tag(text: str, tag: str) -> str:
     """
     m = re.search(f"<{tag}>(.*?)</{tag}>", text, re.DOTALL | re.IGNORECASE)
     if m:
-        return m.group(1).strip()
+        candidate = m.group(1).strip()
+        if tag.lower() == "sql":
+            first = candidate.upper().split()[0] if candidate.split() else ""
+            if first not in _SQL_LEADING_KEYWORDS:
+                m = None
+            else:
+                return candidate
+        else:
+            return candidate
 
     if tag.lower() == "sql":
         m = re.search(r"```(?:sql)?\s*(.*?)```", text, re.DOTALL)
         if m:
             candidate = m.group(1).strip()
             first = candidate.upper().split()[0] if candidate.split() else ""
-            if first in ("SELECT", "WITH"):
+            if first in _SQL_LEADING_KEYWORDS:
                 return candidate
         return ""
 
@@ -524,7 +553,7 @@ def build_directive_section(state: dict) -> str:
             "  4. CONTEXT — informational only; shapes intent but never overrides above\n"
             "\n"
             "ADDITIVE RULE (not a conflict): COMPUTED_FILTER and FILTER DIRECTIVE target different columns.\n"
-            "  FILTER DIRECTIVE = base table column filters (WHERE bank.name ~* 'JPM'). Apply always.\n"
+            "  FILTER DIRECTIVE = base table column filters (WHERE bank.name ILIKE '%JPM%'). Apply always.\n"
             "  COMPUTED_FILTER = predicates on derived values (WHERE running_total < 200000000). Apply always.\n"
             "  Never substitute one for the other. Both appear in the final SQL simultaneously.\n"
             "\n"
@@ -635,6 +664,126 @@ def _build_concept_mappings_section(concept_mappings: dict | None) -> str:
             line += f"  → COMPUTATION: {comp}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def format_prior_context_block(prior_ctx) -> str:
+    """Format prior execution context into a compact factual block for LLM prompts.
+
+    Accepts EITHER a single prior-turn dict OR a list of recent prior-turn dicts
+    (newest first — the rolling thread-context window). Returns empty string if empty.
+    Never includes SQL — only structured context (tables, filters, measures, dimensions).
+    The block is non-directive — agents decide what is relevant.
+    """
+    if not prior_ctx:
+        return ""
+
+    if isinstance(prior_ctx, dict):
+        turns = [prior_ctx]
+    else:
+        turns = [t for t in prior_ctx if t]
+    if not turns:
+        return ""
+
+    blocks = []
+    for idx, turn in enumerate(turns):
+        body = _format_single_prior_turn(turn)
+        if body:
+            label = "most recent" if idx == 0 else f"{idx + 1} turns back"
+            blocks.append(f"[{label}]\n{body}")
+    if not blocks:
+        return ""
+
+    header = "PRIOR THREAD CONTEXT (recent turns, newest first — reference only, use your judgment):\n"
+    return header + "\n\n".join(blocks) + "\n"
+
+
+def _format_single_prior_turn(prior_ctx: dict) -> str:
+    """Format one prior-turn context dict into compact factual lines (no header, no SQL)."""
+    if not prior_ctx:
+        return ""
+
+    question = prior_ctx.get("question", "")
+    tables = prior_ctx.get("anchor_tables") or []
+    filters = prior_ctx.get("filters") or []
+    measures = prior_ctx.get("measures") or []
+    dimensions = prior_ctx.get("dimensions") or []
+    time_filter = prior_ctx.get("time_filter")
+    temporal_grains = prior_ctx.get("temporal_grains") or []
+    measure_summary = prior_ctx.get("measure_summary") or ""
+    dimension_summary = prior_ctx.get("dimension_summary") or ""
+
+    # Flatten filters from SemanticIR (list of dicts with table_fqn, column_name, operator, values)
+    filter_parts = []
+    for f in filters:
+        tbl = f.get("table_fqn", "")
+        col = f.get("column_name", "")
+        op = f.get("operator", "=")
+        vals = f.get("values") or []
+        val_str = ", ".join(str(v) for v in vals) if vals else f.get("raw_user_value") or ""
+        if col:
+            prefix = f"{tbl}." if tbl else ""
+            filter_parts.append(f"{prefix}{col} {op} {val_str}")
+    if time_filter:
+        tf_col = time_filter.get("column_name") or time_filter.get("column") or ""
+        tf_range = time_filter.get("range") or time_filter.get("period") or ""
+        if tf_col and tf_range:
+            filter_parts.append(f"time: {tf_col} → {tf_range}")
+        elif tf_range:
+            filter_parts.append(f"period: {tf_range}")
+    filter_line = " | ".join(filter_parts) if filter_parts else "(none)"
+
+    # Flatten measures from SemanticIR
+    measure_parts = []
+    for m in measures:
+        agg = m.get("aggregation") or ""
+        tbl = m.get("table_fqn", "")
+        col = m.get("column_name", "")
+        alias = m.get("alias", "")
+        if agg and col:
+            measure_parts.append(f"{agg}({tbl}.{col}) → {alias}" if alias else f"{agg}({tbl}.{col})")
+        elif col:
+            measure_parts.append(f"{tbl}.{col}")
+    if not measure_parts and measure_summary:
+        measure_line = measure_summary[:200]
+    else:
+        measure_line = " | ".join(measure_parts) if measure_parts else "(none)"
+
+    # Flatten dimensions from SemanticIR
+    dim_parts = [d.get("column_name", "") for d in dimensions if d.get("column_name")]
+    if not dim_parts and dimension_summary:
+        dim_line = dimension_summary[:200]
+    else:
+        dim_line = ", ".join(dim_parts) if dim_parts else "(none)"
+
+    # Tables
+    tables_line = ", ".join(tables) if tables else "(none)"
+
+    # Temporal grains
+    grain_suffix = f" (grain: {', '.join(temporal_grains)})" if temporal_grains else ""
+
+    return (
+        f"Prior question: \"{question}\"\n"
+        f"Tables: {tables_line}\n"
+        f"Filters: {filter_line}\n"
+        f"Measures: {measure_line}\n"
+        f"Dimensions: {dim_line}{grain_suffix}"
+    )
+
+
+def build_instructions_section(state: dict, role: str) -> str:
+    """Return a formatted <user_instructions> block for LLM prompts, or '' if no instructions set."""
+    gi = (state.get("global_instructions") or "").strip()
+    if not gi:
+        return ""
+    return (
+        f"<user_instructions>\n"
+        f"Apply only instructions relevant to your task as a {role}. "
+        f"These are explicit user-defined rules — follow them precisely. "
+        f"When an instruction conflicts with schema constraints, follow the schema; "
+        f"where possible also satisfy the instruction's intent.\n"
+        f"{gi}\n"
+        f"</user_instructions>"
+    )
 
 
 def build_mission_context(state: dict, role: str, feeds: str) -> str:

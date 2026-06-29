@@ -4,7 +4,7 @@ import { Message, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { useUIStore } from '@/lib/store/ui';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, ChevronDown, Pencil, X, Check, Code2, TableIcon, Info, MoreHorizontal, Pin, LayoutDashboard, Loader2, Network, Brain } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, ChevronDown, Pencil, X, Check, Code2, TableIcon, Info, Pin, LayoutDashboard, Loader2, Network, Brain } from 'lucide-react';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import {
   Dialog,
@@ -13,13 +13,6 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { SqlBlock } from './sql-block';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
@@ -99,6 +92,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
     const md = message.metadata_;
     const hasRows = !!(md?.rows && (md.rows as unknown[]).length > 0);
     if (!hasRows && md?.sql) return 'sql';
+    if (!pref.showData) return 'sql';
     if (!pref.showSQL) return 'table';
     return pref.defaultDataView;
   });
@@ -428,6 +422,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
   const prefShowFollowUps = usePreferencesStore((s) => s.showFollowUps);
   const prefShowReasoning = usePreferencesStore((s) => s.showReasoning);
   const thinkingPlacement = usePreferencesStore((s) => s.thinkingPlacement);
+  const prefShowData = usePreferencesStore((s) => s.showData);
   const openThinkingPanel = useUIStore((s) => s.openThinkingPanel);
   const thinkingPanelOpen = useUIStore((s) => s.thinkingPanelOpen);
   const thinkingPanelMessageId = useUIStore((s) => s.thinkingPanelMessageId);
@@ -615,7 +610,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
                 SQL
               </Button>
             )}
-            {hasTableData && (
+            {hasTableData && prefShowData && (
               <Button
                 variant={dataView === 'table' ? 'secondary' : 'ghost'}
                 size="sm"
@@ -648,7 +643,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               </div>
             </div>
           )}
-          {dataView === 'table' && hasTableData && (
+          {dataView === 'table' && hasTableData && prefShowData && (
             <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} isStreaming={message.isStreaming} />
           )}
         </div>
@@ -837,63 +832,44 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               <FeedbackWidget threadId={threadId} conversationId={message.conversation_id} feedback={message.feedback} />
             )}
 
-            {/* Overflow: TTS, Share, Pin, About */}
-            <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm" aria-label="More actions" className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent">
-                    <MoreHorizontal className="w-3.5 h-3.5" aria-hidden />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="min-w-[180px]">
-                  {/* Read aloud - hidden */}
-                  {/* {ttsAvailable && message.content && (
-                    <DropdownMenuItem onClick={() => isSpeaking ? ttsStop() : ttsSpeak(message.content)} className="gap-2">
-                      {isSpeaking ? <Square className="w-4 h-4 fill-current" /> : <Volume2 className="w-4 h-4" />}
-                      {isSpeaking ? 'Stop reading' : 'Read aloud'}
-                    </DropdownMenuItem>
-                  )} */}
-                  {message.content && (
-                    <DropdownMenuItem onClick={() => { setPinLabel(''); setPinDialogOpen(true); }} className="gap-2">
-                      <Pin className="w-4 h-4" />
-                      Pin to home
-                    </DropdownMenuItem>
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleOpenAbout} className="gap-2">
-                    <Info className="w-4 h-4" />
-                    About this answer
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            <Dialog open={pinDialogOpen} onOpenChange={(o) => { if (!o) setPinDialogOpen(false); }}>
-              <DialogContent className="sm:max-w-sm p-6 gap-0">
-                <DialogTitle className="text-base font-semibold mb-1">Pin to home</DialogTitle>
-                <DialogDescription className="text-sm text-muted-foreground mb-4">
-                  Give this metric a name. It will appear on your home page.
-                </DialogDescription>
-                <input
-                  autoFocus
-                  value={pinLabel}
-                  onChange={(e) => setPinLabel(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault(); // stop Enter from clicking the button
-                      handlePin();
-                    }
-                  }}
-                  placeholder="e.g. Daily cash position"
-                  className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                />
-                <DialogFooter className="mt-4">
-                  <button onClick={() => setPinDialogOpen(false)} className="text-sm text-muted-foreground hover:text-foreground px-3 py-2">Cancel</button>
-                  <button onClick={handlePin} className="rounded-xl bg-primary text-primary-foreground text-sm px-4 py-2 hover:bg-primary/90">
-                    Pin
-                  </button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+            {/* About this answer */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="sm" onClick={handleOpenAbout} aria-label="About this answer" className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent">
+                  <Info className="w-3.5 h-3.5" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">About this answer</TooltipContent>
+            </Tooltip>
           </div>
         </div>
+      <Dialog open={pinDialogOpen} onOpenChange={(o) => { if (!o) setPinDialogOpen(false); }}>
+        <DialogContent className="sm:max-w-sm p-6 gap-0">
+          <DialogTitle className="text-base font-semibold mb-1">Pin to home</DialogTitle>
+          <DialogDescription className="text-sm text-muted-foreground mb-4">
+            Give this metric a name. It will appear on your home page.
+          </DialogDescription>
+          <input
+            autoFocus
+            value={pinLabel}
+            onChange={(e) => setPinLabel(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handlePin();
+              }
+            }}
+            placeholder="e.g. Daily cash position"
+            className="w-full rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <DialogFooter className="mt-4">
+            <button onClick={() => setPinDialogOpen(false)} className="text-sm text-muted-foreground hover:text-foreground px-3 py-2">Cancel</button>
+            <button onClick={handlePin} className="rounded-xl bg-primary text-primary-foreground text-sm px-4 py-2 hover:bg-primary/90">
+              Pin
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AboutPanel
         open={aboutOpen}
         onOpenChange={setAboutOpen}

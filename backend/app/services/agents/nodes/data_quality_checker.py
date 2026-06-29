@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -54,14 +55,21 @@ async def data_quality_checker(state: AnalyticsState, config: RunnableConfig) ->
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
-    from langchain_core.messages import HumanMessage
 
     llm = get_llm("fast")
 
     @llm_breaker
     async def _call():
         from app.core.retry import retry_async
-        return await retry_async(lambda: llm.ainvoke([HumanMessage(content=prompt_text)], config=config), service="bedrock-data-quality-checker", max_attempts=2, backoff_base=5.0)
+        return await retry_async(
+            lambda: llm.ainvoke([
+                SystemMessage(content="You are a financial data-integrity gate. Return JSON only."),
+                HumanMessage(content=prompt_text),
+            ], config=config),
+            service="bedrock-data-quality-checker",
+            max_attempts=2,
+            backoff_base=5.0,
+        )
 
     try:
         response = await _call()

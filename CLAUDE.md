@@ -81,7 +81,7 @@ npm install --legacy-peer-deps
 npm run dev
 ```
 
-Open `http://localhost:3000` — default login: `admin` / `admin123`
+Open `http://localhost:3000` and log in with an existing DB user.
 
 ---
 

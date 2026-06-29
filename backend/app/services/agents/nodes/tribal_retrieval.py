@@ -1,8 +1,10 @@
- """Node: tribal_retrieval — hybrid pgvector + FTS retrieval from tribal knowledge store.
+"""Node: tribal_retrieval — multi-term hybrid pgvector + FTS retrieval from tribal knowledge store.
 
-Primary path (when deep_analysis=True): embeds the question via Cohere and runs a
-hybrid search against mti_brain_tribal_knowledge — vector cosine similarity (top 5)
-merged with PostgreSQL full-text search (top 5) via Reciprocal Rank Fusion.
+When deep_analysis=True:
+  - Reads search_terms, search_variants, and entity_tokens from state (set by intake_classifier).
+  - Embeds [question, *search_terms] concurrently via Cohere.
+  - For each query string runs BOTH a vector search and a websearch_to_tsquery FTS search.
+  - Merges all ranked lists via multi-source Reciprocal Rank Fusion → top 12 docs.
 
 Fallback: if the pgvector table is empty (ingestion script not yet run), falls back
 to the original Neo4j keyword search so the pipeline degrades gracefully.
@@ -57,66 +59,90 @@ _VECTOR_SQL = text("""
     FROM mti_brain_tribal_knowledge
     WHERE embedding IS NOT NULL
     ORDER BY embedding <=> CAST(:embedding AS vector)
-    LIMIT 5
+    LIMIT 10
 """)
 
 _FTS_SQL = text("""
     SELECT source_file, file_name, folder, content,
-           ts_rank(search_vector, plainto_tsquery('english', :query)) AS score
+           ts_rank_cd(search_vector, websearch_to_tsquery('english', :query)) AS score
     FROM mti_brain_tribal_knowledge
-    WHERE search_vector @@ plainto_tsquery('english', :query)
+    WHERE search_vector @@ websearch_to_tsquery('english', :query)
     ORDER BY score DESC
-    LIMIT 5
+    LIMIT 10
 """)
 
 
-def _rrf_merge(
-    vector_rows: list[dict],
-    fts_rows: list[dict],
+def _rrf_merge_multi(
+    ranked_lists: list[list[dict]],
     k: int = 60,
-    top_n: int = 8,
+    top_n: int = 12,
 ) -> list[dict]:
-    """Reciprocal Rank Fusion over two ranked lists keyed by source_file."""
+    """Multi-source Reciprocal Rank Fusion over N ranked lists keyed by source_file.
+
+    Each list contributes 1/(k + rank + 1) to the shared score dict.
+    A document found by multiple passes (e.g. full-question vector + focused-term FTS)
+    accumulates score from each, naturally surfacing the most relevant docs.
+    """
     scores: dict[str, float] = {}
-    for rank, row in enumerate(vector_rows):
-        key = row["source_file"]
-        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
-    for rank, row in enumerate(fts_rows):
-        key = row["source_file"]
-        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
     by_key: dict[str, dict] = {}
-    for row in (*vector_rows, *fts_rows):
-        by_key.setdefault(row["source_file"], row)
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [by_key[k] for k, _ in ranked[:top_n]]
+    for ranked in ranked_lists:
+        for rank, row in enumerate(ranked):
+            key = row["source_file"]
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+            by_key.setdefault(key, row)
+    ranked_keys = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    result = []
+    for key, score in ranked_keys[:top_n]:
+        row = dict(by_key[key])
+        row["_rrf_score"] = score
+        result.append(row)
+    return result
 
 
-async def _pgvector_retrieval(question: str) -> list[dict] | None:
-    """Run hybrid vector+FTS search. Returns None if the table is empty (not seeded)."""
-    embedding = await embed_question(question)
-    if embedding is None:
-        return []
+async def _hybrid_retrieval(question: str, search_terms: list[str]) -> list[dict] | None:
+    """Run multi-term hybrid vector+FTS search.
 
-    embedding_str = str(embedding)
+    Embeds [question, *search_terms] concurrently, runs vector and FTS per query string,
+    then merges all ranked lists via multi-source RRF.
+    Returns None if the table is empty (not seeded).
+    """
+    query_strings = [question] + [t for t in search_terms if t and t != question]
+
+    embeddings = await asyncio.gather(*[embed_question(q) for q in query_strings])
 
     async with async_read_session_factory() as db:
         count = (await db.execute(_COUNT_SQL)).scalar() or 0
         if count == 0:
             return None
 
-        vec_result = await db.execute(_VECTOR_SQL, {"embedding": embedding_str})
-        vec_rows = [dict(r._mapping) for r in vec_result]
+        ranked_lists: list[list[dict]] = []
+        for q_str, embedding in zip(query_strings, embeddings):
+            if embedding is not None:
+                vec_result = await db.execute(_VECTOR_SQL, {"embedding": str(embedding)})
+                vec_rows = [dict(r._mapping) for r in vec_result]
+                if vec_rows:
+                    ranked_lists.append(vec_rows)
 
-        fts_result = await db.execute(_FTS_SQL, {"query": question})
-        fts_rows = [dict(r._mapping) for r in fts_result]
+            try:
+                fts_result = await db.execute(_FTS_SQL, {"query": q_str})
+                fts_rows = [dict(r._mapping) for r in fts_result]
+                if fts_rows:
+                    ranked_lists.append(fts_rows)
+            except Exception:
+                pass
 
-    merged = _rrf_merge(vec_rows, fts_rows)
+    if not ranked_lists:
+        return []
+
+    merged = _rrf_merge_multi(ranked_lists)
+    max_score = merged[0]["_rrf_score"] if merged else 1.0
     return [
         {
             "type": "TribalKnowledge",
             "label": row["file_name"],
-            "value": row["content"][:2000],
+            "value": row["content"][:4000],
             "status": "active",
+            "score": round(row["_rrf_score"] / max_score, 3),
         }
         for row in merged
     ]
@@ -156,14 +182,23 @@ async def tribal_retrieval(state: AnalyticsState, config: RunnableConfig) -> dic
         return {"tribal_facts": []}
 
     question = state.get("question", "")
+    search_terms = list(state.get("search_terms") or [])
+    search_variants = list(state.get("search_variants") or [])
+    entity_tokens = list(state.get("entity_tokens") or [])
 
-    # Primary: pgvector hybrid search (vector + FTS via RRF)
+    # If intake_classifier didn't populate search_terms, fall back to search_variants / entity_tokens
+    if not search_terms:
+        search_terms = (search_variants + entity_tokens)[:3]
+
+    num_terms = len(search_terms)
+
+    # Primary: multi-term hybrid search (vector + FTS via multi-source RRF)
     try:
-        facts = await _pgvector_retrieval(question)
+        facts = await _hybrid_retrieval(question, search_terms)
         if facts is not None:
             logger.info(
-                "tribal_retrieval | pgvector | thread={} | found={}",
-                state["thread_id"], len(facts),
+                "tribal_retrieval | hybrid | thread={} | pgvector_terms={} | found={}",
+                state["thread_id"], 1 + num_terms, len(facts),
             )
             return {"tribal_facts": facts}
         logger.info(
@@ -172,11 +207,11 @@ async def tribal_retrieval(state: AnalyticsState, config: RunnableConfig) -> dic
         )
     except Exception as e:
         logger.warning(
-            "tribal_retrieval pgvector failed (non-fatal) | thread={} | error={}",
+            "tribal_retrieval hybrid failed (non-fatal) | thread={} | error={}",
             state["thread_id"], e,
         )
 
-    # Fallback: Neo4j keyword search
+    # Fallback: Neo4j keyword search (only when pgvector table is empty)
     kw1, kw2 = _extract_keywords(question)
     try:
         facts = await asyncio.to_thread(_run_cypher, kw1, kw2)

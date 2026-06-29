@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import json
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
 from app.services.agents.helpers import _build_entity_tokens_section, build_mission_context, merge_neo4j_raw_graph
-from app.services.agents.prompts import ANCHOR_RESOLVER_PROMPT, REASONING_DIRECTIVE_NORMAL
+from app.services.agents.prompts import ANCHOR_RESOLVER_HUMAN, ANCHOR_RESOLVER_SYSTEM, QUERY_PLANNER_HUMAN, QUERY_PLANNER_SYSTEM, REASONING_DIRECTIVE_NORMAL
 from app.services.agents.state import AnalyticsState
 
 
@@ -149,6 +150,15 @@ def _inject_signal_tables(
             second_hop = neo4j_client.get_direct_joins(list(joinable_fqns))
             joinable_fqns |= {r["to_fqn"] for r in second_hop} | {r["from_fqn"] for r in second_hop}
             _raw_join_edges.extend({"_type": "JOINS_TO", "source": "anchor_resolver_2hop", **r} for r in second_hop)
+        elif semantic_context.get("entity_hints"):
+            # Entity-bearing dimensions are often 2 hops from the fact anchor
+            # (fact -> bridge -> dimension, e.g. cash_balance -> bank_account -> company).
+            # Expand one extra hop when the user named an entity value so that dimension
+            # passes the joinable gate below — otherwise the specialist falls back to
+            # substring-matching a code column. Scoped to entity-hint cases to limit cost.
+            entity_second_hop = neo4j_client.get_direct_joins(list(joinable_fqns))
+            joinable_fqns |= {r["to_fqn"] for r in entity_second_hop} | {r["from_fqn"] for r in entity_second_hop}
+            _raw_join_edges.extend({"_type": "JOINS_TO", "source": "anchor_resolver_entity_2hop", **r} for r in entity_second_hop)
         # Also treat any table that appears in loaded JoinPath nodes as joinable —
         # avoids a second Neo4j call and covers multi-hop paths without JOINS_TO edges.
         for path in (anchor_join_paths or []):
@@ -166,6 +176,27 @@ def _inject_signal_tables(
     bt_added = 0
     intent_added = 0
     domain_added = 0
+    entity_hint_added = 0
+
+    # Signal 1 (highest confidence): entity_hints — tables where the user's named value
+    # ACTUALLY matched a column value (score >= 2). The entity lives in this dimension, so it
+    # MUST be in scope; otherwise the specialist substring-matches a code column and selects a
+    # wrong/contaminated population. Deterministic — not left to the LLM honoring the prompt hint.
+    entity_hint_cap = 3
+    for h in (semantic_context.get("entity_hints") or []):
+        if entity_hint_added >= entity_hint_cap:
+            break
+        fqn = h.get("table_fqn")
+        if fqn and fqn not in valid_anchors and fqn not in to_add:
+            if _joinable(fqn):
+                to_add.append(fqn)
+                entity_hint_added += 1
+                logger.info(
+                    "anchor_resolver | entity_hint_injected | {} (col={} value={})",
+                    fqn, h.get("column"), h.get("token"),
+                )
+            else:
+                logger.info("anchor_resolver | signal_rejected_not_joinable | fqn={} | signal=entity_hint", fqn)
 
     # Signal 2: BusinessTerm.related_table_fqns — Neo4j REFERENCES_TABLE edge, not LLM output
     # No valid_tables gate: BT FQNs are ground truth; injecting outside the 14-cap is safe.
@@ -263,8 +294,8 @@ def _inject_signal_tables(
 
     if len(result) > len(valid_anchors):
         logger.info(
-            "anchor_resolver | signal_injection | bt={} intent={} domain={} entity={} | total={}",
-            bt_added, intent_added, domain_added, ent_added, result,
+            "anchor_resolver | signal_injection | entity_hint={} bt={} intent={} domain={} entity={} | total={}",
+            entity_hint_added, bt_added, intent_added, domain_added, ent_added, result,
         )
     return result, _raw_join_edges, _raw_bridge_edges, _raw_community_nodes
 
@@ -340,25 +371,84 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
     )
 
     _prior_anchor_section = _build_prior_anchor_section(semantic_context)
-
-    anchor_prompt = ANCHOR_RESOLVER_PROMPT.format_messages(
-        question=question,
-        tables_section=_build_tables_section(semantic_context),
-        business_terms_section=_build_terms_section(semantic_context),
-        entity_hints_section=_build_entity_hints_section(semantic_context),
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-        intents_section=_build_intents_section(semantic_context),
-        query_intent_section=query_intent_section,
-        prior_anchor_section=_prior_anchor_section,
+    _pat_ar = semantic_context.get("_matched_pattern") or {}
+    logger.info(
+        "anchor_resolver | pattern_injection | thread={} | tier={} | tables_used={} | anti_count={} | anti_types={} | section_built={}",
+        state["thread_id"],
+        semantic_context.get("_matched_pattern_tier") or "none",
+        _pat_ar.get("tables_used") or [],
+        len(semantic_context.get("_matched_anti_patterns") or []),
+        [a.get("error_type") for a in (semantic_context.get("_matched_anti_patterns") or [])],
+        bool(_prior_anchor_section),
     )
+
+    from app.services.agents.helpers import build_instructions_section
+    anchor_prompt = [
+        SystemMessage(content=ANCHOR_RESOLVER_SYSTEM.format(
+            question=question,
+            tables_section=_build_tables_section(semantic_context),
+            business_terms_section=_build_terms_section(semantic_context),
+            entity_hints_section=_build_entity_hints_section(semantic_context),
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            intents_section=_build_intents_section(semantic_context),
+            query_intent_section=query_intent_section,
+            prior_anchor_section=_prior_anchor_section,
+            instructions_section=build_instructions_section(state, "table selector"),
+        )),
+        HumanMessage(content=ANCHOR_RESOLVER_HUMAN),
+    ]
     _mission = build_mission_context(
         state,
         role="Select the anchor tables from Neo4j candidates that are semantically central to this query",
         feeds="schema_enricher (column loading for selected tables), all 3 specialists (entity context)",
     )
-    anchor_prompt[0].content = _mission + "\n\n" + anchor_prompt[0].content
+    from app.services.agents.helpers import format_prior_context_block
+    from app.services.embeddings import embed_question as _embed_q
+    _prior_ctx = state.get("prior_execution_context")
+    _prior_window = state.get("prior_context_window")
+    _cur_emb = semantic_context.get("query_embedding")
+    if _cur_emb and _prior_ctx and _prior_ctx.get("question"):
+        try:
+            _prev_emb = await _embed_q(_prior_ctx["question"])
+            if _prev_emb:
+                _sim = sum(a * b for a, b in zip(_cur_emb, _prev_emb))
+                if _sim < 0.65:
+                    logger.info(
+                        "anchor_resolver | prior_ctx_filtered | sim={:.2f} | thread={}",
+                        _sim, state["thread_id"],
+                    )
+                    _prior_ctx = None
+        except Exception as _exc:
+            logger.debug("anchor_resolver | prior_ctx_sim_failed | err={}", _exc)
+    if _cur_emb and _prior_window:
+        try:
+            _kept: list[dict] = []
+            for _entry in _prior_window:
+                _eq = (_entry.get("question") or "").strip()
+                if not _eq:
+                    continue
+                _eemb = await _embed_q(_eq)
+                if _eemb:
+                    _esim = sum(a * b for a, b in zip(_cur_emb, _eemb))
+                    if _esim >= 0.65:
+                        _kept.append(_entry)
+            _prior_window = _kept or None
+        except Exception as _exc:
+            logger.debug("anchor_resolver | prior_window_filter_failed | err={}", _exc)
+    _prior_ctx_block = format_prior_context_block(_prior_window or _prior_ctx)
+    from app.services.chat.feedback import build_feedback_context_for_node as _fb_for_node
+    _feedback_block = _fb_for_node(state.get("feedback_context") or [], "sql")
+    _feedback_section = (
+        f"LEARNED SQL PREFERENCES (apply where relevant to table selection):\n<feedback_context>{_feedback_block}</feedback_context>\n"
+        if _feedback_block else ""
+    )
+    anchor_prompt[0].content = (
+        _mission + "\n\n"
+        + (_prior_ctx_block + "\n" if _prior_ctx_block else "")
+        + (_feedback_section if _feedback_section else "")
+        + anchor_prompt[0].content
+    )
 
-    from app.services.agents.prompts import QUERY_PLANNER_PROMPT
     available_tables_lines = [
         f"  {t.get('fqn')} — {(t.get('business_context') or t.get('description') or '')[:80]}"
         for t in (semantic_context.get("tables") or [])[:20]
@@ -368,12 +458,17 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         "AVAILABLE TABLES (verify groupings/entities against these):\n" + "\n".join(available_tables_lines)
         if available_tables_lines else ""
     )
-    plan_prompt = QUERY_PLANNER_PROMPT.format_messages(
-        question=question,
-        available_tables_section=available_tables_section,
-        entity_tokens_section=_build_entity_tokens_section(entity_tokens),
-        reasoning_directive=REASONING_DIRECTIVE_NORMAL,
-    )
+    plan_prompt = [
+        SystemMessage(content=QUERY_PLANNER_SYSTEM.format(
+            question=question,
+            available_tables_section=available_tables_section,
+            entity_tokens_section=_build_entity_tokens_section(entity_tokens),
+            reasoning_directive=REASONING_DIRECTIVE_NORMAL,
+            prior_columns_section="",
+            instructions_section="",
+        )),
+        HumanMessage(content=QUERY_PLANNER_HUMAN),
+    ]
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
@@ -427,7 +522,10 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         pm = re.search(r"<output>(.*?)</output>", plan_raw, re.DOTALL | re.IGNORECASE)
         plan_str = pm.group(1).strip() if pm else plan_raw
         try:
-            query_plan = json_repair.loads(plan_str) or {}
+            _qp_raw = json_repair.loads(plan_str)
+            if isinstance(_qp_raw, list):
+                _qp_raw = _qp_raw[0] if _qp_raw else {}
+            query_plan = _qp_raw if isinstance(_qp_raw, dict) else {}
         except Exception:
             logger.warning("anchor_resolver | query_plan JSON parse failed (non-fatal) | thread={}", state["thread_id"])
 
@@ -531,6 +629,26 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         _raw_join_edges + _raw_bridge_edges + _raw_struct_edges,
     )
 
+    # B0: Pass 2 pattern re-search — embed question + resolved table names for intent-aware match
+    _refined_matched_pattern: dict | None = None
+    _current_top_score = (semantic_context.get("_matched_pattern") or {}).get("raw_score", 0)
+    if valid_anchors:
+        try:
+            from app.services.agents import neo4j_client as _nc2
+            _anchor_names = " ".join(sorted(fqn.rsplit(".", 1)[-1] for fqn in valid_anchors))
+            _anchor_intent_text = f"{state['question']} | tables: {_anchor_names}"
+            _anchor_emb = await _embed_q(_anchor_intent_text)
+            if _anchor_emb:
+                _refined = await asyncio.to_thread(_nc2.search_query_patterns, _anchor_emb)
+                if _refined and _refined[0].get("raw_score", 0) > _current_top_score:
+                    _refined_matched_pattern = _refined[0]
+                    logger.info(
+                        "anchor_resolver | pass2_pattern | raw={:.3f} > pass1={:.3f} | id={}",
+                        _refined[0]["raw_score"], _current_top_score, (_refined[0].get("id") or "")[:8],
+                    )
+        except Exception as _b0e:
+            logger.debug("anchor_resolver | pass2_pattern_failed | err={}", _b0e)
+
     # Store in resolved_intent stub so query_compiler can read result_shape
     existing_resolved = state.get("resolved_intent") or {}
     return {
@@ -540,4 +658,7 @@ async def anchor_resolver(state: AnalyticsState, config: RunnableConfig) -> dict
         "neo4j_raw_graph": neo4j_raw_graph,
         "fx_rate_template_join": _fx_template_join,
         "llm_selected_anchors": _llm_selected_anchors,
+        "prior_execution_context": _prior_ctx,
+        "prior_context_window": _prior_window,
+        "_refined_matched_pattern": _refined_matched_pattern,
     }

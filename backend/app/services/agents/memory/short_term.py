@@ -7,7 +7,6 @@ Compresses conversation after 6+ messages using Haiku summary.
 from __future__ import annotations
 
 from app.core.logger import logger
-from app.services.agents import redis_client
 
 
 async def compress_session(
@@ -17,7 +16,8 @@ async def compress_session(
 ) -> str:
     """Compress conversation messages into a short summary.
 
-    Returns the summary string. Also caches in Redis (30 min TTL).
+    Returns the summary string. Checkpoint persists it automatically
+    via state["summary"] — no Redis needed.
     """
     from langchain_core.messages import HumanMessage, AIMessage
 
@@ -34,21 +34,16 @@ async def compress_session(
     conversation = "\n".join(conversation_text)
 
     try:
-        from app.services.agents.prompts import COMPRESS_PROMPT
-        from langchain_core.messages import HumanMessage as HM
-        response = await llm.ainvoke(
-            COMPRESS_PROMPT.format_messages(conversation=conversation)
-        )
+        from app.services.agents.prompts import COMPRESS_HUMAN, COMPRESS_SYSTEM
+        from langchain_core.messages import HumanMessage as HM, SystemMessage
+        response = await llm.ainvoke([
+            SystemMessage(content=COMPRESS_SYSTEM),
+            HM(content=COMPRESS_HUMAN.format(existing_summary_section="None.", recent_exchanges=conversation)),
+        ])
         summary = (response.content or "").strip()
         if summary:
-            redis_client.set_session_summary(thread_id, summary, ttl=1800)
             logger.info("short_term | compressed session | thread={} | summary_len={}", thread_id, len(summary))
         return summary
     except Exception as e:
         logger.warning("short_term | compress failed | thread={} | error={}", thread_id, e)
         return ""
-
-
-def get_session_summary(thread_id: str) -> str:
-    """Retrieve cached session summary."""
-    return redis_client.get_session_summary(thread_id) or ""

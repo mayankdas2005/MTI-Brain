@@ -8,14 +8,13 @@ both state["summary"] (persisted across turns) and Redis (30 min TTL).
 
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
-from app.services.agents import redis_client
 from app.services.agents.bedrock import get_llm
 from app.services.agents.helpers import parse_tag
-from app.services.agents.prompts import COMPRESS_PROMPT
+from app.services.agents.prompts import COMPRESS_HUMAN, COMPRESS_SYSTEM
 from app.services.agents.state import AnalyticsState
 
 SUMMARIZE_THRESHOLD = 6
@@ -37,10 +36,17 @@ async def compress(state: AnalyticsState, config: RunnableConfig) -> dict:
     existing_section = f"Previous summary:\n{existing}" if existing else "None."
 
     from app.core.retry import retry_async
-    chain = COMPRESS_PROMPT | get_llm("fast")
     try:
-        _payload = {"existing_summary_section": existing_section, "recent_exchanges": "\n\n".join(exchanges)}
-        raw = await retry_async(lambda: chain.ainvoke(_payload), service="bedrock-compress", max_attempts=2, backoff_base=5.0)
+        prompt = [
+            SystemMessage(content=COMPRESS_SYSTEM),
+            HumanMessage(
+                content=COMPRESS_HUMAN.format(
+                    existing_summary_section=existing_section,
+                    recent_exchanges="\n\n".join(exchanges),
+                )
+            ),
+        ]
+        raw = await retry_async(lambda: get_llm("fast").ainvoke(prompt, config=config), service="bedrock-compress", max_attempts=2, backoff_base=5.0)
         text = raw.content if hasattr(raw, "content") else str(raw)
         summary = parse_tag(text, "summary") or text.strip()
     except Exception as e:
@@ -48,7 +54,7 @@ async def compress(state: AnalyticsState, config: RunnableConfig) -> dict:
         return {}
 
     if summary:
-        redis_client.set_session_summary(thread_id, summary, ttl=1800)
+        logger.info("compress | summary generated | thread={} | len={}", thread_id, len(summary))
 
     logger.info("compress DONE | thread={} | removed={} | summary_len={}",
                 thread_id, len(to_summarize), len(summary))

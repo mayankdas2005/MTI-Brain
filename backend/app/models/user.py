@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from app.db.base import Base
-from sqlalchemy import DateTime, Index, String, Text
+from sqlalchemy import DateTime, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,6 +35,8 @@ class MTIBrainUser(Base):
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Stores a bcrypt hash in the DB column named "password".
+    password_hash: Mapped[str | None] = mapped_column("password", Text, nullable=True)
     groups: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     organization: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_login: Mapped[datetime] = mapped_column(
@@ -43,6 +45,10 @@ class MTIBrainUser(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    # Haiku-synthesised 5-8 bullet behavioural profile; injected instead of raw feedback when fresh
+    distilled_preferences: Mapped[str | None] = mapped_column(Text, nullable=True)
+    distilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    feedback_count_at_distill: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     threads: Mapped[list["MTIBrainThread"]] = relationship(  # noqa: F821
         back_populates="user", lazy="noload"

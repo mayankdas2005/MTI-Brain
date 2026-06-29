@@ -58,6 +58,8 @@ from .enrich.llm_enricher import (
     enrich_domain,
     enrich_intents,
     enrich_query_templates,
+    enrich_join_paths,
+    enrich_relationships,
     enrich_tables,
     generate_business_glossary,
 )
@@ -127,6 +129,8 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             log.info("Communities cache cleared from checkpoint.")
         _save_checkpoint(cp)
 
+    chat_client = None  # initialized lazily in ENRICH; re-used or created in PATHS
+    checkpoint = _load_checkpoint()  # shared across steps; ENRICH reloads it too
     loader = None if dry_run else Neo4jLoader(
         neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password, neo4j_cfg.db
     )
@@ -715,7 +719,10 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             ))
             tm_by_fqn[tm.fqn] = tm
 
-        tables_not_cached = [t for t in tables_llm_input if t["fqn"] not in table_cache]
+        tables_not_cached = [
+            t for t in tables_llm_input
+            if t["fqn"] not in table_cache or table_cache[t["fqn"]].get("_enrichment_failed")
+        ]
         total_t = len(tables_not_cached)
         log.info("ENRICH Phase 2: %d to enrich, %d from cache.",
                  total_t, len(tables_llm_input) - total_t)
@@ -729,10 +736,12 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             stats["llm_calls"] += len(batch)
 
             pending_tbl_rows = []
+            failed_fqns = []
             for tbl_input in batch:
                 fqn = tbl_input["fqn"]
                 enr = table_cache.get(fqn, {})
                 if enr.get("_enrichment_failed"):
+                    failed_fqns.append(fqn)
                     continue
                 tm_obj = tm_by_fqn.get(fqn)
                 desc   = enr.get("description", "")
@@ -749,6 +758,9 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
 
             if pending_tbl_rows:
                 loader.batch_update_table_enrichment(pending_tbl_rows, _NOW())
+            if failed_fqns:
+                loader.mark_tables_enrichment_failed(failed_fqns, _NOW())
+                log.warning("ENRICH Phase 2: %d tables marked failed: %s", len(failed_fqns), failed_fqns)
             checkpoint["tables"] = table_cache
             _save_checkpoint(checkpoint)
             done_count = min(batch_start + TABLE_BATCH, total_t)
@@ -777,6 +789,13 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
             log.info("Created %d Domain nodes from enrichment.", len(enriched_domains))
 
         loader.initialize_table_defaults()
+
+        # ── Relationship enrichment (JOINS_TO descriptions) ────────────────────
+        rel_cache = checkpoint.get("relationships", {})
+        rel_enriched = enrich_relationships(all_fk_edges, chat_client, rel_cache)
+        checkpoint["relationships"] = rel_enriched
+        _save_checkpoint(checkpoint)
+        loader.load_relationship_descriptions(list(rel_enriched.values()))
 
         # ── Phase 3: Domain voting + community enrichment + domain enrichment ──
         log.info("ENRICH Phase 3 — domain voting + community + domain enrichment …")
@@ -868,6 +887,19 @@ def run(steps: list[str], dry_run: bool = False, reset_checkpoint: bool = False,
         path_builder.close()
         gds._drop_graph("join_graph")
         loader.initialize_joinpath_defaults()
+
+        # ── JoinPath description enrichment ────────────────────────────────
+        _jp_client = chat_client or _langchain_bedrock(bedrock_cfg)
+        jp_rows = loader._run("""
+            MATCH (jp:JoinPath)
+            RETURN jp.id AS id, jp.from_fqn AS from_fqn, jp.to_fqn AS to_fqn,
+                   jp.path_tables AS path_tables, jp.hop_count AS hop_count
+        """)
+        jp_cache = checkpoint.get("join_path_descriptions", {})
+        jp_enriched = enrich_join_paths(jp_rows, _jp_client, jp_cache)
+        checkpoint["join_path_descriptions"] = jp_enriched
+        _save_checkpoint(checkpoint)
+        loader.load_join_path_descriptions(list(jp_enriched.values()))
 
         log.info("PATHS done in %.1fs", time.time() - t)
 
@@ -1508,9 +1540,18 @@ def main():
         help="Comma-separated FQNs to update (e.g. lpp.ap_invoice,lpp.third_party). "
              "Scopes extract/infer/load/enrich/embed to only these tables.",
     )
+    parser.add_argument(
+        "--extend",
+        action="store_true",
+        help="Run all steps from the step given in --steps onwards (inclusive). "
+             "Requires --steps to name exactly one step.",
+    )
     args = parser.parse_args()
 
     if args.steps.strip().lower() == "all":
+        if args.extend:
+            print("--extend cannot be used with --steps all.", file=sys.stderr)
+            sys.exit(1)
         steps = _ALL_STEPS
     else:
         steps = [s.strip() for s in args.steps.split(",")]
@@ -1518,6 +1559,12 @@ def main():
         if invalid:
             print(f"Unknown steps: {invalid}. Valid: {_ALL_STEPS}", file=sys.stderr)
             sys.exit(1)
+        if args.extend:
+            if len(steps) != 1:
+                print("--extend requires exactly one step in --steps.", file=sys.stderr)
+                sys.exit(1)
+            start_idx = _ALL_STEPS.index(steps[0])
+            steps = _ALL_STEPS[start_idx:]
 
     table_filter = [t.strip() for t in args.tables.split(",")] if args.tables else None
 

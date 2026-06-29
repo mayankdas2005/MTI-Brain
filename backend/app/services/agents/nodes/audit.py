@@ -6,6 +6,7 @@ nodes to Neo4j — all as fire-and-forget background tasks.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import time
@@ -13,6 +14,7 @@ import uuid
 
 from app.core.logger import logger
 from app.services.agents import neo4j_client
+from app.services.agents.neo4j import increment_anti_pattern_success as _neo4j_increment_ap_success
 from app.services.agents.semantic_ir import SemanticIR
 from app.services.agents.state import AnalyticsState
 
@@ -25,15 +27,17 @@ def _extract_pg_error_code(error_summary: str) -> str:
     return m.group(1) if m else ""
 
 
-def anti_pattern_merge_key(error_type: str, intent: str, tables_involved: str, error_summary: str) -> str:
+def anti_pattern_merge_key(error_type: str, question_text: str, tables_involved: str, error_summary: str) -> str:
     """Deterministic merge key for AntiPattern dedup.
 
+    Uses question_text (user-typed, deterministic) NOT intent (LLM-generated, non-deterministic).
     Includes pg error code so UNION mismatch (42804) and GROUP BY error (42803)
-    for the same intent+tables create separate nodes.
+    for the same question+tables create separate nodes.
     """
     tables_sorted = ",".join(sorted(t.strip() for t in (tables_involved or "").split(",") if t.strip()))
     pg_code = _extract_pg_error_code(error_summary)
-    raw = f"{error_type}::{intent or 'unknown'}::{tables_sorted}::{pg_code}"
+    q_norm = (question_text or "").strip().lower()
+    raw = f"{error_type}::{q_norm}::{tables_sorted}::{pg_code}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -54,7 +58,7 @@ async def write_audit_log(state: AnalyticsState, sql: str, row_count: int, statu
             user_id=state.get("user_id"),
             user_email=state.get("user_email"),
             question=state["question"],
-            question_type=state.get("question_type", "data_query"),
+            question_type=state.get("question_type", "analytics"),
             schema_fqn=schema_fqn,
             tables_used=anchor_tables,
             sql=sql[:4000] if sql else "",
@@ -76,6 +80,32 @@ async def write_audit_log(state: AnalyticsState, sql: str, row_count: int, statu
         logger.warning("audit | log write failed | error={}", e)
 
 
+def _qp_merge_key(anchor_tables: list[str], question_text: str) -> str:
+    """Deterministic merge key for QueryPattern dedup: hash of sorted tables + normalised question.
+
+    Uses question_text (user-typed, deterministic) NOT intent (LLM-generated, non-deterministic).
+    Same question asked twice — even on different threads — always produces the same key → MERGE
+    updates the existing node rather than creating a duplicate.
+    """
+    tables_csv = ",".join(sorted(t.strip() for t in anchor_tables if t.strip()))
+    q_norm = (question_text or "").strip().lower()
+    raw = f"{tables_csv}::{q_norm}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _extract_fp_fields_from_ir(ir: SemanticIR) -> dict:
+    """Build clean fp_* fields from structured SemanticIR — column names only, no schema/table noise."""
+    return {
+        "fp_measures":    ", ".join(sorted({m.column_name for m in ir.measures if m.column_name})),
+        "fp_filters":     ", ".join(sorted({f.column_name for f in ir.filters if f.column_name})),
+        "fp_time_period": ir.time_filter.column_name if ir.time_filter else "",
+        "fp_dimensions":  ", ".join(sorted({d.column_name for d in ir.dimensions if d.column_name})),
+    }
+
+
+_EMPTY_FP = {"fp_measures": "", "fp_filters": "", "fp_time_period": "", "fp_dimensions": ""}
+
+
 async def write_query_pattern(
     state: AnalyticsState,
     sql: str,
@@ -91,8 +121,11 @@ async def write_query_pattern(
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
+        _fp = _extract_fp_fields_from_ir(ir)
+        _merge_key = _qp_merge_key(list(ir.anchor_tables), state["question"])
         pattern_data = {
             "id": pattern_id or str(uuid.uuid4()),
+            "merge_key": _merge_key,
             "question_text": state["question"],
             "sql_text": sql or "",
             "sql_cte_outline": state.get("_cte_outline") or "",
@@ -113,6 +146,7 @@ async def write_query_pattern(
             "promotion_status": "active",
             "liked_count": 0,
             "disliked_count": 0,
+            **_fp,
         }
         neo4j_client.write_query_pattern(pattern_data, is_update=is_update)
         logger.info(
@@ -120,6 +154,12 @@ async def write_query_pattern(
             "updated" if is_update else "saved",
             pattern_data["id"][:8], confidence_score, ir.intent, is_update,
         )
+        _matched_aps = (state.get("semantic_context") or {}).get("_matched_anti_patterns") or []
+        _ap_ids = [ap["id"] for ap in _matched_aps if ap.get("id")]
+        if _ap_ids:
+            asyncio.create_task(
+                asyncio.to_thread(_neo4j_increment_ap_success, _ap_ids)
+            )
     except Exception as e:
         logger.warning("audit | write_query_pattern failed | error={}", e)
 
@@ -157,9 +197,13 @@ async def write_anti_pattern(
         embedding = await _get_embedding(state["question"])
         tables_involved = ",".join(ir_dict.get("anchor_tables", []))
         intent = ir_dict.get("intent", "")
+        try:
+            _fp = _extract_fp_fields_from_ir(SemanticIR(**ir_dict)) if ir_dict else _EMPTY_FP
+        except Exception:
+            _fp = _EMPTY_FP
         pattern_data = {
             "id": str(uuid.uuid4()),
-            "merge_key": anti_pattern_merge_key(error_type, intent, tables_involved, error_msg),
+            "merge_key": anti_pattern_merge_key(error_type, state["question"], tables_involved, error_msg),
             "question_text": state["question"],
             "sql_text": sql or "",
             "error_type": error_type,
@@ -169,6 +213,7 @@ async def write_anti_pattern(
             "intent": intent,
             "complexity": ir_dict.get("complexity", ""),
             "cohere_embedding": embedding,
+            **_fp,
         }
         neo4j_client.write_anti_pattern(pattern_data)
         logger.debug(

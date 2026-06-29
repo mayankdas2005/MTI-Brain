@@ -2,221 +2,29 @@ version: '1.0'
 schema: lpp
 database: dev
 host: mti-brain-rs-dev-wg.295790629637.us-west-2.redshift-serverless.amazonaws.com
-generated_at: '2026-06-01T14:17:06Z'
+generated_at: '2026-06-25T10:47:51Z'
 table_count: 105
 relationships:
-- from_table: ach_return
-  from_column: bank_account_ref
-  to_table: bank_account
+- from_table: bank_account
+  from_column: currency_ref
+  to_table: currency
   to_column: code
-- from_table: ach_return
-  from_column: company_ref
-  to_table: bank_account
-  to_column: company_ref
-- from_table: ach_return
+- from_table: bank_account
   from_column: company_ref
   to_table: company
-  to_column: code
-- from_table: ach_return
-  from_column: original_transfer_ref
-  to_table: transfer
-  to_column: uuid
-- from_table: acquirer
-  from_column: bank_ref
-  to_table: bank
-  to_column: code
-- from_table: acquirer
-  from_column: settlement_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: acquirer_contract
-  from_column: acquirer_ref
-  to_table: acquirer
-  to_column: code
-- from_table: acquirer_sla_metric
-  from_column: acquirer_ref
-  to_table: acquirer
-  to_column: code
-- from_table: ap_invoice
-  from_column: company_ref
-  to_table: bank_account
-  to_column: company_ref
-- from_table: ap_invoice
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: ap_invoice
-  from_column: vendor_ref
-  to_table: third_party
-  to_column: code
-- from_table: ar_invoice
-  from_column: company_ref
-  to_table: bank_account
-  to_column: company_ref
-- from_table: ar_invoice
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: ar_invoice
-  from_column: customer_ref
-  to_table: third_party
-  to_column: code
-- from_table: audit_trail
-  from_column: actor_user
-  to_table: app_user
   to_column: code
 - from_table: bank_account
   from_column: branch_ref
   to_table: bank_branch
   to_column: code
-- from_table: bank_account
-  from_column: company_ref
-  to_table: bank_account
-  to_column: code
-- from_table: bank_account
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: bank_account
-  from_column: currency_ref
-  to_table: currency
-  to_column: code
-- from_table: bank_account_group_member
-  from_column: account_group_code
-  to_table: bank_account_group
-  to_column: code
-- from_table: bank_account_group_member
-  from_column: bank_account_code
-  to_table: bank_account
-  to_column: code
-- from_table: bank_account_signatory
-  from_column: bank_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: bank_account_signatory
-  from_column: user_ref
-  to_table: app_user
-  to_column: code
 - from_table: bank_branch
   from_column: bank_ref
   to_table: bank
-  to_column: code
-- from_table: bank_branch
-  from_column: region
-  to_table: macro_indicator
-  to_column: region
-- from_table: bank_fee
-  from_column: bank_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: bank_fee
-  from_column: bank_ref
-  to_table: bank
-  to_column: code
-- from_table: bank_fee
-  from_column: service_code
-  to_table: bank_service_type
-  to_column: code
-- from_table: bank_group_member
-  from_column: bank_code
-  to_table: bank
-  to_column: code
-- from_table: bank_group_member
-  from_column: bank_group_code
-  to_table: bank_group
   to_column: code
 - from_table: bank_statement_balance
   from_column: account_ref
   to_table: bank_account
   to_column: code
-- from_table: benchmark_rate
-  from_column: currency_code
-  to_table: bank_account
-  to_column: currency_ref
-- from_table: borrowing
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: brain_evaluation
-  from_column: user_code
-  to_table: company
-  to_column: code
-- from_table: capital_allocation_actual
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: card_authorization
-  from_column: acquirer_ref
-  to_table: acquirer
-  to_column: code
-- from_table: card_authorization
-  from_column: network_code
-  to_table: card_network
-  to_column: code
-- from_table: card_bin_range
-  from_column: network_code
-  to_table: card_network
-  to_column: code
-- from_table: card_rebate_earning
-  from_column: company_ref
-  to_table: capital_allocation_actual
-  to_column: company_ref
-- from_table: card_rebate_earning
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: card_rebate_earning
-  from_column: company_ref
-  to_table: company_financial_metric
-  to_column: company_ref
-- from_table: card_rebate_earning
-  from_column: company_ref
-  to_table: forecast_vs_actual
-  to_column: company_ref
-- from_table: card_rebate_earning
-  from_column: company_ref
-  to_table: working_capital_metric
-  to_column: company_ref
-- from_table: card_rebate_earning
-  from_column: program_ref
-  to_table: card_rebate_program
-  to_column: code
-- from_table: card_rebate_program
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: card_rebate_program
-  from_column: issuer_bank_ref
-  to_table: bank
-  to_column: code
-- from_table: card_settlement_batch
-  from_column: acquirer_ref
-  to_table: acquirer
-  to_column: code
-- from_table: card_settlement_batch
-  from_column: bank_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: card_settlement_batch
-  from_column: bank_account_ref
-  to_table: cash_balance
-  to_column: account_ref
-- from_table: card_settlement_batch
-  from_column: network_code
-  to_table: card_network
-  to_column: code
-- from_table: card_settlement_line
-  from_column: authorization_ref
-  to_table: card_authorization
-  to_column: uuid
-- from_table: card_settlement_line
-  from_column: batch_ref
-  to_table: card_settlement_batch
-  to_column: uuid
-- from_table: card_settlement_line
-  from_column: issuer_country
-  to_table: fraud_loss
-  to_column: issuer_country
 - from_table: cash_balance
   from_column: account_ref
   to_table: bank_account
@@ -226,518 +34,18 @@ relationships:
   to_table: bank_account
   to_column: code
 - from_table: cash_flow
-  from_column: account_ref
-  to_table: cash_balance
-  to_column: account_ref
-- from_table: cash_flow
-  from_column: budget_code_ref
-  to_table: budget_code
-  to_column: code
-- from_table: cash_flow
   from_column: flow_code_ref
   to_table: cash_flow_code
   to_column: code
-- from_table: chargeback
-  from_column: acquirer_ref
-  to_table: acquirer
-  to_column: code
-- from_table: chargeback
-  from_column: authorization_ref
-  to_table: card_authorization
-  to_column: uuid
-- from_table: chargeback
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: chargeback
-  from_column: network_code
-  to_table: card_network
-  to_column: code
 - from_table: company
-  from_column: country
-  to_table: pension_plan
-  to_column: country
-- from_table: company_financial_metric
-  from_column: company_ref
+  from_column: parent_company_ref
   to_table: company
   to_column: code
-- from_table: company_group_member
-  from_column: company_code
-  to_table: company
-  to_column: code
-- from_table: company_group_member
-  from_column: company_group_code
-  to_table: company_group
-  to_column: code
-- from_table: counterparty_exposure
-  from_column: counterparty_bank_ref
-  to_table: bank
-  to_column: code
-- from_table: counterparty_exposure
-  from_column: counterparty_bank_ref
-  to_table: card_rebate_program
-  to_column: issuer_bank_ref
-- from_table: credit_facility
-  from_column: benchmark_code
-  to_table: benchmark_rate
-  to_column: benchmark_code
-- from_table: credit_facility
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: credit_facility
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: credit_facility
-  from_column: currency_ref
-  to_table: currency
-  to_column: code
-- from_table: credit_facility
-  from_column: lender_bank_ref
-  to_table: bank
-  to_column: code
-- from_table: credit_rating
-  from_column: as_of_date
-  to_table: counterparty_exposure
-  to_column: as_of_date
-- from_table: credit_rating
-  from_column: as_of_date
-  to_table: macro_indicator
-  to_column: as_of_date
-- from_table: credit_rating
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: credit_rating
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: cross_border_payment_leg
-  from_column: receive_currency
-  to_table: currency
-  to_column: code
-- from_table: cross_border_payment_leg
-  from_column: send_currency
-  to_table: currency
-  to_column: code
-- from_table: data_permission
-  from_column: entity_code
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: data_permission
-  from_column: profile_code
-  to_table: data_permission_profile
-  to_column: code
-- from_table: derivative_mtm
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: derivative_mtm
-  from_column: counterparty_bank_ref
-  to_table: bank
-  to_column: code
-- from_table: derivative_mtm
-  from_column: instrument_ref
-  to_table: fx_forward
-  to_column: deal_id
-- from_table: derivative_mtm
-  from_column: mtm_currency
-  to_table: currency
-  to_column: code
-- from_table: equity_action
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: equity_action
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: equity_action
-  from_column: currency_code
-  to_table: currency
-  to_column: code
-- from_table: fee_rate_card
-  from_column: bank_ref
-  to_table: bank
-  to_column: code
-- from_table: fee_rate_card
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: fee_rate_card
-  from_column: currency_code
-  to_table: currency
-  to_column: code
-- from_table: forecast_cash_flow
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: forecast_cash_flow
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: forecast_cash_flow
-  from_column: currency_code
-  to_table: currency
-  to_column: code
-- from_table: forecast_cash_flow
-  from_column: snapshot_id
-  to_table: forecast_snapshot
-  to_column: snapshot_id
-- from_table: forecast_vs_actual
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: forecast_vs_actual
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: forecast_vs_actual
-  from_column: currency_code
-  to_table: currency
-  to_column: code
-- from_table: forecast_vs_actual
-  from_column: snapshot_id
-  to_table: forecast_snapshot
-  to_column: snapshot_id
-- from_table: fraud_detection_event
-  from_column: transfer_uuid
-  to_table: cross_border_payment_leg
-  to_column: transfer_uuid
-- from_table: fraud_detection_event
-  from_column: transfer_uuid
-  to_table: transfer
-  to_column: uuid
-- from_table: fraud_loss
-  from_column: channel
-  to_table: membership_fee
-  to_column: channel
-- from_table: fraud_loss
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: fraud_loss
-  from_column: currency_code
-  to_table: currency
-  to_column: code
-- from_table: fraud_loss
-  from_column: detection_event_uuid
-  to_table: fraud_detection_event
-  to_column: uuid
-- from_table: fx_exposure_forecast
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: fx_exposure_forecast
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: fx_exposure_forecast
-  from_column: exposure_currency
-  to_table: currency
-  to_column: code
-- from_table: fx_exposure_forecast
-  from_column: functional_currency
-  to_table: currency
-  to_column: code
-- from_table: fx_exposure_forecast
-  from_column: functional_currency
-  to_table: gen_company_region
-  to_column: functional_ccy
-- from_table: fx_forward
-  from_column: buy_currency
-  to_table: currency
-  to_column: code
-- from_table: fx_forward
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: fx_forward
-  from_column: company_ref
-  to_table: gen_company_region
-  to_column: company_code
-- from_table: fx_forward
-  from_column: counterparty_bank_ref
-  to_table: bank
-  to_column: code
-- from_table: fx_forward
-  from_column: sell_currency
-  to_table: currency
-  to_column: code
-- from_table: fx_rate
-  from_column: base_currency
-  to_table: currency
-  to_column: code
-- from_table: fx_rate
-  from_column: quote_currency
-  to_table: currency
-  to_column: code
-- from_table: gl_account
-  from_column: company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: gl_balance
-  from_column: gl_account_ref
-  to_table: gl_account
-  to_column: code
-- from_table: gl_reconciliation
-  from_column: as_of_date
-  to_table: counterparty_exposure
-  to_column: as_of_date
-- from_table: gl_reconciliation
-  from_column: bank_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: gl_reconciliation
-  from_column: bank_account_ref
-  to_table: gl_account
-  to_column: bank_account_ref
-- from_table: gl_reconciliation
-  from_column: gl_account_ref
-  to_table: gl_account
-  to_column: code
-- from_table: gl_reconciliation
-  from_column: gl_account_ref
-  to_table: gl_balance
-  to_column: gl_account_ref
-- from_table: hedge_dedesignation
-  from_column: company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: hedge_dedesignation
-  from_column: currency_ref
-  to_table: gl_account
-  to_column: currency_ref
-- from_table: hedge_dedesignation
-  from_column: hedge_ref
-  to_table: hedge_relationship
-  to_column: code
-- from_table: hedge_relationship
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: hedge_relationship
-  from_column: instrument_ref
-  to_table: investment_instrument
-  to_column: code
-- from_table: intercompany_transaction
-  from_column: source_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: intercompany_transaction
-  from_column: source_account_ref
-  to_table: gl_account
-  to_column: bank_account_ref
-- from_table: intercompany_transaction
-  from_column: source_company_ref
-  to_table: company
-  to_column: code
-- from_table: intercompany_transaction
-  from_column: source_company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: intercompany_transaction
-  from_column: target_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: intercompany_transaction
-  from_column: target_account_ref
-  to_table: gl_account
-  to_column: bank_account_ref
-- from_table: intercompany_transaction
-  from_column: target_company_ref
-  to_table: company
-  to_column: code
-- from_table: intercompany_transaction
-  from_column: target_company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: interest_accrual
-  from_column: company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: interest_accrual
-  from_column: currency_code
-  to_table: ach_return
-  to_column: currency_code
-- from_table: investment_instrument
-  from_column: currency_ref
-  to_table: currency
-  to_column: code
-- from_table: investment_instrument
-  from_column: currency_ref
-  to_table: gl_account
-  to_column: currency_ref
-- from_table: investment_instrument
-  from_column: issuer_bank_ref
-  to_table: bank
-  to_column: code
-- from_table: investment_position
-  from_column: as_of_date
-  to_table: counterparty_exposure
-  to_column: as_of_date
-- from_table: investment_position
-  from_column: bank_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: investment_position
-  from_column: bank_account_ref
-  to_table: gl_account
-  to_column: bank_account_ref
-- from_table: investment_position
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: investment_position
-  from_column: company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: investment_position
-  from_column: instrument_ref
-  to_table: investment_instrument
-  to_column: code
-- from_table: investment_transaction
-  from_column: bank_account_ref
-  to_table: gl_account
-  to_column: bank_account_ref
-- from_table: investment_transaction
-  from_column: company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: investment_transaction
-  from_column: instrument_ref
-  to_table: investment_instrument
-  to_column: code
-- from_table: kg_relationship
-  from_column: to_entity_code
-  to_table: bank
-  to_column: code
-- from_table: kg_relationship
-  from_column: to_entity_code
-  to_table: credit_facility
-  to_column: code
-- from_table: kg_relationship
-  from_column: to_entity_code
-  to_table: third_party
-  to_column: code
-- from_table: letter_of_credit
-  from_column: applicant_company_ref
-  to_table: company
-  to_column: code
-- from_table: letter_of_credit
-  from_column: applicant_company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: letter_of_credit
-  from_column: issuing_bank_ref
-  to_table: bank
-  to_column: code
-- from_table: liquidity_policy
-  from_column: company_ref
-  to_table: hedge_relationship
-  to_column: company_ref
-- from_table: liquidity_policy
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: mapping_entry
-  from_column: mapping_table_code
-  to_table: mapping_table
-  to_column: code
-- from_table: membership_fee
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: payment_exception
-  from_column: file_uuid
-  to_table: payment_file
-  to_column: file_uuid
-- from_table: payment_exception
-  from_column: transfer_uuid
-  to_table: payment_transaction
-  to_column: uuid
-- from_table: payment_file
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: payment_hub_throughput
-  from_column: payment_rail
-  to_table: cash_flow
-  to_column: payment_rail
 - from_table: payment_transaction
   from_column: file_uuid
   to_table: payment_file
   to_column: file_uuid
-- from_table: peer_company_metric
-  from_column: peer_code
-  to_table: peer_company
-  to_column: code
-- from_table: pension_plan
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: pension_valuation
-  from_column: plan_ref
-  to_table: pension_plan
-  to_column: code
-- from_table: pos_transaction
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: pos_transaction
-  from_column: member_id
-  to_table: membership_fee
-  to_column: member_id
-- from_table: sme_transcript_chunk
-  from_column: session_uuid
-  to_table: sme_feedback_session
-  to_column: uuid
-- from_table: stress_run_result
-  from_column: company_ref
-  to_table: company
-  to_column: code
-- from_table: stress_run_result
-  from_column: scenario_ref
-  to_table: stress_scenario
-  to_column: code
-- from_table: sweep_execution
-  from_column: instruction_ref
-  to_table: sweep_instruction
-  to_column: code
-- from_table: sweep_execution
-  from_column: source_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: sweep_execution
-  from_column: source_account_ref
-  to_table: sweep_instruction
-  to_column: source_account_ref
-- from_table: sweep_execution
-  from_column: target_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: sweep_execution
-  from_column: target_account_ref
-  to_table: sweep_instruction
-  to_column: target_account_ref
-- from_table: sweep_instruction
-  from_column: source_account_ref
-  to_table: bank_account
-  to_column: code
-- from_table: sweep_instruction
-  from_column: target_account_ref
-  to_table: bank_account
-  to_column: code
 - from_table: third_party_bank_account
-  from_column: third_party_code
-  to_table: third_party
-  to_column: code
-- from_table: third_party_category_assignment
-  from_column: category_code
-  to_table: third_party_category
-  to_column: code
-- from_table: third_party_category_assignment
   from_column: third_party_code
   to_table: third_party
   to_column: code
@@ -745,76 +53,11 @@ relationships:
   from_column: file_uuid
   to_table: payment_file
   to_column: file_uuid
-- from_table: transfer
-  from_column: file_uuid
-  to_table: webhook_event
-  to_column: entity_code
-- from_table: tribal_knowledge_entity_link
-  from_column: entity_code
-  to_table: bank
-  to_column: code
-- from_table: tribal_knowledge_entity_link
-  from_column: entity_code
-  to_table: bank_account
-  to_column: code
-- from_table: tribal_knowledge_entity_link
-  from_column: entity_code
-  to_table: company
-  to_column: code
-- from_table: tribal_knowledge_entity_link
-  from_column: entity_code
-  to_table: credit_facility
-  to_column: code
-- from_table: tribal_knowledge_entity_link
-  from_column: entity_code
-  to_table: fx_forward
-  to_column: deal_id
-- from_table: tribal_knowledge_entity_link
-  from_column: entity_code
-  to_table: third_party
-  to_column: code
-- from_table: tribal_knowledge_entity_link
-  from_column: fact_uuid
-  to_table: tribal_knowledge_fact
-  to_column: uuid
-- from_table: tribal_knowledge_fact
-  from_column: confidence
-  to_table: forecast_cash_flow
-  to_column: confidence
-- from_table: user_group_member
-  from_column: user_group_code
-  to_table: user_group
-  to_column: code
-- from_table: user_profile_assignment
-  from_column: user_code
-  to_table: user_group_member
-  to_column: user_code
-- from_table: v_sme_transcript_chunk_indexable
-  from_column: chunk_uuid
-  to_table: tribal_knowledge_fact
-  to_column: uuid
-- from_table: v_tribal_fact_indexable
-  from_column: fact_uuid
-  to_table: tribal_knowledge_fact
-  to_column: uuid
-- from_table: wcf_document
-  from_column: buyer_company
-  to_table: company
-  to_column: code
-- from_table: wcf_document
-  from_column: supplier_ref
-  to_table: third_party
-  to_column: code
-- from_table: working_capital_metric
-  from_column: company_ref
-  to_table: company
-  to_column: code
-
 tables:
 - name: ach_return
   schema: lpp
-  row_count: 417
-  size_mb: 360
+  row_count: 411
+  size_mb: 420
   dist_style: KEY(company_ref)
   primary_keys:
   - uuid
@@ -1288,8 +531,8 @@ tables:
     encoding: none
 - name: ap_invoice
   schema: lpp
-  row_count: 180000
-  size_mb: 512
+  row_count: 182649
+  size_mb: 496
   dist_style: KEY(company_ref)
   primary_keys:
   - uuid
@@ -1494,7 +737,7 @@ tables:
     encoding: none
 - name: ar_invoice
   schema: lpp
-  row_count: 268994
+  row_count: 268996
   size_mb: 686
   dist_style: KEY(company_ref)
   primary_keys:
@@ -2008,7 +1251,7 @@ tables:
     encoding: none
 - name: bank_account
   schema: lpp
-  row_count: 116
+  row_count: 115
   size_mb: 324
   dist_style: ALL
   primary_keys:
@@ -3263,7 +2506,7 @@ tables:
     encoding: none
 - name: bank_fee
   schema: lpp
-  row_count: 12597
+  row_count: 12770
   size_mb: 221
   dist_style: KEY(bank_ref)
   primary_keys:
@@ -4710,7 +3953,7 @@ tables:
 - name: card_settlement_line
   schema: lpp
   row_count: 63237
-  size_mb: 2176
+  size_mb: 4352
   dist_style: KEY(batch_ref)
   primary_keys:
   - uuid
@@ -5020,8 +4263,8 @@ tables:
     encoding: none
 - name: cash_flow
   schema: lpp
-  row_count: 1031641
-  size_mb: 3294
+  row_count: 584266
+  size_mb: 3276
   dist_style: KEY(account_ref)
   primary_keys:
   - uuid
@@ -5468,10 +4711,14 @@ tables:
 - name: company
   schema: lpp
   row_count: 24
-  size_mb: 72
+  size_mb: 44
   dist_style: ALL
   primary_keys:
   - uuid
+  foreign_keys:
+  - from_column: parent_company_ref
+    to_table: company
+    to_column: code
   columns:
   - name: uuid
     data_type: character varying(64)
@@ -5616,6 +4863,49 @@ tables:
   - name: user_zones
     data_type: super
     ordinal_position: 15
+    nullable: true
+    default:
+    is_primary_key: false
+    is_foreign_key: false
+    is_distkey: false
+    sortkey_position: 0
+    encoding: none
+  - name: parent_company_ref
+    data_type: character varying(64)
+    ordinal_position: 16
+    nullable: true
+    default:
+    is_primary_key: false
+    is_foreign_key: true
+    is_distkey: false
+    sortkey_position: 0
+    encoding: none
+    references:
+      table: company
+      column: code
+  - name: ownership_pct
+    data_type: numeric(5,2)
+    ordinal_position: 17
+    nullable: true
+    default:
+    is_primary_key: false
+    is_foreign_key: false
+    is_distkey: false
+    sortkey_position: 0
+    encoding: none
+  - name: consolidation_method
+    data_type: character varying(16)
+    ordinal_position: 18
+    nullable: true
+    default:
+    is_primary_key: false
+    is_foreign_key: false
+    is_distkey: false
+    sortkey_position: 0
+    encoding: none
+  - name: entity_role
+    data_type: character varying(24)
+    ordinal_position: 19
     nullable: true
     default:
     is_primary_key: false
@@ -6347,7 +5637,7 @@ tables:
     encoding: none
 - name: cross_border_payment_leg
   schema: lpp
-  row_count: 17962
+  row_count: 17966
   size_mb: 5120
   dist_style: AUTO(KEY(uuid))
   primary_keys:
@@ -7780,8 +7070,8 @@ tables:
     encoding: none
 - name: fx_rate
   schema: lpp
-  row_count: 730475
-  size_mb: 50
+  row_count: 730472
+  size_mb: 52
   dist_style: ALL
   primary_keys:
   - rate_type
@@ -9702,7 +8992,7 @@ tables:
     encoding: none
 - name: payment_exception
   schema: lpp
-  row_count: 3560
+  row_count: 3551
   size_mb: 3840
   dist_style: AUTO(KEY(uuid))
   primary_keys:
@@ -9830,7 +9120,7 @@ tables:
     encoding: none
 - name: payment_file
   schema: lpp
-  row_count: 17003
+  row_count: 16843
   size_mb: 3584
   dist_style: AUTO(KEY(file_uuid))
   primary_keys:
@@ -9948,7 +9238,7 @@ tables:
     encoding: none
 - name: payment_hub_throughput
   schema: lpp
-  row_count: 2915
+  row_count: 3064
   size_mb: 3584
   dist_style: AUTO(KEY(uuid))
   primary_keys:
@@ -10066,7 +9356,7 @@ tables:
     encoding: none
 - name: payment_transaction
   schema: lpp
-  row_count: 177898
+  row_count: 177871
   size_mb: 4864
   dist_style: KEY(file_uuid)
   primary_keys:
@@ -11446,8 +10736,8 @@ tables:
     encoding: none
 - name: third_party
   schema: lpp
-  row_count: 345
-  size_mb: 144
+  row_count: 344
+  size_mb: 148
   dist_style: ALL
   primary_keys:
   - uuid
@@ -11782,6 +11072,16 @@ tables:
     is_distkey: false
     sortkey_position: 0
     encoding: none
+  - name: default_payment_terms
+    data_type: character varying(16)
+    ordinal_position: 34
+    nullable: true
+    default:
+    is_primary_key: false
+    is_foreign_key: false
+    is_distkey: false
+    sortkey_position: 0
+    encoding: none
 - name: third_party_bank_account
   schema: lpp
   dist_style: AUTO
@@ -11922,7 +11222,7 @@ tables:
     encoding: none
 - name: transfer
   schema: lpp
-  row_count: 177898
+  row_count: 177871
   size_mb: 5888
   dist_style: KEY(file_uuid)
   primary_keys:

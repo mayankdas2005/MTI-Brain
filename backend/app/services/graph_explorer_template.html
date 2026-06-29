@@ -491,6 +491,89 @@
       border-top: 1px solid var(--ge-border-subtle);
       margin: 3px 0;
     }
+
+    /* ── Rich hover tooltip card ── */
+    #hover-card {
+      position: fixed;
+      z-index: 9999;
+      pointer-events: none;
+      background: var(--ge-bg);
+      border: 1px solid var(--ge-border);
+      border-radius: 10px;
+      box-shadow: 0 8px 24px var(--ge-panel-shadow), 0 2px 8px rgba(0,0,0,0.06);
+      padding: 12px 16px;
+      max-width: 280px;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.15s ease, transform 0.15s ease;
+      font-family: 'Alliance No.1', sans-serif;
+    }
+    #hover-card.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    #hover-card .hc-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--ge-fg-heading);
+      margin-bottom: 4px;
+      line-height: 1.3;
+    }
+    #hover-card .hc-type {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-bottom: 6px;
+    }
+    #hover-card .hc-desc {
+      font-size: 13px;
+      color: var(--ge-fg-body);
+      line-height: 1.45;
+      margin-top: 4px;
+    }
+    #hover-card .hc-role {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ge-primary-soft);
+      margin-top: 6px;
+    }
+
+
+
+    /* ── Tour controls ── */
+    #tour-bar {
+      position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+      z-index: 70; background: var(--ge-surface, var(--ge-bg)); border: 1px solid var(--ge-border);
+      border-radius: 10px; padding: 6px 14px; display: none; align-items: center; gap: 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.12); font-size: 13px; color: var(--ge-fg);
+    }
+    #tour-bar button {
+      background: none; border: 1px solid var(--ge-border); border-radius: 6px;
+      padding: 3px 10px; cursor: pointer; color: var(--ge-fg); font-size: 12px; font-weight: 600;
+    }
+    #tour-bar button:hover { background: var(--ge-surface-2, #f3f4f6); }
+
+    /* ── Breadcrumb trail ── */
+    #breadcrumb-trail {
+      display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+      padding: 0 0 8px 0; margin: 0 0 8px 0;
+      border-bottom: 1px solid var(--ge-border-subtle, var(--ge-border));
+      min-height: 0;
+    }
+    #breadcrumb-trail:empty { display: none; padding: 0; margin: 0; border: none; }
+    .bc-item {
+      font-size: 11px; color: var(--ge-fg-muted); cursor: pointer;
+      padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+      max-width: 90px; overflow: hidden; text-overflow: ellipsis;
+      transition: background 0.12s;
+    }
+    .bc-item:hover { background: var(--ge-surface-2, #f3f4f6); color: var(--ge-fg); }
+    .bc-item.bc-active { font-weight: 700; color: var(--ge-fg); }
+    .bc-sep { font-size: 10px; color: var(--ge-border); }
   </style>
 </head>
 
@@ -553,11 +636,19 @@
     </button>
 
     <!-- Semantic model toggle -->
-    <button class="toolbar-btn" id="layer-btn" onclick="toggleRetrievedNodes()" title="Show/hide all fetched semantic model nodes">
+    <button class="toolbar-btn" id="layer-btn" onclick="toggleRetrievedNodes()" title="Show/hide additional graph layers">
       <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/>
       </svg>
-      <span id="layer-label">Show all nodes</span>
+      <span id="layer-label">Show all used nodes</span>
+    </button>
+
+    <!-- Guided Tour -->
+    <button class="toolbar-btn" id="tour-btn" title="Walk through the SQL path step by step" style="display:none;">
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg>
+      Tour SQL path
     </button>
 
     <div style="flex:1;"></div>
@@ -570,6 +661,22 @@
 
     <!-- Graph canvas -->
     <div id="mynetwork" style="position:absolute;inset:0;"></div>
+
+    <!-- Rich hover tooltip card -->
+    <div id="hover-card">
+      <div class="hc-name"></div>
+      <div class="hc-type"></div>
+      <div class="hc-desc"></div>
+      <div class="hc-role"></div>
+    </div>
+
+    <!-- Tour step bar -->
+    <div id="tour-bar">
+      <button id="tour-prev" title="Previous node">◂ Prev</button>
+      <span id="tour-step">1 / 10</span>
+      <button id="tour-next" title="Next node">Next ▸</button>
+      <button id="tour-stop" title="End tour">✕</button>
+    </div>
 
     <!-- Floating panel toggle button -->
     <button id="panel-toggle" title="Toggle details panel">
@@ -601,6 +708,7 @@
             </svg>
           </button>
         </div>
+        <div id="breadcrumb-trail"></div>
         <div id="detailBody"></div>
       </div>
 
@@ -702,16 +810,17 @@
         const nodeObj = {
           id: nd.identity,
           label: rawLabel,
-          title: rawLabel,        // tooltip shows full name
+          title: '',             // disable browser tooltip — rich hover card instead
           labels: nd.labels,
           properties: nd.properties,
           neo4jId: nd.identity,
           shape: 'circle',        // label INSIDE the circle
-          borderWidth: 2,
-          borderWidthSelected: 3,
+          size: 100,
+          borderWidth: 3,
+          borderWidthSelected: 4,
           color: colorObj,
-          font: { color: 'rgba(0,0,0,0.82)', size: 12, face: 'Inter,system-ui,sans-serif', bold: false, multi: false },
-          widthConstraint: { maximum: 100 }
+          font: { color: 'rgba(0,0,0,0.82)', size: 30, face: 'Inter,system-ui,sans-serif', bold: false, multi: false },
+          widthConstraint: { maximum: 160 }
         };
         // Use server-pre-computed positions when available — no browser physics needed
         if (nd._x !== undefined && nd._y !== undefined) {
@@ -732,14 +841,31 @@
             highlight: { background: colorObj.background, border: '#d97706' },
             hover: { background: colorObj.background, border: '#f59e0b' },
           };
-          nodeObj.borderWidth = 6;
-          nodeObj.widthConstraint = { maximum: 140 };
+          nodeObj.size = 80;
+          nodeObj.borderWidth = 7;
+          nodeObj.widthConstraint = { maximum: 200 };
+          nodeObj.font = { color: 'rgba(0,0,0,0.82)', size: 34, face: 'Inter,system-ui,sans-serif', bold: true, multi: false };
           nodeObj.shadow = { enabled: true, color: 'rgba(245,158,11,0.35)', size: 12, x: 0, y: 0 };
           origColors[nd.identity] = nodeObj.color;
         }
         if (isRetrievedOnly) {
           nodeObj.opacity = 0.3;
           nodeObj.hidden  = true;
+        }
+
+        // ── Visual hierarchy by label type ─────────────────────────────
+        if (primaryLabel === 'Column') {
+          nodeObj.size = 44;
+          nodeObj.font = { ...nodeObj.font, size: 26 };
+          nodeObj.widthConstraint = { maximum: 120 };
+        } else if (primaryLabel === 'Domain' || primaryLabel === 'Community') {
+          nodeObj.size = 56;
+          nodeObj.font = { ...nodeObj.font, size: 26, vadjust: 0 };
+          nodeObj.widthConstraint = { maximum: 140 };
+        } else if (primaryLabel === 'Intent' || primaryLabel === 'BusinessTerm') {
+          nodeObj.size = 50;
+          nodeObj.font = { ...nodeObj.font, size: 24 };
+          nodeObj.widthConstraint = { maximum: 130 };
         }
 
         // ── Feedback overlay ────────────────────────────────────────────
@@ -749,29 +875,80 @@
           const posList = (feedbackOverlay.positive || []).map(s => s.toLowerCase());
           if (negList.includes(fqn)) {
             nodeObj._feedbackNegative = true;
-            nodeObj.title = (nodeObj.title || '') + ' ⚠ Negative feedback in this thread';
           } else if (posList.includes(fqn)) {
             nodeObj._feedbackPositive = true;
-            nodeObj.title = (nodeObj.title || '') + ' ✓ Positive feedback in this thread';
           }
         }
 
         nodes.push(nodeObj);
       }
 
+      function buildEdgeLabel(type, props) {
+        if (props.description) return props.description;
+        switch (type) {
+          case 'JOINS_TO': {
+            const cols = (props.from_col && props.to_col)
+              ? `${props.from_col} → ${props.to_col}` : '';
+            const kind = props.is_declared ? ' (FK)' : props.is_inferred ? ' (inferred)' : '';
+            const conf = props.confidence != null
+              ? ` ${Math.round(props.confidence * 100)}%` : '';
+            return [cols, kind, conf].join('').trim() || 'joins';
+          }
+          case 'HAS_COLUMN':
+            return props.role ? `has column · ${props.role}` : 'has column';
+          case 'RELEVANT_TO': {
+            const score = props.relevance_score != null
+              ? ` ${Math.round(props.relevance_score * 100)}%` : '';
+            return `relevant to${score}`;
+          }
+          case 'BRIDGES_TO': {
+            const hub = props.hub_table_fqn
+              ? props.hub_table_fqn.split('.').pop() : null;
+            return hub ? `bridges via ${hub}` : 'bridges to';
+          }
+          case 'REFERENCES_TABLE':
+            return props.source_column_name
+              ? `references via ${props.source_column_name}` : 'references';
+          case 'ROLLUP_OF':
+            return props.window_type ? `rollup · ${props.window_type}` : 'rollup of';
+          case 'BELONGS_TO':           return 'belongs to';
+          case 'CONTAINS_TABLE':       return 'contains';
+          case 'SEMANTICALLY_SIMILAR': return 'similar column';
+          case 'STRUCTURALLY_SIMILAR': return 'similar table';
+          case 'CLASSIFIED_AS':        return 'classified as';
+          default:
+            return type.replace(/_/g, ' ').toLowerCase();
+        }
+      }
+
+      const edgeSet = new Set();
       records.forEach(record => {
         addNode(record.n); addNode(record.m);
         if (record.r) {
+          // Dedup by (from, to, type) — backend may assign different IDs to same logical edge
+          const edgeKey = `${record.r.start}-${record.r.end}-${record.r.type}`;
+          if (edgeSet.has(edgeKey)) return;
+          edgeSet.add(edgeKey);
+          const relType = record.r.type;
+          const relProps = record.r.properties || {};
+          // Edge thickness by relationship importance
+          let edgeWidth = 1.5;
+          let edgeColor = '#b0b8c4';
+          if (relType === 'JOINS_TO') { edgeWidth = 3; edgeColor = '#6366f1'; }
+          else if (relType === 'HAS_COLUMN') { edgeWidth = 1; edgeColor = '#d1d5db'; }
+          else if (relType === 'BELONGS_TO' || relType === 'CONTAINS_TABLE') { edgeWidth = 1.2; edgeColor = '#a5b4fc'; }
           edges.push({
             id: record.r.identity,
             from: record.r.start,
             to: record.r.end,
-            label: record.r.type,
+            label: '',            // hidden by default — shown on hover via hoverEdge
+            _label: buildEdgeLabel(relType, relProps),
             type: record.r.type,
             properties: record.r.properties,
             neo4jId: record.r.identity,
+            width: edgeWidth,
             arrows: { to: { enabled: true, scaleFactor: 0.7 } },
-            color: { color: '#b0b8c4', highlight: '#57C7E3', hover: '#7a8898' },
+            color: { color: edgeColor, highlight: '#57C7E3', hover: '#7a8898' },
             smooth: { enabled: true, type: 'dynamic', roundness: 0.5 }
           });
         }
@@ -786,24 +963,84 @@
     const allNodes = rawData.nodes;
     const allEdges = rawData.edges;
 
-    // ── Visibility layer toggle ──────────────────────────────────────
-    let _showingAll = false;
-    function toggleRetrievedNodes() {
-      _showingAll = !_showingAll;
-      const nodeUpdates = allNodes
-        .filter(n => n._retrievedOnly)
-        .map(n => ({ id: n.id, hidden: !_showingAll }));
-      const edgeUpdates = allEdges
-        .filter(e => e.properties && e.properties._retrieved_only)
-        .map(e => ({ id: e.id, hidden: !_showingAll }));
-      nodesDS.update(nodeUpdates);
-      edgesDS.update(edgeUpdates);
-      const lbl = document.getElementById('layer-label');
-      if (lbl) lbl.textContent = _showingAll ? 'Show semantic model' : 'Show all nodes';
-    }
+    // ── Visibility layer toggle (3 stages) ──────────────────────────
+    // Stage 0: SQL-path tables & columns only (default)
+    // Stage 1: All tables & columns (adds non-SQL-path Table/Column nodes)
+    // Stage 2: Full graph (adds semantic concepts: Domain, Intent, etc. + retrieved-only)
     const nodeById = new Map(allNodes.map(n => [n.id, n]));
-
     const visibleNodeIds = new Set(allNodes.map(n => n.id));
+
+    const sqlPathNodeIds = new Set(allNodes.filter(n => n._inSqlPath).map(n => n.id));
+    const hasSqlPath = sqlPathNodeIds.size > 0;
+
+    // Non-Table/Column labels → "concept" tier (shown only in stage 2)
+    const _conceptLabels = new Set(['QueryPattern', 'Intent', 'BusinessTerm', 'Domain', 'Community', 'AntiPattern', 'JoinPath', 'QueryTemplate']);
+
+    // Classify each node into a visibility tier
+    let _showingUsed = !hasSqlPath;
+    if (hasSqlPath) {
+      allNodes.forEach(n => {
+        const label = (n.labels || [])[0] || '';
+        if (n._retrievedOnly) return; // already has its own tier
+        if (_conceptLabels.has(label)) {
+          n._conceptOnly = true; // stage 2
+        } else if (!n._inSqlPath) {
+          n._usedOnly = true;    // stage 1 (extra Table/Column nodes)
+        }
+      });
+    } else {
+      // No SQL path → hide concepts by default, show all tables
+      allNodes.forEach(n => {
+        const label = (n.labels || [])[0] || '';
+        if (_conceptLabels.has(label) && !n._retrievedOnly) {
+          n._conceptOnly = true;
+        }
+      });
+    }
+
+    let _layerStage = 0; // 0 = In SQL, 1 = In SQL + Used, 2 = full graph
+    function toggleRetrievedNodes() {
+      const lbl = document.getElementById('layer-label');
+      if (_layerStage === 0 && hasSqlPath) {
+        // Stage 0 → 1: reveal Used nodes (extra tables + concepts, not retrieved-only)
+        _layerStage = 1;
+        _showingUsed = true;
+        nodesDS.update(allNodes.filter(n => n._usedOnly || n._conceptOnly).map(n => ({ id: n.id, hidden: false })));
+        // Reveal edges between non-retrieved nodes
+        const edgeUpdates = allEdges
+          .filter(e => !visibleEdgeIds.has(e.id) && !(e.properties && e.properties._retrieved_only))
+          .filter(e => {
+            const src = nodeById.get(e.from), tgt = nodeById.get(e.to);
+            return src && tgt && !src._retrievedOnly && !tgt._retrievedOnly;
+          })
+          .map(e => { visibleEdgeIds.add(e.id); return { id: e.id, hidden: false }; });
+        edgesDS.update(edgeUpdates);
+        lbl.textContent = 'Show full graph';
+      } else if (_layerStage <= 1) {
+        // Stage 1 → 2: reveal retrieved-only nodes
+        _layerStage = 2;
+        nodesDS.update(allNodes.filter(n => n._retrievedOnly).map(n => ({ id: n.id, hidden: false })));
+        const edgeUpdates = allEdges
+          .filter(e => !visibleEdgeIds.has(e.id))
+          .map(e => { visibleEdgeIds.add(e.id); return { id: e.id, hidden: false }; });
+        edgesDS.update(edgeUpdates);
+        lbl.textContent = 'Show In SQL only';
+      } else {
+        // Stage 2 → 0: back to SQL-path only
+        _layerStage = 0;
+        _showingUsed = false;
+        // Hide used + concept + retrieved nodes
+        nodesDS.update(allNodes.filter(n => n._usedOnly || n._conceptOnly || n._retrievedOnly).map(n => ({ id: n.id, hidden: true })));
+        // Hide edges connected to hidden nodes
+        const hiddenIds = new Set(nodesDS.get({ filter: n => n.hidden }).map(n => n.id));
+        const edgeUpdates = allEdges
+          .filter(e => hiddenIds.has(e.from) || hiddenIds.has(e.to))
+          .map(e => { visibleEdgeIds.delete(e.id); return { id: e.id, hidden: true }; });
+        edgesDS.update(edgeUpdates);
+        lbl.textContent = 'Show all used nodes';
+      }
+    }
+
     const visibleEdgeIds = new Set(allEdges.map(e => e.id));
 
     // \u2500\u2500 Adjacency index (built once at startup, O(1) lookups) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -874,9 +1111,19 @@
       if (!toShow.length) return;
       toShow.forEach(eid => visibleEdgeIds.add(eid));
       edgesDS.update(toShow.map(eid => ({ id: eid, hidden: false })));
+      // Reveal connected nodes that were hidden; place at pre-computed positions
+      toShow.forEach(eid => {
+        const edge = edgesDS.get(eid);
+        if (!edge) return;
+        [edge.from, edge.to].forEach(nid => {
+          const n = nodesDS.get(nid);
+          if (n && n.hidden) {
+            const home = _homePositions && _homePositions.get(nid);
+            nodesDS.update({ id: nid, hidden: false, ...(home ? { x: home.x, y: home.y } : {}) });
+          }
+        });
+      });
       refreshExpansionStyles();
-      // Brief physics pulse so new edges spring into place naturally
-      _runPhysics(3000);
     }
 
     // Hide all currently visible edges for nodeId
@@ -886,7 +1133,6 @@
       toHide.forEach(eid => visibleEdgeIds.delete(eid));
       edgesDS.update(toHide.map(eid => ({ id: eid, hidden: true })));
       refreshExpansionStyles();
-      _runPhysics(2000);
     }
 
     // Show all edges (visible + hidden) connected to nodeId in the details panel
@@ -933,9 +1179,25 @@
     // Detect whether server pre-computed positions for all nodes
     const _hasPrecomputedLayout = allNodes.length > 0 && allNodes.every(n => n.x !== undefined);
 
-    // Initial state: all nodes visible; edges start hidden (expand on demand)
-    const nodesDS = new vis.DataSet(allNodes.map(withExpansionStyle));
-    const edgesDS = new vis.DataSet(allEdges.map(e => ({ ...e, hidden: !visibleEdgeIds.has(e.id) })));
+    // Initial state: SQL-path nodes visible; used-only + concept nodes hidden until toggled
+    const nodesDS = new vis.DataSet(allNodes.map(n => {
+      const styled = withExpansionStyle(n);
+      // Ensure nodes are draggable (vis.js can pin nodes that have x/y without explicit fixed:false)
+      const base = { ...styled, fixed: false };
+      if (n._usedOnly || n._conceptOnly) {
+        return { ...base, hidden: true };
+      }
+      return base;
+    }));
+    // Edges: visible only if both endpoints are currently shown
+    const edgesDS = new vis.DataSet(allEdges.map(e => {
+      const src = nodeById.get(e.from), tgt = nodeById.get(e.to);
+      const srcHidden = src && (src._usedOnly || src._conceptOnly || src._retrievedOnly);
+      const tgtHidden = tgt && (tgt._usedOnly || tgt._conceptOnly || tgt._retrievedOnly);
+      const show = visibleEdgeIds.has(e.id) && !srcHidden && !tgtHidden;
+      if (!show) visibleEdgeIds.delete(e.id);
+      return { ...e, hidden: !show };
+    }));
 
     // ── vis.js options ───────────────────────────────────────────────
     const visOptions = {
@@ -948,27 +1210,30 @@
         forceAtlas2Based: {
           gravitationalConstant: -55,
           centralGravity: 0.01,
-          springLength: 130,
+          springLength: 90,
           springConstant: 0.08,
           damping: 0.42,
           avoidOverlap: 0.8
         },
         stabilization: { enabled: false }
       },
-      interaction: { hover: true, tooltipDelay: 200, navigationButtons: true, keyboard: true, selectConnectedEdges: false, hoverConnectedEdges: false },
+      interaction: { hover: true, tooltipDelay: 200, navigationButtons: true, keyboard: true, selectConnectedEdges: false, hoverConnectedEdges: false, zoomSpeed: 0.8 },
       edges: {
         smooth: { enabled: true, type: 'dynamic', roundness: 0.5 },
-        // align:'top' = label rotates PARALLEL to the edge; color/stroke driven by getVisThemeOptions()
-        font: { align: 'top', size: 10, color: '#6b7280', strokeWidth: 4, strokeColor: '#ffffff' },
+        // Edge labels hidden by default — appear on hover/select for declutter
+        font: { align: 'top', size: 30, color: '#6b7280', strokeWidth: 3, strokeColor: '#ffffff' },
         arrows: { to: { enabled: true, scaleFactor: 0.7 } },
         color: { color: '#b0b8c4', highlight: '#57C7E3', hover: '#7a8898' }
       },
       nodes: {
         shape: 'circle',
-        borderWidth: 2,
-        borderWidthSelected: 3,
-        font: { size: 12, face: 'Inter,system-ui', color: 'rgba(0,0,0,0.82)' }
-      }
+        size: 100,
+        borderWidth: 3,
+        borderWidthSelected: 4,
+        font: { size: 30, face: 'Inter,system-ui', color: 'rgba(0,0,0,0.82)', bold: { face: 'Inter,system-ui' } }
+      },
+      minZoom: 0.4,
+      maxZoom: 3.0
     };
 
     const container = document.getElementById('mynetwork');
@@ -991,12 +1256,12 @@
           enabled: true,
           solver: 'forceAtlas2Based',
           forceAtlas2Based: {
-            gravitationalConstant: -100,
+            gravitationalConstant: -120,
             centralGravity: 0,
-            springLength: 140,
-            springConstant: 0.08,
-            damping: 0.5,
-            avoidOverlap: 0.8
+            springLength: 150,
+            springConstant: 0.04,
+            damping: 0.6,
+            avoidOverlap: 1.0
           },
           stabilization: { enabled: false }
         }
@@ -1019,8 +1284,9 @@
       if (_homePositions) {
         nodesDS.update(Array.from(_homePositions.entries()).map(([id, pos]) => ({ id, x: pos.x, y: pos.y, fixed: false })));
         network.fit({ animation: { duration: 300, easingFunction: 'easeOutQuad' } });
-        _runPhysics(1000);
-        setTimeout(() => { btn.disabled = false; icon.classList.remove('spinning'); }, 1000);
+        // Run physics to un-cluster (pre-computed positions are a starting point)
+        _runPhysics(1500);
+        setTimeout(() => { btn.disabled = false; icon.classList.remove('spinning'); }, 1500);
       } else {
         const allIds = nodesDS.getIds();
         const spread = Math.max(600, allIds.length * 60);
@@ -1030,17 +1296,21 @@
           y: (Math.random() - 0.5) * spread,
           fixed: false
         })));
-        _runPhysics(3000);
+        _runPhysics(1500);
         setTimeout(() => {
           network.fit({ animation: { duration: 500, easingFunction: 'easeOutQuad' } });
           btn.disabled = false;
           icon.classList.remove('spinning');
-        }, 3000);
+        }, 1500);
       }
     }
 
     // Initial load
     network.fit({ animation: false });
+    // Clamp: ensure initial view never zooms out past readable threshold
+    if (network.getScale() < 0.5) {
+      network.moveTo({ scale: 0.5 });
+    }
     if (_hasPrecomputedLayout) {
       // Nodes are already at server-computed positions — no physics needed on load.
       // Physics fires only on dragEnd / expand / collapse (wired below).
@@ -1051,7 +1321,7 @@
     // ── Drag-end physics — spring reaction when user releases a node ──────────
     network.on('dragEnd', function (params) {
       if (params.nodes.length > 0) {
-        _runPhysics(3500);
+        _runPhysics(1200);
       }
     });
 
@@ -1456,12 +1726,18 @@
       if (params.nodes.length > 0) {
         const nodeId = params.nodes[0];
         const node = nodesDS.get(nodeId);
-        if (node) showDetail('node', node);
+        if (node) {
+          showDetail('node', node);
+          _breadcrumbPush(nodeId);
+        }
         currentClickedNodeId = nodeId;
         currentSelectedCategory = '*';
         currentSelectedRelType = '*';
         buildOverview();
         updateGraphVisuals();
+        // Smooth zoom to clicked node + auto-open panel
+        if (!panelOpen) setPanelOpen(true);
+        network.focus(nodeId, { scale: 1.2, animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
       } else if (params.edges.length > 0) {
         const edgeId = params.edges[0];
         const edge = edgesDS.get(edgeId);
@@ -1481,6 +1757,77 @@
       } else if (params.edges.length > 0) {
         const edge = edgesDS.get(params.edges[0]);
         if (edge) showDetail('edge', edge);
+      }
+    });
+
+    // ── Rich hover tooltip ────────────────────────────────────────────
+    const hoverCard = document.getElementById('hover-card');
+    let _hoverTimer = null;
+
+    function _showHoverCard(nodeId, domEvent) {
+      const node = nodesDS.get(nodeId);
+      if (!node) return;
+      const props = node.properties || {};
+      const label = (node.labels || [])[0] || 'Node';
+      const name = props.name || props.title || props.term || props.fqn || node.label || '';
+      const desc = props.description || props.question_text || props.error_type || '';
+      const truncDesc = desc.length > 120 ? desc.slice(0, 117) + '…' : desc;
+
+      // Determine role text
+      let role = '';
+      if (node._inSqlPath) role = '● In SQL path';
+      else if (node._retrievedOnly) role = '○ Fetched (not used)';
+      else role = '◉ Used in query';
+
+      // Fill card
+      hoverCard.querySelector('.hc-name').textContent = name;
+      const typeBadge = hoverCard.querySelector('.hc-type');
+      typeBadge.textContent = label;
+      typeBadge.style.background = getLabelColor(label);
+      typeBadge.style.color = 'rgba(0,0,0,0.75)';
+      hoverCard.querySelector('.hc-desc').textContent = truncDesc;
+      hoverCard.querySelector('.hc-role').textContent = role;
+
+      // Position near cursor
+      const x = (domEvent && domEvent.center) ? domEvent.center.x : (domEvent?.clientX || 0);
+      const y = (domEvent && domEvent.center) ? domEvent.center.y : (domEvent?.clientY || 0);
+      const cardW = 280, cardH = 140;
+      const left = (x + cardW + 20 > window.innerWidth) ? x - cardW - 10 : x + 16;
+      const top = (y + cardH + 20 > window.innerHeight) ? y - cardH - 10 : y + 16;
+      hoverCard.style.left = left + 'px';
+      hoverCard.style.top = top + 'px';
+      hoverCard.classList.add('visible');
+    }
+
+    function _hideHoverCard() {
+      hoverCard.classList.remove('visible');
+    }
+
+    network.on('hoverNode', function (params) {
+      if (_hoverTimer) { clearTimeout(_hoverTimer); _hoverTimer = null; }
+      _hoverTimer = setTimeout(() => _showHoverCard(params.node, params.event), 200);
+    });
+    network.on('blurNode', function () {
+      if (_hoverTimer) { clearTimeout(_hoverTimer); _hoverTimer = null; }
+      _hideHoverCard();
+    });
+    // Hide on drag/zoom so card doesn't stick
+    network.on('dragStart', _hideHoverCard);
+    network.on('zoom', _hideHoverCard);
+
+    // ── Edge label on hover ───────────────────────────────────────────
+    let _hoveredEdgeId = null;
+    network.on('hoverEdge', function (params) {
+      const edge = edgesDS.get(params.edge);
+      if (edge && edge._label) {
+        _hoveredEdgeId = params.edge;
+        edgesDS.update({ id: params.edge, label: edge._label });
+      }
+    });
+    network.on('blurEdge', function (params) {
+      if (_hoveredEdgeId) {
+        edgesDS.update({ id: _hoveredEdgeId, label: '' });
+        _hoveredEdgeId = null;
       }
     });
 
@@ -1855,6 +2202,175 @@
         edgesBtn.classList.add('active');
       }
       refreshExpansionStyles();
+    });
+
+    // ── Breadcrumb trail ──────────────────────────────────────────────
+    const _breadcrumbs = []; // array of node IDs
+    const breadcrumbEl = document.getElementById('breadcrumb-trail');
+
+    function _breadcrumbPush(nodeId) {
+      // Don't duplicate the last entry
+      if (_breadcrumbs.length > 0 && _breadcrumbs[_breadcrumbs.length - 1] === nodeId) return;
+      _breadcrumbs.push(nodeId);
+      if (_breadcrumbs.length > 8) _breadcrumbs.shift(); // keep trail short
+      _renderBreadcrumbs();
+    }
+
+    function _renderBreadcrumbs() {
+      if (_breadcrumbs.length <= 1) { breadcrumbEl.innerHTML = ''; return; }
+      breadcrumbEl.innerHTML = _breadcrumbs.map((nid, i) => {
+        const n = nodesDS.get(nid) || nodeById.get(nid);
+        const name = n ? (n.properties?.name || n.properties?.fqn || n.label || String(nid)) : String(nid);
+        const shortName = name.length > 12 ? name.slice(0, 11) + '…' : name;
+        const active = i === _breadcrumbs.length - 1 ? ' bc-active' : '';
+        const sep = i < _breadcrumbs.length - 1 ? '<span class="bc-sep">›</span>' : '';
+        return `<span class="bc-item${active}" data-bcid="${nid}" title="${name.replace(/"/g, '&quot;')}">${shortName}</span>${sep}`;
+      }).join('');
+    }
+
+    breadcrumbEl.addEventListener('click', e => {
+      const item = e.target.closest('.bc-item');
+      if (!item) return;
+      const nid = item.getAttribute('data-bcid');
+      // Navigate to that node
+      const idx = _breadcrumbs.indexOf(nid);
+      if (idx >= 0) _breadcrumbs.length = idx + 1; // trim forward history
+      focusNodeById(nid);
+      _renderBreadcrumbs();
+    });
+
+    // ── Guided Tour (SQL-path walk-through) ───────────────────────────
+    const _tourNodes = allNodes.filter(n => n._inSqlPath && (n.labels || [])[0] === 'Table').map(n => n.id);
+    let _tourIdx = -1;
+    let _tourAutoTimer = null;
+    const tourBtn = document.getElementById('tour-btn');
+    const tourBar = document.getElementById('tour-bar');
+    const tourStep = document.getElementById('tour-step');
+
+    // Show tour button only if there are SQL-path Table nodes
+    if (_tourNodes.length > 1) tourBtn.style.display = '';
+
+    function _tourGo(idx) {
+      if (idx < 0 || idx >= _tourNodes.length) return;
+      _tourIdx = idx;
+      const nid = _tourNodes[idx];
+      tourStep.textContent = `${idx + 1} / ${_tourNodes.length}`;
+      focusNodeById(nid);
+      _breadcrumbPush(nid);
+    }
+
+    function startTour() {
+      tourBar.style.display = 'flex';
+      tourBtn.classList.add('active');
+      _tourGo(0);
+    }
+
+    function stopTour() {
+      tourBar.style.display = 'none';
+      tourBtn.classList.remove('active');
+      _tourIdx = -1;
+      if (_tourAutoTimer) { clearInterval(_tourAutoTimer); _tourAutoTimer = null; }
+    }
+
+    tourBtn.addEventListener('click', () => {
+      if (_tourIdx >= 0) stopTour(); else startTour();
+    });
+    document.getElementById('tour-prev').addEventListener('click', () => {
+      if (_tourIdx > 0) _tourGo(_tourIdx - 1);
+    });
+    document.getElementById('tour-next').addEventListener('click', () => {
+      if (_tourIdx < _tourNodes.length - 1) _tourGo(_tourIdx + 1);
+      else stopTour(); // end of tour
+    });
+    document.getElementById('tour-stop').addEventListener('click', stopTour);
+
+    // ── Keyboard navigation ───────────────────────────────────────────
+    let _kbIndex = -1; // index into visible nodes array
+    let _kbNodeIds = []; // cache of visible node IDs
+
+    function _refreshKbNodeIds() {
+      _kbNodeIds = nodesDS.get({ filter: n => !n.hidden }).map(n => n.id);
+    }
+
+    document.addEventListener('keydown', e => {
+      // Block DevTools shortcuts
+      if (e.key === 'F12') { e.preventDefault(); return; }
+      if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'J' || e.key === 'C')) { e.preventDefault(); return; }
+      if (e.ctrlKey && e.key === 'u') { e.preventDefault(); return; }
+
+      // Don't intercept when typing in search
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        _refreshKbNodeIds();
+        if (_kbNodeIds.length === 0) return;
+        _kbIndex = e.shiftKey
+          ? (_kbIndex <= 0 ? _kbNodeIds.length - 1 : _kbIndex - 1)
+          : (_kbIndex >= _kbNodeIds.length - 1 ? 0 : _kbIndex + 1);
+        const nid = _kbNodeIds[_kbIndex];
+        network.selectNodes([nid]);
+        network.focus(nid, { scale: network.getScale(), animation: { duration: 250, easingFunction: 'easeOutQuad' } });
+        const node = nodesDS.get(nid);
+        if (node) { showDetail('node', node); _breadcrumbPush(nid); }
+        if (!panelOpen) setPanelOpen(true);
+        currentClickedNodeId = nid;
+        buildOverview();
+        updateGraphVisuals();
+        return;
+      }
+
+      if (e.key === 'Enter' && currentClickedNodeId) {
+        e.preventDefault();
+        network.focus(currentClickedNodeId, { scale: 1.4, animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        network.unselectAll();
+        currentClickedNodeId = null;
+        _kbIndex = -1;
+        showOverview();
+        updateGraphVisuals();
+        if (_tourIdx >= 0) stopTour();
+        return;
+      }
+
+      // Arrow keys: navigate to connected neighbor
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && currentClickedNodeId) {
+        e.preventDefault();
+        const neighbors = network.getConnectedNodes(currentClickedNodeId);
+        if (neighbors.length === 0) return;
+        // Pick neighbor based on spatial direction
+        const curPos = network.getPositions([currentClickedNodeId])[currentClickedNodeId];
+        if (!curPos) return;
+        let best = null, bestScore = -Infinity;
+        neighbors.forEach(nid => {
+          const n = nodesDS.get(nid);
+          if (n && n.hidden) return;
+          const p = network.getPositions([nid])[nid];
+          if (!p) return;
+          const dx = p.x - curPos.x, dy = p.y - curPos.y;
+          let score = 0;
+          if (e.key === 'ArrowRight') score = dx - Math.abs(dy) * 0.5;
+          else if (e.key === 'ArrowLeft') score = -dx - Math.abs(dy) * 0.5;
+          else if (e.key === 'ArrowDown') score = dy - Math.abs(dx) * 0.5;
+          else if (e.key === 'ArrowUp') score = -dy - Math.abs(dx) * 0.5;
+          if (score > bestScore) { bestScore = score; best = nid; }
+        });
+        if (best) {
+          network.selectNodes([best]);
+          network.focus(best, { scale: network.getScale(), animation: { duration: 250, easingFunction: 'easeOutQuad' } });
+          const node = nodesDS.get(best);
+          if (node) { showDetail('node', node); _breadcrumbPush(best); }
+          currentClickedNodeId = best;
+          buildOverview();
+          updateGraphVisuals();
+          _refreshKbNodeIds();
+          _kbIndex = _kbNodeIds.indexOf(best);
+        }
+        return;
+      }
     });
   </script>
 </body>

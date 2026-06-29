@@ -18,9 +18,12 @@ server:
   # Add prod origins here or override at deploy-time via CORS_ORIGINS env var.
   cors_origins:
     - "http://localhost:3000"
+    - "http://0.0.0.0:3000"
     - "http://127.0.0.1:3000"
     - "http://100.21.28.155:3000"
     - "https://ai.milestnapps.com"
+    - "http://mtibrain.mtitechlab.com"
+
 
 auth:
   jwt_algorithm: HS256
@@ -74,3 +77,7 @@ prompt_cache:
 feature_toggles:
   langfuse_enabled: true           # Enable Langfuse tracing and model usage tracking
   data_quality_checker_enabled: false  # When true: runs after executor; output feeds confidence + synthesis
+  confidence_score_enabled: false  # When true: runs after executor; output feeds confidence + synthesis
+
+graph_viewer:
+  enable_llm_enrichment_for_nodes: true  # LLM-generate edge labels for edges lacking a description; disable to fall back to type-based labels

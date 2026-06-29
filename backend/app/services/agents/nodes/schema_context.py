@@ -230,6 +230,22 @@ def build_schema_context(ir: SemanticIR, semantic_context: dict) -> dict:
     }
 
 
+def _merge_by_id(primary: list[dict], secondary: list[dict], top_n: int = 5) -> list[dict]:
+    """Union two ranked lists keyed by 'id', taking max score on collision, sort descending."""
+    merged: dict[str, dict] = {}
+    for p in primary:
+        merged[p["id"]] = dict(p)
+    for p in secondary:
+        pid = p["id"]
+        if pid in merged:
+            if p.get("score", 0) > merged[pid].get("score", 0):
+                merged[pid]["score"] = p["score"]
+                merged[pid]["raw_score"] = p.get("raw_score", p["score"])
+        else:
+            merged[pid] = dict(p)
+    return sorted(merged.values(), key=lambda x: x.get("score", 0), reverse=True)[:top_n]
+
+
 async def fetch_anti_patterns(state: AnalyticsState) -> str:
     # NOTE: Template gate REMOVED — anti-patterns must always run.
     # Previously gated on 'if not templates' which silently skipped guard rails
@@ -237,25 +253,44 @@ async def fetch_anti_patterns(state: AnalyticsState) -> str:
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
-        patterns = neo4j_client.search_anti_patterns(embedding)
+        anchor_tables = state.get("anchor_tables_resolved") or []
+
+        # Path A: vector
+        vector_patterns = neo4j_client.search_anti_patterns(embedding)
+        # Path B: table-based (independent path — catches different-wording same-table queries)
+        table_patterns = neo4j_client.search_anti_patterns_by_tables(anchor_tables) if anchor_tables else []
+
+        patterns = _merge_by_id(vector_patterns, table_patterns)
+
         if not patterns:
-            logger.info("schema_context | anti_patterns | MISS (threshold=0.65) | thread={}", state.get("thread_id"))
+            logger.info("schema_context | anti_patterns | MISS | thread={}", state.get("thread_id"))
             return "(none)"
         if state.get("semantic_context") is not None:
             state["semantic_context"]["anti_patterns"] = patterns
         logger.info(
-            "schema_context | anti_patterns | HIT | count={} | types={} | thread={}",
+            "schema_context | anti_patterns | HIT | count={} | vector={} | table={} | types={} | thread={}",
             len(patterns),
+            len(vector_patterns),
+            len(table_patterns),
             [p.get("error_type") for p in patterns],
             state.get("thread_id"),
         )
         lines = []
         for p in patterns:
-            element = p.get("failing_element")
-            line = f"- [{p.get('error_type', 'error')}]"
-            if element:
-                line += f" element={element} |"
-            line += f" {p.get('error_summary', '')}"
+            if p.get("error_type") == "user_dislike":
+                count = p.get("occurrence_count") or 1
+                reason = (p.get("error_summary") or "").strip()
+                tables = (p.get("tables_involved") or "").strip()
+                line = f"USER REJECTED THIS APPROACH ({count}× reported): {reason}"
+                if tables:
+                    line += f"\n  Tables involved: {tables}"
+                line += "\n  DO NOT repeat this pattern."
+            else:
+                element = p.get("failing_element")
+                line = f"- [{p.get('error_type', 'error')}]"
+                if element:
+                    line += f" element={element} |"
+                line += f" {p.get('error_summary', '')}"
             lines.append(line)
         return "\n".join(lines)
     except Exception as e:
@@ -267,17 +302,27 @@ async def fetch_query_patterns(state: AnalyticsState) -> tuple[list, bool, str |
     try:
         from app.services.agents.nodes.context_fetcher import _get_embedding
         embedding = await _get_embedding(state["question"])
-        patterns = neo4j_client.search_query_patterns(embedding)
+        anchor_tables = state.get("anchor_tables_resolved") or []
+
+        # Path A: vector (semantic similarity on question wording)
+        vector_patterns = neo4j_client.search_query_patterns(embedding)
+        # Path B: table-based (catches same-intent different-wording queries missed by vector)
+        table_patterns = neo4j_client.search_query_patterns_by_tables(anchor_tables) if anchor_tables else []
+
+        patterns = _merge_by_id(vector_patterns, table_patterns)
+
         if not patterns:
-            logger.info("schema_context | query_patterns | MISS (threshold=0.65) | thread={}", state.get("thread_id"))
+            logger.info("schema_context | query_patterns | MISS | thread={}", state.get("thread_id"))
             return [], False, None
         if state.get("semantic_context") is not None:
             state["semantic_context"]["query_patterns"] = patterns
         top = patterns[0]
         name = top.get("intent") or top.get("id") or ""
         logger.info(
-            "schema_context | query_patterns | HIT | count={} | top_intent={} | top_score={:.3f} | top_question={} | thread={}",
+            "schema_context | query_patterns | HIT | count={} | vector={} | table={} | top_intent={} | top_score={:.3f} | top_question={} | thread={}",
             len(patterns),
+            len(vector_patterns),
+            len(table_patterns),
             name,
             top.get("score", 0),
             (top.get("question_text") or "")[:80],
@@ -287,3 +332,36 @@ async def fetch_query_patterns(state: AnalyticsState) -> tuple[list, bool, str |
     except Exception as e:
         logger.warning("schema_context | query_patterns | ERROR | thread={} | error={}", state.get("thread_id"), e)
         return [], False, None
+
+
+async def fetch_feedback_by_tables(state: AnalyticsState) -> list[dict]:
+    """Late-pass table-based feedback fetch — supplements lt_memory_retriever's early vector+FTS pass.
+
+    Runs after anchor_resolver so anchor_tables_resolved is populated.
+    Finds cross-thread feedback where stored tables_used overlaps >= 50% with current anchor tables.
+    This catches structurally-identical queries with completely different question wording that
+    the early vector+FTS pass misses.
+    """
+    anchor_tables = state.get("anchor_tables_resolved") or []
+    thread_id = state.get("thread_id")
+    if not anchor_tables or not thread_id:
+        return []
+    try:
+        import uuid as _uuid
+        from app.db import async_session_factory
+        from app.services.chat.feedback import find_feedback_by_tables
+        async with async_session_factory() as db:
+            rows = await find_feedback_by_tables(
+                db, anchor_tables, _uuid.UUID(str(thread_id)), limit=5
+            )
+        logger.debug(
+            "schema_context | fetch_feedback_by_tables | hits={} | tables={} | thread={}",
+            len(rows), anchor_tables, thread_id,
+        )
+        return rows
+    except Exception as e:
+        logger.warning(
+            "schema_context | fetch_feedback_by_tables | ERROR | thread={} | error={}",
+            thread_id, e,
+        )
+        return []

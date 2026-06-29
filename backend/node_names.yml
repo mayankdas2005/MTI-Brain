@@ -42,7 +42,7 @@ nodes:
     stream: [reasoning, reasoning.delta]
 
   - id: query_planner
-    label: "Understanding your request"
+    label: null
     tier: fast
     stream: null
 

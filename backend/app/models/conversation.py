@@ -19,6 +19,7 @@ from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import Text
 from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID
@@ -285,8 +286,21 @@ class MTIBrainFeedback(Base):
         Boolean, nullable=True
     )  # true=like, false=dislike
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # pgvector embedding of question + feedback for similarity search
+    # Denormalised question text — avoids JOIN at retrieval time; populated on save
+    question_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # FTS-searchable intent fingerprint built from directive_writer intent_fingerprint dict
+    intent_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 'answer' | 'sql' | 'chart' | 'general' — captured from frontend widget
+    feedback_type: Mapped[str] = mapped_column(String(16), nullable=False, default="general")
+    # Tracking: when was this feedback last retrieved and applied to a query
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    trigger_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # pgvector embedding of question for vector similarity search
     embedding = mapped_column(Vector(1536), nullable=True)
+    # tsvector over question_text + comment + intent_text for FTS; maintained by DB trigger
+    search_vector = mapped_column(TSVECTOR, nullable=True)
+    # anchor tables from the pipeline run — enables table-based cross-thread retrieval (late pass)
+    tables_used: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -298,6 +312,8 @@ class MTIBrainFeedback(Base):
         Index("ix_mti_brain_feedback_message", "message_id"),
         Index("ix_mti_brain_feedback_created", "created_at"),
         Index("ix_mti_brain_feedback_message_created", "message_id", "created_at"),
+        Index("idx_mti_brain_feedback_fts", "search_vector", postgresql_using="gin"),
+        Index("idx_mti_brain_feedback_tables_used", "tables_used", postgresql_using="gin"),
     )
 
 

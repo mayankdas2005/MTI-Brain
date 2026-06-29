@@ -62,6 +62,7 @@ from app.services.agents.node_names import (
     DEEP_DENOMINATOR as N_DEEP_DENOMINATOR,
     DEEP_PROJECTION as N_DEEP_PROJECTION,
     QUERY_COMPILER as N_QUERY_COMPILER,
+    QUERY_PLANNER as N_QUERY_PLANNER,
     SQL_GENERATOR as N_SQL_GENERATOR,
     SQL_VALIDATOR as N_SQL_VALIDATOR,
     SYNTHESIS as N_SYNTHESIS,
@@ -88,6 +89,7 @@ from app.services.agents.nodes.deep_denominator import deep_denominator
 from app.services.agents.nodes.deep_projection import deep_projection
 from app.services.agents.nodes.measure_specialist import measure_specialist
 from app.services.agents.nodes.query_compiler import query_compiler
+from app.services.agents.nodes.query_planner import query_planner
 from app.services.agents.nodes.schema_enricher import schema_enricher
 from app.services.agents.nodes.sql_generator_node import sql_generator
 from app.services.agents.nodes.sql_validator import sql_validator
@@ -128,38 +130,39 @@ def compile_graph():
     # ── Core infrastructure nodes ─────────────────────────────────────────────
     b.add_node(N_INTAKE,              intake_classifier,    retry_policy=LLM_RETRY)
     b.add_node(N_GENERAL_CHAT,        general_chat,         retry_policy=LLM_RETRY)
-    b.add_node(N_CONTEXT_FETCHER,     context_fetcher)
-    b.add_node(N_TRIBAL_RETRIEVAL,    tribal_retrieval)
+    b.add_node(N_CONTEXT_FETCHER,     context_fetcher,      retry_policy=LLM_RETRY)
+    b.add_node(N_TRIBAL_RETRIEVAL,    tribal_retrieval,     retry_policy=LLM_RETRY)
 
     # ── Single-responsibility intent pipeline ─────────────────────────────────
     # Note: intent_dispatcher is removed — for fixed 3-way parallel branches,
     # direct multi-edges from schema_enricher work correctly and show in the graph.
     # Send API is for variable-length fan-out (map-reduce over a list), not fixed branches.
     b.add_node(N_ANCHOR_RESOLVER,     anchor_resolver,      retry_policy=LLM_RETRY)
-    b.add_node(N_SCHEMA_ENRICHER,     schema_enricher)
+    b.add_node(N_QUERY_PLANNER,       query_planner,        retry_policy=LLM_RETRY)
+    b.add_node(N_SCHEMA_ENRICHER,     schema_enricher,      retry_policy=LLM_RETRY)
     b.add_node(N_MEASURE_SPECIALIST,  measure_specialist,   retry_policy=LLM_RETRY)
     b.add_node(N_FILTER_SPECIALIST,   filter_specialist,    retry_policy=LLM_RETRY)
     b.add_node(N_DIMENSION_SPECIALIST,dimension_specialist, retry_policy=LLM_RETRY)
-    b.add_node(N_INTENT_ASSEMBLER,    intent_assembler,     defer=True)  # waits for all 3 specialists
+    b.add_node(N_INTENT_ASSEMBLER,    intent_assembler,     defer=True, retry_policy=LLM_RETRY)
     b.add_node(N_DIRECTIVE_WRITER,    directive_writer,     retry_policy=LLM_RETRY)
-    b.add_node(N_SCHEMA_GAP_RESOLVER, schema_gap_resolver)
+    b.add_node(N_SCHEMA_GAP_RESOLVER, schema_gap_resolver,  retry_policy=LLM_RETRY)
 
     # ── Fallback: legacy intent_resolver (used when assembler fails) ──────────
     b.add_node(N_INTENT_RESOLVER,     intent_resolver,      retry_policy=LLM_RETRY)
 
-    # ── Compilation + execution pipeline (unchanged) ─────────────────────────
-    b.add_node(N_QUERY_COMPILER,      query_compiler)
+    # ── Compilation + execution pipeline ─────────────────────────────────────
+    b.add_node(N_QUERY_COMPILER,      query_compiler,       retry_policy=LLM_RETRY)
     b.add_node(N_FILTER_RESOLVER,     filter_resolver,      retry_policy=LLM_RETRY)
     b.add_node(N_SQL_GENERATOR,       sql_generator,        retry_policy=LLM_RETRY)
-    b.add_node(N_SQL_VALIDATOR,       sql_validator)
+    b.add_node(N_SQL_VALIDATOR,       sql_validator,        retry_policy=LLM_RETRY)
     b.add_node(N_EXECUTOR,            executor,             retry_policy=LLM_RETRY)
 
     # ── Post-execution: data quality check then deep analysis enrichment then synthesis ──
     b.add_node(N_DATA_QUALITY_CHECKER,data_quality_checker, retry_policy=LLM_RETRY)
     # Deep analysis enrichment chain — self-gate on deep_analysis; no-ops for normal mode
-    b.add_node(N_DEEP_SENSITIVITY,    deep_sensitivity)
-    b.add_node(N_DEEP_DENOMINATOR,    deep_denominator)
-    b.add_node(N_DEEP_PROJECTION,     deep_projection)
+    b.add_node(N_DEEP_SENSITIVITY,    deep_sensitivity,     retry_policy=LLM_RETRY)
+    b.add_node(N_DEEP_DENOMINATOR,    deep_denominator,     retry_policy=LLM_RETRY)
+    b.add_node(N_DEEP_PROJECTION,     deep_projection,      retry_policy=LLM_RETRY)
     b.add_node(N_SYNTHESIS,           synthesis,            retry_policy=LLM_RETRY)
     b.add_node(N_CHART_AGENT,         chart_agent,          retry_policy=LLM_RETRY)
     b.add_node(N_ERROR_RESPONSE,      error_response)
@@ -182,12 +185,13 @@ def compile_graph():
     )
     b.add_edge(N_TRIBAL_RETRIEVAL, N_ANCHOR_RESOLVER)
 
-    # anchor_resolver → schema_enricher (success) or legacy intent_resolver (fallback)
-    # query_plan is now computed concurrently inside anchor_resolver (D8b merge).
+    # anchor_resolver → query_planner (success) or legacy intent_resolver (fallback)
+    # query_planner adds prior_output_columns context before schema enrichment.
     b.add_conditional_edges(
         N_ANCHOR_RESOLVER, route_after_anchor_resolver,
-        {N_SCHEMA_ENRICHER: N_SCHEMA_ENRICHER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
+        {N_QUERY_PLANNER: N_QUERY_PLANNER, N_INTENT_RESOLVER: N_INTENT_RESOLVER},
     )
+    b.add_edge(N_QUERY_PLANNER, N_SCHEMA_ENRICHER)
 
     # schema_enricher fans out to 3 parallel specialists via direct multi-edges.
     # LangGraph executes all three in parallel (superstep), then intent_assembler
@@ -248,7 +252,7 @@ def compile_graph():
 
     b.add_conditional_edges(
         N_SYNTHESIS, route_synthesis,
-        {N_CHART_AGENT: N_CHART_AGENT, END: END},
+        {N_CHART_AGENT: N_CHART_AGENT, N_COMPRESS: N_COMPRESS, END: END},
     )
 
     b.add_conditional_edges(N_CHART_AGENT, route_should_compress, {N_COMPRESS: N_COMPRESS, END: END})
@@ -277,69 +281,84 @@ async def init_analytics_pipeline() -> None:
         _warmup_task.cancel()
         _warmup_task = None
 
-    neo4j_client.init_neo4j()
-    redis_client.init_redis()
-
-    try:
-        from app.services.agents.bedrock import init_llms
-        init_llms()
-    except Exception as e:
-        logger.warning("LLM init failed (non-fatal — will init on first use): {}", e)
-
-    try:
-        from app.services.agents.redshift_client import init_redshift
-        await init_redshift()
-    except Exception as e:
-        logger.warning("Redshift init failed (non-fatal for startup): {}", e)
-
     conninfo = settings.CHECKPOINT_CONNINFO
     conninfo_fast = conninfo + " connect_timeout=10"
 
-    checkpointer = None
-    try:
-        async with await AsyncConnection.connect(
-            conninfo_fast, autocommit=True, prepare_threshold=0
-        ) as conn:
-            try:
-                await AsyncPostgresSaver(conn).setup()
-            except UniqueViolation:
-                pass
+    # ── Phase 1: all external services in parallel ────────────────────────────
+    async def _init_llms_safe() -> None:
+        try:
+            from app.services.agents.bedrock import init_llms
+            await asyncio.to_thread(init_llms)
+        except Exception as e:
+            logger.warning("LLM init failed (non-fatal — will init on first use): {}", e)
 
-        _checkpoint_pool = AsyncConnectionPool(
-            conninfo=conninfo_fast,
-            open=False,
-            min_size=settings.CHECKPOINT_POOL_MIN,
-            max_size=settings.CHECKPOINT_POOL_MAX,
-            check=AsyncConnectionPool.check_connection,
-            max_idle=settings.CHECKPOINT_POOL_MAX_IDLE,
-            kwargs={"prepare_threshold": 0},
-        )
-        await _checkpoint_pool.open()
-        checkpointer = AsyncPostgresSaver(_checkpoint_pool)
-        logger.info("Analytics checkpoint store initialized")
-    except Exception as e:
-        logger.warning("Checkpoint store init failed (non-fatal — running without persistence): {}", e)
-        from langgraph.checkpoint.memory import MemorySaver
-        checkpointer = MemorySaver()
+    async def _init_redshift_safe() -> None:
+        try:
+            from app.services.agents.redshift_client import init_redshift
+            await init_redshift()
+        except Exception as e:
+            logger.warning("Redshift init failed (non-fatal for startup): {}", e)
 
-    try:
-        from contextlib import ExitStack
-        from langgraph.store.postgres import PostgresStore
-        from langgraph.store.base import IndexConfig
-        from app.services.embeddings import embed_texts_sync
-        _memory_store_exit = ExitStack()
-        _memory_store = _memory_store_exit.enter_context(
-            PostgresStore.from_conn_string(
-                conninfo_fast,
-                index=IndexConfig(embed=embed_texts_sync, dims=1536),
+    async def _init_checkpoint() -> None:
+        global _checkpoint_pool
+        nonlocal checkpointer
+        try:
+            async with await AsyncConnection.connect(
+                conninfo_fast, autocommit=True, prepare_threshold=0
+            ) as conn:
+                try:
+                    await AsyncPostgresSaver(conn).setup()
+                except UniqueViolation:
+                    pass
+            _checkpoint_pool = AsyncConnectionPool(
+                conninfo=conninfo_fast,
+                open=False,
+                min_size=settings.CHECKPOINT_POOL_MIN,
+                max_size=settings.CHECKPOINT_POOL_MAX,
+                check=AsyncConnectionPool.check_connection,
+                max_idle=settings.CHECKPOINT_POOL_MAX_IDLE,
+                kwargs={"prepare_threshold": 0},
             )
-        )
-        _memory_store.setup()
-        lt_memory.set_memory_store(_memory_store, conninfo=conninfo_fast, embed_fn=embed_texts_sync)
-        logger.info("Analytics memory store initialized")
-    except Exception as e:
-        logger.warning("Analytics memory store init failed (non-fatal): {}", e)
-        _memory_store = None
+            await _checkpoint_pool.open()
+            checkpointer = AsyncPostgresSaver(_checkpoint_pool)
+            logger.info("Analytics checkpoint store initialized")
+        except Exception as e:
+            logger.warning("Checkpoint store init failed (non-fatal — running without persistence): {}", e)
+            from langgraph.checkpoint.memory import MemorySaver
+            checkpointer = MemorySaver()
+
+    async def _init_memory() -> None:
+        global _memory_store, _memory_store_exit
+        try:
+            from contextlib import ExitStack
+            from langgraph.store.postgres import PostgresStore
+            from langgraph.store.base import IndexConfig
+            from app.services.embeddings import embed_texts_sync
+            exit_stack = ExitStack()
+            store = exit_stack.enter_context(
+                PostgresStore.from_conn_string(
+                    conninfo_fast,
+                    index=IndexConfig(embed=embed_texts_sync, dims=1536),
+                )
+            )
+            await asyncio.to_thread(store.setup)
+            _memory_store_exit = exit_stack
+            _memory_store = store
+            lt_memory.set_memory_store(_memory_store, conninfo=conninfo_fast, embed_fn=embed_texts_sync)
+            logger.info("Analytics memory store initialized")
+        except Exception as e:
+            logger.warning("Analytics memory store init failed (non-fatal): {}", e)
+            _memory_store = None
+
+    checkpointer = None
+    await asyncio.gather(
+        asyncio.to_thread(neo4j_client.init_neo4j),
+        asyncio.to_thread(redis_client.init_redis),
+        _init_llms_safe(),
+        _init_redshift_safe(),
+        _init_checkpoint(),
+        _init_memory(),
+    )
 
     _compiled_graph = compile_graph().compile(checkpointer=checkpointer, store=_memory_store)
 

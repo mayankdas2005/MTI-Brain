@@ -22,7 +22,6 @@ from app.core.logger import logger
 from app.core.retry import retry_async, retry_sync
 from app.services.agents import neo4j_client
 from app.services.agents.helpers import merge_neo4j_raw_graph
-from app.services.agents.memory import short_term
 from app.services.agents.state import AnalyticsState
 from . import helpers, table_discovery, column_loader, cross_domain
 
@@ -97,7 +96,8 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
 
     try:
         # ── Short-term memory + follow-up detection ────────────────────────────
-        session_summary = short_term.get_session_summary(state["thread_id"]) or state.get("summary") or ""
+        _conv_history = state.get("conversation_history") or ""
+        session_summary = _conv_history if _conv_history and _conv_history != "(no prior context)" else (state.get("summary") or "")
         raw_question    = state["question"]
         is_followup     = helpers.is_followup_question(raw_question, bool(session_summary))
 
@@ -284,10 +284,11 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         # Patterns fetched here are stored in semantic_context so ALL specialist nodes
         # can read them without a separate Neo4j round-trip.
         _MAX_EXECUTION_COST = 2  # repair_count + recompile_count threshold for quality filter
+        _question = state.get("effective_question") or state["question"]
         try:
             _all_patterns = await asyncio.to_thread(
                 retry_sync,
-                lambda: neo4j_client.search_query_patterns(embedding, threshold=0.72),
+                lambda: neo4j_client.search_query_patterns_hybrid(embedding, _question, threshold=0.72),
                 service="neo4j",
             )
             _quality_patterns = [
@@ -297,6 +298,14 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
             ]
             _patterns = _quality_patterns if _quality_patterns else _all_patterns
             _top = _patterns[0] if _patterns else None
+            if _top:
+                _last_seen_days = _top.get("last_seen_days")
+                if _last_seen_days is not None and _last_seen_days > 180:
+                    logger.info(
+                        "context_fetcher | pattern_stale_skip | id={} | days={}",
+                        (_top.get("id") or "")[:8], _last_seen_days,
+                    )
+                    _top = None
             if _top:
                 _raw = _top.get("raw_score", 0)
                 _tier = "exact" if _raw >= 0.95 else "strong" if _raw >= 0.85 else "hint"
@@ -313,6 +322,26 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
                     _tier = "hint"
                 elif _occurrence < 4 and not _liked and _tier == "exact":
                     _tier = "strong"  # exact requires 4+ occurrences or an explicit like
+                if (_last_seen_days or 0) > 90 and _tier != "hint":
+                    _tier = "hint"
+                    logger.info(
+                        "context_fetcher | pattern_age_cap | id={} | days={}",
+                        (_top.get("id") or "")[:8], _last_seen_days,
+                    )
+                _cross_d = _top.get("cross_thread_dislikes") or 0
+                _cross_l = _top.get("cross_thread_likes") or 0
+                if _cross_d >= 3 and _cross_d > _cross_l:
+                    _tier = "hint"
+                    logger.info(
+                        "context_fetcher | pattern_cross_demote | id={} | cross_dislikes={}",
+                        (_top.get("id") or "")[:8], _cross_d,
+                    )
+                elif _cross_l >= 3 and _tier == "hint":
+                    _tier = "strong"
+                    logger.info(
+                        "context_fetcher | pattern_cross_promote | id={} | cross_likes={}",
+                        (_top.get("id") or "")[:8], _cross_l,
+                    )
                 semantic_context["_matched_pattern"]      = _top
                 semantic_context["_matched_pattern_tier"] = _tier
                 # Optional corroborating 2nd pattern (same tables, strong tier only)
@@ -342,7 +371,7 @@ async def context_fetcher(state: AnalyticsState, config: RunnableConfig) -> dict
         try:
             _anti_patterns = await asyncio.to_thread(
                 retry_sync,
-                lambda: neo4j_client.search_anti_patterns(embedding),
+                lambda: neo4j_client.search_anti_patterns_hybrid(embedding, _question),
                 service="neo4j",
             )
             semantic_context["_matched_anti_patterns"] = (_anti_patterns or [])[:2]

@@ -375,7 +375,7 @@ interface ThreadStore {
   stopGeneration: (threadId: string) => Promise<void>;
 
   // Feedback
-  submitFeedback: (threadId: string, conversationId: string, liked: boolean, comment?: string) => Promise<void>;
+  submitFeedback: (threadId: string, conversationId: string, liked: boolean, comment?: string, feedbackType?: string) => Promise<void>;
 
   // Local UI
   setCurrentThread: (id: string | null) => void;
@@ -1261,28 +1261,35 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
         get().fetchRecents();
       },
       onError: (data) => {
+        const convId = (data.conversation_id as string) || '';
         set((state) => {
-          const updated = state.currentMessages.map((m) =>
-            m.id === assistantMsgId
-              ? {
-                  ...m,
-                  content: data.message || 'Something went wrong. Please try again.',
-                  isStreaming: false,
-                  conversation_id: data.conversation_id || '',
-                  streamingSteps: markStepError(m.streamingSteps),
-                }
-              : m,
-          );
+          const updated = state.currentMessages.map((m) => {
+            if (m.id === assistantMsgId) {
+              return {
+                ...m,
+                content: data.message || 'Something went wrong. Please try again.',
+                isStreaming: false,
+                conversation_id: convId,
+                streamingSteps: markStepError(m.streamingSteps),
+              };
+            }
+            if (m.id === userMsgId && convId && !m.conversation_id) {
+              return { ...m, conversation_id: convId };
+            }
+            return m;
+          });
           return {
             currentMessages: updated,
             threadMessageMap: { ...state.threadMessageMap, [threadId]: updated },
             streamingMessages: [],
             isStreaming: false,
+            isStopping: false,
             streamingMessageId: null,
             streamingThreadId: null,
             abortController: null,
           };
         });
+        get().fetchRecents();
       },
     };
 
@@ -1643,10 +1650,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           ),
           streamingMessages: [],
           isStreaming: false,
+          isStopping: false,
           streamingMessageId: null,
           streamingThreadId: null,
           abortController: null,
         }));
+        get().fetchRecents();
       },
     };
 
@@ -1964,10 +1973,12 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           ),
           streamingMessages: [],
           isStreaming: false,
+          isStopping: false,
           streamingMessageId: null,
           streamingThreadId: null,
           abortController: null,
         }));
+        get().fetchRecents();
       },
     };
 
@@ -2070,8 +2081,8 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
 
   // ─── Feedback ───
 
-  submitFeedback: async (threadId, conversationId, liked, comment) => {
-    const result = await api.submitFeedback(threadId, conversationId, { liked, comment });
+  submitFeedback: async (threadId, conversationId, liked, comment, feedbackType) => {
+    const result = await api.submitFeedback(threadId, conversationId, { liked, comment, feedback_type: feedbackType });
     // Update both currentMessages (live render) and threadMessageMap (cache)
     // so navigating away and back doesn't reset the feedback indicator.
     const apply = (m: Message) =>

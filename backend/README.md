@@ -157,7 +157,8 @@ backend/
 │   └── versions/
 │       └── 0001_baseline.py             # Full schema baseline migration
 ├── scripts/
-│   └── render_graph.py                  # Export pipeline DAG diagram
+│   ├── render_graph.py                  # Export pipeline DAG diagram
+│   └── ingest_tribal_knowledge.py       # Embed + upsert tribal knowledge .md files into pgvector
 ├── alembic.ini
 ├── config.yml                           # Non-secret configuration (committed)
 ├── .env.example                         # Secrets template (not committed)
@@ -766,6 +767,166 @@ A `PostgresStore` backed by the same connection string provides long-term semant
 
 ---
 
+## Startup Sequence
+
+Application startup is orchestrated by the FastAPI `lifespan` context manager in `app/main.py`. All external service connections are established before the server begins accepting requests. Every step is designed for graceful degradation — if Langfuse, Redis, the memory store, the checkpoint store, or the classifier warmup fail, a warning is logged and the pipeline continues rather than aborting.
+
+### Annotated startup log
+
+```
+# Uvicorn --reload mode: the main process starts a WatchFiles reloader
+# that monitors the backend directory for code changes and restarts the
+# child server process automatically.
+INFO: Will watch for changes in these directories: ['.../backend']
+INFO: Uvicorn running on http://0.0.0.0:8004 (Press CTRL+C to quit)
+INFO: Started reloader process [43124] using WatchFiles
+
+# Module-level import (before lifespan runs): join_key_filter.py reads
+# join_key_profile.json at import time, building a bidirectional index of
+# 2706 (from_table, from_col, to_table, to_col) tuples. sql_validator uses
+# this index to reject unsafe, dead, or fanout joins before SQL execution.
+2026-06-25 14:07:37 | join_key_filter.py:_load:17 | join_key_filter | loaded | pairs=2706
+
+# Uvicorn spawns the actual ASGI server worker process (PID 37540).
+INFO: Started server process [37540]
+INFO: Waiting for application startup.
+
+# FastAPI lifespan enter: logs the app name and active environment
+# (development / production) from config.yml so the first log line
+# confirms which config file was loaded.
+2026-06-25 14:07:37 | main.py:lifespan:34 | Starting MTI Brain Backend [env=development]
+
+# Langfuse observability client authenticated and ready. init_langfuse()
+# reads LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY, calls auth_check(),
+# then registers Bedrock Claude model pricing via the Langfuse REST API so
+# cost-per-trace is tracked automatically. Non-fatal if unreachable.
+2026-06-25 14:07:40 | langfuse_integration.py:init_langfuse:107 | Langfuse initialized → http://100.21.28.155:3100
+
+# Neo4j driver connected to the knowledge graph. init_neo4j() calls
+# verify_connectivity() and creates fulltext search indexes on
+# QueryPattern and AntiPattern nodes if they don't already exist.
+# pool=10 is NEO4J_MAX_POOL_SIZE from config.yml.
+2026-06-25 14:07:55 | client.py:init_neo4j:40 | Neo4j driver initialized | uri=bolt://100.21.28.155:7687 | pool=10
+
+# Redis connection pool ready. init_redis() opens REDIS_MAX_CONNECTIONS=20
+# connections and runs ping() to validate. Redis is used for embedding
+# cache, Redshift result cache, and filter value cache.
+# health_check=30s is REDIS_HEALTH_CHECK_INTERVAL from config.yml.
+2026-06-25 14:07:55 | redis_client.py:init_redis:42 | Redis client initialized | pool=20 | health_check=30s
+
+# Redshift async connection pool ready. init_redshift() opens 10
+# connections in parallel via asyncio.gather. size=10/10 means all 10
+# connections opened successfully. The pool is reused across all
+# analytics pipeline runs to avoid per-query connection overhead.
+2026-06-25 14:07:56 | redshift_client.py:init_redshift:59 | Redshift pool initialized | size=10/10 | host=100.21.28.155
+
+# LangGraph long-term memory store initialised. _init_memory() creates a
+# PostgresStore backed by pgvector (1536-dim Cohere Embed v4). Stores
+# learned patterns and user feedback for cross-session retrieval.
+# Non-fatal: falls back to None (no memory) on failure.
+2026-06-25 14:07:57 | graph.py:_init_memory:348 | Analytics memory store initialized
+
+# LangGraph checkpoint store initialised. _init_checkpoint() creates an
+# AsyncPostgresSaver with a psycopg3 connection pool
+# (CHECKPOINT_POOL_MIN/MAX from config.yml). Checkpoints persist the
+# full AnalyticsState between nodes so interrupted runs can be resumed.
+# Non-fatal: falls back to in-memory MemorySaver on failure.
+2026-06-25 14:07:57 | graph.py:_init_checkpoint:324 | Analytics checkpoint store initialized
+
+# SQLAlchemy app DB pool pre-warmed. warm_pool() opens min(pool_size, 4)
+# connections to PgBouncer and runs SELECT 1 on each. This avoids
+# TCP cold-start latency on the first user request.
+# "2 sockets" = DB_POOL_SIZE=2 in config.yml.
+2026-06-25 14:08:01 | session.py:warm_pool:155 | DB pool ready — 2 client→PgBouncer sockets pre-opened
+
+# AWS Bedrock LLM clients ready. init_llms() builds three ChatBedrock
+# instances (temperature=0, max_tokens=16384, streaming=True):
+#   fast     = Haiku  — used for cheap/parallel specialist nodes
+#   balanced = Sonnet — used for SQL generation, synthesis, directive writing
+#   deep     = Opus   — used when deep_analysis=true
+# Model IDs come from AWS_BEDROCK_*_ARN env vars.
+2026-06-25 14:08:08 | bedrock.py:init_llms:67 | Bedrock LLMs ready | fast=Haiku (global.anthropic.claude-haiku-4-5-20251001-v1:0) | balanced=Sonnet (global.anthropic.claude-sonnet-4-6) | deep=Opus (global.anthropic.claude-opus-4-6-v1)
+
+# LangGraph DAG compiled and stored globally. All nodes, edges, and
+# conditional routing functions defined in graph.py are assembled into
+# the compiled graph object used for every pipeline invocation.
+2026-06-25 14:08:09 | graph.py:init_analytics_pipeline:370 | Neo4j analytics pipeline initialized
+
+# Background Redshift keepalive task started. Runs SELECT 1 every 30 s
+# to prevent Redshift Serverless auto-suspend and keep the connection
+# pool alive. Interval is hardcoded in main.py.
+2026-06-25 14:08:09 | main.py:lifespan:41 | Redshift keepalive started | interval=30s
+
+# Uvicorn signals that all lifespan startup hooks completed successfully.
+# The server is now accepting HTTP requests.
+INFO: Application startup complete.
+
+# Background warmup (async, after startup complete): intake_classifier
+# pre-loads domain names (15) and intent names (16) from Neo4j and
+# caches them in Redis (TTL 1 day) and in-process memory. Without this,
+# the first classification call pays the Neo4j round-trip cost.
+2026-06-25 14:08:09 | intake_classifier.py:warmup_classifier_context:120 | warmup | intake_classifier context ready | domains=15 | intents=16
+
+# Background warmup: a dummy "hi" message is sent to the fast (Haiku)
+# Bedrock tier to open the underlying HTTPS connection to AWS. This
+# eliminates the TLS handshake latency on the first real user query.
+2026-06-25 14:08:12 | graph.py:_warmup_llms:387 | warmup | Bedrock OK | tier=fast
+
+# Same warmup for the balanced (Sonnet) tier.
+2026-06-25 14:08:16 | graph.py:_warmup_llms:387 | warmup | Bedrock OK | tier=balanced
+
+# All warmup tasks finished. Pipeline is fully primed and ready.
+2026-06-25 14:08:16 | graph.py:_warmup_pipeline:399 | warmup | pipeline warmup complete
+```
+
+### Startup order summary
+
+| # | Phase | What happens | Source |
+|---|-------|-------------|--------|
+| 1 | **Module load** | `join_key_filter.py` reads `join_key_profile.json`, builds bidirectional join-pair index | `join_key_filter.py:_load` |
+| 2 | **Lifespan enter** | Logs app name and active environment | `app/main.py:lifespan` |
+| 3 | **Langfuse** | Auth check + Bedrock model pricing registration for cost tracking | `app/core/langfuse_integration.py:init_langfuse` |
+| 4 | **Analytics pipeline** (parallel) | Neo4j driver, Redis pool, Redshift pool (10 conns), LangGraph checkpoint store (PostgreSQL), LangGraph memory store (pgvector) — all initialised concurrently via `asyncio.gather` | `app/services/agents/graph.py:init_analytics_pipeline` |
+| 5 | **DB pool warmup** | 2 PgBouncer sockets pre-opened with `SELECT 1` | `app/db/session.py:warm_pool` |
+| 6 | **Bedrock LLMs** | Three tiers initialised: `fast`=Haiku, `balanced`=Sonnet, `deep`=Opus | `app/services/agents/bedrock.py:init_llms` |
+| 7 | **Graph compiled** | LangGraph DAG assembled from all node/edge definitions | `app/services/agents/graph.py:init_analytics_pipeline` |
+| 8 | **Redshift keepalive** | Background `SELECT 1` task started (30 s interval) | `app/main.py:lifespan` |
+| 9 | **Classifier warmup** | Intake classifier domain + intent context loaded from Neo4j, cached in Redis (TTL 1 day) | `nodes/intake_classifier.py:warmup_classifier_context` |
+| 10 | **LLM warmup** | Dummy call to `fast` and `balanced` tiers to open Bedrock TCP/TLS connections | `app/services/agents/graph.py:_warmup_llms` |
+| 11 | **Ready** | `Application startup complete` — server accepting requests | Uvicorn |
+
+### Graceful degradation
+
+The following steps are **non-fatal**: a warning is logged and the pipeline continues if they fail.
+
+| Component | Fallback behaviour |
+|-----------|-------------------|
+| Langfuse | Tracing disabled for the session; pipeline runs without observability |
+| Redis | Cache misses on every request; no embedding or filter caching |
+| LangGraph memory store | Long-term memory unavailable; `store` set to `None` |
+| LangGraph checkpoint store | Falls back to in-memory `MemorySaver`; state not persisted across restarts |
+| Classifier warmup | First classification query pays the Neo4j round-trip cost |
+
+### First-request example (auth flow)
+
+```
+# Browser sends an OPTIONS preflight for CORS before the actual POST.
+# CORSMiddleware responds 200 immediately — no backend logic runs.
+INFO: 127.0.0.1:61222 - "OPTIONS /api/v1/auth/login HTTP/1.1" 200 OK
+
+# User authenticated: auth.py verified username/password against
+# mti_brain_user, issued a signed JWT (HS256, 8-hour expiry).
+# 3289.8 ms includes PgBouncer connection overhead on first DB query.
+2026-06-25 14:11:21 | auth.py:login:65 | User authenticated: admin@milestone.tech
+
+# TimingMiddleware logs method, path, status, and wall-clock duration.
+# rid= is the X-Request-ID header (generated by RequestIDMiddleware if
+# the client did not supply one) for correlating logs across services.
+2026-06-25 14:11:21 | middleware.py:send_with_timing:88 | POST /api/v1/auth/login → 200 (3289.8ms) [rid=a36ca3bb-9658-4498-9ecd-4e4d3159e4b9]
+```
+
+---
+
 ## Database Schema
 
 ### PostgreSQL Tables
@@ -932,3 +1093,79 @@ To export a visual diagram of the LangGraph DAG:
 ```bash
 python scripts/render_graph.py
 ```
+
+---
+
+## Scripts
+
+### `scripts/ingest_tribal_knowledge.py`
+
+#### Why this script exists
+
+The `tribal_retrieval` pipeline node (active in **Deep Analysis** mode) answers questions about internal policies, limits, decisions, commitments, and watchlist items by doing a semantic search over a pgvector table called `mti_brain_tribal_knowledge`. This script is the **one-time (and re-runnable) loader** that populates that table from Markdown source files.
+
+Without running this script, `tribal_retrieval` will always return empty context and Deep Analysis mode will produce answers with no institutional knowledge grounding.
+
+#### What it does — step by step
+
+1. **Discovers files** — recursively scans `data/Synthetic Company Tribal Knowledge/` (relative to repo root) for every `*.md` file.
+2. **Parses YAML frontmatter** — strips the `--- … ---` block at the top of each file and keeps it as structured metadata; the body text below becomes the embeddable content.
+3. **Embeds content** — calls `embed_texts_sync()` (Cohere Embed v4 via AWS Bedrock) to produce a 1536-dimensional vector for each file body.
+4. **Upserts into PostgreSQL** — writes each record to `mti_brain_tribal_knowledge` with:
+   - `source_file` — relative path from repo root (used as the unique key for upserts)
+   - `file_name` — basename of the file
+   - `folder` — immediate parent directory name (used as a category label)
+   - `content` — full stripped body text
+   - `embedding` — 1536-dim pgvector column
+   - `search_vector` — `tsvector` column built from `content` for full-text search
+   - `metadata` — JSONB of the parsed frontmatter
+
+The upsert is **idempotent**: re-running the script on the same files updates existing rows rather than duplicating them. It is safe to re-run after adding or editing files.
+
+#### Prerequisites
+
+| Requirement | Detail |
+|-------------|--------|
+| `backend/.env` | Must have `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, and `AWS_BEARER_TOKEN_BEDROCK` set |
+| Database migration applied | `mti_brain_tribal_knowledge` table must exist — run `alembic upgrade head` first |
+| `data/Synthetic Company Tribal Knowledge/` | Directory must exist at repo root and contain at least one `*.md` file |
+| Python environment | Run from the `backend/` virtualenv so `app.*` imports resolve |
+
+#### Usage
+
+Run from the **repo root**:
+
+```bash
+# From repo root, with backend venv activated
+python backend/scripts/ingest_tribal_knowledge.py
+```
+
+Expected output:
+
+```
+Found 12 .md files. Embedding via Cohere Embed v4...
+Embedding complete. Inserting into PostgreSQL...
+  OK  data/Synthetic Company Tribal Knowledge/policies/cash-policy.md
+  OK  data/Synthetic Company Tribal Knowledge/limits/counterparty-limits.md
+  ...
+Done: 12 inserted/updated, 0 failed out of 12 files.
+```
+
+#### What to change if needed
+
+| Scenario | What to change |
+|----------|---------------|
+| Tribal knowledge files live in a different directory | Update `DATA_DIR` at the top of the script (line ~38): `DATA_DIR = REPO_ROOT / "your" / "new" / "path"` |
+| The table is renamed | Change every reference to `mti_brain_tribal_knowledge` in `_insert_records()` |
+| Folder categorization logic needs adjustment | Edit `_collect_files()`: the `folder` field defaults to `path.parent.name`; change it to a deeper path slice or a frontmatter field if your folder hierarchy changes |
+| Adding new metadata fields from frontmatter | `metadata` already stores the entire frontmatter JSONB — no script change needed; add downstream queries against the `metadata` column in `tribal_retrieval` |
+| Embedding model changes | `embed_texts_sync` is defined in `app/services/embeddings.py`; update the ARN there rather than in this script |
+| Batch size / rate limiting | Currently embeds all files in a single `embed_texts_sync` call; if you have hundreds of files, split `contents` into batches before calling `embed_texts_sync` in a loop |
+
+#### What it enables in the pipeline
+
+After ingestion, the following capabilities become active:
+
+- **Deep Analysis mode** — the `tribal_retrieval` node (`nodes/tribal_retrieval.py`) does a pgvector similarity search over `mti_brain_tribal_knowledge` using the user's question embedding; matching chunks are injected into the pipeline state as `tribal_context`
+- **Policy/Limit/Decision grounding** — `synthesis` and `directive_writer` see institutional constraints (e.g. counterparty limits, cash-balance policies, approved entity lists) drawn from the ingested files
+- **Full-text fallback** — the `search_vector` column enables keyword-based retrieval as a fallback when semantic similarity is insufficient

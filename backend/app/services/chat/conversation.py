@@ -944,6 +944,88 @@ async def is_first_conversation(
     return first_conv == conversation_id
 
 
+async def get_conversation_history(
+    db: AsyncSession,
+    thread_id: uuid.UUID,
+    before_conversation_id: uuid.UUID | None = None,
+    max_pairs: int = 3,
+) -> str:
+    """Load recent Q/A pairs from DB for LLM conversation context.
+
+    Groups by conversation_id (each has one user + one assistant message).
+    If before_conversation_id is given, returns pairs BEFORE that
+    conversation (for retry/edit). Otherwise returns the latest pairs
+    in the thread (for new ask).
+
+    Returns a formatted string like:
+        User: <question>
+        Assistant: <answer>
+        ...
+
+    Returns "(no prior context)" if no prior complete pairs exist.
+    """
+    from sqlalchemy import and_
+    from sqlalchemy.orm import aliased
+
+    UserMsg = aliased(MTIBrainMessage)
+    AsstMsg = aliased(MTIBrainMessage)
+
+    # Join user and assistant messages on conversation_id to get complete pairs
+    # Only include ORIGINAL conversations (not retries/edits) — like ChatGPT/Claude
+    pair_q = (
+        select(
+            UserMsg.content.label("question"),
+            AsstMsg.content.label("answer"),
+            UserMsg.created_at.label("asked_at"),
+        )
+        .select_from(UserMsg)
+        .join(
+            AsstMsg,
+            and_(
+                AsstMsg.conversation_id == UserMsg.conversation_id,
+                AsstMsg.role == "assistant",
+            ),
+        )
+        .where(UserMsg.thread_id == thread_id)
+        .where(UserMsg.role == "user")
+        .where(UserMsg.parent_conversation_id.is_(None))
+        .where(UserMsg.content.isnot(None))
+        .where(UserMsg.content != "")
+        .where(AsstMsg.content.isnot(None))
+        .where(AsstMsg.content != "")
+    )
+
+    if before_conversation_id is not None:
+        # Get the timestamp of the target conversation's user message
+        cutoff_row = await db.execute(
+            select(MTIBrainMessage.created_at)
+            .where(MTIBrainMessage.thread_id == thread_id)
+            .where(MTIBrainMessage.conversation_id == before_conversation_id)
+            .where(MTIBrainMessage.role == "user")
+            .limit(1)
+        )
+        cutoff_ts = cutoff_row.scalar_one_or_none()
+        if cutoff_ts is None:
+            return "(no prior context)"
+        pair_q = pair_q.where(UserMsg.created_at < cutoff_ts)
+
+    # Get last N complete pairs ordered by when user asked
+    rows = await db.execute(
+        pair_q.order_by(UserMsg.created_at.desc()).limit(max_pairs)
+    )
+    pairs = rows.all()
+    if not pairs:
+        return "(no prior context)"
+
+    # Reverse to chronological order and format
+    pairs = list(reversed(pairs))
+    lines = []
+    for question, answer, _ in pairs:
+        lines.append(f"User: {(question or '')[:200]}")
+        lines.append(f"Assistant: {(answer or '')[:200]}")
+    return "\n".join(lines)
+
+
 async def delete_from_conversation(
     db: AsyncSession,
     thread_id: uuid.UUID,

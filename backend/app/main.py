@@ -2,9 +2,11 @@
 
 import asyncio
 import sys
-from app.core.langfuse_integration import init_langfuse, shutdown_langfuse
+
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from app.core.langfuse_integration import init_langfuse, shutdown_langfuse
 
 from contextlib import asynccontextmanager
 
@@ -33,7 +35,7 @@ from slowapi.middleware import SlowAPIMiddleware
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} [env={settings.ENVIRONMENT}]")
     init_langfuse()
-    await warm_pool()
+    asyncio.create_task(warm_pool())
     _keepalive_task = None
     try:
         await init_analytics_pipeline()

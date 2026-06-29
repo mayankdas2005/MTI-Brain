@@ -130,6 +130,15 @@ class QueryTemplatesOutput(BaseModel):
     templates: list[QueryTemplateItem] = Field(default_factory=list)
 
 
+class RelationshipEnrichment(BaseModel):
+    rel_key: str
+    description: str
+
+
+class RelationshipsEnrichmentResponse(BaseModel):
+    relationships: list[RelationshipEnrichment] = Field(default_factory=list)
+
+
 # ── Bedrock clients ────────────────────────────────────────────────────────────
 
 def _bedrock_client(cfg):
@@ -825,4 +834,166 @@ def enrich_query_templates(
                     }
 
     log.info("QueryTemplate enrichment: %d / %d processed.", len(results), len(questions))
+    return results
+
+
+# ── Relationship enrichment ────────────────────────────────────────────────────
+
+_REL_BATCH = 20
+
+_REL_PROMPT_TEMPLATE = """\
+You are a data model expert. For each join relationship below, write a concise label \
+(≤12 words) that a business analyst would understand. Describe what the join means in \
+plain English, e.g. "links orders to customers via customer ID".
+
+Relationships:
+{rels_json}
+
+Return a JSON array only, no other text:
+[{{"rel_key": "<rel_key value>", "description": "<label>"}}]"""
+
+
+def enrich_relationships(edges: list, chat_client, cache: dict) -> dict:
+    """
+    Enrich JOINS_TO edges with human-readable one-liner descriptions.
+    Returns {{rel_key: {{from_table, from_col, to_table, to_col, description}}}}.
+    """
+    from json_repair import loads as _json_repair_loads
+
+    def _edge_key(e) -> str:
+        return f"{e.from_table}.{e.from_col}→{e.to_table}.{e.to_col}"
+
+    to_process = [e for e in edges if _edge_key(e) not in cache]
+    results = dict(cache)
+
+    for i in range(0, len(to_process), _REL_BATCH):
+        batch = to_process[i : i + _REL_BATCH]
+        rels_data = [
+            {
+                "rel_key": _edge_key(e),
+                "from_table": e.from_table.split(".")[-1],
+                "from_col": e.from_col,
+                "to_table": e.to_table.split(".")[-1],
+                "to_col": e.to_col,
+                "source": e.source,
+                "is_declared": e.is_declared,
+                "confidence": round(e.confidence, 2),
+            }
+            for e in batch
+        ]
+        prompt = _REL_PROMPT_TEMPLATE.format(rels_json=json.dumps(rels_data, indent=2))
+        try:
+            response = chat_client.invoke(prompt)
+            raw_text = response.content if hasattr(response, "content") else str(response)
+            parsed = _json_repair_loads(raw_text)
+            items = parsed if isinstance(parsed, list) else (parsed.get("relationships") or [])
+            for item in items:
+                key = item.get("rel_key", "")
+                if not key:
+                    continue
+                edge = next((e for e in batch if _edge_key(e) == key), None)
+                if edge:
+                    results[key] = {
+                        "from_table": edge.from_table,
+                        "from_col": edge.from_col,
+                        "to_table": edge.to_table,
+                        "to_col": edge.to_col,
+                        "description": item.get("description", ""),
+                    }
+            log.info(
+                "Relationship enrichment: batch %d/%d done (%d/%d edges).",
+                i // _REL_BATCH + 1, -(-len(to_process) // _REL_BATCH),
+                min(i + _REL_BATCH, len(to_process)), len(to_process),
+            )
+        except Exception as exc:
+            log.error("Relationship batch %d failed: %s", i // _REL_BATCH + 1, exc, exc_info=True)
+            for edge in batch:
+                key = _edge_key(edge)
+                if key not in results:
+                    results[key] = {
+                        "from_table": edge.from_table,
+                        "from_col": edge.from_col,
+                        "to_table": edge.to_table,
+                        "to_col": edge.to_col,
+                        "description": "",
+                        "_enrichment_failed": True,
+                    }
+
+    log.info("Relationship enrichment: %d / %d processed.", len(results), len(edges))
+    return results
+
+
+# ── JoinPath enrichment ─────────────────────────────────────────────────────────
+
+_JP_BATCH = 15
+
+_JP_PROMPT_TEMPLATE = """\
+You are a data model expert. For each join path below, write a concise description \
+(≤15 words) that a business analyst would understand. Describe what the path connects \
+in plain English, e.g. "links sales orders to customers via the account ledger".
+
+Join paths:
+{paths_json}
+
+Return a JSON array only, no other text:
+[{{"jp_id": "<jp_id value>", "description": "<label>"}}]"""
+
+
+def enrich_join_paths(join_paths: list[dict], chat_client, cache: dict) -> dict:
+    """
+    Enrich JoinPath nodes with human-readable one-liner descriptions.
+    Each dict in join_paths: {id, from_fqn, to_fqn, path_tables, hop_count}.
+    Returns {jp_id: {id, from_fqn, to_fqn, description}}.
+    """
+    from json_repair import loads as _json_repair_loads
+
+    to_process = [jp for jp in join_paths if jp["id"] not in cache]
+    results = dict(cache)
+
+    for i in range(0, len(to_process), _JP_BATCH):
+        batch = to_process[i : i + _JP_BATCH]
+        paths_data = [
+            {
+                "jp_id":      jp["id"],
+                "from_table": jp["from_fqn"].split(".")[-1],
+                "to_table":   jp["to_fqn"].split(".")[-1],
+                "via_tables": [t.split(".")[-1] for t in (jp.get("path_tables") or [])],
+                "hop_count":  jp.get("hop_count", 0),
+            }
+            for jp in batch
+        ]
+        prompt = _JP_PROMPT_TEMPLATE.format(paths_json=json.dumps(paths_data, indent=2))
+        try:
+            response = chat_client.invoke(prompt)
+            raw_text = response.content if hasattr(response, "content") else str(response)
+            parsed = _json_repair_loads(raw_text)
+            items = parsed if isinstance(parsed, list) else (parsed.get("join_paths") or [])
+            for item in items:
+                jp_id = item.get("jp_id", "")
+                jp = next((j for j in batch if j["id"] == jp_id), None)
+                if jp:
+                    results[jp_id] = {
+                        "id":          jp["id"],
+                        "from_fqn":    jp["from_fqn"],
+                        "to_fqn":      jp["to_fqn"],
+                        "description": item.get("description", ""),
+                    }
+            log.info(
+                "JoinPath enrichment: batch %d/%d done (%d/%d paths).",
+                i // _JP_BATCH + 1, -(-len(to_process) // _JP_BATCH),
+                min(i + _JP_BATCH, len(to_process)), len(to_process),
+            )
+        except Exception as exc:
+            log.error("JoinPath batch %d failed: %s", i // _JP_BATCH + 1, exc, exc_info=True)
+            for jp in batch:
+                if jp["id"] not in results:
+                    results[jp["id"]] = {
+                        "id":                 jp["id"],
+                        "from_fqn":           jp["from_fqn"],
+                        "to_fqn":             jp["to_fqn"],
+                        "description":        "",
+                        "_enrichment_failed": True,
+                    }
+
+    log.info("JoinPath enrichment: %d / %d processed.", len(results), len(join_paths))
     return results

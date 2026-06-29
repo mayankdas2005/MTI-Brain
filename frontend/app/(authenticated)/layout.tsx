@@ -10,7 +10,7 @@ import { ShortcutsDialog } from '@/components/shortcuts-dialog';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useEffect, useState, startTransition } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { isAuthenticated, getStoredUser, getLoginGate, setLoginGate } from '@/lib/auth';
+import { isAuthenticated, getStoredUser } from '@/lib/auth';
 import { useUIStore } from '@/lib/store/ui';
 import { useIsMobile, useIsTablet } from '@/hooks/use-mobile';
 import { usePreferencesStore } from '@/lib/store/preferences';
@@ -18,13 +18,13 @@ import { useSearchStore } from '@/lib/store/search';
 import { useThreadStore } from '@/lib/store/threads';
 import { useProjectStore } from '@/lib/store/projects';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
+import { useInstructionsStore } from '@/lib/store/instructions';
 import { copyText } from '@/lib/utils';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { useTheme } from 'next-themes';
 import { useStreamCompletionNotice } from '@/lib/hooks/use-stream-completion-notice';
 import { useDashboardNotice } from '@/lib/hooks/use-dashboard-notice';
 import { useGraphContextNotice } from '@/lib/hooks/use-graph-context-notice';
-import { CreditsOverlay } from '@/components/credits-overlay';
 import { OnboardingTour } from '@/components/onboarding-tour';
 import { InstallPrompt } from '@/components/install-prompt';
 import { LiveAnnouncer } from '@/components/live-announcer';
@@ -49,8 +49,6 @@ export default function AuthenticatedLayout({
   const shortcutsOpen = useUIStore((s) => s.shortcutsOpen);
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen);
   const toggleShortcuts = useUIStore((s) => s.toggleShortcuts);
-  const [creditsOpen, setCreditsOpen] = useState(false);
-
   const isMobile = useIsMobile();
   const isTablet = useIsTablet();
   const mobileSidebarOpen = useUIStore((s) => s.mobileSidebarOpen);
@@ -106,9 +104,6 @@ export default function AuthenticatedLayout({
 
   // Redirect unauthenticated users - runs client-side only
   useEffect(() => {
-    // React StrictMode double-invokes effects. The `cancelled` flag ensures
-    // only the final (active) invocation acts - the first run's callback is
-    // a no-op once cleanup fires, so the gate and prime() fire exactly once.
     let cancelled = false;
 
     const prime = () => {
@@ -135,21 +130,12 @@ export default function AuthenticatedLayout({
       if (!pmStore.fetched) {
         pmStore.fetchMetrics();
       }
+      const INSTR_FRESH_MS = 30_000;
+      const instrStore = useInstructionsStore.getState();
+      if (now - (instrStore.lastFetched || 0) > INSTR_FRESH_MS) {
+        instrStore.fetchInstructions();
+      }
     };
-
-    // If a login is in-flight (optimistic navigation from the login page),
-    // wait for it to complete before checking auth. Clear the gate only
-    // inside the callback so the second StrictMode run still finds it.
-    const gate = getLoginGate();
-    if (gate) {
-      gate.then(() => {
-        if (cancelled) return;
-        setLoginGate(null);
-        if (!isAuthenticated()) { router.replace('/'); return; }
-        prime();
-      });
-      return () => { cancelled = true; };
-    }
 
     if (!isAuthenticated()) { router.replace('/'); return; }
     prime();
@@ -217,25 +203,7 @@ export default function AuthenticatedLayout({
     },
   });
 
-  // Easter eggs: Konami code + Cmd+Shift+B Milestone facts
   useEffect(() => {
-    // Konami: ↑↑↓↓←→←→BA
-    const KONAMI = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
-    let konamiPos = 0;
-    let konamiTimer: ReturnType<typeof setTimeout> | null = null;
-
-    // Milestone facts for Cmd+Shift+B
-    const MTI_FACTS = [
-      '🚀 Milestone Technologies has been powering smarter IT since 1997',
-      '🌍 Milestone operates in 36 countries across 6 continents',
-      '🏢 Headquartered in Fremont, California - the heart of Silicon Valley',
-      '👥 3500+ employees delivering IT services and digital solutions at scale',
-      '🏆 Great Place to Work certified in the USA, India, Ireland, the Philippines, the UK and Mexico',
-      '🤖 Milestone specializes in AI/Automation, Cloud Infrastructure, and Application Services',
-      '🤝 Trusted by 200+ of the world\'s leading companies to deliver technology at scale',
-      '💡 Sameer Kishore was appointed CEO in 2020, driving Milestone\'s next era of growth',
-    ];
-
     const handler = (e: KeyboardEvent) => {
       const isCmdMod = navigator.platform.toUpperCase().indexOf('MAC') >= 0 ? e.metaKey : e.ctrlKey;
 
@@ -252,34 +220,11 @@ export default function AuthenticatedLayout({
         return;
       }
 
-      // Skip if user is typing in an input (only matters for the easter
-      // eggs / nav shortcuts below - Cmd+/ is handled above unconditionally).
+      // Skip if user is typing in an input
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-      // Konami code detection
-      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-      if (key === KONAMI[konamiPos]) {
-        konamiPos++;
-        if (konamiTimer) clearTimeout(konamiTimer);
-        konamiTimer = setTimeout(() => { konamiPos = 0; }, 3000);
-        if (konamiPos === KONAMI.length) {
-          konamiPos = 0;
-          setCreditsOpen(true);
-        }
-      } else if (key === KONAMI[0]) {
-        konamiPos = 1; // restart from first match
-      } else {
-        konamiPos = 0;
-      }
-
       const isCmd = navigator.platform.toUpperCase().indexOf('MAC') >= 0 ? e.metaKey : e.ctrlKey;
-
-      // Cmd+Shift+B → Milestone fact
-      if (isCmd && e.shiftKey && (e.key === 'B' || e.key === 'b')) {
-        e.preventDefault();
-        toast.info(MTI_FACTS[Math.floor(Math.random() * MTI_FACTS.length)]);
-      }
 
       // Cmd+Shift+P → /projects
       if (isCmd && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
@@ -311,10 +256,7 @@ export default function AuthenticatedLayout({
     };
 
     window.addEventListener('keydown', handler);
-    return () => {
-      window.removeEventListener('keydown', handler);
-      if (konamiTimer) clearTimeout(konamiTimer);
-    };
+    return () => { window.removeEventListener('keydown', handler); };
   }, []);
 
   if (!authChecked) {
@@ -407,7 +349,6 @@ export default function AuthenticatedLayout({
 
       <SearchModal />
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
-      <CreditsOverlay open={creditsOpen} onClose={() => setCreditsOpen(false)} />
       <OnboardingTourGate />
       <InstallPrompt />
       <LiveAnnouncer />

@@ -161,6 +161,7 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
                             "query_summary": relaxed_summary.model_dump(),
                             "no_data": False,
                             "zero_row_probe_result": probe_result.get("reason"),
+                            "zero_row_probe_type": probe_type,
                             "reliability_flags": [retry_flag],
                             "error": None,
                             "execution_error": None,
@@ -224,17 +225,26 @@ async def executor(state: AnalyticsState, config: RunnableConfig) -> dict:
     }
 
 
+_CHART_MAX_ROWS = 2000
+
+
 async def _execute_single(sql: str, ir_dict: dict, state: AnalyticsState, timeout_s: int, max_rows: int = 100) -> dict:
     from app.services.agents.redshift_client import execute_query
 
-    probe_sql = _apply_row_limit(sql, max_rows + 1)
+    # Fetch enough for both table display (max_rows) and chart (CHART_MAX_ROWS).
+    # Single query, two slices — no extra Redshift round-trip.
+    fetch_limit = max(max_rows, _CHART_MAX_ROWS) + 1
+    probe_sql = _apply_row_limit(sql, fetch_limit)
     columns, rows_raw = await execute_query(probe_sql, timeout_s=timeout_s, thread_id=state["thread_id"])
 
     was_truncated = len(rows_raw) > max_rows
     rows = _make_rows_json_safe(rows_raw[:max_rows])
+    # chart_rows: extended slice for visualization; None when not needed
+    chart_rows = _make_rows_json_safe(rows_raw[:_CHART_MAX_ROWS]) if was_truncated else None
     logger.info(
-        "executor | probe | thread={} rows_fetched={} was_truncated={}",
+        "executor | probe | thread={} rows_fetched={} was_truncated={} chart_rows={}",
         state.get("thread_id"), len(rows_raw), was_truncated,
+        len(chart_rows) if chart_rows else "n/a",
     )
 
     true_stats, stats_source = None, "capped"
@@ -252,6 +262,7 @@ async def _execute_single(sql: str, ir_dict: dict, state: AnalyticsState, timeou
     return {
         "columns": columns,
         "rows": rows,
+        "chart_rows": chart_rows,
         "was_truncated": was_truncated,
         "true_stats": true_stats,
         "stats_source": stats_source,
