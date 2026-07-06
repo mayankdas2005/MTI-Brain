@@ -382,10 +382,10 @@ html[data-density="compact"] {
   }
 }
 
-/* Print stylesheet for the "Export as PDF" flow. Hides chrome (sidebar,
-   topbar, composer, action affordances), forces a light theme so dark
-   mode doesn't waste toner, and lets code blocks wrap so long lines
-   aren't truncated by the page edge. */
+/* Print stylesheet for native browser printing (Ctrl/Cmd+P) of the live
+   chat page. Hides chrome (sidebar, topbar, composer, action affordances),
+   forces a light theme so dark mode doesn't waste toner, and lets code
+   blocks wrap so long lines aren't truncated by the page edge. */
 @media print {
   :root {
     color-scheme: light;

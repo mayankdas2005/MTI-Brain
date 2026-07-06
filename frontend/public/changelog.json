@@ -1,5 +1,16 @@
 [
   {
+    "version": "2026.07.06",
+    "date": "2026-07-06",
+    "entries": [
+      {
+        "type": "new",
+        "title": "Export conversations as Markdown",
+        "body": "Conversation export now produces a Markdown file. One click from the export button (or Ctrl/Cmd+Shift+E) downloads the full thread with each question, the AI's reasoning trace, the generated SQL, and the final answer — structured with headings so it drops cleanly into docs, tickets, or review tools."
+      }
+    ]
+  },
+  {
     "version": "2026.06.24",
     "date": "2026-06-24",
     "entries": [

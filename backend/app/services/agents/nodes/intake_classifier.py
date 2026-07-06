@@ -215,11 +215,24 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
     result = await _call_llm(prompt, config)
     question_type, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent = _parse_intake(result)
 
+    # Backstop: a genuine data-dependent follow-up must never resolve to general_chat,
+    # regardless of how the LLM classified surface phrasing (e.g. "explain"/"why").
+    if is_followup and prior_analytics and question_type == "general_chat":
+        logger.info(
+            "intake_classifier | followup_override | general_chat -> analytics | thread={}",
+            state["thread_id"],
+        )
+        question_type = "analytics"
+
     # Derive query_type from structured query_intent signals
     query_type = _derive_query_type(query_intent)
 
-    # Combine current search_terms with prior turn's terms for follow-up queries
-    prior_search_terms = list(state.get("search_terms") or [])
+    # Combine current search_terms with the IMMEDIATELY PRECEDING turn's own terms only.
+    # Read from `_own_search_terms` (that turn's fresh, pre-merge terms), never from
+    # `search_terms` (which is itself already a merged/accumulated value) — otherwise stale
+    # terms from many turns ago ride along indefinitely across an entire thread, since each
+    # turn's merge output becomes the next turn's "prior" input with no decay or turn-scoping.
+    prior_search_terms = list(state.get("_own_search_terms") or [])
     combined_search_terms = _combine_search_terms(search_terms, prior_search_terms, is_followup)
 
     # Await feedback retrieval
@@ -242,6 +255,7 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
         "query_type": query_type,
         "entity_tokens": entity_tokens or None,
         "search_terms": combined_search_terms or None,
+        "_own_search_terms": search_terms or None,
         "search_variants": search_variants or entity_tokens or None,
         "query_intent": query_intent or None,
         "specialist_outputs": [{"__reset__": True}],

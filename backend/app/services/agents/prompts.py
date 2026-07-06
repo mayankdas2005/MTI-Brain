@@ -427,6 +427,11 @@ is_followup=true. Consider the full semantic meaning, not just surface keywords.
 TIEBREAKER: When ambiguous, default to "analytics". A failed query returns "no data found"; a misclassified
 data question silently disappears.
 
+FOLLOW-UP OVERRIDE: If is_followup=true and the question depends on entities, results, or figures established
+in the conversation context (e.g. "these suppliers", "that account", "those transactions") to be answered
+correctly, set type="analytics" — even if the question is phrased with explanatory verbs like "explain",
+"why", or "identify the reason". Surface phrasing does not override a genuine data dependency on the prior turn.
+
 Respond with ONLY the JSON inside an <output> block. No explanation, no preamble.
 
 <output>
@@ -755,6 +760,8 @@ IMPLICIT DIMENSION RULE — include context columns users expect to see in outpu
    Add a cte_steps entry describing the delta: "compute variance = X - Y".
 NOTE: Named entity filters (JPMorgan, USD) are RESTRICT signals — they go in filters[], NOT dimensions.
   dimension_specialist handles PARTITION signals ("by bank", "per currency").
+  Exception: a currency mentioned only as the desired output/reporting unit (e.g. "total in USD")
+  is NOT a restrict signal — do not filter or treat it as an entity; it is handled by FX conversion.
 
 ---
 
@@ -1122,6 +1129,17 @@ STALE-DATA FALLBACK: If the original SQL uses an OR MAX pattern, replace it with
     WITH _anchor AS (SELECT LEAST(CURRENT_DATE, (SELECT MAX(col)::DATE FROM tbl)) AS ref)
     WHERE col >= DATEADD(day, -60, _anchor.ref) AND col <= _anchor.ref
   The OR expands the dataset; the LEAST anchor restricts correctly with both an upper and lower bound.
+
+EMPTY OR MALFORMED CTE BODY: If the error reports a missing required keyword inside a CTE
+definition (e.g. "Required keyword: 'this' missing for CTE"), or the broken SQL shows a CTE with
+an empty or incomplete body (e.g. `WITH fx_anchor AS ()` or `fx_anchor AS (` with no SELECT), the
+CTE was truncated or left empty during generation. Do NOT guess a body from nothing. Instead:
+  1. If an FX CTE TEMPLATE section is provided below and the empty CTE is named fx_anchor or
+     fx_latest, replace it with the exact corresponding CTE from that template.
+  2. Otherwise, if the CTE's purpose can't be inferred from its name and downstream references,
+     emit `-- UNRESOLVED CTE: <cte_name> — malformed/empty body, cannot reconstruct without
+     template` and remove all downstream references to that CTE's exports from the rest of the
+     query (do not leave dangling references to a CTE that no longer exists).
 
 ERROR TO FIX: {error_message}
 BROKEN SQL: {original_sql}
@@ -1548,7 +1566,16 @@ When a Rule conflicts with the CTE CONTRACT (3): the contract wins on STRUCTURE 
 export aliases), but Rules win on CORRECTNESS (computation method, dead CTEs).
 
 If any input from 1-5 conflicts with a lower-numbered source: the higher-numbered source wins.
-Never invent a JOIN, filter, or column not traceable to a source in 1-5.
+Never invent a JOIN, filter, or column not traceable to a source in 1-5. This includes never
+fabricating a derived classification, segmentation, or exclusion rule to stand in for a business
+concept that has no schema support — see S3e.
+
+MINIMALITY: never add a table, column, join, or filter beyond what the directives above actually
+require. Each unnecessary addition is a live failure risk, not a harmless extra: an unneeded JOIN
+on a bad or NULL key silently zeroes out every row, an unneeded join to a different-grain table
+multiplies rows, and either failure mode typically forces one or more repair cycles to undo. If a
+table/column/filter isn't traceable to a source in 1-5, leaving it out is always safer than
+including it "just in case."
 
 --- STRUCTURE RULES ---
 
@@ -1643,6 +1670,39 @@ S3c. NEVER infer or guess enum values for a column by analogy from other columns
      -- UNRESOLVED FILTER: <table.column> — no known values in schema; cannot apply filter
    Example violation: lpp.bank.risk_tier_ref has TIER_1/TIER_2 but that does NOT authorise
    using category_code = 'TIER_2' on a different table — those are unrelated columns.
+S3e. NO PROXY LOGIC FOR UNRESOLVED CONCEPTS — ABSOLUTE: If the QUERY DIRECTIVE / CONTEXT section
+   contains an unresolved SCHEMA_GAP_CONCEPT needed for a filter, exclusion, or segmentation the
+   user asked about, do NOT invent a substitute rule using an unrelated column, string pattern, or
+   naming convention as a stand-in for that concept — even if it produces plausible-looking results.
+   A fabricated proxy presented as fact is worse than omitting the logic. Instead:
+     a. Omit that specific piece of filter/CASE/segmentation logic from the SQL entirely.
+     b. Emit one comment line per unresolved concept, placed near the omission:
+        -- UNRESOLVED CONCEPT: <concept identifier> — <why: no schema column/table supports this>
+     c. Continue building the rest of the query normally around the omission.
+   Example violation: user asks to exclude suppliers with "contract lock-in"; no contract/supplier
+   master table exists.
+     WRONG:   CASE WHEN vendor_ref LIKE 'TP_CAPEX%' THEN 'Contract lock-in' ELSE 'Open' END
+     CORRECT: -- UNRESOLVED CONCEPT: contract_lock_in — no contract/supplier master table in
+              schema; cannot determine lock-in status. Exclusion omitted.
+   A fluent-sounding CASE expression is not evidence the underlying business rule is real.
+S3f. UNRESOLVED OUTPUT COLUMN — MANDATORY COMMENT: If a requested SELECT-list column corresponds to
+   a business concept with no schema support (e.g. supplier_name, exclusion_reason, exclusion_flag
+   when no supplier master/contract table exists), you may still include it as a typed NULL
+   placeholder so the output shape matches what was asked for — but you MUST pair every such
+   column with a comment immediately above or beside it:
+     -- UNRESOLVED CONCEPT: <alias> — <why: no schema column/table supports this>
+   A silent `CAST(NULL AS <type>) AS <alias>` with no comment is a violation of this rule even
+   though it satisfies output-shape completeness — the comment is what allows the answer to
+   surface the gap to the user. Never emit an unexplained NULL placeholder.
+S3g. TRACEABLE BUSINESS CONSTANTS: when a computation depends on a numeric value implied by a named
+   term from the user's question or a standing instruction (e.g. "Net-30" = 30 days, "Net-90" = 90
+   days, a stated interest rate, a named threshold) rather than a value read from a schema column,
+   never emit the final result as a bare literal (e.g. `60 AS benefit_duration_days`). Show the
+   arithmetic explicitly with a comment naming the source terms:
+     (90 - 30) AS benefit_duration_days -- NET_90 (90 days) minus NET_30 (30 days), per renegotiation scenario
+   This keeps the derivation auditable even though the underlying terms are not stored as numbers
+   anywhere in the schema — a bare number with no derivation is indistinguishable from a fabricated
+   one to anyone reviewing the SQL.
 S3d. NULL-SAFE JOIN KEYS — for EVERY table involved in any JOIN (fact, dimension, bridge, hub, cross-domain):
    In the CTE that reads from that table, add WHERE <join_column> IS NOT NULL before the JOIN.
    A NULL join key silently drops every row from the JOIN — producing 0 results with no error, on ANY table type.
@@ -1889,6 +1949,14 @@ RULES:
     the data, prefix with "May indicate:" rather than stating it as fact. Never describe data issues as
     "pipeline failure", "system failure", or "processing failure" — use "data mapping gap", "missing data
     linkage", "data configuration issue", or simply "data gap".
+    IDENTIFIER PREFIX RULE — HEDGING DOES NOT LICENSE THIS: never infer a business category, role, or
+    classification (e.g. "landlord," "regulated utility," "strategic vendor," "lease agreement") from an
+    identifier's prefix, substring, or naming convention (e.g. TP_LAND_, TP_UTIL_, TP_IT_) unless that
+    exact mapping is given in the column's code_mappings or description in the data profile. This applies
+    even under hedged language ("may indicate," "could suggest") — a hedge softens the confidence of a
+    claim, it does not license inventing a claim with zero schema basis. If a field needed to answer a
+    categorization question (e.g. supplier_name, industry, contract type) is entirely NULL, state that as
+    a data gap (see data_gaps) — do not substitute an inferred value derived from the identifier string.
 - urgency per finding — CLASSIFICATION CRITERIA:
     "immediate": a threshold is breached, a balance is negative, or a deadline is within 48 hours.
     "watch":     a metric is within 20% of a threshold, a trend is deteriorating over 3+ periods, or data is stale.
@@ -1898,6 +1966,8 @@ RULES:
     or "at current burn rate, balance reaches zero in N weeks"). Leave null if no trend or threshold
     proximity exists in the data — do not speculate.
 - data_gaps: only populate if a column is all-NULL or a key field is missing that would change the analysis.
+    Any "Data limitation: ..." line above (in the quality/flag context) MUST be copied into data_gaps
+    verbatim — these are code-verified gaps from SQL generation, not something to re-derive or omit.
 - staleness_note: populate only if TEMPORAL CONTEXT shows data older than 30 days. Format: "Positions as of [date], [N] days old."
 - truncation_count: when the data profile includes "TRUNCATION WARNING" with true total M and display cap N, every row-count reference must say "top N of M" (e.g. "top 100 of 249 vendors"), not "M vendors" — users see only the capped rows in the data table.
 - follow_up_paths: 3 short questions (≤12 words each) tailored to the PERSONA above.
@@ -1924,11 +1994,15 @@ SELF-CHECK before emitting insights:
    group-level subtotal). Ask: "Does this number appear as a cell value in DATA SAMPLE or as a column
    stat?" If not, delete it. You are NOT permitted to compute totals in your head, even if the arithmetic
    seems straightforward. The SQL already computed everything the user needs — trust the cells.
+   If a VERIFIED TOTALS block appears at the top of the data profile, it was computed in code, not by
+   you — any total/sum you report for that same metric MUST match the VERIFIED TOTALS value exactly.
+   Never state a total that differs from VERIFIED TOTALS, and never derive your own total when one is
+   already provided there.
 3. SCALE CHECK: Scan every number in your JSON output. If any number contains an abbreviation (M, B, K, T)
    or appears larger/smaller than the source cell by a factor of 1000+, you applied illegal scaling —
    rewrite it as the exact raw value from the data. 948,541.40 must appear as 948541.40, not 948.5M.
 4. TREND GATE: Do not describe a trend from fewer than 3 data points. Two values is a comparison, not a trend.
-5. IMPLICATION CHECK: Does each "implication" follow logically from the observation, or does it require outside knowledge? If it requires inference beyond the data, hedge it ("may indicate", "warrants investigation") rather than stating it as fact.
+5. IMPLICATION CHECK: Does each "implication" follow logically from the observation, or does it require outside knowledge? If it requires inference beyond the data, hedge it ("may indicate", "warrants investigation") rather than stating it as fact. A hedge word never licenses a category/classification invented from an identifier's prefix or naming pattern (see IDENTIFIER PREFIX RULE above) — that class of claim must be omitted entirely, not hedged.
 
 {deep_analysis_extraction}
 
@@ -2522,6 +2596,15 @@ LESS IS MORE: Only generate a chart when it adds clear insight over reading the 
 If the data does not lend itself to a meaningful chart (raw detail rows, too many dimensions,
 no clear pattern to visualize), output chart_confidence: 0 — do not force a chart.
 
+GROUNDING — ABSOLUTE: Your job is chart mechanics only (type, columns, axes, sort, aggregation).
+Never infer or state a business category, industry, vendor type, or real-world entity identity
+from a code/identifier value (e.g. do not read "TP_LOGI_0036" as "a logistics company" or invent
+that it might be "Maersk" or "FedEx" — those names do not appear in the data and inventing them is
+a hallucination, not a chart decision). Treat every identifier as an opaque label: fine to use as
+an axis category or color key, never fine to explain, classify, or attach real-world meaning to.
+This applies even in your own <reasoning> — reasoning about data shape/grouping must stay
+mechanical (distinct counts, value ranges, column types), not narrative business interpretation.
+
 PERSONA: {persona}
 Persona chart preferences:
   executive  — single metric → kpi_card; trend → line; comparison → bar (max 5 categories)
@@ -2553,6 +2636,17 @@ DO NOT USE: dual_axis (confusing scales), bubble (adds size dimension that is ra
   heatmap (use grouped_bar or bar instead), pie (donut is always better). These chart types are not available.
 
 ---
+
+ONE CHART PER CALL — MANDATORY: This call produces exactly ONE primary chart_type. The
+alternative_types you list are different renderings of the SAME chart intent (e.g. bar vs. line
+for the same x/y), not a second, independent chart answering a different part of the question.
+If the question implies two genuinely distinct visual outputs (e.g. "what's the total benefit" +
+"which suppliers should be excluded" — a KPI summary AND a separate filtered ranking), you cannot
+produce both here. Pick the ONE that most directly answers the question's primary ask (the part
+phrased as the main question, not a secondary "also identify..." clause), commit to it fully, and
+score its confidence on its own merits. Wanting a second chart is never a reason to output
+chart_confidence: 0 for the first one — "I'd also like a second chart" and "no chart here adds
+insight" are different, unrelated conditions; do not let the former collapse into the latter.
 
 NO CHART: Output chart_confidence: 0 when:
   • The result is raw detail rows with no aggregation pattern
@@ -2629,6 +2723,8 @@ CHART CONFIDENCE (start 100, deduct):
 2. Persona "{persona}": which preference rule applies here?
 3. Data shape: identify date cols, string cols, numeric cols from the profile above. For any column with "⚠ Display rows only:", record the display distinct count — that is what can actually be plotted.
 4. No-chart check: does this data benefit from visualization? If not, state why and output confidence 0.
+   If you find yourself wanting to propose two separate charts for two parts of the question, stop —
+   pick the one serving the primary ask (see ONE CHART PER CALL above) and proceed with only that one.
 5. x_column: which column, what x_column_type — justify from actual sample values. If "⚠ Display rows only:" is present for this column, use its distinct count for chart type selection.
 6. y_column: which numeric measure best answers the question?
 7. color_column: is there a meaningful series dimension? null for single series.
@@ -3070,6 +3166,9 @@ SELF-CHECK before outputting anchor_tables:
    (b) A date column (see "dates:" line) NOT present in already-selected tables, OR
    (c) A specific dimension or filter column explicitly named in the question or intent.
    If none of (a), (b), (c) apply: REMOVE the table. Shared domain alone is NOT justification.
+   Every unnecessary table you keep is a live risk downstream: an unjustified join can zero out
+   every row (a bad join key drops the whole result), multiply rows (grain mismatch), or force
+   multiple repair cycles when the join can't be resolved. When in doubt, leave it out.
 2. PERIODIC TABLE RULE: Read the "grain:" line for each table carefully.
    A grain like "one row per company per reporting date", "one row per account per month",
    or "one row per entity per period" means the table stores pre-aggregated data — NOT one row per event.
@@ -3234,7 +3333,9 @@ Your single failure mode to avoid: emitting a WHERE clause with a value you inve
 You identify FILTER CONDITIONS from the user's question.
 
 FILTER — restricts which rows enter the result (WHERE clause).
-  Signal: "only X", "for X", "at X", "where X is Y", named entities, currency codes.
+  Signal: "only X", "for X", "at X", "where X is Y", named entities, currency codes (only when
+  restricting to a named currency subset — see OUTPUT-CURRENCY EXCLUSION below; not when the
+  currency is just the desired output/reporting unit).
   Includes numeric thresholds that EXCLUDE rows: "only accounts over $1M" -> WHERE balance > 1000000.
 
 THRESHOLD — flags rows without removing them (CASE WHEN or HAVING flag).
@@ -3255,6 +3356,23 @@ IMPLICIT DATA QUALITY DEFAULT rule:
   Do NOT apply if: the description is ambiguous, the column purpose is unclear, or the question
   explicitly asks for all states or uses words that override the default.
   This applies to any domain — cash, payments, positions, orders, or anything else.
+
+  OUTPUT-CURRENCY EXCLUSION (applies to the rule above): a currency code is NEVER a default-filter
+  candidate on the basis that it's the standard/expected reporting currency for a monetary metric
+  (e.g. "amount in USD", "total... in dollars", "USD benefit"). That is an OUTPUT/DISPLAY
+  requirement — it is satisfied by FX conversion (see FX RATE RULE), not by a WHERE filter, and
+  doing so would silently drop every non-matching-currency row instead of converting it. Only emit
+  a currency_code filter when the user names a currency to RESTRICT the row set to (e.g.
+  "EUR-denominated accounts", "our USD accounts only", "for the JPY portfolio") — i.e. the currency
+  identifies a named subset of rows, not the unit the final number should be expressed in. When in
+  doubt (a bare mention of "USD"/"dollars" with no restrictive phrasing like "only"/"denominated
+  in"/a named subset): do NOT filter.
+
+  TABLE-LEVEL EXCLUSION (applies to the rule above): never apply this rule to lpp.fx_rate.rate_type
+  or lpp.fx_rate.source. FX rate selection is handled entirely by a dedicated conversion template
+  (nearest-date lookup across rate types) that already picks the correct rate — it does not read a
+  rate_type/source filter, and adding one only removes rows the template needs, producing wrong or
+  zero results. Never emit a filter on these two columns for any reason.
 
 These are the FILTERABLE columns available:
 {filterable_columns_section}
@@ -3482,6 +3600,8 @@ Examples:
 "list all JPMorgan accounts" -> dimensions=[{{account_id}}, {{account_name}}]
 "total balance" -> dimensions=[] (single KPI — no grouping)
 "balance by currency for USD only" -> dimensions=[{{currency_code}}] (USD is a filter, handled separately)
+"total disputed invoices in USD" -> dimensions=[] (USD is just the output/reporting unit here, not a
+  named subset — no currency_code filter or dimension; handled by FX conversion)
 
 DEMO QUERIES:
 Q1 "total liquidity available today" -> dimensions=[] (single KPI)

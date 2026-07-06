@@ -1056,14 +1056,3 @@ export function MessageVisualization({
     </div>
   );
 }
-
-// Legacy export — used by PDF export utilities to grab the rendered chart canvas.
-export async function exportChartAsCanvas(container: HTMLElement, _title?: string): Promise<HTMLCanvasElement> {
-  const src = container.querySelector('canvas');
-  if (!src) throw new Error('No chart canvas found');
-  const dst = document.createElement('canvas');
-  dst.width  = src.width;
-  dst.height = src.height;
-  dst.getContext('2d')!.drawImage(src, 0, 0);
-  return dst;
-}
