@@ -108,5 +108,5 @@ graphify-out/
 # SSL certificates
 nginx/ssl/*.pem
 
-# Keys / secrets
+# Keys / secrets (JWT RSA keys, etc.)
 keys/

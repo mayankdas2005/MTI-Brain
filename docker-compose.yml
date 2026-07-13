@@ -9,6 +9,9 @@ services:
     container_name: mti-brain-backend
     restart: unless-stopped
     env_file: ./backend/.env
+    volumes:
+      - ./keys/jwt_private.pem:/app/keys/jwt_private.pem:ro
+      - ./keys/jwt_public.pem:/app/keys/jwt_public.pem:ro
     networks:
       - app_net
       - db_net
