@@ -154,6 +154,7 @@ export async function login(username: string, password: string, role: 'admin' | 
   const data = await apiFetch<{ token: string; user: User }>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password, role }),
+    credentials: 'include',
   });
   setStoredToken(data.token);
   setStoredUser(data.user);
@@ -173,6 +174,14 @@ export async function logout(): Promise<void> {
     }
   } catch {
     // Store import shouldn't fail, but if it does, proceed with logout.
+  }
+
+  // Revoke refresh token on the backend (best-effort)
+  try {
+    const { apiBase } = await import('./api/client');
+    await fetch(`${apiBase}/auth/logout`, { method: 'POST', credentials: 'include' });
+  } catch {
+    // Backend unreachable — still clear local state
   }
 
   clearStoredToken();
