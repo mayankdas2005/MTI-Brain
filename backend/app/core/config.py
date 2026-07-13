@@ -91,13 +91,18 @@ class Settings(BaseSettings):
     CB_RESET_TIMEOUT: int = Field(default=_cb.get("reset_timeout_seconds", 30))
 
     # ── JWT config (config.yml → auth) + secret (.env) ──────────────────────────
-    JWT_ALGORITHM: str = Field(default=_auth.get("jwt_algorithm", "HS256"))
+    JWT_ALGORITHM: str = Field(default=_auth.get("jwt_algorithm", "RS256"))
     JWT_EXPIRY_HOURS: int = Field(default=_auth.get("jwt_expiry_hours", 8))
+    JWT_ACCESS_TOKEN_MINUTES: int = Field(default=_auth.get("access_token_minutes", 15))
+    JWT_REFRESH_TOKEN_DAYS: int = Field(default=_auth.get("refresh_token_days", 7))
     JWT_SECRET: str = Field(..., min_length=32, repr=False)
+    JWT_PRIVATE_KEY_PATH: str = Field(default="")
+    JWT_PUBLIC_KEY_PATH: str = Field(default="")
 
     # ── Rate limiting (config.yml) ────────────────────────────────────────────
     RATE_LIMIT_LOGIN_PER_MINUTE: int = Field(default=_rl.get("login_per_minute", 5))
     RATE_LIMIT_ASK_PER_MINUTE: int = Field(default=_rl.get("ask_per_minute", 30))
+    RATE_LIMIT_ASK_PER_HOUR_USER: int = Field(default=_rl.get("ask_per_hour_user", 60))
 
     # ── AWS credentials (.env) ────────────────────────────────────────────────
     AWS_ACCESS_KEY_ID: str = Field(default="")
@@ -153,6 +158,8 @@ class Settings(BaseSettings):
     REDSHIFT_USER: str = Field(default="")
     REDSHIFT_PASSWORD: str = Field(default="", repr=False)
     REDSHIFT_PORT: int = Field(default=5439)
+    REDSHIFT_SSL_MODE: str = Field(default="require")
+    REDSHIFT_SCHEMA: str = Field(default="lpp", description="Redshift schema for analytics queries (lpp or apex)")
 
     # ── Redis (analytics pipeline) ────────────────────────────────────────────
     REDIS_HOST: str = Field(default="redis://localhost:6379")
@@ -222,7 +229,35 @@ class Settings(BaseSettings):
                 "DATABASE_SSL_MODE cannot be 'disable' in production. "
                 "Set DATABASE_SSL_MODE=require or verify-full."
             )
+        # Load RSA keys from PEM files if RS256 is configured
+        if self.JWT_ALGORITHM == "RS256":
+            if not self.JWT_PRIVATE_KEY_PATH or not self.JWT_PUBLIC_KEY_PATH:
+                raise ValueError(
+                    "JWT_PRIVATE_KEY_PATH and JWT_PUBLIC_KEY_PATH must be set when JWT_ALGORITHM=RS256"
+                )
+            priv_path = Path(self.JWT_PRIVATE_KEY_PATH)
+            pub_path = Path(self.JWT_PUBLIC_KEY_PATH)
+            if not priv_path.exists():
+                raise ValueError(f"JWT private key not found: {priv_path}")
+            if not pub_path.exists():
+                raise ValueError(f"JWT public key not found: {pub_path}")
+            object.__setattr__(self, "_jwt_private_key", priv_path.read_text())
+            object.__setattr__(self, "_jwt_public_key", pub_path.read_text())
         return self
+
+    @property
+    def jwt_signing_key(self) -> str:
+        """Key used to sign JWTs. RSA private key for RS256, shared secret for HS256."""
+        if self.JWT_ALGORITHM == "RS256":
+            return getattr(self, "_jwt_private_key", "")
+        return self.JWT_SECRET
+
+    @property
+    def jwt_verify_key(self) -> str:
+        """Key used to verify JWTs. RSA public key for RS256, shared secret for HS256."""
+        if self.JWT_ALGORITHM == "RS256":
+            return getattr(self, "_jwt_public_key", "")
+        return self.JWT_SECRET
 
     @property
     def DATABASE_URL(self) -> str:

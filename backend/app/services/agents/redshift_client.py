@@ -28,7 +28,7 @@ def _make_connection():
         user=settings.REDSHIFT_USER,
         password=settings.REDSHIFT_PASSWORD,
         port=getattr(settings, "REDSHIFT_PORT", 5439),
-        sslmode="disable",
+        sslmode=settings.REDSHIFT_SSL_MODE,
         keepalives=1,
         keepalives_idle=60,
         keepalives_interval=10,
