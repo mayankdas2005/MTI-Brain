@@ -26,12 +26,15 @@ server:
 
 
 auth:
-  jwt_algorithm: HS256
-  jwt_expiry_hours: 8
+  jwt_algorithm: RS256               # RS256 (asymmetric, recommended) or HS256 (symmetric, legacy)
+  jwt_expiry_hours: 8              # Legacy — kept for backward compat
+  access_token_minutes: 15         # Short-lived access token
+  refresh_token_days: 7            # Long-lived refresh token (stored in httpOnly cookie)
 
 rate_limit:
   login_per_minute: 5              # Max login attempts per IP per minute
   ask_per_minute: 30               # Max /ask, /retry, /edit requests per IP per minute
+  ask_per_hour_user: 60            # Max /ask, /retry, /edit requests per authenticated user per hour
 
 postgres:                            # PostgreSQL / PgBouncer connection settings
   port: 5432

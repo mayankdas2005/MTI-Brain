@@ -60,7 +60,7 @@ from app.schemas.chat import (
     ThreadSummary,
 )
 from app.core.config import settings
-from app.core.rate_limit import limiter
+from app.core.rate_limit import limiter, user_limiter
 from app.services.chat import conversation as conv_service
 from app.services.chat import feedback as fb_service
 from app.services.agents.nodes.audit import anti_pattern_merge_key
@@ -566,6 +566,7 @@ async def move_chat(
 
 @router.post("/{thread_id}/ask")
 @limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
+@user_limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_HOUR_USER}/hour")
 async def ask_question(
     request: Request,
     thread_id: uuid.UUID,
@@ -760,6 +761,7 @@ async def ask_question(
 
 @router.post("/{thread_id}/retry")
 @limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
+@user_limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_HOUR_USER}/hour")
 async def retry_response(
     request: Request,
     thread_id: uuid.UUID,
@@ -921,6 +923,7 @@ async def retry_response(
 
 @router.post("/{thread_id}/edit")
 @limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
+@user_limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_HOUR_USER}/hour")
 async def edit_question(
     request: Request,
     thread_id: uuid.UUID,
