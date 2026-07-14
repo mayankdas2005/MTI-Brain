@@ -29,8 +29,7 @@ def _breaker_status(breaker: pybreaker.CircuitBreaker) -> dict:
     return result
 
 
-@router.get("/health", summary="Readiness - can it serve traffic?")
-async def readiness(db: AsyncSession = Depends(get_read_session)):
+async def _check_readiness(db: AsyncSession) -> JSONResponse:
     pg, neo4j, redis = await asyncio.gather(
         check_postgres(db),
         check_neo4j(),
@@ -63,3 +62,18 @@ async def readiness(db: AsyncSession = Depends(get_read_session)):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+
+@router.get("/health/live", summary="Liveness - is the process running?")
+async def liveness():
+    return JSONResponse(status_code=200, content={"status": "alive"})
+
+
+@router.get("/health/ready", summary="Readiness - can it serve traffic?")
+async def readiness_probe(db: AsyncSession = Depends(get_read_session)):
+    return await _check_readiness(db)
+
+
+@router.get("/health", summary="Readiness - can it serve traffic?")
+async def readiness(db: AsyncSession = Depends(get_read_session)):
+    return await _check_readiness(db)
