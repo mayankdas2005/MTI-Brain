@@ -33,6 +33,7 @@ class AnalyticsState(TypedDict):
     persona: str                          # executive | analyst | manager — passed in from HTTP, NOT re-detected
     question: str
     effective_question: str             # full reconstructed intent: = question for normal, prior+current for refinements/follow-ups
+    user_role: str                        # "admin" or "user" — controls Redshift pool selection (admin=full, user=SELECT-only)
 
     # ── Routing ──────────────────────────────────────────────────────────────
     question_type: str                    # general_chat | analytics

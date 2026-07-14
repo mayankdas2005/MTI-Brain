@@ -4,6 +4,11 @@ Uses psycopg2 with a queue.Queue-based connection pool (size 10)
 so concurrent probe queries (context_fetcher) and actual query execution
 don't compete for connections.
 All queries use parameterized execution — never string interpolation.
+
+Two pools are maintained:
+  - _admin_pool: full privileges (REDSHIFT_USER) — for admin-role users
+  - _readonly_pool: SELECT-only (REDSHIFT_READONLY_USER) — for regular users
+If REDSHIFT_READONLY_USER is not configured, falls back to the admin pool.
 """
 
 from __future__ import annotations
@@ -17,16 +22,19 @@ from app.core.logger import logger
 from app.core.retry import is_transient
 
 _POOL_SIZE = 10
+_admin_pool: queue.Queue | None = None
+_readonly_pool: queue.Queue | None = None
+# Legacy alias — internal helpers (keepalive, schema fetch) use admin pool
 _connection_pool: queue.Queue | None = None
 
 
-def _make_connection():
+def _make_connection(user: str | None = None, password: str | None = None):
     import psycopg2
     return psycopg2.connect(
         host=settings.REDSHIFT_HOST,
         dbname=settings.REDSHIFT_DB,
-        user=settings.REDSHIFT_USER,
-        password=settings.REDSHIFT_PASSWORD,
+        user=user or settings.REDSHIFT_USER,
+        password=password or settings.REDSHIFT_PASSWORD,
         port=getattr(settings, "REDSHIFT_PORT", 5439),
         sslmode=settings.REDSHIFT_SSL_MODE,
         keepalives=1,
@@ -37,26 +45,45 @@ def _make_connection():
     )
 
 
+def _make_readonly_connection():
+    return _make_connection(
+        user=settings.REDSHIFT_READONLY_USER,
+        password=settings.REDSHIFT_READONLY_PASSWORD,
+    )
+
+
+async def _init_pool(conn_factory, pool_label: str) -> queue.Queue:
+    """Initialize a connection pool using the given factory."""
+    results = await asyncio.gather(
+        *[asyncio.to_thread(conn_factory) for _ in range(_POOL_SIZE)],
+        return_exceptions=True,
+    )
+    pool: queue.Queue = queue.Queue(maxsize=_POOL_SIZE)
+    ok = 0
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning("Redshift {} connection failed (skipping): {}", pool_label, r)
+        else:
+            pool.put_nowait(r)
+            ok += 1
+    if ok == 0:
+        raise RuntimeError(f"All Redshift {pool_label} connections failed during pool init")
+    logger.info("Redshift {} pool initialized | size={}/{} | host={}", pool_label, ok, _POOL_SIZE, settings.REDSHIFT_HOST)
+    return pool
+
+
 async def init_redshift() -> None:
-    """Initialize the Redshift connection pool — all connections opened in parallel."""
-    global _connection_pool
+    """Initialize the Redshift connection pools — admin and readonly."""
+    global _admin_pool, _readonly_pool, _connection_pool
     try:
-        results = await asyncio.gather(
-            *[asyncio.to_thread(_make_connection) for _ in range(_POOL_SIZE)],
-            return_exceptions=True,
-        )
-        pool: queue.Queue = queue.Queue(maxsize=_POOL_SIZE)
-        ok = 0
-        for r in results:
-            if isinstance(r, Exception):
-                logger.warning("Redshift connection failed (skipping): {}", r)
-            else:
-                pool.put_nowait(r)
-                ok += 1
-        if ok == 0:
-            raise RuntimeError("All Redshift connections failed during pool init")
-        _connection_pool = pool
-        logger.info("Redshift pool initialized | size={}/{} | host={}", ok, _POOL_SIZE, settings.REDSHIFT_HOST)
+        _admin_pool = await _init_pool(_make_connection, "admin")
+        _connection_pool = _admin_pool  # legacy alias
+
+        if settings.REDSHIFT_READONLY_USER:
+            _readonly_pool = await _init_pool(_make_readonly_connection, "readonly")
+        else:
+            logger.warning("Redshift REDSHIFT_READONLY_USER not configured — all queries use admin pool")
+            _readonly_pool = _admin_pool
     except Exception as e:
         logger.error("Redshift initialization failed: {}", e)
         raise
@@ -77,22 +104,25 @@ async def redshift_keepalive(interval_s: int = 60) -> None:
 
 
 async def close_redshift() -> None:
-    global _connection_pool
-    pool, _connection_pool = _connection_pool, None
-    if pool:
+    global _admin_pool, _readonly_pool, _connection_pool
+    # Close both pools (deduplicated — readonly may be aliased to admin)
+    pools_to_close = {id(p): p for p in [_admin_pool, _readonly_pool] if p}
+    _admin_pool = _readonly_pool = _connection_pool = None
+    for pool in pools_to_close.values():
         while not pool.empty():
             try:
                 conn = pool.get_nowait()
                 conn.close()
             except Exception:
                 pass
-        logger.info("Redshift pool closed")
+    logger.info("Redshift pools closed")
 
 
-def _get_pool() -> queue.Queue:
-    if not _connection_pool:
+def _get_pool(readonly: bool = False) -> queue.Queue:
+    pool = _readonly_pool if readonly else _admin_pool
+    if not pool:
         raise RuntimeError("Redshift not initialized — call init_redshift() first.")
-    return _connection_pool
+    return pool
 
 
 def _run_cursor(conn, sql: str, params: list | None) -> tuple[list[str], list[list]]:
@@ -112,7 +142,7 @@ def _run_cursor(conn, sql: str, params: list | None) -> tuple[list[str], list[li
         cursor.close()
 
 
-def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60, quiet: bool = False) -> tuple[list[str], list[list]]:
+def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60, quiet: bool = False, readonly: bool = False) -> tuple[list[str], list[list]]:
     """Borrow a connection from the pool, execute, return it. Runs in a thread.
 
     On timeout / stale connection / broken pipe: reconnects and retries up to
@@ -120,8 +150,10 @@ def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60, qui
     The finally block guarantees the connection is always returned or replaced —
     no pool slots are permanently leaked on any error path.
     quiet=True suppresses SQL preview and query OK logs (used by keepalive pings).
+    readonly=True uses the read-only pool (SELECT-only DB user).
     """
-    pool = _get_pool()
+    pool = _get_pool(readonly=readonly)
+    _reconnect_factory = _make_readonly_connection if readonly else _make_connection
     try:
         conn = pool.get(timeout=timeout_s)
     except queue.Empty:
@@ -157,7 +189,7 @@ def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60, qui
                     except Exception:
                         pass
                     try:
-                        conn = _make_connection()
+                        conn = _reconnect_factory()
                     except Exception as conn_err:
                         logger.error("redshift | reconnect failed | error={}", conn_err)
                         raise conn_err
@@ -187,7 +219,7 @@ def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60, qui
             except Exception:
                 pass
             try:
-                pool.put_nowait(_make_connection())
+                pool.put_nowait(_reconnect_factory())
             except Exception:
                 pass  # Pool one short; next successful query restores it
 
@@ -262,16 +294,18 @@ async def execute_query(
     params: list | None = None,
     timeout_s: int = 60,
     thread_id: str = "",
+    readonly: bool = True,
 ) -> tuple[list[str], list[list]]:
     """Execute a parameterized SQL query on Redshift.
 
     Returns (columns, rows). All values in rows are Python primitives.
     Raises on execution error — caller decides how to handle.
+    readonly=True (default) uses the SELECT-only pool for defense-in-depth.
     """
     t0 = time.monotonic()
     try:
         columns, rows = await asyncio.wait_for(
-            asyncio.to_thread(_execute_sync, sql, params, timeout_s),
+            asyncio.to_thread(_execute_sync, sql, params, timeout_s, False, readonly),
             timeout=timeout_s + 5,
         )
         elapsed_ms = (time.monotonic() - t0) * 1000

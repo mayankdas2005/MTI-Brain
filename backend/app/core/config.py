@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     REDSHIFT_SSL_MODE: str = Field(default="require")
     REDSHIFT_SCHEMA: str = Field(default="lpp", description="Redshift schema for analytics queries (lpp or apex)")
 
+    # ── Redshift read-only (regular users — SELECT only) ─────────────────────
+    REDSHIFT_READONLY_USER: str = Field(default="")
+    REDSHIFT_READONLY_PASSWORD: str = Field(default="", repr=False)
+
     # ── Redis (analytics pipeline) ────────────────────────────────────────────
     REDIS_HOST: str = Field(default="redis://localhost:6379")
     REDIS_PASSWORD: str = Field(default="", repr=False)
