@@ -28,11 +28,11 @@ _readonly_pool: queue.Queue | None = None
 _connection_pool: queue.Queue | None = None
 
 
-def _make_connection(user: str | None = None, password: str | None = None):
+def _make_connection(user: str | None = None, password: str | None = None, dbname: str | None = None):
     import psycopg2
     return psycopg2.connect(
         host=settings.REDSHIFT_HOST,
-        dbname=settings.REDSHIFT_DB,
+        dbname=dbname or settings.REDSHIFT_DB,
         user=user or settings.REDSHIFT_USER,
         password=password or settings.REDSHIFT_PASSWORD,
         port=getattr(settings, "REDSHIFT_PORT", 5439),
@@ -49,6 +49,7 @@ def _make_readonly_connection():
     return _make_connection(
         user=settings.REDSHIFT_READONLY_USER,
         password=settings.REDSHIFT_READONLY_PASSWORD,
+        dbname="readonly",
     )
 
 
