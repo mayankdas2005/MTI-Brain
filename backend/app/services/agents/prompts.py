@@ -515,7 +515,9 @@ Other examples:
     ("human", """Conversation context:
 {conversation_context}
 
-User question: "{question}"
+<user_question>
+{question}
+</user_question>
 """),
 ])
 
@@ -563,7 +565,9 @@ your response here
 The <follow_ups> block: exactly 3 direct queries the user might naturally ask next.
 If the message is a greeting or capability question, suggest 3 analytics topics to explore."""
 
-GENERAL_CHAT_HUMAN = """User: {question}"""
+GENERAL_CHAT_HUMAN = """<user_question>
+{question}
+</user_question>"""
 
 GENERAL_CHAT_PROMPT = ChatPromptTemplate.from_messages([
   ("system", GENERAL_CHAT_SYSTEM),
@@ -856,7 +860,10 @@ Leave both arrays empty [] when not explicitly requested.
 }}
 </output>"""
 
-INTENT_RESOLVE_HUMAN = """USER QUESTION: {question}"""
+INTENT_RESOLVE_HUMAN = """USER QUESTION:
+<user_question>
+{question}
+</user_question>"""
 
 INTENT_RESOLVE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", INTENT_RESOLVE_SYSTEM),
@@ -878,7 +885,10 @@ Ask ONE specific, concise question. No reasoning, no explanation, no preamble.
 one targeted question here
 </question>"""
 
-CLARIFICATION_HUMAN = """The user asked: "{question}"""
+CLARIFICATION_HUMAN = """The user asked:
+<user_question>
+{question}
+</user_question>"""
 
 CLARIFICATION_PROMPT = ChatPromptTemplate.from_messages([
   ("system", CLARIFICATION_SYSTEM),
@@ -916,7 +926,10 @@ One sentence: which numbered entry matches (by direct match or meaning label) an
 
 FILTER_DISAMBIGUATE_HUMAN = """Column: {column_name}  in table: {table_fqn}
 User said: "{raw_user_value}"
-Context question: {question}
+Context question:
+<user_question>
+{question}
+</user_question>
 
 {entity_hint_section}
 Known database codes (numbered; business meanings shown in parentheses when available):
@@ -947,7 +960,10 @@ INTERVAL syntax with months/years is NOT supported — replace with DATEADD:
       If you must use json_extract_path_text: cast first: super_col::varchar
       How to detect SUPER type: the schema will show the column data_type as "super" (case-insensitive)
 
-USER QUESTION: {question}
+USER QUESTION:
+<user_question>
+{question}
+</user_question>
 
 {entity_tokens_section}
 
@@ -1251,7 +1267,10 @@ Treat the prescribed structure as your first-pass contract and fill in column ex
 DEAD CTE EXCEPTION: a prescribed CTE whose exports do NOT chain to FINAL SELECT must still
 be DROPPED — dead CTE prohibition overrides NAME LOCK.
 
-USER QUESTION: {question}
+USER QUESTION:
+<user_question>
+{question}
+</user_question>
 
 {query_intent_section}
 
@@ -1498,7 +1517,10 @@ Correct Redshift date arithmetic:
   DATE_TRUNC('month', date)  DATEDIFF(day, d1, d2)      GETDATE()
   CURRENT_DATE — ONLY inside the stale-data anchor pattern (S2); never standalone as a date boundary
 
-USER QUESTION: {question}
+USER QUESTION:
+<user_question>
+{question}
+</user_question>
 
 {cross_domain_section}
 
@@ -1816,7 +1838,10 @@ synthesis will misread the scale and amplify the error.
 Extract business insights from this financial data. Facts only. Every observation must quote a specific value from the data.
 PERSONA: {persona}
 
-QUESTION: {question}
+QUESTION:
+<user_question>
+{question}
+</user_question>
 
 {tribal_facts_section}
 
@@ -2409,7 +2434,10 @@ LANGUAGE RULES:
 
 ---
 
-QUESTION: {question}
+QUESTION:
+<user_question>
+{question}
+</user_question>
 
 {no_data_context}
 
@@ -2676,7 +2704,10 @@ CHART CONFIDENCE (start 100, deduct):
 }}
 </chart>"""
 
-CHART_AGENT_HUMAN = """QUESTION: {question}
+CHART_AGENT_HUMAN = """QUESTION:
+<user_question>
+{question}
+</user_question>
 
 QUERY INTENT:
 {query_intent}
@@ -2732,7 +2763,9 @@ COMPRESS_PROMPT = ChatPromptTemplate.from_messages([
 CONFIDENCE_JUDGE_PROMPT = """\
 You are verifying whether an analytical answer actually addresses the user's question.
 
-User question: {question}
+<user_question>
+{question}
+</user_question>
 
 Answer: {answer}
 
@@ -2782,7 +2815,9 @@ Examples:
   "CONFIRMED"         -> {{"operator":null}}"""
 
 TEMPORAL_RESOLVE_HUMAN = """{temporal_grain_hint}
-User question: {question}
+<user_question>
+{question}
+</user_question>
 Expression: {expression}"""
 
 TEMPORAL_RESOLVE_PROMPT = ChatPromptTemplate.from_messages([
@@ -2833,7 +2868,10 @@ NOTE: When the SQL uses an early-filter CTE structure (contains CTEs named match
   WINDOW_TOO_TIGHT       — data exists in broad window; exact date window is too narrow
 These result types are returned directly without an LLM call and without the JSON format above.
 
-USER QUESTION: {question}
+USER QUESTION:
+<user_question>
+{question}
+</user_question>
 ANCHOR TABLES: {anchor_tables}
 
 {entity_tokens_section}
@@ -2858,7 +2896,9 @@ You are a query specification extractor. Your ONLY job is to read the user's que
 and extract what they explicitly want to see in the output. You do NOT select tables, columns,
 or write SQL — that happens later with the actual database schema.
 
-User question: {question}
+<user_question>
+{question}
+</user_question>
 
 {available_tables_section}
 
@@ -2977,7 +3017,9 @@ Example intent patterns:
 
 ---
 
-User question: {question}
+<user_question>
+{question}
+</user_question>
 
 {query_intent_section}
 
@@ -3109,7 +3151,9 @@ These are the MEASURABLE columns available (numeric/amount types):
 {measurable_columns_section}
 
 {joinable_table_graph}
-User question: {question}
+<user_question>
+{question}
+</user_question>
 Intent summary: {intent_summary}
 {refinement_section}
 {query_plan_section}
@@ -3260,7 +3304,9 @@ These are the FILTERABLE columns available:
 {filterable_columns_section}
 
 {joinable_table_graph}
-User question: {question}
+<user_question>
+{question}
+</user_question>
 Intent summary: {intent_summary}
 {refinement_section}
 {query_plan_section}
@@ -3424,7 +3470,9 @@ These are the GROUPABLE columns available (non-numeric + date types):
 {groupable_columns_section}
 
 {joinable_table_graph}
-User question: {question}
+<user_question>
+{question}
+</user_question>
 Intent summary: {intent_summary}
 Measures already selected: {measures_summary}
 {refinement_section}

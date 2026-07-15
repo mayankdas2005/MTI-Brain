@@ -18,6 +18,7 @@ from app.core.langfuse_integration import (
     make_trace_public as _lf_make_public,
 )
 from app.core.logger import logger
+from app.core.prompt_guard import sanitize_question as _sanitize_q
 from app.services.agents.node_names import (
     NODE_MESSAGE,
     NODE_STREAM,
@@ -265,7 +266,7 @@ async def stream_pipeline(
         "user_id": user_id or "",
         "thread_id": thread_id,
         "persona": persona or "analyst",
-        "question": question,
+        "question": _sanitize_q(question),
         "user_role": kwargs.get("user_role") or "user",
         "needs_clarification": False,
         "clarification_count": 0,
