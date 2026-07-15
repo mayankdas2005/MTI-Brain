@@ -79,6 +79,7 @@ prompt_cache:
 
 feature_toggles:
   langfuse_enabled: true           # Enable Langfuse tracing and model usage tracking
+  langfuse_pii_scrubbing: true     # Scrub emails, phones, SSNs, card numbers from Langfuse traces
   data_quality_checker_enabled: false  # When true: runs after executor; output feeds confidence + synthesis
   confidence_score_enabled: false  # When true: runs after executor; output feeds confidence + synthesis
 

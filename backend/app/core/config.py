@@ -125,6 +125,7 @@ class Settings(BaseSettings):
     
     # ── Feature toggles (config.yml → feature_toggles) ───────────────────────
     LANGFUSE_ENABLED: bool = Field(default=_feature_toggles.get("langfuse_enabled", False))
+    LANGFUSE_PII_SCRUBBING: bool = Field(default=_feature_toggles.get("langfuse_pii_scrubbing", True))
     DATA_QUALITY_CHECKER_ENABLED: bool = Field(default=_feature_toggles.get("data_quality_checker_enabled", False))
     CONFIDENCE_SCORE_ENABLED: bool = Field(default=_feature_toggles.get("confidence_score_enabled", False))
 
