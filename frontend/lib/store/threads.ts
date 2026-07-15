@@ -1107,6 +1107,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             : m,
         );
       },
+      onFilterWarning: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, metadata_: { ...m.metadata_, filter_warning: data } }
+            : m,
+        );
+      },
       onTribalFacts: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
@@ -1503,6 +1510,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, confidence: data } } : m,
         );
       },
+      onFilterWarning: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, filter_warning: data } } : m,
+        );
+      },
       onTribalFacts: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, tribal_facts: data.facts } } : m,
@@ -1833,6 +1845,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onConfidence: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, confidence: data } } : m,
+        );
+      },
+      onFilterWarning: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, filter_warning: data } } : m,
         );
       },
       onTribalFacts: (data) => {

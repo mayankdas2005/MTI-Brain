@@ -613,6 +613,17 @@ async def stream_pipeline(
                         },
                     }
 
+                    reliability_flags = state.get("reliability_flags") or []
+                    filter_flags = [f for f in reliability_flags if f in ("time_filter_relaxed", "filters_relaxed")]
+                    if filter_flags:
+                        flag = filter_flags[0]
+                        message = (
+                            "The time filter was relaxed because the original date range returned no data. Results span a broader period than requested."
+                            if flag == "time_filter_relaxed"
+                            else "All WHERE filters were removed because the original query returned 0 rows. Results may be broader than intended."
+                        )
+                        yield {"event": "filter_warning", "data": {"flag": flag, "message": message}}
+
                 elif node == N_CHART_AGENT and state.get("chart_spec"):
                     yield {"event": "chart", "data": {
                         "spec": state["chart_spec"],

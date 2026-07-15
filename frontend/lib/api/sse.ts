@@ -35,7 +35,8 @@ export interface SSEHandlers {
   onChart?: (data: { spec: Record<string, unknown>; chart_type?: string; alternative_chart_specs?: { chart_type: string; spec: Record<string, unknown> }[] }) => void;
   onVizSkip?: () => void;
   onFollowUps?: (data: { questions: string[] }) => void;
-  onConfidence?: (data: { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string }) => void;
+  onConfidence?: (data: { score: number; label: 'High' | 'Medium' | 'Low' | 'Very Low'; explanation: string }) => void;
+  onFilterWarning?: (data: { flag: string; message: string }) => void;
   onTribalFacts?: (data: { facts: Array<{ type: string; label: string; value: string; status: string }> }) => void;
   onStopped?: (data: { message: string; conversation_id?: string; pipeline_steps?: unknown; duration_ms?: number }) => void;
   onDone?: (data: Record<string, unknown>) => void;
@@ -178,7 +179,10 @@ function dispatchEvent(event: string, rawData: string, handlers: SSEHandlers) {
       handlers.onFollowUps?.(data as { questions: string[] });
       break;
     case 'confidence':
-      handlers.onConfidence?.(data as { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string });
+      handlers.onConfidence?.(data as { score: number; label: 'High' | 'Medium' | 'Low' | 'Very Low'; explanation: string });
+      break;
+    case 'filter_warning':
+      handlers.onFilterWarning?.(data as { flag: string; message: string });
       break;
     case 'tribal_facts':
       handlers.onTribalFacts?.(data as { facts: Array<{ type: string; label: string; value: string; status: string }> });

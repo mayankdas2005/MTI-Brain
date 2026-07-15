@@ -36,7 +36,7 @@ export interface TrustStripProps {
   /** Authoritative row count from the query. */
   rowCount?: number | null;
   /** Confidence score from the backend — only present for SQL-backed answers. */
-  confidence?: { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string } | null;
+  confidence?: { score: number; label: 'High' | 'Medium' | 'Low' | 'Very Low'; explanation: string } | null;
 }
 
 /** Always show only the first table inline; the rest collapse into a "+N"
