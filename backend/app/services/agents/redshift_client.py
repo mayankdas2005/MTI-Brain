@@ -1,9 +1,7 @@
 """Async Redshift client for the analytics pipeline.
 
-Uses psycopg2 with a queue.Queue-based connection pool (size 10)
-so concurrent probe queries (context_fetcher) and actual query execution
-don't compete for connections.
-All queries use parameterized execution — never string interpolation.
+Uses psycopg3 (async) with psycopg_pool.AsyncConnectionPool so queries are
+truly non-blocking — no thread-pool contention under burst load.
 
 Two pools are maintained:
   - _admin_pool: full privileges (REDSHIFT_USER) — for admin-role users
@@ -14,89 +12,93 @@ If REDSHIFT_READONLY_USER is not configured, falls back to the admin pool.
 from __future__ import annotations
 
 import asyncio
-import queue
 import time
+
+import psycopg
+from psycopg.rows import tuple_row
+from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import settings
 from app.core.logger import logger
 from app.core.retry import is_transient
 
-_POOL_SIZE = 10
-_admin_pool: queue.Queue | None = None
-_readonly_pool: queue.Queue | None = None
-# Legacy alias — internal helpers (keepalive, schema fetch) use admin pool
-_connection_pool: queue.Queue | None = None
+_POOL_MIN = 2
+_POOL_MAX = 10
+
+_admin_pool: AsyncConnectionPool | None = None
+_readonly_pool: AsyncConnectionPool | None = None
 
 
-def _make_connection(user: str | None = None, password: str | None = None, dbname: str | None = None):
-    import psycopg2
-    return psycopg2.connect(
+def _conninfo(user: str | None = None, password: str | None = None, dbname: str | None = None) -> str:
+    return psycopg.conninfo.make_conninfo(
         host=settings.REDSHIFT_HOST,
+        port=getattr(settings, "REDSHIFT_PORT", 5439),
         dbname=dbname or settings.REDSHIFT_DB,
         user=user or settings.REDSHIFT_USER,
         password=password or settings.REDSHIFT_PASSWORD,
-        port=getattr(settings, "REDSHIFT_PORT", 5439),
         sslmode=settings.REDSHIFT_SSL_MODE,
-        keepalives=1,
-        keepalives_idle=60,
-        keepalives_interval=10,
-        keepalives_count=5,
-        connect_timeout=10,
     )
 
 
-def _make_readonly_connection():
-    return _make_connection(
-        user=settings.REDSHIFT_READONLY_USER,
-        password=settings.REDSHIFT_READONLY_PASSWORD,
-        dbname="readonly",
-    )
-
-
-async def _init_pool(conn_factory, pool_label: str) -> queue.Queue:
-    """Initialize a connection pool using the given factory."""
-    results = await asyncio.gather(
-        *[asyncio.to_thread(conn_factory) for _ in range(_POOL_SIZE)],
-        return_exceptions=True,
-    )
-    pool: queue.Queue = queue.Queue(maxsize=_POOL_SIZE)
-    ok = 0
-    for r in results:
-        if isinstance(r, Exception):
-            logger.warning("Redshift {} connection failed (skipping): {}", pool_label, r)
-        else:
-            pool.put_nowait(r)
-            ok += 1
-    if ok == 0:
-        raise RuntimeError(f"All Redshift {pool_label} connections failed during pool init")
-    logger.info("Redshift {} pool initialized | size={}/{} | host={}", pool_label, ok, _POOL_SIZE, settings.REDSHIFT_HOST)
-    return pool
+_CONNECT_KWARGS = {
+    "keepalives": 1,
+    "keepalives_idle": 60,
+    "keepalives_interval": 10,
+    "keepalives_count": 5,
+    "connect_timeout": 10,
+    "client_encoding": "utf8",
+    "row_factory": tuple_row,
+}
 
 
 async def init_redshift() -> None:
     """Initialize the Redshift connection pools — admin and readonly."""
-    global _admin_pool, _readonly_pool, _connection_pool
-    try:
-        _admin_pool = await _init_pool(_make_connection, "admin")
-        _connection_pool = _admin_pool  # legacy alias
+    global _admin_pool, _readonly_pool
 
-        if settings.REDSHIFT_READONLY_USER:
-            _readonly_pool = await _init_pool(_make_readonly_connection, "readonly")
-        else:
-            logger.warning("Redshift REDSHIFT_READONLY_USER not configured — all queries use admin pool")
-            _readonly_pool = _admin_pool
-    except Exception as e:
-        logger.error("Redshift initialization failed: {}", e)
-        raise
+    admin_conninfo = _conninfo()
+    _admin_pool = AsyncConnectionPool(
+        conninfo=admin_conninfo,
+        min_size=_POOL_MIN,
+        max_size=_POOL_MAX,
+        timeout=10,
+        max_idle=300,
+        kwargs=_CONNECT_KWARGS,
+        open=False,
+    )
+    await _admin_pool.open(wait=True, timeout=15)
+    logger.info("Redshift admin pool ready | min={} max={} | host={}", _POOL_MIN, _POOL_MAX, settings.REDSHIFT_HOST)
+
+    if settings.REDSHIFT_READONLY_USER:
+        ro_conninfo = _conninfo(
+            user=settings.REDSHIFT_READONLY_USER,
+            password=settings.REDSHIFT_READONLY_PASSWORD,
+        )
+        _readonly_pool = AsyncConnectionPool(
+            conninfo=ro_conninfo,
+            min_size=_POOL_MIN,
+            max_size=_POOL_MAX,
+            timeout=10,
+            max_idle=300,
+            kwargs=_CONNECT_KWARGS,
+            open=False,
+        )
+        await _readonly_pool.open(wait=True, timeout=15)
+        logger.info("Redshift readonly pool ready | min={} max={}", _POOL_MIN, _POOL_MAX)
+    else:
+        logger.warning("Redshift REDSHIFT_READONLY_USER not configured — all queries use admin pool")
+        _readonly_pool = _admin_pool
 
 
 async def redshift_keepalive(interval_s: int = 60) -> None:
-    """Ping Redshift every interval_s seconds to prevent Serverless auto-suspend
-    and proactively validate pool connections."""
+    """Ping Redshift every interval_s seconds to prevent Serverless auto-suspend."""
     while True:
         await asyncio.sleep(interval_s)
         try:
-            await asyncio.to_thread(_execute_sync, "SELECT 1", None, 15, quiet=True)
+            pool = _admin_pool
+            if not pool:
+                continue
+            async with pool.connection() as conn:
+                await conn.execute("SELECT 1")
             logger.debug("redshift | keepalive OK")
         except asyncio.CancelledError:
             raise
@@ -105,135 +107,87 @@ async def redshift_keepalive(interval_s: int = 60) -> None:
 
 
 async def close_redshift() -> None:
-    global _admin_pool, _readonly_pool, _connection_pool
-    # Close both pools (deduplicated — readonly may be aliased to admin)
-    pools_to_close = {id(p): p for p in [_admin_pool, _readonly_pool] if p}
-    _admin_pool = _readonly_pool = _connection_pool = None
-    for pool in pools_to_close.values():
-        while not pool.empty():
-            try:
-                conn = pool.get_nowait()
-                conn.close()
-            except Exception:
-                pass
+    global _admin_pool, _readonly_pool
+    pools_to_close: list[AsyncConnectionPool] = []
+    seen_ids: set[int] = set()
+    for p in [_admin_pool, _readonly_pool]:
+        if p and id(p) not in seen_ids:
+            seen_ids.add(id(p))
+            pools_to_close.append(p)
+    _admin_pool = _readonly_pool = None
+    for pool in pools_to_close:
+        await pool.close()
     logger.info("Redshift pools closed")
 
 
-def _get_pool(readonly: bool = False) -> queue.Queue:
+def _get_pool(readonly: bool = False) -> AsyncConnectionPool:
     pool = _readonly_pool if readonly else _admin_pool
     if not pool:
         raise RuntimeError("Redshift not initialized — call init_redshift() first.")
     return pool
 
 
-def _run_cursor(conn, sql: str, params: list | None) -> tuple[list[str], list[list]]:
-    """Execute SQL on a connection and return (columns, rows)."""
-    cursor = conn.cursor()
-    try:
-        if params:
-            cursor.execute(sql, params)
-        else:
-            cursor.execute(sql)
-        if cursor.description:
-            columns = [desc[0] for desc in cursor.description]
-            rows = cursor.fetchall()
-            return columns, [list(r) for r in rows]
-        return [], []
-    finally:
-        cursor.close()
+async def _execute(
+    sql: str,
+    params: list | None = None,
+    timeout_s: int = 60,
+    quiet: bool = False,
+    readonly: bool = False,
+) -> tuple[list[str], list[list]]:
+    """Borrow a connection from the pool, execute, return it.
 
-
-def _execute_sync(sql: str, params: list | None = None, timeout_s: int = 60, quiet: bool = False, readonly: bool = False) -> tuple[list[str], list[list]]:
-    """Borrow a connection from the pool, execute, return it. Runs in a thread.
-
-    On timeout / stale connection / broken pipe: reconnects and retries up to
-    3 attempts total (1 original + 2 retries) before raising.
-    The finally block guarantees the connection is always returned or replaced —
-    no pool slots are permanently leaked on any error path.
-    quiet=True suppresses SQL preview and query OK logs (used by keepalive pings).
-    readonly=True uses the read-only pool (SELECT-only DB user).
+    On transient errors: retries up to 3 times with exponential backoff.
+    psycopg_pool automatically discards broken connections.
     """
     pool = _get_pool(readonly=readonly)
-    _reconnect_factory = _make_readonly_connection if readonly else _make_connection
-    try:
-        conn = pool.get(timeout=timeout_s)
-    except queue.Empty:
-        raise TimeoutError("All Redshift connections busy — pool exhausted.")
 
     if not quiet:
-        logger.info("redshift | SQL preview | {}", sql)
+        logger.info("redshift | SQL preview | {}", sql[:200])
 
     last_err: Exception | None = None
-    succeeded = False
-    columns: list[str] = []
-    rows: list[list] = []
 
-    try:
-        for attempt in range(3):
-            try:
-                columns, rows = _run_cursor(conn, sql, params)
-                if not quiet:
-                    logger.info("redshift | query OK | attempt={} | rows={} | columns={}", attempt + 1, len(rows), columns)
-                succeeded = True
-                break
-            except Exception as exc:
-                last_err = exc
-                if not is_transient(exc):
-                    logger.error("redshift | non-transient error | error={}", exc)
-                    raise
-                if attempt < 2:
-                    delay = 0.5 * (attempt + 1)
-                    logger.warning("redshift | transient error attempt {}/3 — reconnecting in {:.1f}s | error={}", attempt + 1, delay, exc)
-                    time.sleep(delay)
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                    try:
-                        conn = _reconnect_factory()
-                    except Exception as conn_err:
-                        logger.error("redshift | reconnect failed | error={}", conn_err)
-                        raise conn_err
+    for attempt in range(3):
+        try:
+            async with pool.connection() as conn:
+                await conn.execute(
+                    f"SET statement_timeout = {int(timeout_s) * 1000}"
+                )
+                cursor = await conn.execute(sql, params)
+                if cursor.description:
+                    columns = [desc[0] for desc in cursor.description]
+                    rows = await cursor.fetchall()
+                    result = columns, [list(r) for r in rows]
                 else:
-                    logger.error("redshift | all 3 attempts failed | error={}", exc)
-                    raise
-        else:
-            raise last_err  # type: ignore[misc]
-    finally:
-        if succeeded:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            try:
-                pool.put_nowait(conn)
-            except queue.Full:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-        else:
-            # Dead or exhausted connection — close and put a fresh one back so
-            # pool size stays at _POOL_SIZE instead of shrinking over time.
-            try:
-                conn.close()
-            except Exception:
-                pass
-            try:
-                pool.put_nowait(_reconnect_factory())
-            except Exception:
-                pass  # Pool one short; next successful query restores it
+                    result = [], []
+                if not quiet:
+                    logger.info(
+                        "redshift | query OK | attempt={} | rows={} | columns={}",
+                        attempt + 1, len(result[1]), result[0],
+                    )
+                return result
+        except Exception as exc:
+            last_err = exc
+            if not is_transient(exc):
+                logger.error("redshift | non-transient error | error={}", exc)
+                raise
+            if attempt < 2:
+                delay = 0.5 * (attempt + 1)
+                logger.warning(
+                    "redshift | transient error attempt {}/3 — retrying in {:.1f}s | error={}",
+                    attempt + 1, delay, exc,
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error("redshift | all 3 attempts failed | error={}", exc)
+                raise
 
-    return columns, rows
+    raise last_err  # type: ignore[misc]
 
 
 async def fetch_table_schema(schema: str, table: str) -> list[list]:
     """Return [[col_name, data_type], ...] for ALL columns in the table.
 
-    Always returns the full schema regardless of which specific columns the caller
-    needs. Caches via set_schema_cols (TTL 1 day). Use this when you need to know
-    whether a specific column exists — passing it to get_table_columns with an empty
-    list returns [] immediately without fetching anything.
+    Caches via Redis (TTL 1 day).
     """
     from app.services.agents.redis_client import get_schema_cols, set_schema_cols
 
@@ -249,7 +203,7 @@ async def fetch_table_schema(schema: str, table: str) -> list[list]:
         "ORDER BY ordinal_position"
     )
     try:
-        _, rows = await asyncio.to_thread(_execute_sync, sql, [schema, table], 15)
+        _, rows = await _execute(sql, [schema, table], 15, quiet=True)
         all_cols = [list(r) for r in rows]
         set_schema_cols(schema, table, all_cols)
         logger.info("schema_cols | FETCHED | {}.{} | total_cols={}", schema, table, len(all_cols))
@@ -262,19 +216,13 @@ async def fetch_table_schema(schema: str, table: str) -> list[list]:
 async def get_table_columns(schema: str, table: str, col_names: list[str]) -> list[list]:
     """Return [[col_name, data_type], ...] for the requested columns.
 
-    Results for the full table are cached in Redis for 1 day so repeated calls
-    for the same table (column validation, filter probing, context_fetcher) never
-    hit Redshift more than once per day per table.
-
-    Only returns rows for columns that actually exist — caller detects missing
-    columns by comparing the returned set against the input list.
+    Results cached in Redis for 1 day per table.
     """
     from app.services.agents.redis_client import get_schema_cols
 
     if not col_names:
         return []
 
-    # Try Redis first — full column list for the table
     cached = get_schema_cols(schema, table)
     if cached is not None:
         requested = set(col_names)
@@ -282,7 +230,6 @@ async def get_table_columns(schema: str, table: str, col_names: list[str]) -> li
         logger.info("schema_cols | CACHE HIT | {}.{} | total_cols={} | requested={} | found={}", schema, table, len(cached), len(col_names), len(matched))
         return matched
 
-    # Cache miss — use fetch_table_schema which handles Redis write
     all_cols = await fetch_table_schema(schema, table)
     requested = set(col_names)
     matched = [row for row in all_cols if row[0] in requested]
@@ -300,13 +247,12 @@ async def execute_query(
     """Execute a parameterized SQL query on Redshift.
 
     Returns (columns, rows). All values in rows are Python primitives.
-    Raises on execution error — caller decides how to handle.
     readonly=True (default) uses the SELECT-only pool for defense-in-depth.
     """
     t0 = time.monotonic()
     try:
         columns, rows = await asyncio.wait_for(
-            asyncio.to_thread(_execute_sync, sql, params, timeout_s, False, readonly),
+            _execute(sql, params, timeout_s, False, readonly),
             timeout=timeout_s + 5,
         )
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -327,19 +273,13 @@ def _normalize_unrealistic_numbers(rows: list[list]) -> list[list]:
     """Scale down numeric values >= 1 billion to hundreds-of-millions range.
 
     Mocked source data produces unrealistic aggregations (trillions). This
-    brings any value with 10+ digits down to a 9-figure (hundreds of millions)
-    range while preserving sign and leading significant digits.
-
-    Handles int, float, and Decimal types from Redshift.
-
-    Examples:
-        -2,411,469,305.97 → -241,146,930.60
-        3,700,000,000,000 → 370,000,000.00
+    brings any value with 10+ digits down to a 9-figure range while preserving
+    sign and leading significant digits.
     """
     import decimal
     import math
 
-    THRESHOLD = 1_000_000_000  # 1 billion
+    THRESHOLD = 1_000_000_000
 
     normalized = []
     for row in rows:
@@ -365,8 +305,7 @@ def _normalize_unrealistic_numbers(rows: list[list]) -> list[list]:
 async def fetch_table_distkeys(schema: str, table: str) -> dict[str, bool]:
     """Return {column_name: is_distkey} from pg_table_def.
 
-    Empty dict on any failure (pg_table_def requires pg_catalog access;
-    may be unavailable on Redshift Serverless).
+    Empty dict on any failure.
     """
     sql = (
         "SELECT \"column\", distkey "
@@ -374,7 +313,7 @@ async def fetch_table_distkeys(schema: str, table: str) -> dict[str, bool]:
         "WHERE schemaname = %s AND tablename = %s"
     )
     try:
-        _, rows = await asyncio.to_thread(_execute_sync, sql, [schema, table], 10, True)
+        _, rows = await _execute(sql, [schema, table], 10, quiet=True)
         return {str(r[0]): bool(r[1]) for r in rows}
     except Exception as e:
         logger.debug("redshift | fetch_distkeys | {}.{} | unavailable | error={}", schema, table, e)
@@ -384,13 +323,11 @@ async def fetch_table_distkeys(schema: str, table: str) -> dict[str, bool]:
 async def run_explain(sql: str) -> list[str]:
     """Run EXPLAIN on a SQL string and return the plan lines.
 
-    Uses quiet=True to suppress the SQL preview log (EXPLAIN text is large).
-    Returns empty list on any failure — caller treats empty as no flags detected.
-    Never blocks query execution on EXPLAIN failure.
+    Returns empty list on any failure.
     """
     explain_sql = "EXPLAIN " + sql
     try:
-        _, rows = await asyncio.to_thread(_execute_sync, explain_sql, None, 15, True)
+        _, rows = await _execute(explain_sql, None, 15, quiet=True)
         return [str(row[0]) for row in rows]
     except Exception as e:
         logger.warning("redshift | run_explain failed | error={}", e)
