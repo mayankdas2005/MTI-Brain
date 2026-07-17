@@ -89,7 +89,7 @@ services:
         max-file: "5"
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/mti-brain/ || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
