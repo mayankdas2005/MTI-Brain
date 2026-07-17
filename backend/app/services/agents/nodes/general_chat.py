@@ -60,6 +60,7 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
+    from pybreaker import CircuitBreakerError
 
     llm = get_llm("fast")
 
@@ -68,7 +69,11 @@ async def general_chat(state: AnalyticsState, config: RunnableConfig) -> dict:
         from app.core.retry import retry_async
         return await retry_async(lambda: llm.ainvoke(prompt, config=config), service="bedrock-general-chat", max_attempts=2, backoff_base=5.0)
 
-    response = await _call()
+    try:
+        response = await _call()
+    except CircuitBreakerError:
+        logger.warning("general_chat | circuit breaker open | thread={}", state["thread_id"])
+        return {"answer": "I'm temporarily unable to respond. Please try again in a moment.", "follow_ups": []}
 
     raw = response.content or ""
     answer = parse_tag(raw, "answer") or raw.strip()

@@ -173,7 +173,7 @@ def compile_graph():
 
     b.add_conditional_edges(
         N_INTAKE, route_intake,
-        {N_GENERAL_CHAT: N_GENERAL_CHAT, N_CONTEXT_FETCHER: N_CONTEXT_FETCHER},
+        {N_GENERAL_CHAT: N_GENERAL_CHAT, N_CONTEXT_FETCHER: N_CONTEXT_FETCHER, N_ERROR_RESPONSE: N_ERROR_RESPONSE},
     )
     b.add_conditional_edges(N_GENERAL_CHAT, route_should_compress, {N_COMPRESS: N_COMPRESS, END: END})
 
