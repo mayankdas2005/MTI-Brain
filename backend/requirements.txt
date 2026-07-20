@@ -74,3 +74,4 @@ html5lib>=1.1
 python-dateutil>=2.9.0.post0
 pandas>=3.0.3
 networkx>=3.6.1
+cryptography>=43.0.0

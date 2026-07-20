@@ -4,7 +4,7 @@ import { Message, useThreadStore } from '@/lib/store/threads';
 import { usePreferencesStore } from '@/lib/store/preferences';
 import { useUIStore } from '@/lib/store/ui';
 import { Button } from '@/components/ui/button';
-import { Copy, RotateCcw, ChevronLeft, ChevronRight, ChevronDown, Pencil, X, Check, Code2, TableIcon, Info, Pin, LayoutDashboard, Loader2, Network, Brain } from 'lucide-react';
+import { Copy, RotateCcw, ChevronLeft, ChevronRight, ChevronDown, Pencil, X, Check, Code2, TableIcon, Info, Pin, LayoutDashboard, Loader2, Network, Brain, AlertTriangle } from 'lucide-react';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import {
   Dialog,
@@ -643,6 +643,12 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               </div>
             </div>
           )}
+          {message.metadata_?.filter_warning && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{message.metadata_.filter_warning.message}</span>
+            </div>
+          )}
           {dataView === 'table' && hasTableData && prefShowData && (
             <DataTable columns={columns!} rows={rows!} rowCount={rowCount} filename={exportFilename} isStreaming={message.isStreaming} />
           )}
@@ -696,6 +702,18 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               Response stopped before content was generated.
             </div>
       )}
+
+      {/* Low-confidence refine prompt */}
+      {!message.isStreaming && (() => {
+        const conf = (message.metadata_ as Record<string, unknown> | null)?.confidence as { label: string } | null;
+        if (conf?.label !== 'Very Low') return null;
+        return (
+          <div className="mt-2 flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span>Low confidence — consider refining your question for better results</span>
+          </div>
+        );
+      })()}
 
       {/* Follow-up Chips + Refine — appear as soon as follow_ups event fires */}
       {!!(message.followUpsReady ?? !message.isStreaming) && prefShowFollowUps && followUps && followUps.length > 0 && (
@@ -782,7 +800,7 @@ export function MessageBubble({ message, threadId, versionNav }: MessageBubblePr
               freshnessAt={m.data_freshness_at as string | null}
               metric={metric}
               rowCount={m.row_count as number | null}
-              confidence={m.confidence as { score: number; label: 'High' | 'Medium' | 'Low'; explanation: string } | null | undefined}
+              confidence={m.confidence as { score: number; label: 'High' | 'Medium' | 'Low' | 'Very Low'; explanation: string } | null | undefined}
             />
           </div>
         );

@@ -40,6 +40,9 @@ LLM_RETRY = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor=2.0
 
 
 def route_intake(state: AnalyticsState) -> str:
+    if state.get("error"):
+        logger.info("route: intake → error_response | thread={}", state["thread_id"])
+        return N_ERROR_RESPONSE
     qt = state.get("question_type", "analytics")
     if qt == "general_chat":
         logger.info("route: intake → general_chat | thread={}", state["thread_id"])

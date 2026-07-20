@@ -100,9 +100,10 @@ export interface MessageMetadata {
   langfuse_trace_url?: string;
   confidence?: {
     score: number;
-    label: 'High' | 'Medium' | 'Low';
+    label: 'High' | 'Medium' | 'Low' | 'Very Low';
     explanation: string;
   };
+  filter_warning?: { flag: string; message: string } | null;
   preference_summary?: PreferenceSummary;
   tribal_facts?: TribalFact[];
   deep_analysis?: boolean;

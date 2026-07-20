@@ -24,6 +24,9 @@ alembic/versions/__pycache__/
 
 # Data
 
+# Local Qwen3 fine-tuning workspace (venv, checkpoints, datasets) — not source
+finetune-qwen3-sql/
+
 # Docs
 assets/guide_screenshots/
 assets/*.docx
@@ -122,4 +125,5 @@ graphify-out/
 # SSL certificates
 nginx/ssl/*.pem
 
-
+# Keys / secrets (JWT RSA keys, etc.)
+keys/

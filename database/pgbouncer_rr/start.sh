@@ -26,6 +26,14 @@ if [ ! -f "${INI}" ]; then
     DATABASES_BLOCK+="    redshift_${i} = host=${HOST} port=${REDSHIFT_PORT:-5439} dbname=${REDSHIFT_DB} user=${REDSHIFT_USER} password=${REDSHIFT_PASSWORD}"$'\n'
   done
 
+  # Readonly pool — connects to Redshift using the SELECT-only user.
+  # Backend connects with dbname=readonly to route through this entry.
+  REDSHIFT_READONLY_USER="${REDSHIFT_READONLY_USER:-}"
+  REDSHIFT_READONLY_PASSWORD="${REDSHIFT_READONLY_PASSWORD:-}"
+  if [ -n "${REDSHIFT_READONLY_USER}" ]; then
+    DATABASES_BLOCK+="    readonly = host=${DEFAULT_HOST} port=${REDSHIFT_PORT:-5439} dbname=${REDSHIFT_DB} user=${REDSHIFT_READONLY_USER} password=${REDSHIFT_READONLY_PASSWORD}"$'\n'
+  fi
+
   cat <<- END > "${INI}"
 [databases]
 ${DATABASES_BLOCK}

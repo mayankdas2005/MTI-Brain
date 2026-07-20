@@ -2,7 +2,8 @@
  * Base API client with typed fetch wrapper, auth headers, and error handling.
  */
 
-import { getAuthHeaders, clearStoredToken } from '@/lib/auth';
+import { getAuthHeaders, clearStoredToken, setStoredToken, setStoredUser } from '@/lib/auth';
+import type { User } from '@/lib/auth';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -23,6 +24,37 @@ export class ApiError extends Error {
   }
 }
 
+// ─── Token refresh ───
+
+let _refreshPromise: Promise<boolean> | null = null;
+
+async function _tryRefresh(): Promise<boolean> {
+  try {
+    const res = await fetch(`${apiBase}/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (!res.ok) return false;
+    const data = await res.json() as { token: string; user: User };
+    setStoredToken(data.token);
+    setStoredUser(data.user);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Attempt a single token refresh. Deduplicates concurrent calls so only one
+ * refresh request is in flight at a time.
+ */
+function tryRefreshOnce(): Promise<boolean> {
+  if (!_refreshPromise) {
+    _refreshPromise = _tryRefresh().finally(() => { _refreshPromise = null; });
+  }
+  return _refreshPromise;
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit & { signal?: AbortSignal } = {},
@@ -35,13 +67,22 @@ export async function apiFetch<T>(
     ...(options.headers as Record<string, string> | undefined),
   };
 
-  const res = await fetch(url, { ...options, headers });
+  let res = await fetch(url, { ...options, headers });
+
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    // Access token expired — attempt silent refresh
+    const refreshed = await tryRefreshOnce();
+    if (refreshed) {
+      // Retry the original request with the new token
+      const retryHeaders: Record<string, string> = {
+        ...headers,
+        ...getAuthHeaders(),
+      };
+      res = await fetch(url, { ...options, headers: retryHeaders });
+    }
+  }
 
   if (res.status === 401) {
-    // Token expired or invalid - clear and notify the layout via a custom event.
-    // Using window.location.href triggers a full page reload (slow). The
-    // authenticated layout listens for 'mti-brain:unauthenticated' and uses
-    // Next.js routing to redirect, which keeps the bundle warm.
     clearStoredToken();
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('mti-brain:unauthenticated'));

@@ -91,7 +91,7 @@ export const PREFERENCES_DEFAULTS: PreferencesState = {
   highContrast: false,
   deepAnalysis: false,
   conversationMode: false,
-  thinkingPlacement: 'inline',
+  thinkingPlacement: 'sidebar',
 };
 
 const STORAGE_PREFIX = 'mti-brain-prefs';

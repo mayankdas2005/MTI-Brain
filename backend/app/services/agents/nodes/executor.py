@@ -231,11 +231,14 @@ _CHART_MAX_ROWS = 2000
 async def _execute_single(sql: str, ir_dict: dict, state: AnalyticsState, timeout_s: int, max_rows: int = 100) -> dict:
     from app.services.agents.redshift_client import execute_query
 
+    # Use read-only pool for non-admin users (defense-in-depth against SQL injection)
+    readonly = state.get("user_role", "user") != "admin"
+
     # Fetch enough for both table display (max_rows) and chart (CHART_MAX_ROWS).
     # Single query, two slices — no extra Redshift round-trip.
     fetch_limit = max(max_rows, _CHART_MAX_ROWS) + 1
     probe_sql = _apply_row_limit(sql, fetch_limit)
-    columns, rows_raw = await execute_query(probe_sql, timeout_s=timeout_s, thread_id=state["thread_id"])
+    columns, rows_raw = await execute_query(probe_sql, timeout_s=timeout_s, thread_id=state["thread_id"], readonly=readonly)
 
     was_truncated = len(rows_raw) > max_rows
     rows = _make_rows_json_safe(rows_raw[:max_rows])

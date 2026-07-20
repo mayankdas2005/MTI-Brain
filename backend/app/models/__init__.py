@@ -3,6 +3,7 @@ from app.models.conversation import MTIBrainMessage
 from app.models.conversation import MTIBrainProject
 from app.models.conversation import MTIBrainThread
 from app.models.execution_log import MTIBrainExecutionLog
+from app.models.refresh_token import RefreshToken
 from app.models.user_instruction import UserInstruction
 
 

@@ -83,7 +83,7 @@ class TimingMiddleware:
                 headers.append((b"x-response-time", f"{duration_ms:.2f}ms".encode()))
                 message = {**message, "headers": headers}
 
-                if path != "/health":
+                if not path.startswith("/health"):
                     request_id = scope.get("state", {}).get("request_id", "N/A")
                     logger.info(
                         f"{method} {path} → {status_code} ({duration_ms:.1f}ms) [rid={request_id}]"

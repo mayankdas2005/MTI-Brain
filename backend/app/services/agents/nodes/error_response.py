@@ -15,6 +15,10 @@ _ERROR_MESSAGES = {
         "I'm unable to reach the data warehouse right now. "
         "Your query has been logged and you can retry shortly."
     ),
+    "llm_unavailable": (
+        "The AI service is temporarily unavailable. "
+        "Please try again in a minute."
+    ),
     "default": (
         "Something went wrong while processing your question. "
         "Please try again."

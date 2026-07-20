@@ -7,6 +7,7 @@ import { setLoginGate } from '@/lib/auth';
 import type { PinnedMetric } from '@/lib/store/pinned-metrics';
 import { usePinnedMetricsStore } from '@/lib/store/pinned-metrics';
 import { toast } from '@/lib/toast';
+import { randomId } from '@/lib/utils';
 
 interface MetricPinCardProps {
   metric: PinnedMetric;
@@ -20,7 +21,7 @@ export function MetricPinCard({ metric, className }: MetricPinCardProps) {
   const setPendingQuestion = useThreadStore((s) => s.setPendingQuestion);
 
   const handleRerun = () => {
-    const threadId = crypto.randomUUID();
+    const threadId = randomId();
     const gate = createThread(undefined, undefined, threadId)
       .then(() => {})
       .catch(() => {

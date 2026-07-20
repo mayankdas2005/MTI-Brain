@@ -219,9 +219,10 @@ async def attempt_repair(
         last = repair_history[-1]
         fp = last.get("sql_fingerprint")
         err = last.get("error", "")
+        strategy_used = last.get("strategy", "unknown")
         if fp:
             prior_attempts_detail += (
-                f"\nPREVIOUS ATTEMPT STRUCTURE (attempt {last['attempt']}) produced error: '{err}'\n"
+                f"\nPREVIOUS ATTEMPT STRUCTURE (attempt {last['attempt']}, strategy: {strategy_used}) produced error: '{err}'\n"
                 f"  That approach used: tables={fp.get('tables',[])} | "
                 f"joins={fp.get('join_ons',[])} | CTEs={fp.get('cte_count',0)} | "
                 f"GROUP BY={'yes' if fp.get('has_group_by') else 'no'}\n"
@@ -230,12 +231,12 @@ async def attempt_repair(
             )
         elif last.get("sql_fragment"):
             prior_attempts_detail += (
-                f"\nPREVIOUS ATTEMPT (attempt {last['attempt']}) produced error: '{err}'\n"
+                f"\nPREVIOUS ATTEMPT (attempt {last['attempt']}, strategy: {strategy_used}) produced error: '{err}'\n"
                 f"  SQL preview: {last['sql_fragment'][:300]}\n"
                 "  Choose a structurally different approach."
             )
         else:
-            prior_attempts_detail += f"\nPREVIOUS ATTEMPT (attempt {last['attempt']}) failed: '{err}'"
+            prior_attempts_detail += f"\nPREVIOUS ATTEMPT (attempt {last['attempt']}, strategy: {strategy_used}) failed: '{err}'"
     elif repair_count > 0 and state.get("execution_error"):
         prior_attempts_detail += (
             f"\nThe PREVIOUS repair attempt produced this NEW error: {state['execution_error']}\n"
@@ -296,6 +297,19 @@ async def attempt_repair(
     # would fail identically to execution (column/syntax validation runs at plan time).
     # Only "general" (execution) errors — timeouts, cartesian joins, 0 rows — benefit from EXPLAIN.
     error_type = _classify_error(error_msg)
+
+    # Strategy deduplication: if this strategy was already tried, escalate to avoid looping.
+    used_strategies = {h.get("strategy") for h in repair_history}
+    if error_type in used_strategies:
+        _escalation = {"syntax": "structure", "structure": "general", "general": "general"}
+        original_type = error_type
+        error_type = _escalation[error_type]
+        if error_type in used_strategies:
+            error_type = "general"
+        logger.info(
+            "repair | strategy dedup: {} already tried, escalating to {} | thread={}",
+            original_type, error_type, state["thread_id"],
+        )
 
     # Run EXPLAIN on the failing SQL — fires only here (after first execution failure),
     # not pre-emptively in sql_validator on every query.
@@ -489,7 +503,7 @@ async def attempt_repair(
     asyncio.create_task(write_audit_log(state, first_sql, 0, "repaired"))
 
     # Record this attempt in repair_history for future repair iterations
-    new_history_entry: dict = {"attempt": repair_count + 1, "error": error_msg[:300]}
+    new_history_entry: dict = {"attempt": repair_count + 1, "strategy": error_type, "error": error_msg[:300]}
     try:
         import sqlglot
         import sqlglot.expressions as _exp

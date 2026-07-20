@@ -150,12 +150,47 @@ def flush_langfuse() -> None:
 
 
 def create_callback_handler():
-    """Create a LangChain CallbackHandler for Langfuse. Returns None if disabled."""
+    """Create a LangChain CallbackHandler for Langfuse. Returns None if disabled.
+
+    When PII scrubbing is enabled, returns a subclass that masks sensitive data
+    (emails, phones, SSNs, card numbers) in prompts and completions before they
+    reach Langfuse.
+    """
     if not _enabled:
         return None
 
     try:
         from langfuse.langchain import CallbackHandler
+
+        if settings.LANGFUSE_PII_SCRUBBING:
+            from app.core.pii_scrubber import scrub
+
+            class _ScrubbingHandler(CallbackHandler):
+                def on_llm_start(self, serialized, prompts, **kwargs):
+                    prompts = [scrub(p) for p in prompts]
+                    return super().on_llm_start(serialized, prompts, **kwargs)
+
+                def on_chat_model_start(self, serialized, messages, **kwargs):
+                    scrubbed = []
+                    for msg_list in messages:
+                        scrubbed_msgs = []
+                        for m in msg_list:
+                            if isinstance(m.content, str):
+                                scrubbed_msgs.append(m.__class__(content=scrub(m.content)))
+                            else:
+                                scrubbed_msgs.append(m)
+                        scrubbed.append(scrubbed_msgs)
+                    return super().on_chat_model_start(serialized, scrubbed, **kwargs)
+
+                def on_llm_end(self, response, **kwargs):
+                    for gen_list in response.generations:
+                        for gen in gen_list:
+                            if gen.text:
+                                gen.text = scrub(gen.text)
+                    return super().on_llm_end(response, **kwargs)
+
+            return _ScrubbingHandler()
+
         return CallbackHandler()
     except Exception as e:
         logger.warning(f"Failed to create Langfuse callback: {e}")

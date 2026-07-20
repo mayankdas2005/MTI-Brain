@@ -19,7 +19,7 @@ from app.core.middleware import (
     SecurityHeadersMiddleware,
     TimingMiddleware,
 )
-from app.core.rate_limit import limiter
+from app.core.rate_limit import limiter, user_limiter
 from app.db import dispose_engine, warm_pool
 from app.services.agents.graph import init_analytics_pipeline, shutdown_analytics_pipeline
 from app.services.agents.redshift_client import redshift_keepalive
@@ -70,6 +70,7 @@ app = FastAPI(
 )
 
 app.state.limiter = limiter
+app.state.user_limiter = user_limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(SlowAPIMiddleware)

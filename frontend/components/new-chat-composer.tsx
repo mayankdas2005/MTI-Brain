@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import { useThreadStore, setThreadCreationGate } from '@/lib/store/threads';
 import { toast } from '@/lib/toast';
+import { randomId } from '@/lib/utils';
 import { ArrowUp, Loader2, BrainCircuit, BookOpen, Bookmark } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -203,7 +204,7 @@ export function NewChatComposer({ initialValue = '', centered = false, projectId
     if (!message || submitting) return;
 
     setSubmitting(true);
-    const threadId = crypto.randomUUID();
+    const threadId = randomId();
 
     const gate = createThread(undefined, projectId, threadId)
       .then(() => {})

@@ -60,7 +60,7 @@ from app.schemas.chat import (
     ThreadSummary,
 )
 from app.core.config import settings
-from app.core.rate_limit import limiter
+from app.core.rate_limit import limiter, user_limiter
 from app.services.chat import conversation as conv_service
 from app.services.chat import feedback as fb_service
 from app.services.agents.nodes.audit import anti_pattern_merge_key
@@ -117,6 +117,7 @@ def _build_sse_generator(
     prior_question: str = "",
     user_display_name: str = "",
     user_email: str | None = None,
+    user_role: str = "user",
     is_retry: bool = False,
     prior_execution_context: dict | None = None,
     prior_context_window: list[dict] | None = None,
@@ -262,6 +263,7 @@ def _build_sse_generator(
                 prior_question=prior_question,
                 user_email=user_email,
                 user_display_name=user_display_name,
+                user_role=user_role,
                 is_retry=is_retry,
                 prior_execution_context=prior_execution_context,
                 prior_context_window=prior_context_window,
@@ -566,6 +568,7 @@ async def move_chat(
 
 @router.post("/{thread_id}/ask")
 @limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
+@user_limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_HOUR_USER}/hour")
 async def ask_question(
     request: Request,
     thread_id: uuid.UUID,
@@ -745,6 +748,7 @@ async def ask_question(
         prior_question=prior_question,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
+        user_role="admin" if "admin" in current_user.groups else "user",
         prior_execution_context=prior_execution_context,
         prior_context_window=prior_context_window,
         prior_output_columns=_prior_output_columns,
@@ -760,6 +764,7 @@ async def ask_question(
 
 @router.post("/{thread_id}/retry")
 @limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
+@user_limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_HOUR_USER}/hour")
 async def retry_response(
     request: Request,
     thread_id: uuid.UUID,
@@ -907,6 +912,7 @@ async def retry_response(
         prior_question=prior_question,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
+        user_role="admin" if "admin" in current_user.groups else "user",
         is_retry=not is_refinement_retry,
         prior_execution_context=prior_execution_context,
         prior_context_window=prior_context_window,
@@ -921,6 +927,7 @@ async def retry_response(
 
 @router.post("/{thread_id}/edit")
 @limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_MINUTE}/minute")
+@user_limiter.limit(f"{settings.RATE_LIMIT_ASK_PER_HOUR_USER}/hour")
 async def edit_question(
     request: Request,
     thread_id: uuid.UUID,
@@ -1038,6 +1045,7 @@ async def edit_question(
         cancel_event=_cancel_ev,
         user_display_name=_get_display_name(current_user),
         user_email=current_user.email,
+        user_role="admin" if "admin" in current_user.groups else "user",
         is_retry=True,
         prior_execution_context=prior_execution_context,
         prior_context_window=prior_context_window,

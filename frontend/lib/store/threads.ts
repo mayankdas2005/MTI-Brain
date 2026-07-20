@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import * as api from '../api';
+import { randomId } from '../utils';
 
 // Gate that chat-composer awaits before firing askQuestion on a new thread.
 // Set by new-chat-composer when it pre-generates a thread ID and navigates
@@ -60,22 +61,6 @@ export interface Message {
   /** Timing anchor from backend timing.sync event - lets LiveTimer
    *  track the server's elapsed clock instead of the client's wall clock. */
   _timingAnchor?: { serverElapsedMs: number; clientReceivedAt: number };
-}
-
-// `crypto.randomUUID` is only exposed on secure contexts (HTTPS or localhost).
-// On plain-http deployments it's undefined, so fall back to a v4-shaped id built
-// from `getRandomValues`, which is available everywhere. IDs here are only used
-// as React keys / optimistic-message handles, not for anything cryptographic.
-function randomId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**
@@ -1122,6 +1107,13 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
             : m,
         );
       },
+      onFilterWarning: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId
+            ? { ...m, metadata_: { ...m.metadata_, filter_warning: data } }
+            : m,
+        );
+      },
       onTribalFacts: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId
@@ -1518,6 +1510,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
           m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, confidence: data } } : m,
         );
       },
+      onFilterWarning: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, filter_warning: data } } : m,
+        );
+      },
       onTribalFacts: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, tribal_facts: data.facts } } : m,
@@ -1848,6 +1845,11 @@ export const useThreadStore = create<ThreadStore>()(persist((set, get) => ({
       onConfidence: (data) => {
         mapMsgs((m) =>
           m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, confidence: data } } : m,
+        );
+      },
+      onFilterWarning: (data) => {
+        mapMsgs((m) =>
+          m.id === assistantMsgId ? { ...m, metadata_: { ...m.metadata_, filter_warning: data } } : m,
         );
       },
       onTribalFacts: (data) => {

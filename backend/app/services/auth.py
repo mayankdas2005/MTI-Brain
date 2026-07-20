@@ -1,14 +1,17 @@
 """Authentication service - JWT token management and user credential validation."""
 
 import asyncio
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
 from app.core.config import settings
 from app.core.logger import logger
+from app.models.refresh_token import RefreshToken
 from app.models.user import MTIBrainUser
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -67,6 +70,7 @@ def create_jwt_token(
     name: str,
     groups: list[str],
 ) -> str:
+    """Create a short-lived access token (default 15 minutes)."""
     now = datetime.now(timezone.utc)
     payload = {
         "sub": email,
@@ -74,21 +78,103 @@ def create_jwt_token(
         "email": email,
         "name": name,
         "groups": groups,
+        "type": "access",
         "iat": now,
-        "exp": now + timedelta(hours=settings.JWT_EXPIRY_HOURS),
+        "exp": now + timedelta(minutes=settings.JWT_ACCESS_TOKEN_MINUTES),
     }
-    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(payload, settings.jwt_signing_key, algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_jwt_token(token: str) -> dict | None:
+    # Accept both RS256 and HS256 during migration so old tokens still work
+    _algorithms = [settings.JWT_ALGORITHM]
+    if settings.JWT_ALGORITHM == "RS256" and "HS256" not in _algorithms:
+        _algorithms.append("HS256")
     try:
-        return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        return jwt.decode(token, settings.jwt_verify_key, algorithms=_algorithms)
+    except jwt.InvalidAlgorithmError:
+        # Token signed with HS256 but we're verifying with RSA public key — retry with shared secret
+        if settings.JWT_ALGORITHM == "RS256":
+            try:
+                return jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
+            except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+                return None
+        return None
     except jwt.ExpiredSignatureError:
         logger.debug("JWT expired")
         return None
     except jwt.InvalidTokenError as e:
         logger.debug(f"JWT invalid: {e}")
         return None
+
+
+# ─── Refresh token management ───
+
+
+def _hash_token(token: str) -> str:
+    """SHA-256 hash of the raw refresh token — only the hash is stored in DB."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def create_refresh_token(db: AsyncSession, user_id: str) -> str:
+    """Generate a cryptographically random refresh token, store its hash in DB."""
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = _hash_token(raw_token)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_DAYS)
+
+    rt = RefreshToken(
+        user_id=user_id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+    )
+    db.add(rt)
+    await db.flush()
+    return raw_token
+
+
+async def validate_refresh_token(db: AsyncSession, raw_token: str) -> RefreshToken | None:
+    """Validate a refresh token: exists, not revoked, not expired."""
+    token_hash = _hash_token(raw_token)
+    result = await db.execute(
+        select(RefreshToken).where(
+            RefreshToken.token_hash == token_hash,
+            RefreshToken.revoked == False,  # noqa: E712
+            RefreshToken.expires_at > datetime.now(timezone.utc),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def revoke_refresh_token(db: AsyncSession, raw_token: str) -> bool:
+    """Revoke a single refresh token. Returns True if found and revoked."""
+    token_hash = _hash_token(raw_token)
+    result = await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.token_hash == token_hash)
+        .values(revoked=True)
+    )
+    await db.flush()
+    return result.rowcount > 0
+
+
+async def revoke_all_user_tokens(db: AsyncSession, user_id: str) -> int:
+    """Revoke all refresh tokens for a user (e.g. password change, security event)."""
+    result = await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user_id, RefreshToken.revoked == False)  # noqa: E712
+        .values(revoked=True)
+    )
+    await db.flush()
+    return result.rowcount
+
+
+async def cleanup_expired_tokens(db: AsyncSession) -> int:
+    """Delete expired refresh tokens. Call periodically to keep the table small."""
+    result = await db.execute(
+        delete(RefreshToken).where(RefreshToken.expires_at < datetime.now(timezone.utc))
+    )
+    await db.flush()
+    return result.rowcount
 
 
 # ─── User upsert ───

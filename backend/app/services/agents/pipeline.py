@@ -18,6 +18,7 @@ from app.core.langfuse_integration import (
     make_trace_public as _lf_make_public,
 )
 from app.core.logger import logger
+from app.core.prompt_guard import sanitize_question as _sanitize_q
 from app.services.agents.node_names import (
     NODE_MESSAGE,
     NODE_STREAM,
@@ -265,7 +266,8 @@ async def stream_pipeline(
         "user_id": user_id or "",
         "thread_id": thread_id,
         "persona": persona or "analyst",
-        "question": question,
+        "question": _sanitize_q(question),
+        "user_role": kwargs.get("user_role") or "user",
         "needs_clarification": False,
         "clarification_count": 0,
         "clarification_reason": None,
@@ -610,6 +612,17 @@ async def stream_pipeline(
                             "will_visualize": bool(all_rows),
                         },
                     }
+
+                    reliability_flags = state.get("reliability_flags") or []
+                    filter_flags = [f for f in reliability_flags if f in ("time_filter_relaxed", "filters_relaxed")]
+                    if filter_flags:
+                        flag = filter_flags[0]
+                        message = (
+                            "The time filter was relaxed because the original date range returned no data. Results span a broader period than requested."
+                            if flag == "time_filter_relaxed"
+                            else "All WHERE filters were removed because the original query returned 0 rows. Results may be broader than intended."
+                        )
+                        yield {"event": "filter_warning", "data": {"flag": flag, "message": message}}
 
                 elif node == N_CHART_AGENT and state.get("chart_spec"):
                     yield {"event": "chart", "data": {

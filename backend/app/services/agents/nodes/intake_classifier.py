@@ -212,7 +212,14 @@ async def intake_classifier(state: AnalyticsState, config: RunnableConfig) -> di
         prior_was_analytics="YES" if prior_analytics else "NO",
     )
 
-    result = await _call_llm(prompt, config)
+    from pybreaker import CircuitBreakerError
+
+    try:
+        result = await _call_llm(prompt, config)
+    except CircuitBreakerError:
+        logger.warning("intake_classifier | circuit breaker open | thread={}", state["thread_id"])
+        return {"error": "llm_unavailable"}
+
     question_type, is_followup, complexity, entity_tokens, search_terms, search_variants, query_intent = _parse_intake(result)
 
     # Backstop: a genuine data-dependent follow-up must never resolve to general_chat,

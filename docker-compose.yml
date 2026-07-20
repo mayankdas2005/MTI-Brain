@@ -9,6 +9,9 @@ services:
     container_name: mti-brain-backend
     restart: unless-stopped
     env_file: ./backend/.env
+    volumes:
+      - ./keys/jwt_private.pem:/app/keys/jwt_private.pem:ro
+      - ./keys/jwt_public.pem:/app/keys/jwt_public.pem:ro
     networks:
       - app_net
       - db_net
@@ -33,9 +36,9 @@ services:
         max-file: "5"
 
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request, sys; r=urllib.request.urlopen('http://localhost:8000/health', timeout=25); sys.exit(0 if r.status < 500 else 1)\" 2>/dev/null || exit 1"]
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request, sys; urllib.request.urlopen('http://localhost:8000/health/live', timeout=3) or sys.exit(1)\" 2>/dev/null || exit 1"]
       interval: 30s
-      timeout: 30s
+      timeout: 5s
       retries: 5
       start_period: 90s
 
