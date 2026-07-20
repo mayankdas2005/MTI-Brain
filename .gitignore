@@ -28,6 +28,23 @@ alembic/versions/__pycache__/
 finetune-qwen3-sql/
 
 # Docs
+assets/guide_screenshots/
+assets/*.docx
+assets/*.pdf
+assets/*.pptx
+assets/case_study/extracted/
+assets/analytics_graph.png
+assets/generate_*.py
+assets/extract_logos.py
+
+# Images / screenshots / logos
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.svg
+*.webp
 
 # IDE
 .vscode/

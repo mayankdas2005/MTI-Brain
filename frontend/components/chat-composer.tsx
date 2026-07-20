@@ -328,7 +328,7 @@ export function ChatComposer() {
           }
           break;
         case 'export':
-          window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
+          window.dispatchEvent(new CustomEvent('mti-brain:export-markdown'));
           break;
         case 'tone-analyst':
           setResponseTone('analyst');

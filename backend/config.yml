@@ -23,6 +23,7 @@ server:
     - "http://100.21.28.155:3000"
     - "https://ai.milestnapps.com"
     - "http://mtibrain.mtitechlab.com"
+    - "https://mtibrain.mtitechlab.com"
 
 
 auth:

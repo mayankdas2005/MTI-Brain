@@ -10,6 +10,8 @@ reaching here already has validated column names and join clauses.
 
 from __future__ import annotations
 
+import re
+
 from langchain_core.runnables import RunnableConfig
 
 from app.core.logger import logger
@@ -107,6 +109,9 @@ async def sql_generator(state: AnalyticsState, config: RunnableConfig) -> dict:
         result["neo4j_raw_graph"] = _neo4j_raw_graph
     if first_sql:
         result["prior_sql"] = first_sql
+        _unresolved_markers = re.findall(r"--\s*UNRESOLVED (?:CONCEPT|FILTER):\s*(.+)", first_sql)
+        if _unresolved_markers:
+            result["unresolved_sql_markers"] = [m.strip() for m in _unresolved_markers]
     if _cte_outline:
         result["_cte_outline"] = _cte_outline
     # Persist intra-turn caches so LangGraph keeps them across recompile invocations.

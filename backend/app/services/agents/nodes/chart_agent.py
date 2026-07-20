@@ -717,7 +717,7 @@ async def _call_chart_llm(
     from app.services.agents.bedrock import get_llm
     from app.core.circuit_breaker import llm_breaker
 
-    llm = get_llm("balanced")
+    llm = get_llm("fast")
 
     @llm_breaker
     async def _call():

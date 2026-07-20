@@ -163,9 +163,9 @@ export default function AuthenticatedLayout({
     // 'cmd-shift-v': () => {
     //   window.dispatchEvent(new CustomEvent('mti-brain:toggle-voice'));
     // },
-    // 'cmd-shift-e': () => {
-    //   window.dispatchEvent(new CustomEvent('mti-brain:export-pdf'));
-    // },
+    'cmd-shift-e': () => {
+      window.dispatchEvent(new CustomEvent('mti-brain:export-markdown'));
+    },
     'cmd-shift-l': () => setTheme(theme === 'dark' ? 'light' : 'dark'),
     'cmd-shift-m': () => {
       const { currentThreadId } = useThreadStore.getState();

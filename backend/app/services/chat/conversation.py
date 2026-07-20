@@ -1022,7 +1022,7 @@ async def get_conversation_history(
     lines = []
     for question, answer, _ in pairs:
         lines.append(f"User: {(question or '')[:200]}")
-        lines.append(f"Assistant: {(answer or '')[:200]}")
+        lines.append(f"Assistant: {(answer or '')[:1500]}")
     return "\n".join(lines)
 
 

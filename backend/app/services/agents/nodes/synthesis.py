@@ -142,6 +142,39 @@ def _build_assumption_audit(state: AnalyticsState) -> list[str]:
     return lines
 
 
+def _build_verified_totals(all_columns: list[str], all_rows: list[list]) -> str:
+    """Deterministically sum numeric columns over the raw rows — code-computed, not LLM-computed.
+
+    Given to Phase 1 alongside the raw rows so it never has to trust its own arithmetic
+    (the source of a previously observed total mismatch between the raw data and the narrative).
+    """
+    if not all_columns or not all_rows:
+        return ""
+    lines = [f"row_count = {len(all_rows)}"]
+    for idx, col in enumerate(all_columns):
+        values = []
+        all_numeric = True
+        for row in all_rows:
+            if idx >= len(row):
+                continue
+            v = row[idx]
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                all_numeric = False
+                break
+            values.append(v)
+        if all_numeric and values:
+            lines.append(f"total_{col} = {sum(values)}")
+    if len(lines) <= 1:
+        return ""
+    return (
+        "VERIFIED TOTALS (computed from raw rows in code — use these exact figures for any "
+        "matching metric in your findings; do not recompute or sum values yourself):\n"
+        + "\n".join(lines)
+    )
+
+
 def _fmt_number(v: float | int | None) -> str:
     if v is None:
         return "N/A"
@@ -336,6 +369,12 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
         if "repair_required" not in reliability_flags:
             reliability_flags = list(reliability_flags) + ["data_quality_concern"]
 
+    # Surface SQL-generation data gaps (unresolved business concepts/columns the schema can't
+    # support) to every user, not just deep_analysis — a fabricated-logic gap is a correctness
+    # issue regardless of persona/depth.
+    for marker in (state.get("unresolved_sql_markers") or [])[:3]:
+        quality_context_lines.append(f"Data limitation: {marker.strip()}")
+
     quality_context = "\n".join(quality_context_lines)
 
     reasoning_directive = REASONING_DIRECTIVE_DEEP if state.get("deep_analysis") else REASONING_DIRECTIVE_NORMAL
@@ -409,6 +448,9 @@ async def synthesis(state: AnalyticsState, config: RunnableConfig) -> dict:
 
     # Build structured data profile (shared builder with chart_agent)
     data_profile = _build_data_profile(all_columns, all_rows, query_summary)
+    _verified_totals = _build_verified_totals(all_columns, all_rows)
+    if _verified_totals:
+        data_profile = f"{_verified_totals}\n\n{data_profile}"
 
     current_date_context = _build_current_date_context(
         state.get("current_date") or datetime.date.today().isoformat(),

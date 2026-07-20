@@ -53,9 +53,11 @@ from app.services.agents.sql_validator_logic import validate_sql
 from app.services.agents.state import AnalyticsState
 
 
+_PARSE_ERROR_SIGNALS = (
+    "syntax error", "parse error", "unexpected token", "missing keyword", "required keyword",
+)
 _SYNTAX_SIGNALS = (
     "interval", "dateadd", "date_add", "boolean", "cast", "union all", "union", "order by",
-    "syntax error", "parse error", "unexpected token",
 )
 _STRUCTURE_SIGNALS = (
     "not exported by upstream", "ambiguous", "42702", "does not exist in table",
@@ -65,6 +67,13 @@ _STRUCTURE_SIGNALS = (
 
 def _classify_error(error_msg: str) -> str:
     lower = error_msg.lower()
+    # Parse-error phrases win unconditionally: they mean sqlglot/Redshift couldn't even parse
+    # the statement, which is always a syntax-repair problem regardless of which structure-related
+    # words (e.g. "CTE", "column") appear elsewhere in the error text. A genuine structure error
+    # (ambiguous column, CTE export scope) is only ever reported AFTER a successful parse.
+    for sig in _PARSE_ERROR_SIGNALS:
+        if sig in lower:
+            return "syntax"
     for sig in _STRUCTURE_SIGNALS:
         if sig in lower:
             return "structure"

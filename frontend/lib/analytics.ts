@@ -98,5 +98,5 @@ export const Events = {
   PaletteActionUsed: 'palette_action_used',
   ResponseCopied: 'response_copied',
   ResponseRetried: 'response_retried',
-  ExportPdf: 'export_pdf',
+  ExportMarkdown: 'export_markdown',
 } as const;
