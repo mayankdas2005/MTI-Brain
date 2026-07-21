@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -42,10 +43,103 @@ async def app():
 
 @pytest_asyncio.fixture
 async def client(app) -> AsyncGenerator[AsyncClient, None]:
-    """Async HTTP client for integration tests."""
+    """Async HTTP client with DB session dependency overrides but NO auth override.
+
+    Use this for testing 401 responses (unauthenticated requests).
+    """
+    from app.db.session import get_async_session, get_read_session
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=MagicMock())
+    mock_session.commit = AsyncMock()
+    mock_session.rollback = AsyncMock()
+    mock_session.flush = AsyncMock()
+    mock_session.close = AsyncMock()
+
+    async def _mock_session_gen():
+        yield mock_session
+
+    app.dependency_overrides[get_async_session] = _mock_session_gen
+    app.dependency_overrides[get_read_session] = _mock_session_gen
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
+        c.mock_session = mock_session
         yield c
+
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def authed_client(app) -> AsyncGenerator[AsyncClient, None]:
+    """Async HTTP client with auth AND DB overrides — for authenticated endpoint tests."""
+    from app.db.session import get_async_session, get_read_session
+    from app.api.v1.deps import get_current_user, CurrentUser
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=MagicMock())
+    mock_session.commit = AsyncMock()
+    mock_session.rollback = AsyncMock()
+    mock_session.flush = AsyncMock()
+    mock_session.close = AsyncMock()
+
+    async def _mock_session_gen():
+        yield mock_session
+
+    async def _mock_admin_user():
+        return CurrentUser(
+            id=TEST_USER_ID,
+            email="test@example.com",
+            name="Test User",
+            groups=["user", "admin"],
+        )
+
+    app.dependency_overrides[get_async_session] = _mock_session_gen
+    app.dependency_overrides[get_read_session] = _mock_session_gen
+    app.dependency_overrides[get_current_user] = _mock_admin_user
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        c.mock_session = mock_session
+        yield c
+
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def user_client(app) -> AsyncGenerator[AsyncClient, None]:
+    """Async HTTP client with auth (user only, no admin) + DB overrides."""
+    from app.db.session import get_async_session, get_read_session
+    from app.api.v1.deps import get_current_user, CurrentUser
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=MagicMock())
+    mock_session.commit = AsyncMock()
+    mock_session.rollback = AsyncMock()
+    mock_session.flush = AsyncMock()
+    mock_session.close = AsyncMock()
+
+    async def _mock_session_gen():
+        yield mock_session
+
+    async def _mock_regular_user():
+        return CurrentUser(
+            id=TEST_USER_ID,
+            email="test@example.com",
+            name="Test User",
+            groups=["user"],
+        )
+
+    app.dependency_overrides[get_async_session] = _mock_session_gen
+    app.dependency_overrides[get_read_session] = _mock_session_gen
+    app.dependency_overrides[get_current_user] = _mock_regular_user
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        c.mock_session = mock_session
+        yield c
+
+    app.dependency_overrides.clear()
 
 
 # ─── Auth fixtures ───
@@ -62,6 +156,24 @@ def auth_headers():
         mock_settings.jwt_signing_key = "test-secret-key-for-unit-tests-32chars!"
         token = create_jwt_token("test-user-id", "test@example.com", "Test User", ["user", "admin"])
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def user_headers():
+    """JWT token with only 'user' group (no admin)."""
+    from app.services.auth import create_jwt_token
+
+    with patch("app.services.auth.settings") as mock_settings:
+        mock_settings.JWT_ACCESS_TOKEN_MINUTES = 60
+        mock_settings.JWT_ALGORITHM = "HS256"
+        mock_settings.jwt_signing_key = "test-secret-key-for-unit-tests-32chars!"
+        token = create_jwt_token("test-user-id", "test@example.com", "Test User", ["user"])
+    return {"Authorization": f"Bearer {token}"}
+
+
+TEST_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+TEST_THREAD_ID = uuid.UUID("00000000-0000-0000-0000-000000000010")
+TEST_PROJECT_ID = uuid.UUID("00000000-0000-0000-0000-000000000020")
 
 
 # ─── Database fixtures ───
