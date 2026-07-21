@@ -120,7 +120,8 @@ next.user-config.*
 # Claude
 .claude/worktrees/
 graphify-out/
-.github/
+.github/*
+!.github/workflows/
 
 # SSL certificates
 nginx/ssl/*.pem

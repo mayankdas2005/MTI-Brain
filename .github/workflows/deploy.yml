@@ -1,0 +1,64 @@
+name: Deploy to Dev
+
+on:
+  push:
+    branches: [langgraph_neo4j]
+
+env:
+  DEPLOY_DIR: /home/ubuntu/Projects/mti-brain
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, mti-brain-dev]
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: /home/ubuntu/Projects/mti-brain
+
+    steps:
+      - name: Pull latest code
+        run: git pull origin langgraph_neo4j
+
+      - name: Detect database changes
+        id: changes
+        run: |
+          if git diff --name-only HEAD~1 | grep -q '^database/'; then
+            echo "database=true" >> $GITHUB_OUTPUT
+          else
+            echo "database=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stop application containers
+        run: docker compose down --remove-orphans || true
+
+      - name: Restart database stack
+        if: steps.changes.outputs.database == 'true'
+        working-directory: /home/ubuntu/Projects/mti-brain/database
+        run: |
+          docker compose down || true
+          docker compose up -d
+          echo "Waiting for database services to be ready..."
+          sleep 15
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start application
+        run: docker compose up -d
+
+      - name: Health check
+        run: |
+          echo "Waiting for services..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost/ > /dev/null 2>&1; then
+              echo "Application healthy (nginx + frontend responding)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Health check failed"
+          docker compose logs --tail=50
+          exit 1
+
+      - name: Prune old images
+        run: docker image prune -f
