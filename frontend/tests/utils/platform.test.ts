@@ -7,7 +7,7 @@ describe('platform utils', () => {
       Object.defineProperty(globalThis, 'navigator', { value: undefined, writable: true, configurable: true });
 
       vi.resetModules();
-      const { isMac } = await import('../platform');
+      const { isMac } = await import('@/lib/utils/platform');
       expect(isMac()).toBe(false);
 
       Object.defineProperty(globalThis, 'navigator', { value: origNav, writable: true, configurable: true });
@@ -20,7 +20,7 @@ describe('platform utils', () => {
         writable: true,
       });
 
-      const { isMac } = await import('../platform');
+      const { isMac } = await import('@/lib/utils/platform');
       expect(isMac()).toBe(true);
     });
 
@@ -31,7 +31,7 @@ describe('platform utils', () => {
         writable: true,
       });
 
-      const { isMac } = await import('../platform');
+      const { isMac } = await import('@/lib/utils/platform');
       expect(isMac()).toBe(false);
     });
 
@@ -42,7 +42,7 @@ describe('platform utils', () => {
         writable: true,
       });
 
-      const { isMac } = await import('../platform');
+      const { isMac } = await import('@/lib/utils/platform');
       expect(isMac()).toBe(true);
     });
   });
@@ -55,7 +55,7 @@ describe('platform utils', () => {
         writable: true,
       });
 
-      const { modifierLabel } = await import('../platform');
+      const { modifierLabel } = await import('@/lib/utils/platform');
       expect(modifierLabel()).toBe('\u2318'); // Command key
     });
 
@@ -66,7 +66,7 @@ describe('platform utils', () => {
         writable: true,
       });
 
-      const { modifierLabel } = await import('../platform');
+      const { modifierLabel } = await import('@/lib/utils/platform');
       expect(modifierLabel()).toBe('Ctrl');
     });
   });

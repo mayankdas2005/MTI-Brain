@@ -10,7 +10,7 @@ vi.mock('@/lib/auth', () => ({
   setStoredUser: vi.fn(),
 }));
 
-import { useAuthStore } from '../auth';
+import { useAuthStore } from '@/lib/store/auth';
 import * as authLib from '@/lib/auth';
 
 describe('useAuthStore', () => {

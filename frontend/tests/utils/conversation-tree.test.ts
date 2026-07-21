@@ -5,7 +5,7 @@ import {
   getActiveIdx,
   computeVisibility,
   getLastVisibleAssistantConvId,
-} from '../conversation-tree';
+} from '@/lib/utils/conversation-tree';
 
 function makeMessage(overrides: Partial<Message> = {}): Message {
   return {

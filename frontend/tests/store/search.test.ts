@@ -9,7 +9,7 @@ vi.mock('@/lib/api/projects', () => ({
   listProjects: vi.fn().mockResolvedValue([]),
 }));
 
-import { useSearchStore } from '../search';
+import { useSearchStore } from '@/lib/store/search';
 import { getRecents } from '@/lib/api/threads';
 import { listProjects } from '@/lib/api/projects';
 

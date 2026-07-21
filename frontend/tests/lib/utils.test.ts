@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { cn, randomId } from '../utils';
+import { cn, randomId } from '@/lib/utils';
 
 describe('cn (classname merge utility)', () => {
   it('merges simple class names', () => {

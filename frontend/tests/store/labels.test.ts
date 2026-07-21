@@ -5,7 +5,7 @@ vi.mock('@/lib/api/client', () => ({
   apiFetch: vi.fn(),
 }));
 
-import { useLabelsStore, LABEL_COLORS } from '../labels';
+import { useLabelsStore, LABEL_COLORS } from '@/lib/store/labels';
 import { apiFetch } from '@/lib/api/client';
 
 describe('useLabelsStore', () => {

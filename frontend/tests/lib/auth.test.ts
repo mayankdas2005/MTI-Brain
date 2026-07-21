@@ -29,7 +29,7 @@ import {
   isTokenExpired,
   isAuthenticated,
   getAuthHeaders,
-} from '../auth';
+} from '@/lib/auth';
 
 // Helper: create a base64url-encoded JWT payload
 function makeJWT(payload: Record<string, unknown>): string {

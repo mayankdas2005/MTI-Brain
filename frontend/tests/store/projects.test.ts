@@ -26,7 +26,7 @@ vi.mock('@/lib/api', () => ({
   starProject: vi.fn().mockResolvedValue({ starred: true }),
 }));
 
-import { useProjectStore } from '../projects';
+import { useProjectStore } from '@/lib/store/projects';
 import * as api from '@/lib/api';
 
 describe('useProjectStore', () => {

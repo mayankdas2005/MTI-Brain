@@ -3,7 +3,7 @@ import {
   setThreadCreationGate,
   getThreadCreationGate,
   isThreadCreationPending,
-} from '../threads';
+} from '@/lib/store/threads';
 
 describe('thread creation gate', () => {
   it('starts with no gate', () => {

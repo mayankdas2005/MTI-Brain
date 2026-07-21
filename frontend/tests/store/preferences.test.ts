@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { act } from '@testing-library/react';
-import { usePreferencesStore, PREFERENCES_DEFAULTS } from '../preferences';
+import { usePreferencesStore, PREFERENCES_DEFAULTS } from '@/lib/store/preferences';
 
 describe('usePreferencesStore', () => {
   beforeEach(() => {

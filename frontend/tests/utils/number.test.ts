@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatNumber, formatNumberWithDecimals } from '../number';
+import { formatNumber, formatNumberWithDecimals } from '@/lib/utils/number';
 
 describe('formatNumber', () => {
   it('formats small numbers without grouping', () => {

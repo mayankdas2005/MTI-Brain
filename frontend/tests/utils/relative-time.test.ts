@@ -4,7 +4,7 @@ import {
   bucketOf,
   groupByRecencyBucket,
   RECENCY_BUCKET_ORDER,
-} from '../relative-time';
+} from '@/lib/utils/relative-time';
 
 describe('formatRelativeTime', () => {
   const now = new Date('2024-06-15T12:00:00Z');

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickRandom, pickSuggestions, GHOST_PROMPTS, GHOST_PROMPTS_BY_TONE, SIMPLE, COMPLEX, ADVANCED } from '../suggestions';
+import { pickRandom, pickSuggestions, GHOST_PROMPTS, GHOST_PROMPTS_BY_TONE, SIMPLE, COMPLEX, ADVANCED } from '@/lib/suggestions';
 
 describe('pickRandom', () => {
   it('returns the requested number of items', () => {

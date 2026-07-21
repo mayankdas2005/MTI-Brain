@@ -24,7 +24,7 @@ vi.mock('@/lib/utils', () => ({
   randomId: vi.fn(() => 'mock-random-id'),
 }));
 
-vi.mock('../projects', () => ({
+vi.mock('@/lib/store/projects', () => ({
   useProjectStore: {
     getState: () => ({
       mutateProjectDetail: vi.fn(),
@@ -35,7 +35,7 @@ vi.mock('../projects', () => ({
   },
 }));
 
-vi.mock('../preferences', () => ({
+vi.mock('@/lib/store/preferences', () => ({
   usePreferencesStore: {
     getState: () => ({
       responseTone: 'executive',
@@ -45,7 +45,7 @@ vi.mock('../preferences', () => ({
   },
 }));
 
-import { useThreadStore } from '../threads';
+import { useThreadStore } from '@/lib/store/threads';
 import * as api from '@/lib/api';
 
 describe('useThreadStore', () => {
