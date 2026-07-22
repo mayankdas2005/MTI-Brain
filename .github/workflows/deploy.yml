@@ -19,13 +19,23 @@ jobs:
       - name: Pull latest code
         run: git pull origin langgraph_neo4j
 
-      - name: Detect database changes
+      - name: Detect changes
         id: changes
         run: |
           if git diff --name-only HEAD~1 | grep -q '^database/'; then
             echo "database=true" >> $GITHUB_OUTPUT
           else
             echo "database=false" >> $GITHUB_OUTPUT
+          fi
+          if git diff --name-only HEAD~1 | grep -q 'backend/requirements.txt'; then
+            echo "backend_deps=true" >> $GITHUB_OUTPUT
+          else
+            echo "backend_deps=false" >> $GITHUB_OUTPUT
+          fi
+          if git diff --name-only HEAD~1 | grep -q 'frontend/package-lock.json\|frontend/package.json'; then
+            echo "frontend_deps=true" >> $GITHUB_OUTPUT
+          else
+            echo "frontend_deps=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Stop application containers
@@ -39,6 +49,14 @@ jobs:
           docker compose up -d
           echo "Waiting for database services to be ready..."
           sleep 15
+
+      - name: Build backend base image
+        if: steps.changes.outputs.backend_deps == 'true'
+        run: docker build -f backend/Dockerfile.base -t mti-brain-backend-base:latest backend/
+
+      - name: Build frontend base image
+        if: steps.changes.outputs.frontend_deps == 'true'
+        run: docker build -f frontend/Dockerfile.base -t mti-brain-frontend-base:latest frontend/
 
       - name: Build images
         run: docker compose build
