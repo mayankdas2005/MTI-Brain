@@ -225,6 +225,181 @@ docker build -t mti-brain-backend .
 docker run --env-file .env -p 8000:8000 mti-brain-backend
 ```
 
+### Multi-Stage Docker Build
+
+The project uses **two-stage Docker builds** to optimize image size:
+
+#### Dockerfile.base (Dependencies Layer)
+
+- Installs Python 3.12-slim, compiler toolchain, and all dependencies from `requirements.txt`
+- Uses `uv` (fast package manager) to build a virtual environment
+- Creates non-root `appuser`
+- Build: ~5-8 minutes (done once, reused across deployments)
+- Size: ~800MB
+
+```bash
+# Build base image (only when requirements.txt changes)
+docker build -f Dockerfile.base -t mti-brain-backend-base:latest .
+```
+
+#### Dockerfile (Application Layer)
+
+- Copies venv from base image
+- Copies only application code (`app/`, `config.yml`, etc.)
+- Final image: ~800MB (small footprint since base is cached)
+- Build: ~10-30 seconds (fast rebuild after code changes)
+
+```bash
+# Build final image (fast, uses cached base)
+docker build -t mti-brain-backend:latest .
+```
+
+This split keeps deployments fast by caching the expensive dependency layer and only rebuilding when code or dependencies change.
+
+---
+
+## Testing
+
+The backend includes three tiers of automated tests:
+
+### Test Structure
+
+```
+backend/tests/
+├── conftest.py              # Pytest fixtures + shared setup
+├── fixtures/                # Mock services + sample data
+│   ├── mock_bedrock.py      # Mocked AWS Bedrock LLM
+│   ├── mock_neo4j.py        # Mocked Neo4j driver
+│   ├── mock_redis.py        # Mocked Redis client
+│   ├── mock_redshift.py     # Mocked Redshift connection
+│   └── sample_states.py     # Pre-built AnalyticsState instances
+├── unit/                    # Fast, isolated tests (~120 tests)
+│   ├── agents/              # Node logic, helpers, routing
+│   ├── core/                # Middleware, auth, rate limiting
+│   ├── analysis/            # SQL parsing (sqlglot)
+│   └── test_auth.py         # JWT, user creation
+├── integration/             # Full stack tests (~77 tests)
+│   ├── test_api_auth.py     # Login, /me endpoint
+│   ├── test_api_chat.py     # Thread CRUD + SSE streaming
+│   ├── test_api_projects.py # Project management
+│   ├── test_middleware.py   # Request ID, rate limiting
+│   └── [other endpoints]
+└── e2e/                     # End-to-end scenarios (~57 tests)
+    ├── test_auth_flow.py    # Sign up → login → JWT
+    ├── test_chat_flow.py    # Ask → stream → synthesis
+    └── test_project_flow.py # Create project → add threads
+```
+
+### Running Tests
+
+**Install dev dependencies:**
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+**Run all tests:**
+
+```bash
+pytest                              # All tests
+pytest -v                           # Verbose
+pytest --tb=short                   # Short traceback format
+pytest -x                           # Stop on first failure
+pytest --lf                         # Run last failed
+```
+
+**Run specific suites:**
+
+```bash
+pytest tests/unit/                  # Unit tests only
+pytest tests/integration/           # Integration tests only
+pytest tests/e2e/                   # E2E tests only
+pytest tests/unit/agents/           # Agent tests only
+pytest tests/e2e/test_chat_flow.py  # Single file
+pytest tests/e2e/test_chat_flow.py::test_ask_question  # Single test
+```
+
+**Run with coverage:**
+
+```bash
+pytest --cov=app --cov-report=html
+# Open htmlcov/index.html in browser
+```
+
+**Parallel execution:**
+
+```bash
+pip install pytest-xdist
+pytest -n auto          # Use all CPU cores
+pytest -n 4             # Use 4 workers
+```
+
+### Test Configuration
+
+`pytest.ini` controls behavior:
+
+```ini
+[pytest]
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+testpaths = tests
+asyncio_mode = auto
+```
+
+### Fixtures & Mocks
+
+All fixtures are defined in `backend/tests/conftest.py` and imported automatically by pytest:
+
+| Fixture | Provides | Purpose |
+|---------|----------|---------|
+| `mock_bedrock` | Mocked `ChatBedrock` | Fake LLM responses (no AWS calls) |
+| `mock_neo4j` | Mocked `AsyncDriver` | Fake graph queries |
+| `mock_redis` | Mocked `Redis` | Fake cache operations |
+| `mock_redshift` | Mocked `psycopg` pool | Fake SQL execution |
+| `sample_state` | `AnalyticsState` dict | Pre-built pipeline state |
+| `async_client` | `AsyncClient` | Fake FastAPI test client |
+| `db_session` | Async SQLAlchemy session | Real test DB (created fresh per test) |
+| `auth_token` | JWT string | Valid test JWT for auth endpoints |
+
+### Integration Tests
+
+Integration tests hit **real services** via Docker:
+
+- PostgreSQL (test database with migrations applied)
+- Redis (test instance)
+- Neo4j (test graph database)
+
+Pytest fixtures handle setup/teardown:
+
+```python
+@pytest.fixture(scope="session")
+async def db_engine():
+    # Create async engine connected to test DB
+    # Run migrations (alembic upgrade head)
+    # Return engine
+    # After all tests, drop all tables and close engine
+
+@pytest.fixture
+async def db_session(db_engine):
+    # Create a transaction-scoped session for each test
+    # Rollback after test (no side effects between tests)
+```
+
+### CI/CD Integration
+
+Tests run automatically in GitHub Actions (`.github/workflows/deploy.yml`):
+
+```yaml
+- name: Run backend tests
+  if: github.ref == 'refs/heads/langgraph_neo4j'
+  run: |
+    cd backend
+    pytest tests/integration tests/e2e --tb=short
+```
+
+Failed tests block deployment.
+
 ---
 
 ## Configuration Reference

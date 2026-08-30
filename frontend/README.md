@@ -313,7 +313,140 @@ docker run -p 3000:3000 mti-brain-frontend
 
 The container: runs as non-root user (`nextjs`), health-checks port 3000 every 30 s, uses Next.js standalone output, limits Node.js to 256 MB.
 
-## Environment Variables
+### Multi-Stage Docker Build
+
+The frontend uses a **two-stage build** to optimize for production:
+
+#### Dockerfile.base (Dependencies Layer)
+
+- Installs Node 20-alpine and npm dependencies from `package.json` using `npm ci`
+- Reused across builds when dependencies haven't changed
+- Build: ~2-3 minutes (done once, cached)
+- Size: ~500MB
+
+```bash
+# Build base image (only when package.json changes)
+docker build -f Dockerfile.base -t mti-brain-frontend-base:latest .
+```
+
+#### Dockerfile (Application Layer)
+
+- Copies dependencies from base image
+- Builds Next.js (standalone output)
+- Produces final production image (~400MB)
+- Build: ~3-5 minutes (reuses cached base)
+
+This split keeps deployments fast by caching the npm install step.
+
+---
+
+## Testing
+
+The frontend includes comprehensive unit tests for stores, utilities, and API client interactions.
+
+### Test Structure
+
+```
+frontend/tests/
+├── setup.ts                     # Vitest + @testing-library configuration
+├── utils.tsx                    # Test utilities + mock components
+├── api/
+│   ├── client.test.ts          # API client with auth headers
+│   └── sse.test.ts (future)    # SSE parser
+├── lib/
+│   ├── auth.test.ts            # Login, token handling, logout
+│   ├── utils.test.ts           # cn() classnames utility
+│   ├── suggestions.test.ts      # Follow-up suggestion parsing
+│   └── analytics.test.ts        # PostHog integration
+├── store/
+│   ├── auth.test.ts            # useAuthStore: login, token, user
+│   ├── threads.test.ts         # useThreadStore: message CRUD, streaming, deep analysis
+│   ├── projects.test.ts        # useProjectStore: project list, search, current project
+│   ├── ui.test.ts              # useUIStore: sidebar, dialogs, shortcuts
+│   ├── preferences.test.ts      # usePreferencesStore: settings persistence
+│   ├── search.test.ts          # useSearchStore: debounced search
+│   └── labels.test.ts          # useLabelsStore: thread labels
+├── utils/
+│   ├── conversation-tree.test.ts # Message threading, version branching
+│   ├── number.test.ts           # Number formatting
+│   ├── platform.test.ts         # Platform detection (mobile/tablet/desktop)
+│   ├── relative-time.test.ts    # Relative time formatting
+│   └── …
+└── smoke.test.ts                # Canary test: verify app can boot
+```
+
+### Running Tests
+
+**Install dev dependencies:**
+
+```bash
+npm install
+```
+
+Tests are configured in `vitest.config.ts` and run with:
+
+```bash
+npm test                            # Run all tests
+npm test -- --ui                   # Interactive UI mode
+npm test -- --coverage             # With coverage report
+npm test -- --watch                # Watch mode (re-run on change)
+npm test -- --run                  # Single run (CI mode)
+npm test store/auth.test.ts        # Single file
+npm test -- --reporter=verbose     # Verbose output
+```
+
+### Test Configuration
+
+`vitest.config.ts` sets up:
+
+- **Environment**: `jsdom` (browser-like DOM)
+- **Globals**: `describe`, `it`, `expect` available without imports
+- **Coverage**: configured to track `lib/` and `store/` directories
+- **Setup**: `tests/setup.ts` runs before all tests (imports globals, mocks)
+
+### Mocking Strategy
+
+Common mocks are defined in `tests/utils.tsx`:
+
+| Mock | Purpose |
+|------|---------|
+| `MockApiClient` | Fake API responses (threads, projects, auth) |
+| `MockRouter` | Fake Next.js router (navigation) |
+| `MockAuthStore` | Pre-populated auth state |
+| `MockThreadStore` | Pre-populated thread/message state |
+| `renderWithStores` | Wrapper for @testing-library render with all stores |
+
+**Example test:**
+
+```typescript
+import { renderWithStores } from '@/tests/utils'
+import { useThreadStore } from '@/lib/store/threads'
+
+describe('Thread Store', () => {
+  it('adds a message', async () => {
+    const { store } = renderWithStores(<Component />)
+    
+    act(() => {
+      store.addMessage({ id: 'msg-1', content: 'Hello' })
+    })
+    
+    expect(store.currentMessages).toHaveLength(1)
+  })
+})
+```
+
+### CI Integration
+
+Frontend tests run in GitHub Actions (planned):
+
+```yaml
+- name: Run frontend tests
+  run: npm test -- --run --coverage
+```
+
+Failed tests block deployment.
+
+---
 
 `NEXT_PUBLIC_*` variables are embedded at **build time** and exposed to the browser.
 

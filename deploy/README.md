@@ -1,8 +1,84 @@
 # MTI Brain Deployment
 
-AWS CodeDeploy lifecycle hooks executed on the EC2 host as part of the CodePipeline → CodeDeploy flow. The pipeline ships the source bundle to `/opt/mti-brain` and CodeDeploy runs each script below in order. Docker images are built **on the EC2 host** (no ECR).
+## Overview
 
-## Pipeline Flow
+The project supports two deployment paths:
+
+1. **GitHub Actions (recommended for dev)** — Automated CI/CD for the `langgraph_neo4j` branch → self-hosted runner on AWS EC2
+2. **AWS CodeDeploy (production)** — Manual trigger via console → EC2 via CodeDeploy hooks
+
+---
+
+## GitHub Actions CI/CD (Dev Deployment)
+
+### What it does
+
+Every push to the `langgraph_neo4j` branch triggers `.github/workflows/deploy.yml`:
+
+1. **Detect what changed** (diff analysis):
+   - `database/` changes → restart database containers
+   - `backend/requirements.txt` changes → rebuild `backend/Dockerfile.base`
+   - `frontend/package.json` changes → rebuild `frontend/Dockerfile.base`
+   - App code changes → rebuild final image (reuses cached base)
+
+2. **Build images** — only affected stages (caching strategy makes this fast)
+3. **Deploy** — `docker compose down`, build, `docker compose up -d`
+4. **Health check** — polls nginx + frontend for 60 seconds
+5. **Cleanup** — prunes old Docker images
+
+### Pipeline configuration
+
+```yaml
+# .github/workflows/deploy.yml
+on:
+  push:
+    branches: [langgraph_neo4j]
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, mti-brain-dev]
+    # Self-hosted runner on AWS EC2 tagged "mti-brain-dev"
+```
+
+### Setup requirements
+
+**Self-hosted runner:**
+
+1. Register runner on the EC2 host:
+   ```bash
+   # On EC2 host
+   mkdir -p ~/actions-runner
+   cd ~/actions-runner
+   curl -o actions-runner-linux-x64-2.320.0.tar.gz \
+     -L https://github.com/actions/runner/releases/download/v2.320.0/actions-runner-linux-x64-2.320.0.tar.gz
+   tar xzf ./actions-runner-linux-x64-2.320.0.tar.gz
+   ./config.sh --url https://github.com/your-org/mti-brain --token XXXX --labels linux,mti-brain-dev
+   ./run.sh
+   ```
+
+2. Prerequisites on runner:
+   - Docker Engine + docker-compose-plugin
+   - Git
+   - Permissions: ubuntu user can run docker without sudo
+
+3. GitHub repository:
+   - Navigate to **Settings → Runners → New self-hosted runner**
+   - Add your runner and tag it `mti-brain-dev`
+
+### Manual override
+
+To manually trigger without pushing:
+
+```bash
+# From local machine
+git push origin langgraph_neo4j
+```
+
+Or use GitHub's workflow dispatch (if enabled in `.github/workflows/deploy.yml`).
+
+---
+
+## AWS CodeDeploy (Production)
 
 ```
 GitHub push (main)

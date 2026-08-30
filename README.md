@@ -243,10 +243,14 @@ cd ..
 cp backend/.env.example .env
 # Edit .env: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, JWT_SECRET
 
-# 3. Bring up nginx + frontend + backend
+# 3. Build base images (dependencies layer)
+docker build -f backend/Dockerfile.base -t mti-brain-backend-base:latest backend/
+docker build -f frontend/Dockerfile.base -t mti-brain-frontend-base:latest frontend/
+
+# 4. Bring up nginx + frontend + backend
 docker compose up -d
 
-# 4. Run migrations
+# 5. Run migrations
 docker compose run --rm backend alembic upgrade head
 ```
 
@@ -284,6 +288,77 @@ curl http://localhost:8000/health
 # {"status":"healthy","services":{"postgres":{"status":"ok"}},...}
 ```
 
+## Docker Build Strategy
+
+The project uses a **multi-stage Docker build** to optimize image sizes and build times:
+
+### Backend Build Process
+
+- **Stage 1 (`Dockerfile.base`)**: Installs Python 3.12, compiler tools, and all dependencies from `requirements.txt` into a virtual environment using `uv`. Creates non-root `appuser`. Build once, reuse across deployments.
+- **Stage 2 (`Dockerfile`)**: Copies only the venv and application code, keeping the final image lean (~800MB vs 2.5GB).
+
+### Frontend Build Process
+
+- **Stage 1 (`Dockerfile.base`)**: Installs Node 20 dependencies from `package.json` using `npm ci`. Reused across builds.
+- **Stage 2 (`Dockerfile`)**: Builds Next.js (standalone output), copies artifacts, runs as non-root `nextjs` user.
+
+### CI/CD Automatic Rebuild
+
+The GitHub Actions pipeline (`.github/workflows/deploy.yml`) detects changes and rebuilds only what changed:
+
+- **Backend dependencies changed** (`backend/requirements.txt`) → rebuild `Dockerfile.base`
+- **Frontend dependencies changed** (`frontend/package.json`) → rebuild `Dockerfile.base`
+- **App code changed** → rebuild final stage (always fast, cached base image reused)
+- **Database schema changed** → restart database containers before re-deploying
+
+See [Deploy](#deploy-section) and `.github/workflows/deploy.yml` for full CI/CD flow.
+
+## Testing
+
+The project includes comprehensive test suites across backend and frontend:
+
+### Backend Tests
+
+| Suite | Location | Count | Coverage |
+|-------|----------|-------|----------|
+| **Unit Tests** | `backend/tests/unit/` | ~120 | Core logic (agents, helpers, validators) |
+| **Integration Tests** | `backend/tests/integration/` | 77 | All API endpoints, middleware, auth flow |
+| **E2E Tests** | `backend/tests/e2e/` | 57 | Full pipelines (auth, chat, projects) |
+| **Fixtures** | `backend/tests/fixtures/` | — | Mock Bedrock, Neo4j, Redis, Redshift, sample states |
+
+Run all tests:
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest                    # Run all
+pytest tests/unit/        # Run unit only
+pytest tests/e2e/test_chat_flow.py  # Run single file
+pytest -v --tb=short     # Verbose output
+```
+
+### Frontend Tests
+
+| Suite | Location | Count | Coverage |
+|-------|----------|-------|----------|
+| **Unit Tests** | `frontend/tests/` | 234 | Stores, utils, API client, hooks |
+| **Setup** | `frontend/tests/setup.ts` | — | Vitest + @testing-library configuration |
+
+Run all tests:
+
+```bash
+cd frontend
+npm test                  # Run all
+npm test -- --ui        # Interactive UI
+npm test -- --coverage  # With coverage report
+```
+
+### Test Organization
+
+- Each test file mirrors the source structure (e.g., `tests/store/threads.test.ts` mirrors `lib/store/threads.ts`)
+- Fixtures and mocks are centralized in `tests/fixtures/` (backend) or `tests/utils.tsx` (frontend)
+- Integration tests hit real services (PostgreSQL, Neo4j) via Docker; use `pytest` fixtures for setup/teardown
+
 ## Services Overview
 
 | Service | Port | Stack | Resource Limits | Description |
@@ -306,7 +381,63 @@ See each component for the full variable reference:
 
 ---
 
-## Related Documentation
+## Deploy
+
+### GitHub Actions CI/CD
+
+The project includes an automated deployment pipeline for the `langgraph_neo4j` branch:
+
+**Trigger**: Every push to `langgraph_neo4j`
+
+**Pipeline steps** (`.github/workflows/deploy.yml`):
+
+1. **Pull latest code** from origin
+2. **Detect changes** — analyzes diff to determine what to rebuild:
+   - Database changes → restart database containers
+   - Backend dependencies changed → rebuild `backend/Dockerfile.base`
+   - Frontend dependencies changed → rebuild `frontend/Dockerfile.base`
+3. **Stop application** containers gracefully
+4. **Rebuild images** — only changed stages (cached base images reused)
+5. **Start application** (`docker compose up -d`)
+6. **Health check** — polls nginx + frontend for 60 seconds
+7. **Cleanup** — prunes old Docker images
+
+**Deployment target**: Self-hosted runner (`linux`, `mti-brain-dev`) on AWS EC2
+
+**Required setup**:
+
+- Self-hosted runner registered and online
+- Pre-existing `.env` files on the EC2 host (not committed to git)
+- Secrets available as runner environment variables
+
+Logs and failure notifications are captured by GitHub Actions.
+
+### Manual Deployment
+
+For manual deployments outside the pipeline:
+
+```bash
+cd /path/to/mti-brain
+git pull origin langgraph_neo4j
+
+# Build base images if dependencies changed
+docker build -f backend/Dockerfile.base -t mti-brain-backend-base:latest backend/
+docker build -f frontend/Dockerfile.base -t mti-brain-frontend-base:latest frontend/
+
+# Build and start application
+docker compose down --remove-orphans || true
+docker compose build
+docker compose up -d
+
+# Verify health
+curl http://localhost/health
+docker compose ps
+docker compose logs -f backend
+```
+
+See `deploy/README.md` for AWS CodeDeploy integration and rollback procedures.
+
+---
 
 | Component | README |
 |-----------|--------|

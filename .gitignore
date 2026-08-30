@@ -27,15 +27,10 @@ alembic/versions/__pycache__/
 # Local Qwen3 fine-tuning workspace (venv, checkpoints, datasets) — not source
 finetune-qwen3-sql/
 
-# Docs
-assets/guide_screenshots/
-assets/*.docx
-assets/*.pdf
-assets/*.pptx
-assets/case_study/extracted/
-assets/analytics_graph.png
-assets/generate_*.py
-assets/extract_logos.py
+# Docs & assets — only keep README.md and .mmd source
+assets/*
+!assets/README.md
+!assets/analytics_graph.mmd
 
 # Images / screenshots / logos
 *.png
@@ -45,6 +40,15 @@ assets/extract_logos.py
 *.ico
 *.svg
 *.webp
+
+# Video / media
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Accidental files
+witch*
 
 # IDE
 .vscode/
